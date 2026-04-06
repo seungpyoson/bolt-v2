@@ -43,15 +43,16 @@ This spec does **not** define alpha features, strategy logic, dashboards, or a f
   - `TradeTick`
   - `OrderBookDelta`
   - `InstrumentAny`
-  - `InstrumentClose` / `InstrumentStatus`
+  - `InstrumentClose`
+  - `InstrumentStatus`
 - NT object-store and Parquet catalog primitives.
-- NT FeatherWriter for streaming normalized market-data capture.
 - NT backtest/replay engine.
 
 ### Thin Glue Around NT
 
-- Subscribe NT market-data events to the NT FeatherWriter on the message bus.
+- Instantiate and subscribe NT `FeatherWriter` on the message bus from the Rust live path.
 - Configure NT object-store paths for S3 targets.
+- Capture `InstrumentStatus` close/resolution events with a tiny companion subscriber.
 - Batch-convert or materialize NT-native stream outputs into Athena/DuckDB-friendly Parquet tables.
 - Use NT Gamma/instrument provider surfaces to populate a versioned market catalog.
 
@@ -101,7 +102,7 @@ Responsibilities:
 
 Notes:
 
-- This is the only truly unavoidable custom component in V1.
+- This is one of the unavoidable custom components in V1.
 - It should be transport-adjacent and dumb: capture bytes/payloads plus receive timestamps and request metadata.
 - It must not perform normalized business logic.
 
@@ -113,8 +114,10 @@ Purpose:
 
 Implementation:
 
-- Use NT `FeatherWriter`.
-- Subscribe it to the message bus.
+- Use NT `FeatherWriter` as the default market-data sink.
+- Wire it manually from the Rust live path by subscribing it to the message bus.
+- Add a tiny companion subscriber for `InstrumentStatus` events, because stock FeatherWriter is market-data-centric.
+- Default to local spool/output paths in V1 unless benchmarks prove direct remote object-store writes are safe for the live path.
 
 Expected captured classes in V1:
 
@@ -130,6 +133,7 @@ Expected captured classes in V1:
 Explicit V1 limitation:
 
 - Stock NT FeatherWriter is market-data-centric and does not natively cover order/fill/position lake tables.
+- Stock NT FeatherWriter does not cover `InstrumentStatus` close/resolution events.
 - Those remain separate, deferred or custom-exported later.
 
 ### 4. Batch Lake + Enrichment Job
@@ -142,7 +146,8 @@ Responsibilities:
 
 - Read raw captured payloads as needed.
 - Read NT normalized stream outputs.
-- Convert or compact into canonical Parquet tables.
+- Convert Feather stream outputs into canonical Parquet tables.
+- Reshape NT-native stream layout into Athena/DuckDB-friendly lake layout.
 - Enrich with market metadata and resolution history.
 - Publish Athena-ready datasets.
 
@@ -150,6 +155,7 @@ Notes:
 
 - In V1 this is one job family, not a fleet of microservices.
 - It can run on a schedule.
+- In practice this is ETL, not just compaction.
 
 ## Data Layers
 
@@ -248,7 +254,12 @@ Produced from NT market-data stream plus instrument discovery.
 
 #### `normalized_market_closes`
 
-Derived from NT instrument close/status events.
+Derived from custom-captured `InstrumentStatus` events with close/resolution semantics.
+
+Clarification:
+
+- This table is not the same thing as NT `InstrumentClose` market-data records.
+- In Polymarket, resolution currently arrives through `InstrumentStatus` close events.
 
 #### `normalized_markets`
 
@@ -263,6 +274,10 @@ Required contents should include:
 - timing metadata
 - source observation timestamp
 
+Primary source:
+
+- NT Gamma/instrument provider surfaces, persisted with our own history/versioning.
+
 #### `normalized_resolutions`
 
 Versioned resolution fact table.
@@ -274,6 +289,10 @@ Required contents should include:
 - observed resolution timestamp
 - provenance/source
 - any reason text available from NT or upstream metadata
+
+V1 constraint:
+
+- NT emits live close/resolution signals, but a complete history/backfill path may still require upstream polling outside the stock live node.
 
 ### Research Tables
 
@@ -369,6 +388,7 @@ Design note:
 
 - Can be restarted independently of strategy logic.
 - Loss of normalized stream capture must not imply loss of raw capture.
+- Treat direct remote object-store writes as opt-in after performance validation; local-first spool is the safe default.
 
 ### Batch Lake Job
 
@@ -394,9 +414,10 @@ These are deferred to keep V1 thin and NT-first.
 1. Keep stock NT live path unchanged for execution/runtime.
 2. Add raw payload capture.
 3. Wire NT FeatherWriter for normalized market-data capture.
-4. Define canonical S3 lake paths and table names.
-5. Build one batch job to produce canonical Parquet tables and enrich metadata/resolution history.
-6. Validate Athena and DuckDB against those canonical tables.
+4. Add a tiny `InstrumentStatus` subscriber for market close/resolution events.
+5. Define canonical S3 lake paths and table names.
+6. Build one batch ETL job to convert Feather outputs to canonical Parquet and enrich metadata/resolution history.
+7. Validate Athena and DuckDB against those canonical tables.
 
 ## Explicit Non-Goals
 

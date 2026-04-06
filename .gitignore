@@ -1,4 +1,6 @@
 /target
+/docs/
+/Tasks/
 config/live.toml
 *.log
 .omx/

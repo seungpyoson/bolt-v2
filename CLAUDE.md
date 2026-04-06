@@ -10,3 +10,4 @@
 6. **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve via `aws ssm get-parameter --with-decryption`. No 1Password CLI, no environment variable fallbacks, no other secret backends.
 7. **GROUP BY CHANGE** — if swapping a wallet, credential set, or venue requires editing more than one config section, the config is wrong. All values that share a lifecycle belong in one section. Test: "if I change X, how many places do I touch?" The answer must be one.
 8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
+9. **SAFE WORKTREE LOCATION** — if using git worktrees for this repo, place them outside any parent directory tree that contains an unrelated `Cargo.toml`. Prefer `~/worktrees/bolt-v2/<branch>` or another path that is not inside a different Rust workspace.

@@ -19,6 +19,18 @@ pub struct ResolvedPolymarketSecrets {
     pub passphrase: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretConfigCheck {
+    pub present: Vec<&'static str>,
+    pub missing: Vec<&'static str>,
+}
+
+impl SecretConfigCheck {
+    pub fn is_complete(&self) -> bool {
+        self.missing.is_empty()
+    }
+}
+
 fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
     let output = std::process::Command::new("aws")
         .args([
@@ -55,27 +67,59 @@ fn pad_base64(mut secret: String) -> String {
     secret
 }
 
+fn is_present(value: Option<&String>) -> bool {
+    value.is_some_and(|v| !v.trim().is_empty())
+}
+
+pub fn check_polymarket_secret_config(secrets: &ExecClientSecrets) -> SecretConfigCheck {
+    let mut present = Vec::new();
+    let mut missing = Vec::new();
+
+    for (field, configured) in [
+        ("pk", is_present(secrets.pk.as_ref())),
+        ("api_key", is_present(secrets.api_key.as_ref())),
+        ("api_secret", is_present(secrets.api_secret.as_ref())),
+        ("passphrase", is_present(secrets.passphrase.as_ref())),
+    ] {
+        if configured {
+            present.push(field);
+        } else {
+            missing.push(field);
+        }
+    }
+
+    SecretConfigCheck { present, missing }
+}
+
 pub fn resolve_polymarket(
     secrets: &ExecClientSecrets,
 ) -> Result<ResolvedPolymarketSecrets, SecretError> {
+    let check = check_polymarket_secret_config(secrets);
+    if !check.is_complete() {
+        return Err(SecretError(format!(
+            "Missing required secret config fields: {}",
+            check.missing.join(", ")
+        )));
+    }
+
     let region = &secrets.region;
 
     let private_key_path = secrets
         .pk
         .as_ref()
-        .ok_or_else(|| SecretError("Missing pk SSM path".to_string()))?;
+        .expect("pk must exist after config check");
     let api_key_path = secrets
         .api_key
         .as_ref()
-        .ok_or_else(|| SecretError("Missing api_key SSM path".to_string()))?;
+        .expect("api_key must exist after config check");
     let api_secret_path = secrets
         .api_secret
         .as_ref()
-        .ok_or_else(|| SecretError("Missing api_secret SSM path".to_string()))?;
+        .expect("api_secret must exist after config check");
     let passphrase_path = secrets
         .passphrase
         .as_ref()
-        .ok_or_else(|| SecretError("Missing passphrase SSM path".to_string()))?;
+        .expect("passphrase must exist after config check");
 
     Ok(ResolvedPolymarketSecrets {
         private_key: resolve_secret(region, private_key_path)?,

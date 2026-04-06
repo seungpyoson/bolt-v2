@@ -26,6 +26,18 @@ enum Command {
         config: PathBuf,
     },
     Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum SecretsCommand {
+    Check {
+        #[arg(short, long)]
+        config: PathBuf,
+    },
+    Resolve {
         #[arg(short, long)]
         config: PathBuf,
     },
@@ -35,13 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Secrets { config } => {
-            let cfg = Config::load(&config)?;
-            for client in &cfg.exec_clients {
-                println!("{}: secret references found in config", client.name);
-            }
-            Ok(())
-        }
+        Command::Secrets { command } => run_secrets_command(command),
         Command::Run { config } => {
             let cfg = Config::load(&config)?;
 
@@ -110,6 +116,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .enable_all()
                 .build()?
                 .block_on(node.run())?;
+
+            Ok(())
+        }
+    }
+}
+
+fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        SecretsCommand::Check { config } => {
+            let cfg = Config::load(&config)?;
+            let mut has_errors = false;
+
+            for client in &cfg.exec_clients {
+                match client.kind.as_str() {
+                    "polymarket" => {
+                        let check = secrets::check_polymarket_secret_config(&client.secrets);
+                        if check.is_complete() {
+                            println!(
+                                "{}: secret config complete ({})",
+                                client.name,
+                                check.present.join(", ")
+                            );
+                        } else {
+                            has_errors = true;
+                            eprintln!(
+                                "{}: missing secret config fields ({})",
+                                client.name,
+                                check.missing.join(", ")
+                            );
+                        }
+                    }
+                    other => return Err(format!("Unsupported exec client type: {other}").into()),
+                }
+            }
+
+            if has_errors {
+                Err("One or more exec clients have incomplete secret configuration".into())
+            } else {
+                Ok(())
+            }
+        }
+        SecretsCommand::Resolve { config } => {
+            let cfg = Config::load(&config)?;
+
+            for client in &cfg.exec_clients {
+                match client.kind.as_str() {
+                    "polymarket" => {
+                        secrets::resolve_polymarket(&client.secrets)?;
+                        println!("{}: secrets resolved successfully", client.name);
+                    }
+                    other => return Err(format!("Unsupported exec client type: {other}").into()),
+                }
+            }
 
             Ok(())
         }

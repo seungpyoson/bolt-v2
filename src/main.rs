@@ -23,46 +23,20 @@ use crate::config::Config;
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
 struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(clap::Subcommand)]
-enum Command {
-    /// Run the trading node
-    Run {
-        /// Path to TOML config file
-        #[arg(short, long)]
-        config: PathBuf,
-    },
-    /// Resolve secrets from the config and output as env vars
-    Secrets {
-        /// Path to TOML config file
-        #[arg(short, long)]
-        config: PathBuf,
-    },
+    /// Path to TOML config file
+    #[arg(short, long)]
+    config: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let cfg = Config::load(&cli.config)?;
+    cfg.wallet.inject()?;
 
-    match cli.command {
-        Command::Secrets { config } => {
-            let cfg = Config::load(&config)?;
-            cfg.wallet.print_env()?;
-            Ok(())
-        }
-        Command::Run { config } => {
-            let cfg = Config::load(&config)?;
-            // Env vars set here, before tokio spawns worker threads.
-            cfg.wallet.inject()?;
-
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?
-                .block_on(run(cfg))
-        }
-    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cfg))
 }
 
 async fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {

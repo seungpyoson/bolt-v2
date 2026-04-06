@@ -5,10 +5,10 @@ set -euo pipefail
 echo "=== Checking compilation ==="
 ~/.cargo/bin/cargo check 2>&1 | grep -E "^(error|warning:|Finished)" || true
 
-echo "=== Verifying CLI subcommands ==="
-~/.cargo/bin/cargo run --release -- --help 2>&1 | grep -E "^  (run|secrets|help)"
+echo "=== Verifying CLI ==="
+~/.cargo/bin/cargo run --release -- --help 2>&1 | grep -E "\-\-config"
 
 echo "=== Verifying config parses ==="
-~/.cargo/bin/cargo run --release -- run --config config/example.toml 2>&1 | head -1 || true
+~/.cargo/bin/cargo run --release -- --config config/example.toml 2>&1 | head -1 || true
 
 echo "=== All checks passed ==="

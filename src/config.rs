@@ -129,13 +129,6 @@ impl WalletConfig {
         }
         Ok(())
     }
-
-    pub fn print_env(&self) -> Result<(), Box<dyn std::error::Error>> {
-        for (env_name, value) in self.resolve_env_vars()? {
-            println!("{env_name}={value}");
-        }
-        Ok(())
-    }
 }
 
 impl Config {

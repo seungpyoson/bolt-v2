@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add the smallest working raw + normalized + canonical-lake pipeline around the existing stock NautilusTrader Polymarket live node without rebuilding anything NT already provides.
+**Goal:** Add the smallest working raw + normalized + local catalog pipeline around the existing stock NautilusTrader Polymarket live node without rebuilding anything NT already provides.
 
-**Architecture:** Keep the existing `LiveNode::builder(...)` runtime as-is. Add one separate raw-capture binary, wire NT `FeatherWriter` plus a tiny `InstrumentStatus` subscriber into the live node, and use NT’s built-in stream-to-Parquet conversion where possible before applying a minimal custom ETL step for market metadata, resolution history, and final canonical table layout.
+**Architecture:** Keep the existing `LiveNode::builder(...)` runtime as-is. Add one separate raw-capture binary, wire NT `FeatherWriter` plus a tiny real `InstrumentStatus` sink into the live node, and use NT’s built-in stream-to-Parquet conversion against the same local catalog root. S3 and Athena are explicitly out of the critical path until the local pipeline works.
 
-**Tech Stack:** Rust, NautilusTrader crates pinned to `af2aefc24451ed5c51b94e64459421f1dd540bfb`, Tokio, tokio-tungstenite, reqwest, Serde, NT FeatherWriter, NT ParquetDataCatalog, S3-compatible object store, DuckDB.
+**Tech Stack:** Rust, NautilusTrader crates pinned to `af2aefc24451ed5c51b94e64459421f1dd540bfb`, Tokio, tokio-tungstenite, reqwest, Serde, NT FeatherWriter, NT ParquetDataCatalog, DuckDB.
 
 ---
 
@@ -51,7 +51,7 @@ Every task below survives the deletion test:
 - NT normalized sink wiring cannot be deleted because stock Rust live path does not auto-wire FeatherWriter.
 - The `InstrumentStatus` sink cannot be deleted because stock FeatherWriter does not capture those events.
 - The reduced ETL cannot be deleted because Feather is not the final Parquet lake format and NT-native stream conversion still needs canonical reshaping.
-- Formal Athena DDL does not survive the deletion test and is therefore out of the critical path.
+- Formal Athena DDL and S3 publishing do not survive the deletion test and are therefore out of the critical path.
 
 ## File Structure
 
@@ -62,7 +62,7 @@ Every task below survives the deletion test:
 - Modify: [src/main.rs](/Users/spson/Projects/Claude/bolt-v2/src/main.rs)
   Purpose: keep stock NT runtime intact while wiring the NT-native normalized sink.
 - Modify: [src/config.rs](/Users/spson/Projects/Claude/bolt-v2/src/config.rs)
-  Purpose: add only the minimal configuration surface needed for raw capture, sink spool, and ETL output.
+  Purpose: add only the minimal configuration surface needed for raw capture and the local NT catalog root.
 
 ### New Shared Files
 
@@ -73,7 +73,7 @@ Every task below survives the deletion test:
 - Create: [src/normalized_sink.rs](/Users/spson/Projects/Claude/bolt-v2/src/normalized_sink.rs)
   Purpose: NT FeatherWriter wiring and tiny `InstrumentStatus` sink wiring.
 - Create: [src/etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/etl.rs)
-  Purpose: reduced ETL around NT `convert_stream_to_data(...)` plus canonical reshaping helpers.
+  Purpose: reduced ETL around NT `convert_stream_to_data(...)` plus minimal custom materialization helpers for the non-NT tables.
 
 ### New Binaries
 
@@ -88,11 +88,6 @@ Every task below survives the deletion test:
 - Create: [tests/raw_capture_io.rs](/Users/spson/Projects/Claude/bolt-v2/tests/raw_capture_io.rs)
 - Create: [tests/normalized_sink.rs](/Users/spson/Projects/Claude/bolt-v2/tests/normalized_sink.rs)
 - Create: [tests/etl_stream_convert.rs](/Users/spson/Projects/Claude/bolt-v2/tests/etl_stream_convert.rs)
-
-### New Query Smoke Artifact
-
-- Create: [docs/sql/duckdb/smoke_v1.sql](/Users/spson/Projects/Claude/bolt-v2/docs/sql/duckdb/smoke_v1.sql)
-  Purpose: minimal smoke validation after first ETL success.
 
 ## Task 1: Reduce Config Surface And Add Only Required Dependencies
 
@@ -162,19 +157,15 @@ fn parses_minimal_data_lake_config() {
         gamma_http_url = "https://example/api"
         enable_user_stream = false
 
-        [normalized_sink]
-        spool_dir = "var/normalized"
+        [streaming]
+        catalog_path = "var/catalog"
         flush_interval_ms = 1000
 
-        [lake]
-        canonical_dir = "var/lake"
-        s3_uri = "s3://bolt-lake"
     "#;
 
     let cfg: Config = toml::from_str(toml).unwrap();
     assert!(cfg.venue.subscribe_new_markets);
-    assert_eq!(cfg.normalized_sink.spool_dir, "var/normalized");
-    assert_eq!(cfg.lake.s3_uri, "s3://bolt-lake");
+    assert_eq!(cfg.streaming.catalog_path, "var/catalog");
 }
 ```
 
@@ -215,8 +206,7 @@ pub struct Config {
     pub strategy: StrategyConfig,
     pub wallet: WalletConfig,
     pub raw_capture: RawCaptureConfig,
-    pub normalized_sink: NormalizedSinkConfig,
-    pub lake: LakeConfig,
+    pub streaming: StreamingCaptureConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,15 +220,9 @@ pub struct RawCaptureConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NormalizedSinkConfig {
-    pub spool_dir: String,
+pub struct StreamingCaptureConfig {
+    pub catalog_path: String,
     pub flush_interval_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LakeConfig {
-    pub canonical_dir: String,
-    pub s3_uri: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,6 +382,8 @@ pub fn append_jsonl<T: Serialize>(path: &Path, row: &T) -> anyhow::Result<()> {
 Create [src/bin/raw_capture.rs](/Users/spson/Projects/Claude/bolt-v2/src/bin/raw_capture.rs):
 
 ```rust
+use std::time::Duration;
+
 use std::path::PathBuf;
 
 use bolt_v2::{
@@ -405,8 +391,9 @@ use bolt_v2::{
     raw_types::{RawHttpResponse, RawWsMessage, append_jsonl},
 };
 use clap::Parser;
-use futures_util::StreamExt;
-use tokio_tungstenite::connect_async;
+use futures_util::{SinkExt, StreamExt};
+use nautilus_polymarket::websocket::messages::MarketInitialSubscribeRequest;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Parser)]
 struct Cli {
@@ -427,11 +414,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let cfg = Config::load(&cli.config)?;
     let ingest_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-
-    let (stream, _) = connect_async(&cfg.raw_capture.market_ws_url).await?;
-    let (_write, mut read) = stream.split();
-    let ws_path = ws_output_path(&cfg.raw_capture.output_dir, &ingest_date);
-
+    let token_id = cfg
+        .venue
+        .instrument_id
+        .rsplit_once('-')
+        .map(|(_, token)| token.to_string())
+        .unwrap_or_else(|| cfg.venue.instrument_id.clone());
     let http_client = reqwest::Client::new();
     let http_path = http_output_path(&cfg.raw_capture.output_dir, &ingest_date);
     let url = format!("{}/markets?slug={}", cfg.raw_capture.gamma_http_url, cfg.venue.event_slug);
@@ -447,26 +435,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     append_jsonl(&http_path, &http_row)?;
 
-    while let Some(message) = read.next().await {
-        let message = message?;
-        if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
-            let row = RawWsMessage {
-                stream_type: "market".to_string(),
-                channel: "market".to_string(),
-                market_id: None,
-                instrument_id: None,
-                received_ts: chrono::Utc::now().timestamp_nanos_opt().unwrap() as u64,
-                exchange_ts: None,
-                payload_json: text.to_string(),
-                source: "polymarket".to_string(),
-                parser_version: "v1".to_string(),
-                ingest_date: ingest_date.clone(),
-            };
-            append_jsonl(&ws_path, &row)?;
-        }
-    }
+    loop {
+        let (stream, _) = connect_async(&cfg.raw_capture.market_ws_url).await?;
+        let (mut write, mut read) = stream.split();
 
-    Ok(())
+        let payload = serde_json::to_string(&MarketInitialSubscribeRequest {
+            assets_ids: vec![token_id.clone()],
+            msg_type: "market",
+            custom_feature_enabled: cfg.venue.subscribe_new_markets,
+        })?;
+        write.send(Message::Text(payload.into())).await?;
+
+        let ws_path = ws_output_path(&cfg.raw_capture.output_dir, &ingest_date);
+        while let Some(message) = read.next().await {
+            let message = message?;
+            if let Message::Text(text) = message {
+                let row = RawWsMessage {
+                    stream_type: "market".to_string(),
+                    channel: "market".to_string(),
+                    market_id: None,
+                    instrument_id: Some(cfg.venue.instrument_id.clone()),
+                    received_ts: chrono::Utc::now().timestamp_nanos_opt().unwrap() as u64,
+                    exchange_ts: None,
+                    payload_json: text.to_string(),
+                    source: "polymarket".to_string(),
+                    parser_version: "v1".to_string(),
+                    ingest_date: ingest_date.clone(),
+                };
+                append_jsonl(&ws_path, &row)?;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 ```
 
@@ -540,6 +541,7 @@ use nautilus_persistence::{
     backend::feather::FeatherWriter,
     parquet::create_object_store_from_path,
 };
+use crate::raw_types::append_jsonl;
 
 pub struct NormalizedSinkGuards {
     pub feather_writer: Rc<RefCell<FeatherWriter>>,
@@ -553,12 +555,15 @@ pub fn spool_root_for_instance(base: &str, instance_id: &str) -> String {
 
 pub fn wire_normalized_sinks(
     node: &LiveNode,
-    spool_dir: &str,
+    catalog_path: &str,
     flush_interval_ms: u64,
 ) -> Result<NormalizedSinkGuards> {
     let instance_id = node.instance_id().to_string();
-    let spool_root = spool_root_for_instance(spool_dir, &instance_id);
+    let spool_root = spool_root_for_instance(catalog_path, &instance_id);
     let (object_store, _base_path, _uri) = create_object_store_from_path(&spool_root, None)?;
+    let status_path = PathBuf::from(&spool_root)
+        .join("status")
+        .join("instrument_status.jsonl");
 
     let writer = FeatherWriter::new(
         spool_root,
@@ -573,7 +578,9 @@ pub fn wire_normalized_sinks(
     let feather_handler = FeatherWriter::subscribe_to_message_bus(writer.clone())?;
 
     let status_handler = ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
-        let _ = message.downcast_ref::<InstrumentStatus>();
+        if let Some(status) = message.downcast_ref::<InstrumentStatus>() {
+            let _ = append_jsonl(&status_path, status);
+        }
     });
     subscribe_any(MStr::pattern("*"), status_handler.clone(), None);
 
@@ -612,8 +619,8 @@ Wire the sinks after node build:
 
     let _normalized_sinks = wire_normalized_sinks(
         &node,
-        &cfg.normalized_sink.spool_dir,
-        cfg.normalized_sink.flush_interval_ms,
+        &cfg.streaming.catalog_path,
+        cfg.streaming.flush_interval_ms,
     )?;
 ```
 
@@ -691,7 +698,7 @@ pub fn convert_supported_stream_classes(
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
 
     for data_cls in ["quotes", "trades", "order_book_deltas", "order_book_depths"] {
-        let _ = catalog.convert_stream_to_data(instance_id, data_cls, Some("live"), None, false);
+        catalog.convert_stream_to_data(instance_id, data_cls, Some("live"), None, false)?;
     }
 
     Ok(())
@@ -701,27 +708,27 @@ pub fn convert_supported_stream_classes(
 Create [src/bin/lake_etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/bin/lake_etl.rs):
 
 ```rust
-use std::{path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 
 use bolt_v2::{config::Config, etl::convert_supported_stream_classes};
 use clap::Parser;
-use nautilus_core::UUID4;
 
 #[derive(Parser)]
 struct Cli {
     #[arg(short, long)]
     config: PathBuf,
+    #[arg(long)]
+    instance_id: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let cfg = Config::load(&cli.config)?;
-    let instance_id = UUID4::from_str("00000000-0000-0000-0000-000000000000")
-        .unwrap()
-        .to_string();
-
-    convert_supported_stream_classes(PathBuf::from(&cfg.lake.canonical_dir).as_path(), &instance_id)?;
-    println!("lake_etl scaffold complete");
+    convert_supported_stream_classes(
+        PathBuf::from(&cfg.streaming.catalog_path).as_path(),
+        &cli.instance_id,
+    )?;
+    println!("lake_etl conversion complete");
     Ok(())
 }
 ```
@@ -732,7 +739,7 @@ Run:
 
 ```bash
 cargo test --test etl_stream_convert
-cargo run --bin lake_etl -- --config config/live.toml
+cargo run --bin lake_etl -- --config config/live.toml --instance-id instance-123
 ```
 
 Expected:
@@ -749,41 +756,6 @@ git add src/etl.rs src/bin/lake_etl.rs tests/etl_stream_convert.rs src/lib.rs
 git commit -m "feat: add reduced NT-native etl path"
 ```
 
-## Task 5: Add A Single Post-ETL DuckDB Smoke Query
-
-**Files:**
-- Create: [docs/sql/duckdb/smoke_v1.sql](/Users/spson/Projects/Claude/bolt-v2/docs/sql/duckdb/smoke_v1.sql)
-
-- [ ] **Step 1: Add one smoke query only**
-
-Create [docs/sql/duckdb/smoke_v1.sql](/Users/spson/Projects/Claude/bolt-v2/docs/sql/duckdb/smoke_v1.sql):
-
-```sql
-SELECT count(*) AS trade_rows
-FROM read_parquet('s3://REPLACE_ME/normalized/trades/**/*.parquet');
-```
-
-- [ ] **Step 2: Verify the file exists**
-
-Run:
-
-```bash
-test -f docs/sql/duckdb/smoke_v1.sql
-```
-
-Expected:
-
-```text
-exit code 0
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add docs/sql/duckdb/smoke_v1.sql
-git commit -m "docs: add v1 duckdb smoke query"
-```
-
 ## Self-Review
 
 ### Spec Coverage
@@ -793,14 +765,14 @@ git commit -m "docs: add v1 duckdb smoke query"
 - NT-native normalized sink via FeatherWriter: covered by Task 3.
 - `InstrumentStatus` close/resolution capture remains explicit: covered by Task 3.
 - Reduced ETL using NT-native conversion first: covered by Task 4.
-- DuckDB smoke validation: covered by Task 5.
-- Athena is intentionally removed from the critical path and can be added only after the canonical layout is proven.
+- DuckDB smoke validation is intentionally reduced to a post-success check, not a critical-path task.
+- Athena and S3 publishing are intentionally removed from the critical path and can be added only after the local layout is proven.
 
 ### Placeholder Scan
 
 - No bootstrap-only binaries remain.
 - No fake “print-and-exit” tasks remain in the critical path.
-- No duplicate config abstraction around NT `StreamingConfig` remains.
+- No obviously unused duplicate config fields remain in the critical path.
 
 ### Type Consistency
 
@@ -817,5 +789,6 @@ Recommended next step before any execution:
 
 - run one final external review against this revised plan
 - focus only on deletion audit and NT-first reduction
+- validate that Task 3 and Task 4 now describe real capability delivery rather than scaffolding
 
 Do not execute the plan until that review is complete.

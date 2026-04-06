@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Secrets { config } => {
             let cfg = Config::load(&config)?;
             for client in &cfg.exec_clients {
-                println!("{}: secret references found", client.name);
+                println!("{}: secret references found in config", client.name);
             }
             Ok(())
         }

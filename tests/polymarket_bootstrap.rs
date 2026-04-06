@@ -10,7 +10,7 @@ use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;
 
 #[test]
-fn builds_live_node_and_registers_exec_tester_on_real_polymarket_seam() {
+fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymarket_seam() {
     let cfg = Config::load(std::path::Path::new("config/examples/polymarket-exec-tester.toml"))
         .expect("example config should load");
 
@@ -60,5 +60,7 @@ fn builds_live_node_and_registers_exec_tester_on_real_polymarket_seam() {
     node.add_strategy(strategy)
         .expect("strategy should register");
 
+    // This offline seam test stops at compile-checking the final `run()` call.
+    // Polling it would turn the test into a live integration test against external services.
     let _run_future = node.run();
 }

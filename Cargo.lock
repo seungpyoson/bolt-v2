@@ -1323,12 +1323,17 @@ dependencies = [
 name = "bolt-v2"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "clap",
  "log",
  "nautilus-common",
+ "nautilus-core",
+ "nautilus-execution",
  "nautilus-live",
  "nautilus-model",
  "nautilus-polymarket",
+ "nautilus-system",
  "nautilus-testkit",
  "nautilus-trading",
  "serde",

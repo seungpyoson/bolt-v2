@@ -14,7 +14,7 @@
 - `unsafe { set_var() }` moved before tokio runtime creation (no more UB)
 - CLAUDE.md updated: removed stale architecture sections, added rules 5-7
 - Generated `config/live.toml` now comes from `render_live_config`, not hand edits
-- Secrets verification runs through the generated runtime file (`just live-check`)
+- Secret completeness checks run through the generated runtime file (`just live-check`); actual secret resolution is `just live-resolve`
 
 ### Task 2: Archive Bolt v1 (COMPLETE)
 - AMIs created for ALL 5 instances — complete disk images, all `available`:
@@ -74,4 +74,4 @@
 - Operator-owned local input: `config/live.local.toml`
 - Tracked template: `config/live.local.example.toml`
 - Generated runtime file for deploy/runtime: `config/live.toml`
-- Verified locally through the generated runtime flow: `just live-check`
+- Generated runtime flow uses `just live-check` for completeness and `just live-resolve` for actual secret resolution

@@ -79,6 +79,8 @@ fn library_exports_secrets_module() {
 
 #[test]
 fn tracked_live_local_example_renders_to_runtime_schema_via_library_entrypoint() {
+    let source = std::fs::read_to_string("config/live.local.example.toml")
+        .expect("tracked operator template should be readable");
     let rendered = bolt_v2::render_live_config_from_path(
         std::path::Path::new("config/live.local.example.toml"),
         std::path::Path::new("config/live.toml"),
@@ -88,13 +90,28 @@ fn tracked_live_local_example_renders_to_runtime_schema_via_library_entrypoint()
     let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
 
     assert!(rendered.contains("# Source of truth: config/live.local.example.toml"));
+    assert!(source.contains("connection_secs = 60"));
+    assert!(source.contains("shutdown_delay_secs = 5"));
+    assert!(source.contains("strategy_id = \"EXEC_TESTER-001\""));
     assert_eq!(cfg.data_clients.len(), 1);
     assert_eq!(cfg.exec_clients.len(), 1);
     assert_eq!(cfg.strategies.len(), 1);
+    assert_eq!(cfg.node.timeout_connection_secs, 60);
+    assert_eq!(cfg.node.timeout_reconciliation_secs, 60);
+    assert_eq!(cfg.node.timeout_portfolio_secs, 10);
+    assert_eq!(cfg.node.timeout_disconnection_secs, 10);
+    assert_eq!(cfg.node.delay_post_stop_secs, 5);
+    assert_eq!(cfg.node.delay_shutdown_secs, 5);
     assert_eq!(
         cfg.exec_clients[0].config["account_id"]
             .as_str()
             .expect("account id should be present"),
         "POLYMARKET-001"
+    );
+    assert_eq!(
+        cfg.strategies[0].config["order_qty"]
+            .as_str()
+            .expect("order qty should be present"),
+        "5"
     );
 }

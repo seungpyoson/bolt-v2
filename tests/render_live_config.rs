@@ -12,7 +12,8 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn render_live_config_supports_relative_output_paths() {
     let tempdir = TempCaseDir::new("relative-output");
     let input_path = tempdir.path().join("live.local.toml");
-    fs::write(&input_path, sample_live_local_config()).expect("input config should be written");
+    fs::write(&input_path, tracked_live_local_example())
+        .expect("input config should be written");
 
     let output = Command::new(env!("CARGO_BIN_EXE_render_live_config"))
         .current_dir(tempdir.path())
@@ -32,7 +33,8 @@ fn render_live_config_reports_unchanged_for_matching_output() {
     let tempdir = TempCaseDir::new("unchanged-output");
     let input_path = tempdir.path().join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
-    fs::write(&input_path, sample_live_local_config()).expect("input config should be written");
+    fs::write(&input_path, tracked_live_local_example())
+        .expect("input config should be written");
 
     run_renderer(&input_path, &output_path);
     let second_run = run_renderer(&input_path, &output_path);
@@ -47,7 +49,8 @@ fn render_live_config_rewrites_drifted_output_and_restores_read_only_permissions
     let tempdir = TempCaseDir::new("drifted-output");
     let input_path = tempdir.path().join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
-    fs::write(&input_path, sample_live_local_config()).expect("input config should be written");
+    fs::write(&input_path, tracked_live_local_example())
+        .expect("input config should be written");
 
     run_renderer(&input_path, &output_path);
 
@@ -79,51 +82,9 @@ fn run_renderer(input_path: &Path, output_path: &Path) -> std::process::Output {
     output
 }
 
-fn sample_live_local_config() -> &'static str {
-    r#"
-[node]
-name = "BOLT-V2-001"
-trader_id = "BOLT-001"
-
-[logging]
-stdout_level = "Info"
-file_level = "Debug"
-
-[timeouts]
-connection_secs = 60
-reconciliation_secs = 60
-portfolio_secs = 10
-disconnection_secs = 10
-post_stop_delay_secs = 5
-shutdown_delay_secs = 5
-
-[polymarket]
-event_slug = "btc-updown-5m"
-instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-account_id = "POLYMARKET-001"
-funder = "0xabc"
-signature_type = 2
-subscribe_new_markets = false
-update_instruments_interval_mins = 60
-ws_max_subscriptions = 200
-
-[strategy]
-strategy_id = "EXEC_TESTER-001"
-order_qty = "5"
-log_data = false
-tob_offset_ticks = 5
-use_post_only = true
-enable_limit_sells = false
-enable_stop_buys = false
-enable_stop_sells = false
-
-[secrets]
-region = "eu-west-1"
-pk = "/bolt/poly/pk"
-api_key = "/bolt/poly/key"
-api_secret = "/bolt/poly/secret"
-passphrase = "/bolt/poly/passphrase"
-"#
+fn tracked_live_local_example() -> String {
+    fs::read_to_string("config/live.local.example.toml")
+        .expect("tracked operator template should be readable")
 }
 
 fn assert_read_only(path: &Path) {

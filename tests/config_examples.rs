@@ -1,15 +1,23 @@
 use std::{fs, process::Command};
 
 #[test]
-fn renderer_staged_temp_files_are_gitignored() {
-    let status = Command::new("git")
+fn renderer_staged_temp_files_under_config_are_gitignored() {
+    let top_level = Command::new("git")
         .args(["check-ignore", "-q", "config/.live.toml.tmp-123-456"])
+        .status()
+        .expect("git check-ignore should run");
+    let nested = Command::new("git")
+        .args(["check-ignore", "-q", "config/nested/.live.toml.tmp-123-456"])
         .status()
         .expect("git check-ignore should run");
 
     assert!(
-        status.success(),
-        "renderer staged temp files should be gitignored"
+        top_level.success(),
+        "top-level renderer staged temp files should be gitignored"
+    );
+    assert!(
+        nested.success(),
+        "nested renderer staged temp files should be gitignored"
     );
 }
 

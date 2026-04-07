@@ -25,7 +25,7 @@ Current config flow on `main`:
 4. **DRY fix** — Base64 padding logic extracted to `pad_base64()`. Secret resolution unified through `SECRET_FIELDS` constant and `resolve_field()`.
 5. **Partial env check fix** — `inject()` now checks all 5 env vars before skipping, not just `POLYMARKET_PK`.
 6. **Dead code removal** — `main.py`, `strategy.py`, `requirements.txt`, `test_latency.py`, `.env.example`, `.venv/`, `__pycache__/` all removed.
-7. **Dockerfile rewritten** — Multi-stage Rust build from `rust:1.94-bookworm`.
+7. **Docker/Dockerfile path removed** — Native Rust execution replaced the old Docker-based path for this workflow.
 8. **`.gitignore` updated** — Removed Python entries, added `*.log`, `.omx/`.
 
 ### Architecture Decisions
@@ -72,15 +72,15 @@ bolt-v2/
 - serde/toml silently ignores unknown TOML sections (streaming, portfolio, cache, msgbus pass through without dead structs)
 - Secret source is SSM-only on the current path. `secrets check` validates required config fields; `secrets resolve` performs actual resolution.
 
-## Task 1: Replace All Secret Sources with SSM Only
+## Task 1: SSM-Only Secrets Migration
 
-### What
-Remove `source = "op"` and `source = "env"` from `src/config.rs`. SSM is the single secret source. No dual paths.
+### Outcome
+`source = "op"` and `source = "env"` were removed from the active path. SSM is the single secret source.
 
 ### Why
 Three secret sources = three paths to maintain. SSM works everywhere: EC2 reads via instance profile, local dev reads via AWS CLI. 500ms startup cost (5 parameters x ~100ms) is negligible.
 
-### Changes Required
+### Current Shape
 
 **`src/config.rs`:**
 - Secret resolution is SSM-only: `aws ssm get-parameter --name <field> --with-decryption --query 'Parameter.Value' --output text`

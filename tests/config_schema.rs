@@ -1,6 +1,6 @@
 use bolt_v2::config::Config;
-use bolt_v2::raw_capture_transport::market_asset_id;
 use bolt_v2::live_config::{LiveLocalConfig, render_runtime_config};
+use bolt_v2::raw_capture_transport::market_asset_id;
 
 #[test]
 fn library_exports_config_module() {
@@ -83,10 +83,9 @@ fn library_exports_secrets_module() {
 fn rendered_live_config_uses_wrapper_schema_for_operator_lane() {
     let source_path = std::path::Path::new("config/live.local.example.toml");
     let output_path = std::path::Path::new("config/live.toml");
-    let input = LiveLocalConfig::load(source_path)
-        .expect("live local example should parse");
-    let rendered =
-        render_runtime_config(&input, source_path, output_path).expect("rendered config should serialize");
+    let input = LiveLocalConfig::load(source_path).expect("live local example should parse");
+    let rendered = render_runtime_config(&input, source_path, output_path)
+        .expect("rendered config should serialize");
     let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
 
     assert!(rendered.contains("# Source of truth: config/live.local.example.toml"));

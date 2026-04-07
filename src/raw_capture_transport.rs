@@ -1,15 +1,19 @@
 use std::collections::HashMap;
 
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::{
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use nautilus_network::{
     http::{HttpClient, HttpClientError, USER_AGENT},
+    retry::RetryConfig,
     websocket::WebSocketConfig,
 };
 use nautilus_polymarket::{
     common::urls::gamma_api_url,
     http::{
-        models::GammaEvent,
+        gamma::PolymarketGammaHttpClient,
         query::{GetGammaEventsParams, GetGammaMarketsParams},
         rate_limits::POLYMARKET_GAMMA_REST_QUOTA,
     },
@@ -32,6 +36,12 @@ pub fn build_gamma_http_client(timeout_secs: u64) -> Result<HttpClient, HttpClie
         Some(timeout_secs),
         None,
     )
+}
+
+pub fn build_gamma_instrument_client(
+    timeout_secs: u64,
+) -> Result<PolymarketGammaHttpClient, HttpClientError> {
+    PolymarketGammaHttpClient::new(None, timeout_secs, RetryConfig::default())
 }
 
 pub fn gamma_markets_url() -> String {
@@ -93,24 +103,12 @@ pub fn market_subscribe_payload(
     .map_err(Into::into)
 }
 
-pub fn market_token_ids_from_gamma_events_json(body: &str) -> anyhow::Result<Vec<String>> {
-    let events: Vec<GammaEvent> = serde_json::from_str(body)?;
-    let mut token_ids = Vec::new();
-
-    for event in events {
-        for market in event.markets {
-            let market_token_ids: Vec<String> = serde_json::from_str(&market.clob_token_ids)
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to parse clob_token_ids '{}': {e}",
-                        market.clob_token_ids
-                    )
-                })?;
-            token_ids.extend(market_token_ids);
-        }
-    }
-
+pub fn market_token_ids_from_instruments(instruments: &[InstrumentAny]) -> Vec<String> {
+    let mut token_ids: Vec<String> = instruments
+        .iter()
+        .map(|instrument| instrument.raw_symbol().as_str().to_string())
+        .collect();
     token_ids.sort();
     token_ids.dedup();
-    Ok(token_ids)
+    token_ids
 }

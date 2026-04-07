@@ -5,8 +5,9 @@ use bolt_v2::{
     clients::polymarket::PolymarketDataClientInput,
     config::Config,
     raw_capture_transport::{
-        build_gamma_http_client, gamma_events_params, gamma_events_url, market_subscribe_payload,
-        market_token_ids_from_gamma_events_json, market_ws_config,
+        build_gamma_http_client, build_gamma_instrument_client, gamma_events_params,
+        gamma_events_url, market_subscribe_payload, market_token_ids_from_instruments,
+        market_ws_config,
     },
     raw_types::{RawHttpResponse, RawWsMessage, append_jsonl},
 };
@@ -90,9 +91,17 @@ async fn main() -> Result<()> {
     let ingest_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
     let http_client = build_gamma_http_client(targets.timeout_connection_secs)?;
+    let instrument_client = build_gamma_instrument_client(targets.timeout_connection_secs)?;
     let http_path = http_output_path(&targets.output_dir, &ingest_date);
+    let instruments = instrument_client
+        .request_instruments_by_event_slugs(targets.event_slugs.clone())
+        .await?;
+    let token_ids = market_token_ids_from_instruments(&instruments);
+    ensure!(
+        !token_ids.is_empty() || targets.subscribe_new_markets,
+        "raw capture could not resolve any Polymarket token IDs from event slugs"
+    );
 
-    let mut token_ids = Vec::new();
     for event_slug in &targets.event_slugs {
         let response = http_client
             .request_with_params(
@@ -111,7 +120,6 @@ async fn main() -> Result<()> {
             response.status.as_u16()
         );
         let body = String::from_utf8(response.body.to_vec())?;
-        token_ids.extend(market_token_ids_from_gamma_events_json(&body)?);
         let http_row = RawHttpResponse {
             endpoint: "/events".to_string(),
             request_params_json: format!("{{\"slug\":\"{event_slug}\"}}"),
@@ -123,12 +131,6 @@ async fn main() -> Result<()> {
         };
         append_jsonl(&http_path, &http_row)?;
     }
-    token_ids.sort();
-    token_ids.dedup();
-    ensure!(
-        !token_ids.is_empty() || targets.subscribe_new_markets,
-        "raw capture could not resolve any Polymarket token IDs from event slugs"
-    );
 
     let (message_handler, mut raw_rx) = channel_message_handler();
     let ws_client = WebSocketClient::connect(

@@ -1,0 +1,62 @@
+name: Advisory Check
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install just
+        run: |
+          curl -sSf https://just.systems/install.sh | sudo bash -s -- --to /usr/local/bin --tag "$JUST_VERSION"
+
+      - name: Read shared values
+        id: shared
+        shell: bash
+        run: |
+          echo "rust_toolchain=$(awk -F'\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+          echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ steps.shared.outputs.rust_toolchain }}
+
+      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.shared.outputs.deny_version }}" --locked
+
+      - name: Check advisories
+        id: advisories
+        continue-on-error: true
+        run: just deny-advisories
+
+      - name: Create issue on failure
+        if: steps.advisories.outcome == 'failure'
+        run: |
+          BODY="$(cat <<'EOF'
+          ## Advisory Check Failed
+
+          Run `just deny-advisories` locally to see details.
+
+          Automated issue from the weekly advisory check.
+          EOF
+          )"
+          gh issue create \
+            --title "Dependency advisory found ($(date +%Y-%m-%d))" \
+            --body "$BODY"
+        env:
+          GH_TOKEN: ${{ github.token }}

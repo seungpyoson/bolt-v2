@@ -1,4 +1,6 @@
 use bolt_v2::config::Config;
+use bolt_v2::live_config::{LiveLocalConfig, render_runtime_config};
+use bolt_v2::raw_capture_transport::market_asset_id;
 
 #[test]
 fn library_exports_config_module() {
@@ -71,6 +73,66 @@ enable_stop_sells = false
 
 #[test]
 fn library_exports_secrets_module() {
-    assert!(std::any::type_name::<bolt_v2::secrets::ResolvedPolymarketSecrets>()
-        .contains("ResolvedPolymarketSecrets"));
+    assert!(
+        std::any::type_name::<bolt_v2::secrets::ResolvedPolymarketSecrets>()
+            .contains("ResolvedPolymarketSecrets")
+    );
+}
+
+#[test]
+fn rendered_live_config_uses_wrapper_schema_for_operator_lane() {
+    let source_path = std::path::Path::new("config/live.local.example.toml");
+    let output_path = std::path::Path::new("config/live.toml");
+    let input = LiveLocalConfig::load(source_path).expect("live local example should parse");
+    let rendered = render_runtime_config(&input, source_path, output_path)
+        .expect("rendered config should serialize");
+    let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+
+    assert!(rendered.contains("# Source of truth: config/live.local.example.toml"));
+    assert!(rendered.contains(
+        "# Regenerate with: cargo run --bin render_live_config -- --input config/live.local.example.toml --output config/live.toml"
+    ));
+
+    assert_eq!(cfg.node.timeout_connection_secs, 60);
+    assert_eq!(cfg.node.timeout_reconciliation_secs, 60);
+    assert_eq!(cfg.node.timeout_portfolio_secs, 10);
+    assert_eq!(cfg.node.timeout_disconnection_secs, 10);
+    assert_eq!(cfg.node.delay_post_stop_secs, 5);
+    assert_eq!(cfg.node.delay_shutdown_secs, 5);
+
+    assert_eq!(cfg.data_clients.len(), 1);
+    assert_eq!(cfg.data_clients[0].name, "POLYMARKET");
+    assert_eq!(cfg.data_clients[0].kind, "polymarket");
+    assert_eq!(
+        cfg.data_clients[0].config["event_slugs"]
+            .as_array()
+            .expect("event slugs should be an array")
+            .len(),
+        1
+    );
+
+    assert_eq!(cfg.exec_clients.len(), 1);
+    assert_eq!(cfg.exec_clients[0].name, "POLYMARKET");
+    assert_eq!(cfg.exec_clients[0].kind, "polymarket");
+    assert_eq!(
+        cfg.exec_clients[0].config["account_id"]
+            .as_str()
+            .expect("account id should be present"),
+        "POLYMARKET-001"
+    );
+
+    assert_eq!(cfg.strategies.len(), 1);
+    assert_eq!(cfg.strategies[0].kind, "exec_tester");
+    assert_eq!(
+        cfg.strategies[0].config["client_id"]
+            .as_str()
+            .expect("client id should be present"),
+        "POLYMARKET"
+    );
+    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
+    assert_eq!(cfg.venue.event_slug, "btc-updown-5m");
+    assert_eq!(
+        market_asset_id(&cfg.venue.instrument_id).expect("raw capture instrument id should parse"),
+        "12345678901234567890"
+    );
 }

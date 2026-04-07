@@ -1,4 +1,19 @@
-use std::{fs, process::Command, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn temp_config_paths_remain_unique_for_same_timestamp() {
+    let first = temp_config_path_for_timestamp(123);
+    let second = temp_config_path_for_timestamp(123);
+
+    assert_ne!(first, second);
+}
 
 #[test]
 fn secrets_check_reports_complete_secret_config() {
@@ -255,14 +270,17 @@ order_qty = "5"
 }
 
 fn write_temp_config(contents: &str) -> std::path::PathBuf {
-    let filename = format!(
-        "bolt-v2-cli-{}.toml",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should move forward")
-            .as_nanos()
-    );
-    let path = std::env::temp_dir().join(filename);
+    let timestamp_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let path = temp_config_path_for_timestamp(timestamp_nanos);
     fs::write(&path, contents).expect("temp config should be written");
     path
+}
+
+fn temp_config_path_for_timestamp(timestamp_nanos: u128) -> std::path::PathBuf {
+    let counter = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let filename = format!("bolt-v2-cli-{timestamp_nanos}-{counter}.toml");
+    std::env::temp_dir().join(filename)
 }

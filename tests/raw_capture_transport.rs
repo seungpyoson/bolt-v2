@@ -37,10 +37,7 @@ fn builds_nt_gamma_default_headers() {
 
 #[test]
 fn extracts_market_asset_id_from_instrument_id() {
-    let token_id = market_asset_id(
-        "0xabc-12345678901234567890.POLYMARKET",
-    )
-    .unwrap();
+    let token_id = market_asset_id("0xabc-12345678901234567890.POLYMARKET").unwrap();
 
     assert_eq!(token_id, "12345678901234567890");
 }

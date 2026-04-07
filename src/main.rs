@@ -1,129 +1,181 @@
-use std::{path::PathBuf, sync::Arc};
-
-use bolt_v2::config::Config;
 use clap::Parser;
 use log::LevelFilter;
+use std::path::PathBuf;
+
+use bolt_v2::{clients::polymarket, config::Config, secrets, strategies::exec_tester};
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
-use nautilus_model::{
-    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
-    types::Quantity,
-};
-use nautilus_polymarket::{
-    common::enums::SignatureType,
-    config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
-    factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
-    filters::EventSlugFilter,
-};
-use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
+use nautilus_model::identifiers::TraderId;
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
 struct Cli {
-    /// Path to TOML config file
-    #[arg(short, long)]
-    config: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    Run {
+        #[arg(short, long)]
+        config: PathBuf,
+    },
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum SecretsCommand {
+    Check {
+        #[arg(short, long)]
+        config: PathBuf,
+    },
+    Resolve {
+        #[arg(short, long)]
+        config: PathBuf,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let cfg = Config::load(&cli.config)?;
-    cfg.wallet.inject()?;
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run(cfg))
+    match cli.command {
+        Command::Secrets { command } => run_secrets_command(command),
+        Command::Run { config } => {
+            let cfg = Config::load(&config)?;
+
+            let node = cfg.node;
+            let logging = cfg.logging;
+            let data_clients = cfg.data_clients;
+            let exec_clients = cfg.exec_clients;
+            let strategies = cfg.strategies;
+
+            let trader_id = TraderId::from(node.trader_id.as_str());
+            let environment = parse_environment(&node.environment)?;
+            let log_config = LoggerConfig {
+                stdout_level: parse_log_level(&logging.stdout_level)?,
+                fileout_level: parse_log_level(&logging.file_level)?,
+                ..Default::default()
+            };
+
+            let mut builder = LiveNode::builder(trader_id, environment)?
+                .with_name(node.name)
+                .with_logging(log_config)
+                .with_load_state(node.load_state)
+                .with_save_state(node.save_state)
+                .with_timeout_connection(node.timeout_connection_secs)
+                .with_timeout_reconciliation(node.timeout_reconciliation_secs)
+                .with_timeout_portfolio(node.timeout_portfolio_secs)
+                .with_timeout_disconnection_secs(node.timeout_disconnection_secs)
+                .with_delay_post_stop_secs(node.delay_post_stop_secs)
+                .with_delay_shutdown_secs(node.delay_shutdown_secs);
+
+            for client in &data_clients {
+                match client.kind.as_str() {
+                    "polymarket" => {
+                        let (factory, config) = polymarket::build_data_client(&client.config)?;
+                        builder =
+                            builder.add_data_client(Some(client.name.clone()), factory, config)?;
+                    }
+                    other => return Err(format!("Unsupported data client type: {other}").into()),
+                }
+            }
+
+            for client in &exec_clients {
+                match client.kind.as_str() {
+                    "polymarket" => {
+                        let resolved = secrets::resolve_polymarket(&client.secrets)?;
+                        let (factory, config) =
+                            polymarket::build_exec_client(&client.config, trader_id, resolved)?;
+                        builder =
+                            builder.add_exec_client(Some(client.name.clone()), factory, config)?;
+                    }
+                    other => return Err(format!("Unsupported exec client type: {other}").into()),
+                }
+            }
+
+            let mut node = builder.build()?;
+
+            for strategy in &strategies {
+                match strategy.kind.as_str() {
+                    "exec_tester" => {
+                        node.add_strategy(exec_tester::build_exec_tester(&strategy.config)?)?;
+                    }
+                    other => return Err(format!("Unsupported strategy type: {other}").into()),
+                }
+            }
+
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(node.run())?;
+
+            Ok(())
+        }
+    }
 }
 
-async fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
-    let trader_id = TraderId::from(cfg.node.trader_id.as_str());
-    let account_id = AccountId::from(cfg.node.account_id.as_str());
-    let strategy_id = StrategyId::from(cfg.strategy.strategy_id.as_str());
-    let client_id = ClientId::new(cfg.node.client_id.clone());
-    let instrument_id = InstrumentId::from(cfg.venue.instrument_id.as_str());
+fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        SecretsCommand::Check { config } => {
+            let cfg = Config::load(&config)?;
+            let mut has_errors = false;
 
-    let signature_type = match cfg.wallet.signature_type_id {
-        0 => SignatureType::Eoa,
-        1 => SignatureType::PolyProxy,
-        2 => SignatureType::PolyGnosisSafe,
-        other => return Err(format!("Unknown signature_type_id: {other}. Expected 0 (EOA), 1 (PolyProxy), or 2 (PolyGnosisSafe)").into()),
-    };
+            for client in &cfg.exec_clients {
+                match client.kind.as_str() {
+                    "polymarket" => {
+                        let check = secrets::check_polymarket_secret_config(&client.secrets);
+                        if check.is_complete() {
+                            println!(
+                                "{}: secret config complete ({})",
+                                client.name,
+                                check.present.join(", ")
+                            );
+                        } else {
+                            has_errors = true;
+                            eprintln!(
+                                "{}: missing secret config fields ({})",
+                                client.name,
+                                check.missing.join(", ")
+                            );
+                        }
+                    }
+                    other => return Err(format!("Unsupported exec client type: {other}").into()),
+                }
+            }
 
-    let environment = match cfg.node.environment.as_str() {
-        "Live" => Environment::Live,
-        "Sandbox" => Environment::Sandbox,
-        other => {
-            return Err(format!("Unknown environment: {other}. Expected Live or Sandbox").into());
+            if has_errors {
+                Err("One or more exec clients have incomplete secret configuration".into())
+            } else {
+                Ok(())
+            }
         }
-    };
+        SecretsCommand::Resolve { config } => {
+            let cfg = Config::load(&config)?;
 
-    let data_filter = EventSlugFilter::from_slugs(vec![cfg.venue.event_slug]);
+            for client in &cfg.exec_clients {
+                match client.kind.as_str() {
+                    "polymarket" => {
+                        secrets::resolve_polymarket(&client.secrets)?;
+                        println!("{}: secrets resolved successfully", client.name);
+                    }
+                    other => return Err(format!("Unsupported exec client type: {other}").into()),
+                }
+            }
 
-    let data_config = PolymarketDataClientConfig {
-        filters: vec![Arc::new(data_filter)],
-        ..Default::default()
-    };
+            Ok(())
+        }
+    }
+}
 
-    let exec_config = PolymarketExecClientConfig {
-        trader_id,
-        account_id,
-        signature_type,
-        ..Default::default()
-    };
-
-    let log_config = LoggerConfig {
-        stdout_level: parse_log_level(&cfg.logging.stdout_level)?,
-        fileout_level: parse_log_level(&cfg.logging.file_level)?,
-        ..Default::default()
-    };
-
-    let mut node = LiveNode::builder(trader_id, environment)?
-        .with_name(cfg.node.name)
-        .with_logging(log_config)
-        .with_load_state(cfg.node.load_state)
-        .with_save_state(cfg.node.save_state)
-        .with_timeout_connection(cfg.timeouts.connection_secs)
-        .with_timeout_reconciliation(cfg.timeouts.reconciliation_secs)
-        .with_timeout_portfolio(cfg.timeouts.portfolio_secs)
-        .with_timeout_disconnection_secs(cfg.timeouts.disconnection_secs)
-        .with_delay_post_stop_secs(cfg.timeouts.post_stop_delay_secs)
-        .with_delay_shutdown_secs(cfg.timeouts.shutdown_delay_secs)
-        .with_reconciliation(cfg.venue.reconciliation_enabled)
-        .with_reconciliation_lookback_mins(cfg.venue.reconciliation_lookback_mins)
-        .add_data_client(
-            None,
-            Box::new(PolymarketDataClientFactory),
-            Box::new(data_config),
-        )?
-        .add_exec_client(
-            None,
-            Box::new(PolymarketExecutionClientFactory),
-            Box::new(exec_config),
-        )?
-        .build()?;
-
-    let tester_config = ExecTesterConfig::builder()
-        .base(nautilus_trading::strategy::StrategyConfig {
-            strategy_id: Some(strategy_id),
-            external_order_claims: Some(vec![instrument_id]),
-            ..Default::default()
-        })
-        .instrument_id(instrument_id)
-        .client_id(client_id)
-        .order_qty(Quantity::from(cfg.strategy.order_qty.as_str()))
-        .log_data(cfg.strategy.log_data)
-        .use_post_only(cfg.strategy.use_post_only)
-        .tob_offset_ticks(cfg.strategy.tob_offset_ticks)
-        .enable_limit_sells(cfg.strategy.enable_limit_sells)
-        .enable_stop_buys(cfg.strategy.enable_stop_buys)
-        .enable_stop_sells(cfg.strategy.enable_stop_sells)
-        .build();
-
-    node.add_strategy(ExecTester::new(tester_config))?;
-    node.run().await?;
-
-    Ok(())
+fn parse_environment(s: &str) -> Result<Environment, Box<dyn std::error::Error>> {
+    match s {
+        "Live" => Ok(Environment::Live),
+        "Sandbox" => Ok(Environment::Sandbox),
+        other => Err(format!("Unknown environment: {other}").into()),
+    }
 }
 
 fn parse_log_level(s: &str) -> Result<LevelFilter, Box<dyn std::error::Error>> {
@@ -134,9 +186,6 @@ fn parse_log_level(s: &str) -> Result<LevelFilter, Box<dyn std::error::Error>> {
         "Warn" => Ok(LevelFilter::Warn),
         "Error" => Ok(LevelFilter::Error),
         "Off" => Ok(LevelFilter::Off),
-        other => Err(format!(
-            "Unknown log level: {other}. Expected Trace, Debug, Info, Warn, Error, or Off"
-        )
-        .into()),
+        other => Err(format!("Unknown log level: {other}").into()),
     }
 }

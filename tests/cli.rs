@@ -30,7 +30,9 @@ fn secrets_check_reports_complete_secret_config() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("POLYMARKET: secret config complete (region, pk, api_key, api_secret, passphrase)"));
+    assert!(stdout.contains(
+        "POLYMARKET: secret config complete (region, pk, api_key, api_secret, passphrase)"
+    ));
 }
 
 #[test]
@@ -80,14 +82,21 @@ order_qty = "5"
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
-        .args(["secrets", "check", "--config", path.to_str().expect("utf-8 path")])
+        .args([
+            "secrets",
+            "check",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
         .output()
         .expect("secrets check should run");
 
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("TEST: missing secret config fields (pk, api_key, api_secret, passphrase)"));
+    assert!(
+        stderr.contains("TEST: missing secret config fields (pk, api_key, api_secret, passphrase)")
+    );
 }
 
 #[test]
@@ -137,14 +146,22 @@ order_qty = "5"
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
-        .args(["secrets", "resolve", "--config", path.to_str().expect("utf-8 path")])
+        .args([
+            "secrets",
+            "resolve",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
         .output()
         .expect("secrets resolve should run");
 
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Missing required secret config fields: pk, api_key, api_secret, passphrase"));
+    assert!(
+        stderr
+            .contains("Missing required secret config fields: pk, api_key, api_secret, passphrase")
+    );
 }
 
 #[test]
@@ -198,7 +215,12 @@ order_qty = "5"
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
-        .args(["secrets", "check", "--config", path.to_str().expect("utf-8 path")])
+        .args([
+            "secrets",
+            "check",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
         .output()
         .expect("secrets check should run");
 
@@ -259,7 +281,12 @@ order_qty = "5"
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
-        .args(["secrets", "resolve", "--config", path.to_str().expect("utf-8 path")])
+        .args([
+            "secrets",
+            "resolve",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
         .output()
         .expect("secrets resolve should run");
 

@@ -14,9 +14,7 @@ use nautilus_network::{
     http::Method,
     websocket::{WebSocketClient, channel_message_handler},
 };
-use nautilus_polymarket::{
-    common::urls::clob_ws_market_url,
-};
+use nautilus_polymarket::common::urls::clob_ws_market_url;
 
 #[derive(Parser)]
 struct Cli {

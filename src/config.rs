@@ -1,37 +1,98 @@
 use std::path::Path;
 
 use serde::Deserialize;
+use toml::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub node: NodeConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub data_clients: Vec<DataClientEntry>,
+    #[serde(default)]
+    pub exec_clients: Vec<ExecClientEntry>,
+    #[serde(default)]
+    pub strategies: Vec<StrategyEntry>,
+    #[serde(default)]
     pub timeouts: TimeoutsConfig,
+    #[serde(default)]
     pub venue: VenueConfig,
+    #[serde(default)]
     pub strategy: StrategyConfig,
+    #[serde(default)]
     pub wallet: WalletConfig,
+    #[serde(default)]
     pub raw_capture: RawCaptureConfig,
+    #[serde(default)]
     pub streaming: StreamingCaptureConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct NodeConfig {
     pub name: String,
     pub trader_id: String,
+    #[serde(default)]
     pub account_id: String,
+    #[serde(default)]
     pub client_id: String,
     pub environment: String,
     pub load_state: bool,
     pub save_state: bool,
+    #[serde(default)]
+    pub timeout_connection_secs: u64,
+    #[serde(default)]
+    pub timeout_reconciliation_secs: u64,
+    #[serde(default)]
+    pub timeout_portfolio_secs: u64,
+    #[serde(default)]
+    pub timeout_disconnection_secs: u64,
+    #[serde(default)]
+    pub delay_post_stop_secs: u64,
+    #[serde(default)]
+    pub delay_shutdown_secs: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct LoggingConfig {
     pub stdout_level: String,
     pub file_level: String,
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DataClientEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub config: Value,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ExecClientSecrets {
+    pub region: String,
+    pub pk: Option<String>,
+    pub api_key: Option<String>,
+    pub api_secret: Option<String>,
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExecClientEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub config: Value,
+    #[serde(default)]
+    pub secrets: ExecClientSecrets,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StrategyEntry {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub config: Value,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub struct TimeoutsConfig {
     pub connection_secs: u64,
     pub reconciliation_secs: u64,
@@ -41,7 +102,7 @@ pub struct TimeoutsConfig {
     pub shutdown_delay_secs: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct VenueConfig {
     pub event_slug: String,
     pub instrument_id: String,
@@ -51,18 +112,18 @@ pub struct VenueConfig {
     pub subscribe_new_markets: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct RawCaptureConfig {
     pub output_dir: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct StreamingCaptureConfig {
     pub catalog_path: String,
     pub flush_interval_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct StrategyConfig {
     pub strategy_id: String,
     pub log_data: bool,
@@ -77,16 +138,15 @@ pub struct StrategyConfig {
     pub enable_stop_sells: bool,
 }
 
-/// All wallet-related config in one place. Change wallets = change this section.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct WalletConfig {
     pub signature_type_id: u8,
     pub funder: String,
+    #[serde(default)]
     pub secrets: WalletSecretsConfig,
 }
 
-/// SSM-resolved credentials. Each field is an SSM parameter path.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct WalletSecretsConfig {
     pub region: String,
     pub pk: String,
@@ -119,9 +179,6 @@ fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, Box<dyn std::e
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
-/// Pad a base64 string to a multiple of 4 characters.
-/// NT's Credential uses base64::URL_SAFE which requires padding.
-/// Polymarket issues secrets without padding — add it before use.
 fn pad_base64(mut secret: String) -> String {
     let pad_len = (4 - secret.len() % 4) % 4;
     secret.extend(std::iter::repeat_n('=', pad_len));
@@ -129,9 +186,6 @@ fn pad_base64(mut secret: String) -> String {
 }
 
 impl WalletConfig {
-    /// Every env var NT needs, where each value comes from, and any transformation.
-    /// This is the single source of truth for config→env var mapping.
-    /// Must be called before tokio runtime is created — see main().
     fn resolve_env_vars(&self) -> Result<Vec<(&str, String)>, Box<dyn std::error::Error>> {
         let r = &self.secrets.region;
         Ok(vec![

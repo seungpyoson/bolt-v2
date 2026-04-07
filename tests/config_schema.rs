@@ -71,6 +71,8 @@ enable_stop_sells = false
 
 #[test]
 fn library_exports_secrets_module() {
-    assert!(std::any::type_name::<bolt_v2::secrets::ResolvedPolymarketSecrets>()
-        .contains("ResolvedPolymarketSecrets"));
+    assert!(
+        std::any::type_name::<bolt_v2::secrets::ResolvedPolymarketSecrets>()
+            .contains("ResolvedPolymarketSecrets")
+    );
 }

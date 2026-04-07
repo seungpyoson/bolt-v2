@@ -1,5 +1,6 @@
 /target
 config/live.toml
+config/live.local.toml
 *.log
 .omx/
 .claude/findings/

@@ -112,12 +112,16 @@ ci-lint-workflow:
 
 worktree branch:
     #!/usr/bin/env bash
+    set -euo pipefail
     dest="{{worktree_root}}/{{branch}}"
     mkdir -p "$(dirname "$dest")"
 
     if git show-ref --verify --quiet "refs/heads/{{branch}}"; then
         git worktree add "$dest" "{{branch}}"
     elif git show-ref --verify --quiet "refs/remotes/origin/{{branch}}"; then
+        git worktree add --track -b "{{branch}}" "$dest" "origin/{{branch}}"
+    elif git ls-remote --exit-code --heads origin "{{branch}}" >/dev/null 2>&1; then
+        git fetch origin "{{branch}}:refs/remotes/origin/{{branch}}"
         git worktree add --track -b "{{branch}}" "$dest" "origin/{{branch}}"
     else
         git worktree add "$dest" -b "{{branch}}"

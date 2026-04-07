@@ -120,8 +120,8 @@ worktree branch:
         git worktree add "$dest" "{{branch}}"
     elif git show-ref --verify --quiet "refs/remotes/origin/{{branch}}"; then
         git worktree add --track -b "{{branch}}" "$dest" "origin/{{branch}}"
-    elif git ls-remote --exit-code --heads origin "{{branch}}" >/dev/null 2>&1; then
-        git fetch origin "{{branch}}:refs/remotes/origin/{{branch}}"
+    elif git ls-remote --exit-code --heads origin "refs/heads/{{branch}}" >/dev/null 2>&1; then
+        git fetch origin "refs/heads/{{branch}}:refs/remotes/origin/{{branch}}"
         git worktree add --track -b "{{branch}}" "$dest" "origin/{{branch}}"
     else
         git worktree add "$dest" -b "{{branch}}"

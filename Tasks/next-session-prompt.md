@@ -21,7 +21,7 @@ Current config flow on `main`:
 ### Code Changes
 1. **Config alignment** — `src/config.rs` updated: `signature_type_id: u8` (was `signature_type: String`), `LoggingConfig` stripped of unused fields, `StrategyConfig` fields defaulted with `#[serde(default)]`.
 2. **Panic removal** — All `panic!` calls on config errors converted to `Result` returns.
-3. **Secrets consolidation** — Added `bolt-v2 secrets` CLI subcommands for `check` and `resolve`. Single source of truth is the generated runtime config derived from `config/live.local.toml`; no 1Password/env-file path remains in the current operator flow.
+3. **Secrets consolidation** — Added `bolt-v2 secrets` CLI subcommands for `check` and `resolve`. The human-edited source of truth is `config/live.local.toml`, and the generated runtime artifact is `config/live.toml`; no 1Password/env-file path remains in the current operator flow.
 4. **DRY fix** — Base64 padding logic extracted to `pad_base64()`. Secret resolution unified through `SECRET_FIELDS` constant and `resolve_field()`.
 5. **Partial env check fix** — `inject()` now checks all 5 env vars before skipping, not just `POLYMARKET_PK`.
 6. **Dead code removal** — `main.py`, `strategy.py`, `requirements.txt`, `test_latency.py`, `.env.example`, `.venv/`, `__pycache__/` all removed.

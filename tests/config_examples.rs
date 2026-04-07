@@ -1,4 +1,6 @@
-use std::{fs, process::Command};
+use std::process::Command;
+
+use bolt_v2::config::Config;
 
 #[test]
 fn renderer_staged_temp_files_under_config_are_gitignored() {
@@ -22,23 +24,27 @@ fn renderer_staged_temp_files_under_config_are_gitignored() {
 }
 
 #[test]
-fn operator_input_example_identifies_itself_as_operator_input() {
-    let contents = fs::read_to_string("config/live.local.example.toml")
-        .expect("operator input example should be readable");
+fn operator_input_example_renders_to_runtime_schema() {
+    let rendered = bolt_v2::render_live_config_from_path(
+        std::path::Path::new("config/live.local.example.toml"),
+        std::path::Path::new("config/live.toml"),
+    )
+    .expect("operator input example should render");
 
-    assert!(
-        contents.contains("Operator input template"),
-        "operator input example should explain that it is the human-edited template"
-    );
+    let cfg: Config = toml::from_str(&rendered).expect("rendered runtime config should parse");
+    assert_eq!(cfg.data_clients.len(), 1);
+    assert_eq!(cfg.exec_clients.len(), 1);
+    assert_eq!(cfg.strategies.len(), 1);
 }
 
 #[test]
-fn wrapper_fixture_identifies_itself_as_test_fixture() {
-    let contents = fs::read_to_string("config/examples/polymarket-exec-tester.toml")
-        .expect("wrapper fixture should be readable");
+fn wrapper_fixture_parses_as_runtime_schema() {
+    let cfg = Config::load(std::path::Path::new(
+        "config/examples/polymarket-exec-tester.toml",
+    ))
+    .expect("wrapper fixture should parse");
 
-    assert!(
-        contents.contains("Wrapper-format test fixture"),
-        "wrapper fixture should explain that it is not the operator input template"
-    );
+    assert_eq!(cfg.data_clients.len(), 1);
+    assert_eq!(cfg.exec_clients.len(), 1);
+    assert_eq!(cfg.strategies.len(), 1);
 }

@@ -23,17 +23,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let existing = std::fs::read_to_string(&cli.output).ok();
     let changed = existing.as_deref() != Some(rendered.as_str());
 
-    write_output(&cli.output, &rendered)?;
-
     if !changed {
         println!("Generated config unchanged: {}", cli.output.display());
     } else if existed {
+        write_output(&cli.output, &rendered)?;
         println!(
-            "Generated config drift detected, rewrote {} from {}",
+            "Generated config updated: {} from {}",
             cli.output.display(),
             cli.input.display()
         );
     } else {
+        write_output(&cli.output, &rendered)?;
         println!(
             "Generated {} from {}",
             cli.output.display(),

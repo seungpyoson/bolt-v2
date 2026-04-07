@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -37,10 +39,23 @@ fn render_live_config_reports_unchanged_for_matching_output() {
         .expect("input config should be written");
 
     run_renderer(&input_path, &output_path);
+    let modified_before = fs::metadata(&output_path)
+        .expect("output metadata should exist")
+        .modified()
+        .expect("output mtime should exist");
+    thread::sleep(Duration::from_millis(20));
     let second_run = run_renderer(&input_path, &output_path);
 
     let stdout = String::from_utf8_lossy(&second_run.stdout);
     assert!(stdout.contains("Generated config unchanged:"));
+    let modified_after = fs::metadata(&output_path)
+        .expect("output metadata should exist")
+        .modified()
+        .expect("output mtime should exist");
+    assert_eq!(
+        modified_before, modified_after,
+        "unchanged renders should not rewrite the file"
+    );
     assert_read_only(&output_path);
 }
 
@@ -59,11 +74,47 @@ fn render_live_config_rewrites_drifted_output_and_restores_read_only_permissions
 
     let rewrite = run_renderer(&input_path, &output_path);
     let stdout = String::from_utf8_lossy(&rewrite.stdout);
-    assert!(stdout.contains("Generated config drift detected, rewrote"));
+    assert!(stdout.contains("Generated config updated:"));
 
     let rendered = fs::read_to_string(&output_path).expect("rendered output should be readable");
     assert!(rendered.contains("# GENERATED FILE - DO NOT EDIT."));
     assert!(rendered.contains("client_id = \"POLYMARKET\""));
+    assert_read_only(&output_path);
+}
+
+#[test]
+fn render_live_config_handles_nested_output_paths_without_rewriting_unchanged_files() {
+    let tempdir = TempCaseDir::new("nested-output");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("nested/live.toml");
+    fs::write(&input_path, tracked_live_local_example())
+        .expect("input config should be written");
+
+    let first = run_renderer(&input_path, &output_path);
+    assert!(String::from_utf8_lossy(&first.stdout).contains("Generated "));
+    assert!(output_path.exists());
+
+    let modified_before = fs::metadata(&output_path)
+        .expect("output metadata should exist")
+        .modified()
+        .expect("output mtime should exist");
+    thread::sleep(Duration::from_millis(20));
+
+    let second = run_renderer(&input_path, &output_path);
+    assert!(
+        String::from_utf8_lossy(&second.stdout).contains("Generated config unchanged:")
+    );
+    let modified_after = fs::metadata(&output_path)
+        .expect("output metadata should exist")
+        .modified()
+        .expect("output mtime should exist");
+    assert_eq!(modified_before, modified_after);
+
+    make_writable_if_needed(&output_path);
+    fs::write(&output_path, "drifted = true\n").expect("drifted output should be written");
+
+    let third = run_renderer(&input_path, &output_path);
+    assert!(String::from_utf8_lossy(&third.stdout).contains("Generated config updated:"));
     assert_read_only(&output_path);
 }
 

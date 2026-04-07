@@ -33,8 +33,12 @@ fn seam_test_uses_non_secret_placeholders() {
 
 #[test]
 fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymarket_seam() {
-    let cfg = Config::load(std::path::Path::new("config/examples/polymarket-exec-tester.toml"))
-        .expect("example config should load");
+    let rendered = bolt_v2::render_live_config_from_path(
+        std::path::Path::new("config/live.local.example.toml"),
+        std::path::Path::new("config/live.toml"),
+    )
+    .expect("tracked operator template should render");
+    let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
 
     let trader_id = TraderId::from(cfg.node.trader_id.as_str());
     let environment = Environment::Live;

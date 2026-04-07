@@ -1,18 +1,22 @@
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use bolt_v2::{
     config::Config,
+    raw_capture_transport::{
+        build_gamma_http_client, gamma_markets_params, gamma_markets_url, market_asset_id,
+        market_subscribe_payload, market_ws_config,
+    },
     raw_types::{RawHttpResponse, RawWsMessage, append_jsonl},
 };
 use clap::Parser;
-use futures_util::{SinkExt, StreamExt};
-use nautilus_cryptography::providers::install_cryptographic_provider;
-use nautilus_model::identifiers::InstrumentId;
-use nautilus_polymarket::{
-    common::urls::{clob_ws_market_url, gamma_api_url},
-    websocket::messages::MarketInitialSubscribeRequest,
+use nautilus_network::{
+    RECONNECTED,
+    http::Method,
+    websocket::{WebSocketClient, channel_message_handler},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use nautilus_polymarket::{
+    common::urls::clob_ws_market_url,
+};
 
 #[derive(Parser)]
 struct Cli {
@@ -34,33 +38,36 @@ fn http_output_path(base: &str, ingest_date: &str) -> PathBuf {
         .join("responses.jsonl")
 }
 
-fn market_asset_id(instrument_id: &str) -> anyhow::Result<String> {
-    let instrument_id = InstrumentId::from_as_ref(instrument_id)?;
-    let symbol = instrument_id.symbol.as_str();
-    let (_, token_id) = symbol
-        .rsplit_once('-')
-        .ok_or_else(|| anyhow::anyhow!("Expected condition-token symbol in {symbol}"))?;
-    Ok(token_id.to_string())
-}
-
 fn now_unix_nanos() -> u64 {
     chrono::Utc::now().timestamp_nanos_opt().unwrap() as u64
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let cfg = Config::load(&cli.config)?;
+    let cfg = Config::load(&cli.config).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let ingest_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let token_id = market_asset_id(&cfg.venue.instrument_id)?;
 
-    // Tokio Tungstenite's rustls path needs a process-default provider before opening wss://.
-    install_cryptographic_provider();
-
-    let http_client = reqwest::Client::new();
+    let http_client = build_gamma_http_client(cfg.timeouts.connection_secs)?;
     let http_path = http_output_path(&cfg.raw_capture.output_dir, &ingest_date);
-    let url = format!("{}/markets?slug={}", gamma_api_url(), cfg.venue.event_slug);
-    let body = http_client.get(&url).send().await?.text().await?;
+    let response = http_client
+        .request_with_params(
+            Method::GET,
+            gamma_markets_url(),
+            Some(&gamma_markets_params(&cfg.venue.event_slug)),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+    anyhow::ensure!(
+        response.status.is_success(),
+        "Gamma markets request failed with status {}",
+        response.status.as_u16()
+    );
+    let body = String::from_utf8(response.body.to_vec())?;
     let http_row = RawHttpResponse {
         endpoint: "/markets".to_string(),
         request_params_json: format!("{{\"slug\":\"{}\"}}", cfg.venue.event_slug),
@@ -72,37 +79,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     append_jsonl(&http_path, &http_row)?;
 
+    let (message_handler, mut raw_rx) = channel_message_handler();
+    let ws_client = WebSocketClient::connect(
+        market_ws_config(clob_ws_market_url().to_string()),
+        Some(message_handler),
+        None,
+        None,
+        vec![],
+        None,
+    )
+    .await?;
+    let subscribe_payload =
+        market_subscribe_payload(token_id.clone(), cfg.venue.subscribe_new_markets)?;
+    ws_client.send_text(subscribe_payload.clone(), None).await?;
+
     let ws_path = ws_output_path(&cfg.raw_capture.output_dir, &ingest_date);
-    loop {
-        let (stream, _) = connect_async(clob_ws_market_url()).await?;
-        let (mut write, mut read) = stream.split();
-
-        let payload = serde_json::to_string(&MarketInitialSubscribeRequest {
-            assets_ids: vec![token_id.clone()],
-            msg_type: "market",
-            custom_feature_enabled: cfg.venue.subscribe_new_markets,
-        })?;
-        write.send(Message::Text(payload)).await?;
-
-        while let Some(message) = read.next().await {
-            let message = message?;
-            if let Message::Text(text) = message {
-                let row = RawWsMessage {
-                    stream_type: "market".to_string(),
-                    channel: "market".to_string(),
-                    market_id: None,
-                    instrument_id: Some(cfg.venue.instrument_id.clone()),
-                    received_ts: now_unix_nanos(),
-                    exchange_ts: None,
-                    payload_json: text.to_string(),
-                    source: "polymarket".to_string(),
-                    parser_version: "v1".to_string(),
-                    ingest_date: ingest_date.clone(),
-                };
-                append_jsonl(&ws_path, &row)?;
+    while let Some(message) = raw_rx.recv().await {
+        if let Ok(text) = message.to_text() {
+            if text == RECONNECTED {
+                ws_client.send_text(subscribe_payload.clone(), None).await?;
+                continue;
             }
-        }
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+            let row = RawWsMessage {
+                stream_type: "market".to_string(),
+                channel: "market".to_string(),
+                market_id: None,
+                instrument_id: Some(cfg.venue.instrument_id.clone()),
+                received_ts: now_unix_nanos(),
+                exchange_ts: None,
+                payload_json: text.to_string(),
+                source: "polymarket".to_string(),
+                parser_version: "v1".to_string(),
+                ingest_date: ingest_date.clone(),
+            };
+            append_jsonl(&ws_path, &row)?;
+        }
     }
+
+    anyhow::bail!("WebSocket message channel closed")
 }

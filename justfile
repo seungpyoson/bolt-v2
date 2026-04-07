@@ -84,6 +84,7 @@ live-resolve: live-generate
 
 ci-lint-workflow:
     #!/usr/bin/env bash
+    set -euo pipefail
     shopt -s nullglob
     files=(.github/workflows/*.yml .github/workflows/*.yaml)
 
@@ -93,10 +94,11 @@ ci-lint-workflow:
     fi
 
     failed=0
-    pattern='\bcargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)\b'
+    pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
+    install_pattern='(^|[^[:alnum:]_])cargo[[:space:]]+install([^[:alnum:]_]|$)'
 
     for f in "${files[@]}"; do
-        if rg -n -e "$pattern" "$f" | rg -v '\bcargo[[:space:]]+install\b'; then
+        if grep -En "$pattern" "$f" | grep -Ev "$install_pattern"; then
             echo "ERROR: Raw cargo commands found in $f"
             failed=1
         fi
@@ -116,6 +118,8 @@ worktree branch:
 
     if git show-ref --verify --quiet "refs/heads/{{branch}}"; then
         git worktree add "$dest" "{{branch}}"
+    elif git show-ref --verify --quiet "refs/remotes/origin/{{branch}}"; then
+        git worktree add --track -b "{{branch}}" "$dest" "origin/{{branch}}"
     else
         git worktree add "$dest" -b "{{branch}}"
     fi
@@ -131,27 +135,28 @@ worktree-remove branch:
 
 setup:
     #!/usr/bin/env bash
+    set -euo pipefail
     echo "Setting git hooks path..."
     git config core.hooksPath .githooks
 
     echo "Adding {{target}} target..."
     rustup target add {{target}}
 
-    if cargo-nextest --version | rg -q "^cargo-nextest {{nextest_version}}\\b"; then
+    if command -v cargo-nextest >/dev/null 2>&1 && cargo-nextest --version | grep -Eq "^cargo-nextest {{nextest_version}}([[:space:]]|$)"; then
         echo "cargo-nextest {{nextest_version}} already installed"
     else
         echo "Installing cargo-nextest {{nextest_version}}..."
         cargo install cargo-nextest --version {{nextest_version}} --locked
     fi
 
-    if cargo-deny --version | rg -q "^cargo-deny {{deny_version}}\\b"; then
+    if command -v cargo-deny >/dev/null 2>&1 && cargo-deny --version | grep -Eq "^cargo-deny {{deny_version}}([[:space:]]|$)"; then
         echo "cargo-deny {{deny_version}} already installed"
     else
         echo "Installing cargo-deny {{deny_version}}..."
         cargo install cargo-deny --version {{deny_version}} --locked
     fi
 
-    if cargo-zigbuild --version | rg -q "^cargo-zigbuild {{zigbuild_version}}\\b"; then
+    if command -v cargo-zigbuild >/dev/null 2>&1 && cargo-zigbuild --version | grep -Eq "^cargo-zigbuild {{zigbuild_version}}([[:space:]]|$)"; then
         echo "cargo-zigbuild {{zigbuild_version}} already installed"
     else
         echo "Installing cargo-zigbuild {{zigbuild_version}}..."

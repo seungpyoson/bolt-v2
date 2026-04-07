@@ -16,19 +16,21 @@ fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
 
-    let strategy = exec_tester::build_exec_tester(&toml::toml! {
-        strategy_id = "EXEC_TESTER-001"
-        instrument_id = "TOKEN.TESTVENUE"
-        client_id = "TEST"
-        order_qty = "5"
-        log_data = false
-        tob_offset_ticks = 5
-        use_post_only = true
-        enable_limit_sells = false
-        enable_stop_buys = false
-        enable_stop_sells = false
-    }
-    .into())
+    let strategy = exec_tester::build_exec_tester(
+        &toml::toml! {
+            strategy_id = "EXEC_TESTER-001"
+            instrument_id = "TOKEN.TESTVENUE"
+            client_id = "TEST"
+            order_qty = "5"
+            log_data = false
+            tob_offset_ticks = 5
+            use_post_only = true
+            enable_limit_sells = false
+            enable_stop_buys = false
+            enable_stop_sells = false
+        }
+        .into(),
+    )
     .expect("strategy should translate");
 
     let mut node = LiveNode::builder(trader_id, Environment::Live)
@@ -65,7 +67,7 @@ fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
         .expect("runtime should build");
 
     let state = runtime.block_on(async move {
-        let run_result = tokio::time::timeout(Duration::from_secs(1), async move {
+        tokio::time::timeout(Duration::from_secs(1), async move {
             let stop_after_startup = async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 handle.stop();
@@ -79,9 +81,7 @@ fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
             tokio::join!(stop_after_startup, runner).1
         })
         .await
-        .expect("run should finish before timeout");
-
-        run_result
+        .expect("run should finish before timeout")
     });
 
     assert_eq!(state, NodeState::Stopped);

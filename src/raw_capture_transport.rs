@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
-use nautilus_model::{
-    identifiers::InstrumentId,
-    instruments::{Instrument, InstrumentAny},
-};
+use nautilus_model::instruments::{Instrument, InstrumentAny};
 use nautilus_network::{
     http::{HttpClient, HttpClientError, USER_AGENT},
     retry::RetryConfig,
@@ -13,8 +10,7 @@ use nautilus_network::{
 use nautilus_polymarket::{
     common::urls::gamma_api_url,
     http::{
-        gamma::PolymarketGammaHttpClient,
-        query::{GetGammaEventsParams, GetGammaMarketsParams},
+        gamma::PolymarketGammaHttpClient, query::GetGammaEventsParams,
         rate_limits::POLYMARKET_GAMMA_REST_QUOTA,
     },
     websocket::messages::MarketInitialSubscribeRequest,
@@ -44,19 +40,8 @@ pub fn build_gamma_instrument_client(
     PolymarketGammaHttpClient::new(None, timeout_secs, RetryConfig::default())
 }
 
-pub fn gamma_markets_url() -> String {
-    format!("{}/markets", gamma_api_url())
-}
-
 pub fn gamma_events_url() -> String {
     format!("{}/events", gamma_api_url())
-}
-
-pub fn gamma_markets_params(event_slug: &str) -> GetGammaMarketsParams {
-    GetGammaMarketsParams {
-        slug: Some(event_slug.to_string()),
-        ..Default::default()
-    }
 }
 
 pub fn gamma_events_params(event_slug: &str) -> GetGammaEventsParams {
@@ -80,15 +65,6 @@ pub fn market_ws_config(url: String) -> WebSocketConfig {
         reconnect_max_attempts: None,
         idle_timeout_ms: None,
     }
-}
-
-pub fn market_asset_id(instrument_id: &str) -> anyhow::Result<String> {
-    let instrument_id = InstrumentId::from_as_ref(instrument_id)?;
-    let symbol = instrument_id.symbol.as_str();
-    let (_, token_id) = symbol
-        .rsplit_once('-')
-        .ok_or_else(|| anyhow::anyhow!("Expected condition-token symbol in {symbol}"))?;
-    Ok(token_id.to_string())
 }
 
 pub fn market_subscribe_payload(

@@ -1,6 +1,6 @@
 use bolt_v2::raw_capture_transport::{
-    gamma_default_headers, gamma_markets_params, market_asset_id, market_subscribe_payload,
-    market_token_ids_from_instruments, market_ws_config,
+    gamma_default_headers, market_subscribe_payload, market_token_ids_from_instruments,
+    market_ws_config,
 };
 use nautilus_core::UnixNanos;
 use nautilus_polymarket::http::{
@@ -24,13 +24,6 @@ fn builds_market_ws_config_with_nt_polymarket_defaults() {
 }
 
 #[test]
-fn builds_gamma_market_query_for_slug() {
-    let params = gamma_markets_params("election-2028");
-
-    assert_eq!(params.slug.as_deref(), Some("election-2028"));
-}
-
-#[test]
 fn builds_nt_gamma_default_headers() {
     let headers = gamma_default_headers();
 
@@ -39,13 +32,6 @@ fn builds_nt_gamma_default_headers() {
         Some("application/json")
     );
     assert!(headers.contains_key("user-agent"));
-}
-
-#[test]
-fn extracts_market_asset_id_from_instrument_id() {
-    let token_id = market_asset_id("0xabc-12345678901234567890.POLYMARKET").unwrap();
-
-    assert_eq!(token_id, "12345678901234567890");
 }
 
 #[test]

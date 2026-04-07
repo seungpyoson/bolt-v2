@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -121,10 +121,10 @@ enum SinkMessage {
     Trade(TradeTick),
     Bar(Bar),
     Deltas(OrderBookDeltas),
-    Depth10(OrderBookDepth10),
+    Depth10(Box<OrderBookDepth10>),
     MarkPrice(MarkPriceUpdate),
     IndexPrice(IndexPriceUpdate),
-    Instrument(InstrumentAny),
+    Instrument(Box<InstrumentAny>),
     InstrumentClose(InstrumentClose),
     InstrumentStatus(InstrumentStatus),
 }
@@ -342,7 +342,7 @@ async fn run_sink_worker(
 
 async fn write_sink_message(
     writer: &mut FeatherWriter,
-    status_path: &PathBuf,
+    status_path: &Path,
     message: SinkMessage,
 ) -> Result<()> {
     match message {
@@ -368,7 +368,7 @@ async fn write_sink_message(
             Ok(())
         }
         SinkMessage::Depth10(depth) => writer
-            .write(depth)
+            .write(*depth)
             .await
             .map_err(|e| anyhow!("OrderBookDepth10 write failed: {e}")),
         SinkMessage::MarkPrice(price) => writer
@@ -380,7 +380,7 @@ async fn write_sink_message(
             .await
             .map_err(|e| anyhow!("IndexPriceUpdate write failed: {e}")),
         SinkMessage::Instrument(instrument) => writer
-            .write_instrument(instrument)
+            .write_instrument(*instrument)
             .await
             .map_err(|e| anyhow!("InstrumentAny write failed: {e}")),
         SinkMessage::InstrumentClose(close) => writer
@@ -498,7 +498,7 @@ pub fn wire_normalized_sinks(
     let book_depth10 = TypedHandler::from(move |depth: &OrderBookDepth10| {
         send_sink_message(
             &depth_sender,
-            SinkMessage::Depth10(*depth),
+            SinkMessage::Depth10(Box::new(*depth)),
             "OrderBookDepth10",
             &depth_failure_state,
         );
@@ -535,7 +535,7 @@ pub fn wire_normalized_sinks(
         if let Some(instrument) = message.downcast_ref::<InstrumentAny>() {
             send_sink_message(
                 &instrument_sender,
-                SinkMessage::Instrument(instrument.clone()),
+                SinkMessage::Instrument(Box::new(instrument.clone())),
                 "InstrumentAny",
                 &instrument_failure_state,
             );

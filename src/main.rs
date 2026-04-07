@@ -3,15 +3,14 @@ use log::LevelFilter;
 use std::path::PathBuf;
 
 use bolt_v2::{
-    clients::polymarket,
-    config::Config,
-    normalized_sink,
-    secrets,
-    strategies::exec_tester,
+    clients::polymarket, config::Config, normalized_sink, secrets, strategies::exec_tester,
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;
+
+type AppResult = Result<(), Box<dyn std::error::Error>>;
+type AppFuture = std::pin::Pin<Box<dyn std::future::Future<Output = AppResult>>>;
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
@@ -107,13 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .enable_all()
                 .build()?;
             let local = tokio::task::LocalSet::new();
-            let app: std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                        Output = Result<(), Box<dyn std::error::Error>>,
-                    >,
-                >,
-            > = Box::pin(async move {
+            let app: AppFuture = Box::pin(async move {
                 let mut node = builder.build()?;
                 let node_handle = node.handle();
                 let normalized_sink_guards = if streaming.catalog_path.trim().is_empty() {
@@ -164,8 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let shutdown_result = if let Some(guards) = normalized_sink_guards {
                     guards.shutdown().await.map_err(|e| {
-                        Box::new(std::io::Error::other(e.to_string()))
-                            as Box<dyn std::error::Error>
+                        Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
                     })
                 } else {
                     Ok(())

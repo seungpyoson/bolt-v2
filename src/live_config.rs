@@ -2,6 +2,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::default_raw_capture_output_dir;
+
 fn default_environment() -> String {
     "Live".to_string()
 }
@@ -76,10 +78,6 @@ fn default_region() -> String {
 
 fn default_streaming_flush_interval_ms() -> u64 {
     1_000
-}
-
-fn default_raw_capture_output_dir() -> String {
-    "var/raw".to_string()
 }
 
 #[derive(Debug, Deserialize)]

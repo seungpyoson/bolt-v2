@@ -90,7 +90,7 @@ pub struct StreamingCaptureConfig {
     pub flush_interval_ms: u64,
 }
 
-fn default_raw_capture_output_dir() -> String {
+pub(crate) fn default_raw_capture_output_dir() -> String {
     "var/raw".to_string()
 }
 

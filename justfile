@@ -4,7 +4,7 @@ set shell := ["zsh", "-e", "-u", "-o", "pipefail", "-c"]
 # CI and local both call these recipes. No raw cargo build/check commands in workflow YAML.
 
 nextest_version := "0.9.132"
-deny_version := "0.18.2"
+deny_version := "0.19.0"
 zigbuild_version := "0.22.1"
 zig_version := "0.15.2"
 

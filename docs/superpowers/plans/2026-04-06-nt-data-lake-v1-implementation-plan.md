@@ -28,6 +28,8 @@ Expected for V1:
 - `reqwest` for raw HTTP capture
 - `serde_json` for raw payload envelopes
 - `anyhow` for small glue/error propagation if needed
+- `chrono` for timestamping
+- `tempfile` for test isolation
 
 ### Tier 2: OSS Project References Only
 
@@ -79,17 +81,16 @@ Every task below survives the deletion test:
 
 - Create: [src/bin/raw_capture.rs](/Users/spson/Projects/Claude/bolt-v2/src/bin/raw_capture.rs)
   Purpose: raw WS/HTTP archival only.
-- Create: [src/bin/lake_etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/bin/lake_etl.rs)
-  Purpose: convert NT-native Feather streams to Parquet where supported, then enrich and reshape.
 
 ### New Tests
 
 - Create: [tests/config_parsing.rs](/Users/spson/Projects/Claude/bolt-v2/tests/config_parsing.rs)
 - Create: [tests/raw_capture_io.rs](/Users/spson/Projects/Claude/bolt-v2/tests/raw_capture_io.rs)
 - Create: [tests/normalized_sink.rs](/Users/spson/Projects/Claude/bolt-v2/tests/normalized_sink.rs)
-- Create: [tests/etl_stream_convert.rs](/Users/spson/Projects/Claude/bolt-v2/tests/etl_stream_convert.rs)
 
 ## Task 1: Reduce Config Surface And Add Only Required Dependencies
+
+**Mode:** `TDD-first`
 
 **Files:**
 - Modify: [Cargo.toml](/Users/spson/Projects/Claude/bolt-v2/Cargo.toml)
@@ -153,9 +154,6 @@ fn parses_minimal_data_lake_config() {
 
         [raw_capture]
         output_dir = "var/raw"
-        market_ws_url = "wss://example/ws"
-        gamma_http_url = "https://example/api"
-        enable_user_stream = false
 
         [streaming]
         catalog_path = "var/catalog"
@@ -212,11 +210,6 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 pub struct RawCaptureConfig {
     pub output_dir: String,
-    pub market_ws_url: String,
-    pub gamma_http_url: String,
-    pub user_ws_url: Option<String>,
-    #[serde(default)]
-    pub enable_user_stream: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,9 +234,11 @@ Update [Cargo.toml](/Users/spson/Projects/Claude/bolt-v2/Cargo.toml):
 ```toml
 nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb", features = ["cloud"] }
 anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 serde_json = "1"
+tempfile = "3"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 ```
 
@@ -276,6 +271,8 @@ git commit -m "feat: add minimal data lake config and deps"
 ```
 
 ## Task 2: Implement Real Raw Capture (No Bootstrap Stubs)
+
+**Mode:** `TDD-first` for append helpers, then `Evaluation / integration-first` for the binary
 
 **Files:**
 - Create: [src/raw_types.rs](/Users/spson/Projects/Claude/bolt-v2/src/raw_types.rs)
@@ -392,6 +389,7 @@ use bolt_v2::{
 };
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
+use nautilus_polymarket::common::urls::{clob_ws_market_url, gamma_api_url};
 use nautilus_polymarket::websocket::messages::MarketInitialSubscribeRequest;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -420,9 +418,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .rsplit_once('-')
         .map(|(_, token)| token.to_string())
         .unwrap_or_else(|| cfg.venue.instrument_id.clone());
+    let market_ws_url = clob_ws_market_url();
     let http_client = reqwest::Client::new();
     let http_path = http_output_path(&cfg.raw_capture.output_dir, &ingest_date);
-    let url = format!("{}/markets?slug={}", cfg.raw_capture.gamma_http_url, cfg.venue.event_slug);
+    let url = format!("{}/markets?slug={}", gamma_api_url(), cfg.venue.event_slug);
     let body = http_client.get(&url).send().await?.text().await?;
     let http_row = RawHttpResponse {
         endpoint: "/markets".to_string(),
@@ -436,7 +435,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     append_jsonl(&http_path, &http_row)?;
 
     loop {
-        let (stream, _) = connect_async(&cfg.raw_capture.market_ws_url).await?;
+        let (stream, _) = connect_async(market_ws_url).await?;
         let (mut write, mut read) = stream.split();
 
         let payload = serde_json::to_string(&MarketInitialSubscribeRequest {
@@ -486,21 +485,42 @@ running 1 test
 test appends_multiple_jsonl_rows ... ok
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Run the binary against live endpoints and verify real artifacts**
+
+Run:
+
+```bash
+cargo run --bin raw_capture -- --config config/live.toml
+```
+
+Expected proof artifacts:
+
+```text
+var/raw/http/<YYYY-MM-DD>/responses.jsonl exists and contains at least 1 line
+var/raw/ws/<YYYY-MM-DD>/messages.jsonl exists and grows beyond 0 lines
+```
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/raw_types.rs src/bin/raw_capture.rs tests/raw_capture_io.rs src/lib.rs
 git commit -m "feat: add real raw capture path"
 ```
 
+V1 note:
+
+- Raw user-stream capture is explicitly deferred with `normalized_orders`, `normalized_fills`, and `normalized_positions`.
+
 ## Task 3: Wire NT-Native Normalized Capture (FeatherWriter + InstrumentStatus)
+
+**Mode:** `Evaluation / integration-first`
 
 **Files:**
 - Create: [src/normalized_sink.rs](/Users/spson/Projects/Claude/bolt-v2/src/normalized_sink.rs)
 - Modify: [src/main.rs](/Users/spson/Projects/Claude/bolt-v2/src/main.rs)
 - Create: [tests/normalized_sink.rs](/Users/spson/Projects/Claude/bolt-v2/tests/normalized_sink.rs)
 
-- [ ] **Step 1: Write the failing sink config test**
+- [ ] **Step 1: Write the smallest failing helper test**
 
 ```rust
 use bolt_v2::normalized_sink::spool_root_for_instance;
@@ -579,6 +599,9 @@ pub fn wire_normalized_sinks(
 
     let status_handler = ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
         if let Some(status) = message.downcast_ref::<InstrumentStatus>() {
+            if status.action.to_string() != "Close" {
+                return;
+            }
             let _ = append_jsonl(&status_path, status);
         }
     });
@@ -640,7 +663,18 @@ running 1 test
 test builds_live_instance_spool_path ... ok
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Run an integration proof with real emitted data**
+
+Proof requirement:
+
+```text
+After a live node run:
+- files appear under var/catalog/live/<instance_id>/
+- at least one Feather file exists for a supported data class
+- status/instrument_status.jsonl exists if a close event is observed
+```
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/normalized_sink.rs src/main.rs tests/normalized_sink.rs src/lib.rs
@@ -649,37 +683,12 @@ git commit -m "feat: wire NT normalized sink"
 
 ## Task 4: Implement Reduced ETL Around NT Stream Conversion
 
+**Mode:** `Invariant-first` plus `Evaluation / integration-first`
+
 **Files:**
 - Create: [src/etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/etl.rs)
-- Create: [src/bin/lake_etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/bin/lake_etl.rs)
-- Create: [tests/etl_stream_convert.rs](/Users/spson/Projects/Claude/bolt-v2/tests/etl_stream_convert.rs)
 
-- [ ] **Step 1: Write the failing conversion-path test**
-
-```rust
-use bolt_v2::etl::feather_live_subdir;
-
-#[test]
-fn builds_catalog_live_subdir() {
-    assert_eq!(feather_live_subdir("instance-123"), "live/instance-123");
-}
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run:
-
-```bash
-cargo test --test etl_stream_convert builds_catalog_live_subdir
-```
-
-Expected:
-
-```text
-unresolved import `bolt_v2::etl`
-```
-
-- [ ] **Step 3: Implement reduced ETL helpers**
+- [ ] **Step 1: Implement reduced ETL helpers**
 
 Create [src/etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/etl.rs):
 
@@ -687,72 +696,57 @@ Create [src/etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/etl.rs):
 use anyhow::Result;
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
-pub fn feather_live_subdir(instance_id: &str) -> String {
-    format!("live/{instance_id}")
-}
-
 pub fn convert_supported_stream_classes(
     catalog_root: &std::path::Path,
     instance_id: &str,
 ) -> Result<()> {
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
 
-    for data_cls in ["quotes", "trades", "order_book_deltas", "order_book_depths"] {
+    for data_cls in ["quotes", "trades", "order_book_deltas"] {
         catalog.convert_stream_to_data(instance_id, data_cls, Some("live"), None, false)?;
     }
 
     Ok(())
 }
-```
 
-Create [src/bin/lake_etl.rs](/Users/spson/Projects/Claude/bolt-v2/src/bin/lake_etl.rs):
-
-```rust
-use std::path::PathBuf;
-
-use bolt_v2::{config::Config, etl::convert_supported_stream_classes};
-use clap::Parser;
-
-#[derive(Parser)]
-struct Cli {
-    #[arg(short, long)]
-    config: PathBuf,
-    #[arg(long)]
-    instance_id: String,
+pub fn materialize_market_closes(_catalog_root: &std::path::Path, _instance_id: &str) -> Result<()> {
+    Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-    let cfg = Config::load(&cli.config)?;
-    convert_supported_stream_classes(
-        PathBuf::from(&cfg.streaming.catalog_path).as_path(),
-        &cli.instance_id,
-    )?;
-    println!("lake_etl conversion complete");
+pub fn materialize_markets(_catalog_root: &std::path::Path) -> Result<()> {
+    Ok(())
+}
+
+pub fn materialize_resolutions(_catalog_root: &std::path::Path, _instance_id: &str) -> Result<()> {
     Ok(())
 }
 ```
 
-- [ ] **Step 4: Run tests and binary smoke**
+- [ ] **Step 2: Run one real conversion proof**
 
 Run:
 
 ```bash
-cargo test --test etl_stream_convert
-cargo run --bin lake_etl -- --config config/live.toml --instance-id instance-123
+cargo test
 ```
 
-Expected:
+Expected invariant proof:
 
 ```text
-running 1 test
-test builds_catalog_live_subdir ... ok
+- supported stream classes convert from the same var/catalog root used by Task 3
+- conversion does not use a fake UUID
+- conversion errors are not swallowed
+- the plan explicitly names the remaining custom materialization for:
+  - normalized_instruments
+  - normalized_market_closes
+  - normalized_markets
+  - normalized_resolutions
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add src/etl.rs src/bin/lake_etl.rs tests/etl_stream_convert.rs src/lib.rs
+git add src/etl.rs src/lib.rs
 git commit -m "feat: add reduced NT-native etl path"
 ```
 
@@ -762,6 +756,7 @@ git commit -m "feat: add reduced NT-native etl path"
 
 - Stock NT live path preserved: covered by Task 3.
 - Raw capture retained: covered by Task 2.
+- Raw user-stream capture is explicitly deferred with orders/fills/positions.
 - NT-native normalized sink via FeatherWriter: covered by Task 3.
 - `InstrumentStatus` close/resolution capture remains explicit: covered by Task 3.
 - Reduced ETL using NT-native conversion first: covered by Task 4.

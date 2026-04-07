@@ -1,0 +1,12 @@
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[advisories]
+ignore = []

@@ -1,3 +1,7 @@
+# Operator input template.
+# Copy this file to config/live.local.toml and edit that local copy.
+# This is the human-edited source of truth for generating config/live.toml.
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT-001"

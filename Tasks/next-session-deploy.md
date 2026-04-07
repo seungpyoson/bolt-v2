@@ -5,13 +5,16 @@
 ### Task 1: SSM-Only Secrets + Config Restructuring (COMPLETE)
 - Removed `source` field, `"op"` and `"env"` backends from `config.rs`
 - Single secret source: `aws ssm get-parameter --with-decryption --region <region>`
-- Wallet config grouped: `[wallet]` (signature_type_id, funder) + `[wallet.secrets]` (region, pk, api_key, api_secret, passphrase)
-- Funder moved from secrets to venue config (public on-chain address, not a secret)
+- Operator config flow is now:
+  - local source of truth: `config/live.local.toml`
+  - tracked template: `config/live.local.example.toml`
+  - generated runtime file: `config/live.toml`
+- Funder lives in `[polymarket]` on the operator input side (public on-chain address, not a secret)
 - Env var mappings consolidated in single `resolve_env_vars()` function
 - `unsafe { set_var() }` moved before tokio runtime creation (no more UB)
 - CLAUDE.md updated: removed stale architecture sections, added rules 5-7
-- `config/live.toml` updated to new structure, funder = `0xA3a5E9c062331237E5f1403b2bba7A184e5de983`
-- All 4 SSM secrets resolve from eu-west-1. Verified with `bolt-v2 secrets --config config/live.toml`
+- Generated `config/live.toml` now comes from `render_live_config`, not hand edits
+- Secrets verification runs through the generated runtime file (`just live-check`)
 
 ### Task 2: Archive Bolt v1 (COMPLETE)
 - AMIs created for ALL 5 instances — complete disk images, all `available`:
@@ -46,7 +49,7 @@
 1. Cross-compile: `cargo zigbuild --release --target aarch64-unknown-linux-gnu`
 2. Upload binary to S3: `aws s3 cp target/.../bolt-v2 s3://bolt-deploy-artifacts/artifacts/bolt-v2/`
 3. SSM to instance: download from S3, place at `/opt/bolt-v2`
-4. Upload config: `config/live.toml` → instance
+4. Generate runtime config locally from `config/live.local.toml`, then upload generated `config/live.toml` → instance
 5. Create systemd service: `bolt-v2.service`
 6. Disable v1 units: `systemctl disable bolt@pm-eth5m-sniper bolt-log-forwarder`
 7. Delete v1 files (AMIs are the backup)
@@ -67,7 +70,8 @@
 - SSH key pair: bolt-polymarket-key (user doesn't have the .pem)
 - v1 services stopped, v1 files still on instance
 
-### Config (live.toml) — READY
-- `[wallet]` with signature_type_id=2, funder=0xA3a5E9c0...
-- `[wallet.secrets]` with region=eu-west-1, SSM paths for 4 credentials
-- Verified: all secrets resolve from SSM
+### Config Flow — READY
+- Operator-owned local input: `config/live.local.toml`
+- Tracked template: `config/live.local.example.toml`
+- Generated runtime file for deploy/runtime: `config/live.toml`
+- Verified locally through the generated runtime flow: `just live-check`

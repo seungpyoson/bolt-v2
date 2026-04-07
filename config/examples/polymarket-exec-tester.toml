@@ -1,3 +1,7 @@
+# Wrapper-format test fixture.
+# This file matches the generated runtime schema used by tests.
+# It is not the operator input template; use config/live.local.example.toml for that flow.
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT-001"

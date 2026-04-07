@@ -4,6 +4,12 @@
 
 bolt-v2 is a Polymarket trading system built on NautilusTrader's Rust `LiveNode` API. It's a standalone Rust binary — no Python layer. The binary compiles, builds, and has been **proven working locally** (connected to Polymarket, authenticated, reconciled, submitted and accepted an order).
 
+Current config flow on `main`:
+- local source of truth: `config/live.local.toml` (gitignored)
+- tracked template: `config/live.local.example.toml`
+- generated runtime file: `config/live.toml` (gitignored, read-only)
+- operator commands: `just live`, `just live-check`, `just live-resolve`
+
 ## What Was Done This Session
 
 ### Investigation Results
@@ -33,8 +39,9 @@ bolt-v2 is a Polymarket trading system built on NautilusTrader's Rust `LiveNode`
 
 ### Working
 - `cargo build --release` succeeds, zero warnings
-- `bolt-v2 run --config config/live.toml` connects to Polymarket, authenticates (GnosisSafe), loads 2 instruments from event slug, reconciles, subscribes to quotes, submits order, order accepted by venue
-- `bolt-v2 secrets --config config/live.toml` resolves secrets from 1Password and outputs KEY=VALUE lines
+- `just live` regenerates `config/live.toml` from `config/live.local.toml`, then runs the generated runtime config
+- `just live-check` regenerates `config/live.toml`, then verifies secret completeness against the generated runtime config
+- `just live-resolve` regenerates `config/live.toml`, then resolves secrets from the generated runtime config
 - Tested on macOS M4 natively (no Docker needed for Rust path)
 
 ### Files in Repo
@@ -44,9 +51,12 @@ bolt-v2/
   Cargo.lock           # Pinned deps
   src/main.rs          # Entry point — CLI with `run` and `secrets` subcommands
   src/config.rs        # Config parsing + secret resolution (SSM only after Task 1)
-  config/example.toml  # Template with SSM parameter paths
-  config/live.toml     # Live config (gitignored)
-  .gitignore           # target/, config/live.toml, *.log, .omx/
+  src/bin/render_live_config.rs  # Generates runtime config from local operator input
+  justfile             # `just live`, `just live-check`, `just live-resolve`
+  config/live.local.example.toml # Tracked operator-input template
+  config/live.local.toml         # Local source of truth (gitignored, created by operator)
+  config/live.toml               # Generated runtime config (gitignored, read-only)
+  .gitignore           # target/, config/live.local.toml, config/live.toml, *.log, .omx/
   tests/verify_build.sh # Compilation + CLI verification
 ```
 
@@ -86,16 +96,20 @@ Three secret sources = three paths to maintain. SSM works everywhere: EC2 reads 
 - OR keep it as a diagnostic tool (resolve from SSM, print to verify)
 - Decision: keep it. Useful for verifying SSM connectivity.
 
-**`config/example.toml`:**
-- Remove `source` field from `[secrets]`
-- Field values are SSM parameter paths directly:
+**`config/live.local.example.toml`:**
+- Tracked template for the operator-owned local input file `config/live.local.toml`
+- Generated runtime config is produced from this input via `render_live_config`
+- Secret fields are SSM parameter paths directly:
 ```toml
+[polymarket]
+funder = "0xabc"
+
 [secrets]
-polymarket_pk = "/bolt/polymarket/private-key-b64"
-polymarket_api_key = "/bolt/polymarket/api-key"
-polymarket_api_secret = "/bolt/polymarket/api-secret"
-polymarket_passphrase = "/bolt/polymarket/api-passphrase"
-polymarket_funder = "/bolt/polymarket/funder"
+region = "eu-west-1"
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
 ```
 
 **`run.sh`:**
@@ -120,8 +134,8 @@ SSM prefix from bolt v1 configs: `/bolt/polymarket`
 Note: bolt v1 has `rpc-url` but bolt v2 doesn't use it (NT handles RPC internally). Bolt v1 has `private-key-b64` but bolt v2's field is `polymarket_pk` — verify these map correctly. NT expects `POLYMARKET_PK` env var with the raw private key, not base64-encoded.
 
 ### Verification
-- `bolt-v2 secrets --config config/live.toml` resolves all 5 secrets from SSM
-- `bolt-v2 run --config config/live.toml` starts and connects to Polymarket
+- `just live-check` regenerates `config/live.toml` and verifies the generated runtime config resolves secrets correctly
+- `just live` regenerates `config/live.toml` and starts the generated runtime config
 - Test locally with AWS CLI configured
 - Test on EC2 with instance profile
 

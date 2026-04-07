@@ -3,8 +3,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bolt_v2::live_config::{render_runtime_config, LiveLocalConfig};
 use clap::Parser;
+
+#[path = "../live_config_impl.rs"]
+mod live_config;
+
+use live_config::{LiveLocalConfig, render_runtime_config};
 
 #[derive(Parser)]
 #[command(name = "render_live_config")]

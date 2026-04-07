@@ -65,8 +65,9 @@ Add streaming config struct to parse `[streaming]` section from TOML.
 ### src/main.rs
 After building the node, create FeatherWriter and subscribe to message bus.
 
-### config/live.toml
+### generated runtime config (`config/live.toml`)
 `catalog_path` should be `/opt/bolt-v2/data/catalog` (not `/data/catalog` which is the old v1 path).
+Do not hand-edit `config/live.toml` locally; generate it from `config/live.local.toml`.
 
 ### EC2 instance
 Create `/opt/bolt-v2/data/catalog` directory on the instance.
@@ -74,7 +75,7 @@ Create `/opt/bolt-v2/data/catalog` directory on the instance.
 ## Instance Details
 - Instance: `i-08dee6aefe9a5b02c` (eu-west-1)
 - Binary: `/opt/bolt-v2/bolt-v2`
-- Config: `/opt/bolt-v2/config/live.toml`
+- Config: `/opt/bolt-v2/config/live.toml` (generated runtime config)
 - Service: `bolt-v2.service`
 - Cross-compile: `cargo zigbuild --release --target aarch64-unknown-linux-gnu`
 - S3 artifacts: `s3://bolt-deploy-artifacts/artifacts/bolt-v2/`

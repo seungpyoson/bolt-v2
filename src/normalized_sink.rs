@@ -275,10 +275,10 @@ async fn run_sink_worker(
 ) -> Result<()> {
     let mut primary_error: Option<anyhow::Error> = None;
     let mut startup_buffer = VecDeque::new();
-    let mut writes_enabled = failure_state.stop_handle.is_running();
+    let mut saw_running = failure_state.stop_handle.is_running();
 
     loop {
-        let message = if writes_enabled {
+        let message = if saw_running {
             if let Some(message) = startup_buffer.pop_front() {
                 Some(message)
             } else {
@@ -289,7 +289,7 @@ async fn run_sink_worker(
                 maybe_message = receiver.recv() => maybe_message,
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
                     if failure_state.stop_handle.is_running() {
-                        writes_enabled = true;
+                        saw_running = true;
                     }
                     continue;
                 }
@@ -297,17 +297,21 @@ async fn run_sink_worker(
         };
 
         let Some(message) = message else {
-            writes_enabled = true;
+            if !saw_running {
+                startup_buffer.clear();
+                break;
+            }
+
             if startup_buffer.is_empty() {
                 break;
             }
             continue;
         };
 
-        if !writes_enabled {
+        if !saw_running {
             startup_buffer.push_back(message);
             if failure_state.stop_handle.is_running() {
-                writes_enabled = true;
+                saw_running = true;
             }
             continue;
         }

@@ -11,12 +11,33 @@ impl std::fmt::Display for SecretError {
 
 impl std::error::Error for SecretError {}
 
-#[derive(Debug, Clone)]
+struct RedactedDebug;
+
+impl std::fmt::Debug for RedactedDebug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+#[derive(Clone)]
 pub struct ResolvedPolymarketSecrets {
     pub private_key: String,
     pub api_key: String,
     pub api_secret: String,
     pub passphrase: String,
+}
+
+impl std::fmt::Debug for ResolvedPolymarketSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted = RedactedDebug;
+
+        f.debug_struct("ResolvedPolymarketSecrets")
+            .field("private_key", &redacted)
+            .field("api_key", &redacted)
+            .field("api_secret", &redacted)
+            .field("passphrase", &redacted)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +84,7 @@ fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
 
 fn pad_base64(mut secret: String) -> String {
     let pad_len = (4 - secret.len() % 4) % 4;
-    secret.extend(std::iter::repeat_n('=', pad_len));
+    secret.extend(std::iter::repeat('=').take(pad_len));
     secret
 }
 
@@ -128,4 +149,45 @@ pub fn resolve_polymarket(
         api_secret: pad_base64(resolve_secret(region, api_secret_path)?),
         passphrase: resolve_secret(region, passphrase_path)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResolvedPolymarketSecrets, pad_base64};
+
+    #[test]
+    fn debug_redacts_resolved_polymarket_secrets() {
+        let secrets = ResolvedPolymarketSecrets {
+            private_key: "private-key-value".to_string(),
+            api_key: "api-key-value".to_string(),
+            api_secret: "api-secret-value".to_string(),
+            passphrase: "passphrase-value".to_string(),
+        };
+
+        let debug = format!("{secrets:?}");
+
+        assert!(debug.contains("ResolvedPolymarketSecrets"));
+        assert!(debug.contains("[REDACTED]"));
+        for field in ["private_key", "api_key", "api_secret", "passphrase"] {
+            assert!(debug.contains(field), "debug output should mention {field}");
+        }
+        for secret in [
+            "private-key-value",
+            "api-key-value",
+            "api-secret-value",
+            "passphrase-value",
+        ] {
+            assert!(
+                !debug.contains(secret),
+                "debug output leaked secret value: {secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn pad_base64_preserves_existing_padding_shape() {
+        assert_eq!(pad_base64("abcd".to_string()), "abcd");
+        assert_eq!(pad_base64("abc".to_string()), "abc=");
+        assert_eq!(pad_base64("ab".to_string()), "ab==");
+    }
 }

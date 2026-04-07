@@ -9,6 +9,28 @@ use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;
 
+fn bootstrap_test_secrets() -> ResolvedPolymarketSecrets {
+    ResolvedPolymarketSecrets {
+        // Build a syntactically valid EVM key without embedding a credential-shaped literal.
+        private_key: format!("0x{}", "1".repeat(64)),
+        api_key: "placeholder-api-key-for-tests".to_string(),
+        api_secret: "placeholder-api-secret-for-tests".to_string(),
+        passphrase: "placeholder-passphrase-for-tests".to_string(),
+    }
+}
+
+#[test]
+fn seam_test_uses_non_secret_placeholders() {
+    let dummy = bootstrap_test_secrets();
+
+    assert!(dummy.private_key.starts_with("0x"));
+    assert_eq!(dummy.private_key.len(), 66);
+    assert!(dummy.private_key[2..].chars().all(|ch| ch == '1'));
+    assert_eq!(dummy.api_key, "placeholder-api-key-for-tests");
+    assert_eq!(dummy.api_secret, "placeholder-api-secret-for-tests");
+    assert_eq!(dummy.passphrase, "placeholder-passphrase-for-tests");
+}
+
 #[test]
 fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymarket_seam() {
     let cfg = Config::load(std::path::Path::new("config/examples/polymarket-exec-tester.toml"))
@@ -25,13 +47,7 @@ fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymar
     let (data_factory, data_config) = polymarket::build_data_client(&cfg.data_clients[0].config)
         .expect("data config should translate");
 
-    let dummy = ResolvedPolymarketSecrets {
-        private_key: "0x1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
-        api_key: "test_api_key".to_string(),
-        api_secret: "dGVzdF9zZWNyZXQ=".to_string(),
-        passphrase: "test_pass".to_string(),
-    };
+    let dummy = bootstrap_test_secrets();
     let (exec_factory, exec_config) =
         polymarket::build_exec_client(&cfg.exec_clients[0].config, trader_id, dummy)
             .expect("exec config should translate");

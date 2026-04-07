@@ -98,12 +98,17 @@ pub struct WalletSecretsConfig {
 fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, Box<dyn std::error::Error>> {
     let output = std::process::Command::new("aws")
         .args([
-            "ssm", "get-parameter",
-            "--region", region,
-            "--name", ssm_path,
+            "ssm",
+            "get-parameter",
+            "--region",
+            region,
+            "--name",
+            ssm_path,
             "--with-decryption",
-            "--query", "Parameter.Value",
-            "--output", "text",
+            "--query",
+            "Parameter.Value",
+            "--output",
+            "text",
         ])
         .output()
         .map_err(|e| format!("Failed to run `aws ssm get-parameter --name {ssm_path}`: {e}"))?;
@@ -130,17 +135,28 @@ impl WalletConfig {
     fn resolve_env_vars(&self) -> Result<Vec<(&str, String)>, Box<dyn std::error::Error>> {
         let r = &self.secrets.region;
         Ok(vec![
-            ("POLYMARKET_PK",         resolve_secret(r, &self.secrets.pk)?),
-            ("POLYMARKET_API_KEY",    resolve_secret(r, &self.secrets.api_key)?),
-            ("POLYMARKET_API_SECRET", pad_base64(resolve_secret(r, &self.secrets.api_secret)?)),
-            ("POLYMARKET_PASSPHRASE", resolve_secret(r, &self.secrets.passphrase)?),
-            ("POLYMARKET_FUNDER",     self.funder.clone()),
+            ("POLYMARKET_PK", resolve_secret(r, &self.secrets.pk)?),
+            (
+                "POLYMARKET_API_KEY",
+                resolve_secret(r, &self.secrets.api_key)?,
+            ),
+            (
+                "POLYMARKET_API_SECRET",
+                pad_base64(resolve_secret(r, &self.secrets.api_secret)?),
+            ),
+            (
+                "POLYMARKET_PASSPHRASE",
+                resolve_secret(r, &self.secrets.passphrase)?,
+            ),
+            ("POLYMARKET_FUNDER", self.funder.clone()),
         ])
     }
 
     pub fn inject(&self) -> Result<(), Box<dyn std::error::Error>> {
         for (env_name, value) in self.resolve_env_vars()? {
-            unsafe { std::env::set_var(env_name, value); }
+            unsafe {
+                std::env::set_var(env_name, value);
+            }
         }
         Ok(())
     }

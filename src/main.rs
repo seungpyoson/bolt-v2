@@ -53,7 +53,9 @@ async fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let environment = match cfg.node.environment.as_str() {
         "Live" => Environment::Live,
         "Sandbox" => Environment::Sandbox,
-        other => return Err(format!("Unknown environment: {other}. Expected Live or Sandbox").into()),
+        other => {
+            return Err(format!("Unknown environment: {other}. Expected Live or Sandbox").into());
+        }
     };
 
     let data_filter = EventSlugFilter::from_slugs(vec![cfg.venue.event_slug]);
@@ -89,8 +91,16 @@ async fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .with_delay_shutdown_secs(cfg.timeouts.shutdown_delay_secs)
         .with_reconciliation(cfg.venue.reconciliation_enabled)
         .with_reconciliation_lookback_mins(cfg.venue.reconciliation_lookback_mins)
-        .add_data_client(None, Box::new(PolymarketDataClientFactory), Box::new(data_config))?
-        .add_exec_client(None, Box::new(PolymarketExecutionClientFactory), Box::new(exec_config))?
+        .add_data_client(
+            None,
+            Box::new(PolymarketDataClientFactory),
+            Box::new(data_config),
+        )?
+        .add_exec_client(
+            None,
+            Box::new(PolymarketExecutionClientFactory),
+            Box::new(exec_config),
+        )?
         .build()?;
 
     let tester_config = ExecTesterConfig::builder()
@@ -124,6 +134,9 @@ fn parse_log_level(s: &str) -> Result<LevelFilter, Box<dyn std::error::Error>> {
         "Warn" => Ok(LevelFilter::Warn),
         "Error" => Ok(LevelFilter::Error),
         "Off" => Ok(LevelFilter::Off),
-        other => Err(format!("Unknown log level: {other}. Expected Trace, Debug, Info, Warn, Error, or Off").into()),
+        other => Err(format!(
+            "Unknown log level: {other}. Expected Trace, Debug, Info, Warn, Error, or Off"
+        )
+        .into()),
     }
 }

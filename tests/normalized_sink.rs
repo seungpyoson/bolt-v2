@@ -32,7 +32,12 @@ async fn rejects_non_local_catalog_paths() {
                 .unwrap();
 
             let result =
-                bolt_v2::normalized_sink::wire_normalized_sinks(&node, "s3://bucket/catalog", 1000);
+                bolt_v2::normalized_sink::wire_normalized_sinks(
+                    &node,
+                    node.handle(),
+                    "s3://bucket/catalog",
+                    1000,
+                );
 
             assert!(result.is_err());
         })
@@ -72,6 +77,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
                 &node,
+                node.handle(),
                 catalog_root.to_str().unwrap(),
                 60_000,
             )

@@ -1,4 +1,11 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::{Result, anyhow, bail};
 use nautilus_common::msgbus::{
@@ -9,7 +16,7 @@ use nautilus_common::msgbus::{
     unsubscribe_book_depth10, unsubscribe_index_prices, unsubscribe_instrument_close,
     unsubscribe_instruments, unsubscribe_mark_prices, unsubscribe_quotes, unsubscribe_trades,
 };
-use nautilus_live::node::LiveNode;
+use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{
         Bar, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate, OrderBookDeltas,
@@ -45,6 +52,54 @@ struct AnyHandlers {
     instrument_statuses: ShareableMessageHandler,
 }
 
+#[derive(Clone)]
+struct SinkFailureState {
+    unhealthy: Arc<AtomicBool>,
+    first_error: Arc<Mutex<Option<String>>>,
+    stop_handle: LiveNodeHandle,
+}
+
+impl SinkFailureState {
+    fn new(stop_handle: LiveNodeHandle) -> Self {
+        Self {
+            unhealthy: Arc::new(AtomicBool::new(false)),
+            first_error: Arc::new(Mutex::new(None)),
+            stop_handle,
+        }
+    }
+
+    fn is_unhealthy(&self) -> bool {
+        self.unhealthy.load(Ordering::Relaxed)
+    }
+
+    fn error_message(&self) -> Option<String> {
+        self.first_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn record_failure(&self, message: impl Into<String>) {
+        let message = message.into();
+        let is_first = self
+            .unhealthy
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok();
+
+        if is_first {
+            let mut slot = self
+                .first_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if slot.is_none() {
+                *slot = Some(message.clone());
+            }
+            log::error!("{message}");
+            self.stop_handle.stop();
+        }
+    }
+}
+
 enum SinkMessage {
     Quote(QuoteTick),
     Trade(TradeTick),
@@ -63,6 +118,7 @@ pub struct NormalizedSinkGuards {
     worker_handle: Option<JoinHandle<Result<()>>>,
     typed_handlers: Option<TypedHandlers>,
     any_handlers: Option<AnyHandlers>,
+    failure_state: SinkFailureState,
 }
 
 impl Drop for NormalizedSinkGuards {
@@ -77,14 +133,26 @@ impl NormalizedSinkGuards {
         self.unsubscribe_all();
         self.sender.take();
 
+        let mut join_error: Option<anyhow::Error> = None;
         if let Some(handle) = self.worker_handle.take() {
             match handle.await {
-                Ok(result) => result?,
-                Err(error) => return Err(anyhow!("normalized sink worker join failed: {error}")),
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => join_error = Some(error),
+                Err(error) => {
+                    join_error = Some(anyhow!("normalized sink worker join failed: {error}"))
+                }
             }
         }
 
-        Ok(())
+        match (self.failure_state.error_message(), join_error) {
+            (Some(primary), Some(secondary)) => {
+                log::error!("Normalized sink secondary error: {secondary}");
+                Err(anyhow!(primary))
+            }
+            (Some(primary), None) => Err(anyhow!(primary)),
+            (None, Some(error)) => Err(error),
+            (None, None) => Ok(()),
+        }
     }
 
     fn unsubscribe_all(&mut self) {
@@ -160,9 +228,20 @@ fn ensure_local_catalog_path(catalog_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn send_sink_message(sender: &UnboundedSender<SinkMessage>, message: SinkMessage, label: &str) {
+fn send_sink_message(
+    sender: &UnboundedSender<SinkMessage>,
+    message: SinkMessage,
+    label: &str,
+    failure_state: &SinkFailureState,
+) {
+    if failure_state.is_unhealthy() {
+        return;
+    }
+
     if let Err(error) = sender.send(message) {
-        log::warn!("Failed to enqueue {label} for normalized sink: {error}");
+        failure_state.record_failure(format!(
+            "Normalized sink channel closed while enqueueing {label}: {error}"
+        ));
     }
 }
 
@@ -170,77 +249,84 @@ async fn run_sink_worker(
     mut receiver: UnboundedReceiver<SinkMessage>,
     mut writer: FeatherWriter,
     status_path: PathBuf,
+    failure_state: SinkFailureState,
 ) -> Result<()> {
+    let mut primary_error: Option<anyhow::Error> = None;
+
     while let Some(message) = receiver.recv().await {
-        match message {
-            SinkMessage::Quote(quote) => {
-                writer
-                    .write(quote)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
-            SinkMessage::Trade(trade) => {
-                writer
-                    .write(trade)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
-            SinkMessage::Bar(bar) => {
-                writer
-                    .write(bar)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
+        let write_result: Result<()> = match message {
+            SinkMessage::Quote(quote) => writer
+                .write(quote)
+                .await
+                .map_err(|e| anyhow!("QuoteTick write failed: {e}")),
+            SinkMessage::Trade(trade) => writer
+                .write(trade)
+                .await
+                .map_err(|e| anyhow!("TradeTick write failed: {e}")),
+            SinkMessage::Bar(bar) => writer
+                .write(bar)
+                .await
+                .map_err(|e| anyhow!("Bar write failed: {e}")),
             SinkMessage::Deltas(deltas) => {
                 for delta in deltas.deltas {
                     writer
                         .write(delta)
                         .await
-                        .map_err(|e| anyhow!(e.to_string()))?;
+                        .map_err(|e| anyhow!("OrderBookDelta write failed: {e}"))?;
                 }
+                Ok(())
             }
-            SinkMessage::Depth10(depth) => {
-                writer
-                    .write(depth)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
-            SinkMessage::MarkPrice(price) => {
-                writer
-                    .write(price)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
-            SinkMessage::IndexPrice(price) => {
-                writer
-                    .write(price)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
-            SinkMessage::Instrument(instrument) => {
-                writer
-                    .write_instrument(instrument)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
-            SinkMessage::InstrumentClose(close) => {
-                writer
-                    .write(close)
-                    .await
-                    .map_err(|e| anyhow!(e.to_string()))?;
-            }
-            SinkMessage::InstrumentStatus(status) => {
-                append_jsonl(&status_path, &status)?;
-            }
+            SinkMessage::Depth10(depth) => writer
+                .write(depth)
+                .await
+                .map_err(|e| anyhow!("OrderBookDepth10 write failed: {e}")),
+            SinkMessage::MarkPrice(price) => writer
+                .write(price)
+                .await
+                .map_err(|e| anyhow!("MarkPriceUpdate write failed: {e}")),
+            SinkMessage::IndexPrice(price) => writer
+                .write(price)
+                .await
+                .map_err(|e| anyhow!("IndexPriceUpdate write failed: {e}")),
+            SinkMessage::Instrument(instrument) => writer
+                .write_instrument(instrument)
+                .await
+                .map_err(|e| anyhow!("InstrumentAny write failed: {e}")),
+            SinkMessage::InstrumentClose(close) => writer
+                .write(close)
+                .await
+                .map_err(|e| anyhow!("InstrumentClose write failed: {e}")),
+            SinkMessage::InstrumentStatus(status) => append_jsonl(&status_path, &status)
+                .map_err(|e| anyhow!("InstrumentStatus JSONL write failed: {e}")),
+        };
+
+        if let Err(error) = write_result {
+            failure_state.record_failure(error.to_string());
+            primary_error = Some(error);
+            break;
         }
     }
 
-    writer.close().await.map_err(|e| anyhow!(e.to_string()))?;
-    Ok(())
+    if let Err(error) = writer.close().await {
+        let close_error = anyhow!("Failed to close FeatherWriter: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Some(error) = primary_error {
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn wire_normalized_sinks(
     node: &LiveNode,
+    stop_handle: LiveNodeHandle,
     catalog_path: &str,
     flush_interval_ms: u64,
 ) -> Result<NormalizedSinkGuards> {
@@ -264,80 +350,113 @@ pub fn wire_normalized_sinks(
         Some(flush_interval_ms),
     );
 
+    // Unbounded is intentional: sink handlers must never block the NT message bus.
+    // If the sink falls behind, memory can grow until the process is stopped.
+    // This is an accepted Task 3 tradeoff for current local-first Polymarket capture.
     let (sender, receiver) = unbounded_channel();
-    let worker_handle = spawn_local(run_sink_worker(receiver, writer, status_path));
+    let failure_state = SinkFailureState::new(stop_handle);
+    let worker_handle = spawn_local(run_sink_worker(
+        receiver,
+        writer,
+        status_path,
+        failure_state.clone(),
+    ));
 
     let quotes_sender = sender.clone();
+    let quotes_failure_state = failure_state.clone();
     let quotes = TypedHandler::from(move |quote: &QuoteTick| {
-        send_sink_message(&quotes_sender, SinkMessage::Quote(*quote), "QuoteTick");
+        send_sink_message(
+            &quotes_sender,
+            SinkMessage::Quote(*quote),
+            "QuoteTick",
+            &quotes_failure_state,
+        );
     });
     subscribe_quotes(quotes_pattern(), quotes.clone(), None);
 
     let trades_sender = sender.clone();
+    let trades_failure_state = failure_state.clone();
     let trades = TypedHandler::from(move |trade: &TradeTick| {
-        send_sink_message(&trades_sender, SinkMessage::Trade(*trade), "TradeTick");
+        send_sink_message(
+            &trades_sender,
+            SinkMessage::Trade(*trade),
+            "TradeTick",
+            &trades_failure_state,
+        );
     });
     subscribe_trades(trades_pattern(), trades.clone(), None);
 
     let bars_sender = sender.clone();
+    let bars_failure_state = failure_state.clone();
     let bars = TypedHandler::from(move |bar: &Bar| {
-        send_sink_message(&bars_sender, SinkMessage::Bar(*bar), "Bar");
+        send_sink_message(&bars_sender, SinkMessage::Bar(*bar), "Bar", &bars_failure_state);
     });
     subscribe_bars(bars_pattern(), bars.clone(), None);
 
     let deltas_sender = sender.clone();
+    let deltas_failure_state = failure_state.clone();
     let book_deltas = TypedHandler::from(move |deltas: &OrderBookDeltas| {
         send_sink_message(
             &deltas_sender,
             SinkMessage::Deltas(deltas.clone()),
             "OrderBookDeltas",
+            &deltas_failure_state,
         );
     });
     subscribe_book_deltas(book_deltas_pattern(), book_deltas.clone(), None);
 
     let depth_sender = sender.clone();
+    let depth_failure_state = failure_state.clone();
     let book_depth10 = TypedHandler::from(move |depth: &OrderBookDepth10| {
         send_sink_message(
             &depth_sender,
             SinkMessage::Depth10(*depth),
             "OrderBookDepth10",
+            &depth_failure_state,
         );
     });
     subscribe_book_depth10(book_depth10_pattern(), book_depth10.clone(), None);
 
     let mark_sender = sender.clone();
+    let mark_failure_state = failure_state.clone();
     let mark_prices = TypedHandler::from(move |price: &MarkPriceUpdate| {
         send_sink_message(
             &mark_sender,
             SinkMessage::MarkPrice(*price),
             "MarkPriceUpdate",
+            &mark_failure_state,
         );
     });
     subscribe_mark_prices(mark_prices_pattern(), mark_prices.clone(), None);
 
     let index_sender = sender.clone();
+    let index_failure_state = failure_state.clone();
     let index_prices = TypedHandler::from(move |price: &IndexPriceUpdate| {
         send_sink_message(
             &index_sender,
             SinkMessage::IndexPrice(*price),
             "IndexPriceUpdate",
+            &index_failure_state,
         );
     });
     subscribe_index_prices(index_prices_pattern(), index_prices.clone(), None);
 
     let instrument_sender = sender.clone();
+    let instrument_failure_state = failure_state.clone();
     let instruments = ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
         if let Some(instrument) = message.downcast_ref::<InstrumentAny>() {
             send_sink_message(
                 &instrument_sender,
                 SinkMessage::Instrument(instrument.clone()),
                 "InstrumentAny",
+                &instrument_failure_state,
             );
         }
     });
     subscribe_instruments(instruments_pattern(), instruments.clone(), None);
 
     let close_sender = sender.clone();
+    let close_failure_state = failure_state.clone();
     let instrument_closes =
         ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
             if let Some(close) = message.downcast_ref::<InstrumentClose>() {
@@ -345,12 +464,18 @@ pub fn wire_normalized_sinks(
                     &close_sender,
                     SinkMessage::InstrumentClose(*close),
                     "InstrumentClose",
+                    &close_failure_state,
                 );
             }
         });
-    subscribe_instrument_close(instrument_closes_pattern(), instrument_closes.clone(), None);
+    subscribe_instrument_close(
+        instrument_closes_pattern(),
+        instrument_closes.clone(),
+        None,
+    );
 
     let status_sender = sender.clone();
+    let status_failure_state = failure_state.clone();
     let instrument_statuses =
         ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
             if let Some(status) = message.downcast_ref::<InstrumentStatus>() {
@@ -362,6 +487,7 @@ pub fn wire_normalized_sinks(
                     &status_sender,
                     SinkMessage::InstrumentStatus(*status),
                     "InstrumentStatus",
+                    &status_failure_state,
                 );
             }
         });
@@ -388,5 +514,58 @@ pub fn wire_normalized_sinks(
             instrument_closes,
             instrument_statuses,
         }),
+        failure_state,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nautilus_model::{
+        data::QuoteTick,
+        identifiers::{InstrumentId, TraderId},
+        types::{Price, Quantity},
+    };
+
+    #[test]
+    fn failure_state_latches_first_error_and_sets_stop_flag() {
+        let handle = LiveNodeHandle::new();
+        let state = SinkFailureState::new(handle.clone());
+
+        state.record_failure("first failure");
+        state.record_failure("second failure");
+
+        assert!(state.is_unhealthy());
+        assert!(handle.should_stop());
+        assert_eq!(state.error_message().as_deref(), Some("first failure"));
+    }
+
+    #[test]
+    fn send_failure_marks_sink_unhealthy() {
+        let handle = LiveNodeHandle::new();
+        let state = SinkFailureState::new(handle.clone());
+        let (sender, receiver) = unbounded_channel();
+        drop(receiver);
+
+        let quote = QuoteTick::new(
+            InstrumentId::from("0xabc-123456789.POLYMARKET"),
+            Price::from("0.45"),
+            Price::from("0.55"),
+            Quantity::from("100"),
+            Quantity::from("100"),
+            1.into(),
+            1.into(),
+        );
+
+        send_sink_message(&sender, SinkMessage::Quote(quote), "QuoteTick", &state);
+
+        assert!(state.is_unhealthy());
+        assert!(handle.should_stop());
+        assert!(
+            state
+                .error_message()
+                .unwrap()
+                .contains("Normalized sink channel closed while enqueueing QuoteTick")
+        );
+    }
 }

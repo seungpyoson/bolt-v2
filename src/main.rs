@@ -110,14 +110,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .enable_all()
                 .build()?;
             let local = tokio::task::LocalSet::new();
-
-            runtime.block_on(local.run_until(async move {
+            let app: std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                        Output = Result<(), Box<dyn std::error::Error>>,
+                    >,
+                >,
+            > = Box::pin(async move {
                 let mut node = builder.build()?;
+                let node_handle = node.handle();
                 let normalized_sink_guards = if streaming.catalog_path.trim().is_empty() {
                     None
                 } else {
                     Some(normalized_sink::wire_normalized_sinks(
                         &node,
+                        node_handle,
                         &streaming.catalog_path,
                         streaming.flush_interval_ms,
                     )?)
@@ -126,21 +133,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for strategy in &strategies {
                     match strategy.kind.as_str() {
                         "exec_tester" => {
-                            node.add_strategy(exec_tester::build_exec_tester(&strategy.config)?)?;
+                            let strategy = exec_tester::build_exec_tester(&strategy.config)?;
+                            node.add_strategy(strategy)?;
                         }
-                        other => return Err(format!("Unsupported strategy type: {other}").into()),
+                        other => {
+                            return Err(Box::new(std::io::Error::other(format!(
+                                "Unsupported strategy type: {other}"
+                            )))
+                                as Box<dyn std::error::Error>);
+                        }
                     }
                 }
 
                 let run_result = node.run().await;
+                let shutdown_result = if let Some(guards) = normalized_sink_guards {
+                    guards.shutdown().await.map_err(|e| {
+                        Box::new(std::io::Error::other(e.to_string()))
+                            as Box<dyn std::error::Error>
+                    })
+                } else {
+                    Ok(())
+                };
 
-                if let Some(guards) = normalized_sink_guards {
-                    guards.shutdown().await?;
+                match (run_result, shutdown_result) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(run_error), Ok(())) => Err(run_error.into()),
+                    (Ok(()), Err(shutdown_error)) => Err(shutdown_error),
+                    (Err(run_error), Err(shutdown_error)) => {
+                        log::error!("Live node run error during sink shutdown: {run_error}");
+                        Err(Box::new(std::io::Error::other(format!(
+                            "normalized sink shutdown error: {shutdown_error}; node run error: {run_error}"
+                        ))) as Box<dyn std::error::Error>)
+                    }
                 }
+            });
 
-                run_result?;
-                Ok(())
-            }))
+            Ok(runtime.block_on(local.run_until(app))?)
         }
     }
 }

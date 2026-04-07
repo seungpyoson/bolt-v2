@@ -26,7 +26,7 @@ fn parses_minimal_data_lake_config() {
 
         [venue]
         event_slug = "election-2028"
-        instrument_id = "0xabc-123"
+        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
         reconciliation_enabled = true
         reconciliation_lookback_mins = 60
         subscribe_new_markets = true

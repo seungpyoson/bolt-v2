@@ -129,6 +129,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         streaming.flush_interval_ms,
                     )?)
                 };
+                let mut normalized_sink_guards = normalized_sink_guards;
+                let mut sink_failure_receiver = normalized_sink_guards
+                    .as_mut()
+                    .and_then(|guards| guards.take_failure_receiver());
 
                 for strategy in &strategies {
                     match strategy.kind.as_str() {
@@ -145,7 +149,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                let run_result = node.run().await;
+                let run_result = {
+                    let run_future = node.run();
+                    tokio::pin!(run_future);
+
+                    if let Some(receiver) = sink_failure_receiver.as_mut() {
+                        tokio::select! {
+                            result = &mut run_future => result,
+                            _ = receiver => {
+                                log::error!("Normalized sink failure detected, awaiting LiveNode shutdown");
+                                run_future.await
+                            }
+                        }
+                    } else {
+                        run_future.await
+                    }
+                };
                 let shutdown_result = if let Some(guards) = normalized_sink_guards {
                     guards.shutdown().await.map_err(|e| {
                         Box::new(std::io::Error::other(e.to_string()))

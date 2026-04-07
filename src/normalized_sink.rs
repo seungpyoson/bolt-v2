@@ -31,6 +31,7 @@ use nautilus_persistence::{
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    sync::oneshot,
     task::{JoinHandle, spawn_local},
 };
 
@@ -56,16 +57,22 @@ struct AnyHandlers {
 struct SinkFailureState {
     unhealthy: Arc<AtomicBool>,
     first_error: Arc<Mutex<Option<String>>>,
+    notifier: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     stop_handle: LiveNodeHandle,
 }
 
 impl SinkFailureState {
-    fn new(stop_handle: LiveNodeHandle) -> Self {
-        Self {
+    fn new(stop_handle: LiveNodeHandle) -> (Self, oneshot::Receiver<()>) {
+        let (notifier, receiver) = oneshot::channel();
+        (
+            Self {
             unhealthy: Arc::new(AtomicBool::new(false)),
             first_error: Arc::new(Mutex::new(None)),
+            notifier: Arc::new(Mutex::new(Some(notifier))),
             stop_handle,
-        }
+            },
+            receiver,
+        )
     }
 
     fn is_unhealthy(&self) -> bool {
@@ -95,6 +102,14 @@ impl SinkFailureState {
                 *slot = Some(message.clone());
             }
             log::error!("{message}");
+            if let Some(notifier) = self
+                .notifier
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let _ = notifier.send(());
+            }
             self.stop_handle.stop();
         }
     }
@@ -115,10 +130,11 @@ enum SinkMessage {
 
 pub struct NormalizedSinkGuards {
     sender: Option<UnboundedSender<SinkMessage>>,
-    worker_handle: Option<JoinHandle<Result<()>>>,
+    supervisor_handle: Option<JoinHandle<Result<()>>>,
     typed_handlers: Option<TypedHandlers>,
     any_handlers: Option<AnyHandlers>,
     failure_state: SinkFailureState,
+    failure_receiver: Option<oneshot::Receiver<()>>,
 }
 
 impl Drop for NormalizedSinkGuards {
@@ -129,12 +145,17 @@ impl Drop for NormalizedSinkGuards {
 }
 
 impl NormalizedSinkGuards {
+    pub fn take_failure_receiver(&mut self) -> Option<oneshot::Receiver<()>> {
+        self.failure_receiver.take()
+    }
+
     pub async fn shutdown(mut self) -> Result<()> {
         self.unsubscribe_all();
         self.sender.take();
+        self.failure_receiver.take();
 
         let mut join_error: Option<anyhow::Error> = None;
-        if let Some(handle) = self.worker_handle.take() {
+        if let Some(handle) = self.supervisor_handle.take() {
             match handle.await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => join_error = Some(error),
@@ -268,13 +289,14 @@ async fn run_sink_worker(
                 .await
                 .map_err(|e| anyhow!("Bar write failed: {e}")),
             SinkMessage::Deltas(deltas) => {
+                let mut deltas_result = Ok(());
                 for delta in deltas.deltas {
-                    writer
-                        .write(delta)
-                        .await
-                        .map_err(|e| anyhow!("OrderBookDelta write failed: {e}"))?;
+                    if let Err(error) = writer.write(delta).await {
+                        deltas_result = Err(anyhow!("OrderBookDelta write failed: {error}"));
+                        break;
+                    }
                 }
-                Ok(())
+                deltas_result
             }
             SinkMessage::Depth10(depth) => writer
                 .write(depth)
@@ -354,13 +376,28 @@ pub fn wire_normalized_sinks(
     // If the sink falls behind, memory can grow until the process is stopped.
     // This is an accepted Task 3 tradeoff for current local-first Polymarket capture.
     let (sender, receiver) = unbounded_channel();
-    let failure_state = SinkFailureState::new(stop_handle);
+    let (failure_state, failure_receiver) = SinkFailureState::new(stop_handle);
     let worker_handle = spawn_local(run_sink_worker(
         receiver,
         writer,
         status_path,
         failure_state.clone(),
     ));
+    let supervisor_failure_state = failure_state.clone();
+    let supervisor_handle = spawn_local(async move {
+        match worker_handle.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                supervisor_failure_state.record_failure(error.to_string());
+                Err(error)
+            }
+            Err(error) => {
+                let join_error = anyhow!("normalized sink worker join failed: {error}");
+                supervisor_failure_state.record_failure(join_error.to_string());
+                Err(join_error)
+            }
+        }
+    });
 
     let quotes_sender = sender.clone();
     let quotes_failure_state = failure_state.clone();
@@ -499,7 +536,7 @@ pub fn wire_normalized_sinks(
 
     Ok(NormalizedSinkGuards {
         sender: Some(sender),
-        worker_handle: Some(worker_handle),
+        supervisor_handle: Some(supervisor_handle),
         typed_handlers: Some(TypedHandlers {
             quotes,
             trades,
@@ -515,6 +552,7 @@ pub fn wire_normalized_sinks(
             instrument_statuses,
         }),
         failure_state,
+        failure_receiver: Some(failure_receiver),
     })
 }
 
@@ -543,7 +581,7 @@ mod tests {
     #[test]
     fn send_failure_marks_sink_unhealthy() {
         let handle = LiveNodeHandle::new();
-        let state = SinkFailureState::new(handle.clone());
+        let (state, _receiver) = SinkFailureState::new(handle.clone());
         let (sender, receiver) = unbounded_channel();
         drop(receiver);
 
@@ -567,5 +605,15 @@ mod tests {
                 .unwrap()
                 .contains("Normalized sink channel closed while enqueueing QuoteTick")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn record_failure_notifies_receiver() {
+        let handle = LiveNodeHandle::new();
+        let (state, receiver) = SinkFailureState::new(handle);
+
+        state.record_failure("failure");
+
+        receiver.await.unwrap();
     }
 }

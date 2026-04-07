@@ -8,7 +8,11 @@ use nautilus_network::{
 };
 use nautilus_polymarket::{
     common::urls::gamma_api_url,
-    http::{query::GetGammaMarketsParams, rate_limits::POLYMARKET_GAMMA_REST_QUOTA},
+    http::{
+        models::GammaEvent,
+        query::{GetGammaEventsParams, GetGammaMarketsParams},
+        rate_limits::POLYMARKET_GAMMA_REST_QUOTA,
+    },
     websocket::messages::MarketInitialSubscribeRequest,
 };
 
@@ -34,8 +38,19 @@ pub fn gamma_markets_url() -> String {
     format!("{}/markets", gamma_api_url())
 }
 
+pub fn gamma_events_url() -> String {
+    format!("{}/events", gamma_api_url())
+}
+
 pub fn gamma_markets_params(event_slug: &str) -> GetGammaMarketsParams {
     GetGammaMarketsParams {
+        slug: Some(event_slug.to_string()),
+        ..Default::default()
+    }
+}
+
+pub fn gamma_events_params(event_slug: &str) -> GetGammaEventsParams {
+    GetGammaEventsParams {
         slug: Some(event_slug.to_string()),
         ..Default::default()
     }
@@ -76,4 +91,26 @@ pub fn market_subscribe_payload(
         custom_feature_enabled: subscribe_new_markets,
     })
     .map_err(Into::into)
+}
+
+pub fn market_token_ids_from_gamma_events_json(body: &str) -> anyhow::Result<Vec<String>> {
+    let events: Vec<GammaEvent> = serde_json::from_str(body)?;
+    let mut token_ids = Vec::new();
+
+    for event in events {
+        for market in event.markets {
+            let market_token_ids: Vec<String> = serde_json::from_str(&market.clob_token_ids)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse clob_token_ids '{}': {e}",
+                        market.clob_token_ids
+                    )
+                })?;
+            token_ids.extend(market_token_ids);
+        }
+    }
+
+    token_ids.sort();
+    token_ids.dedup();
+    Ok(token_ids)
 }

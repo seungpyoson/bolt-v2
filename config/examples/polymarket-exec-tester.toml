@@ -42,7 +42,7 @@ passphrase = "/bolt/poly/passphrase"
 type = "exec_tester"
 [strategies.config]
 strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
+instrument_id = "0xabc-12345678901234567890.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "5"
 log_data = false

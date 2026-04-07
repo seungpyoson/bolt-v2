@@ -1,6 +1,6 @@
 use bolt_v2::raw_capture_transport::{
     gamma_default_headers, gamma_markets_params, market_asset_id, market_subscribe_payload,
-    market_ws_config,
+    market_token_ids_from_gamma_events_json, market_ws_config,
 };
 
 #[test]
@@ -50,4 +50,36 @@ fn builds_market_subscribe_payload_for_multiple_assets() {
 
     assert!(payload.contains("\"assets_ids\":[\"111\",\"222\"]"));
     assert!(payload.contains("\"custom_feature_enabled\":true"));
+}
+
+#[test]
+fn extracts_all_token_ids_from_gamma_events_payload() {
+    let json = r#"
+        [
+          {
+            "id": "event-1",
+            "slug": "btc-updown-5m",
+            "markets": [
+              {
+                "id": "market-1",
+                "conditionId": "0xcond1",
+                "clobTokenIds": "[\"111\",\"222\"]",
+                "outcomes": "[\"Yes\",\"No\"]",
+                "question": "Q1"
+              },
+              {
+                "id": "market-2",
+                "conditionId": "0xcond2",
+                "clobTokenIds": "[\"333\",\"444\"]",
+                "outcomes": "[\"Yes\",\"No\"]",
+                "question": "Q2"
+              }
+            ]
+          }
+        ]
+    "#;
+
+    let token_ids = market_token_ids_from_gamma_events_json(json).unwrap();
+
+    assert_eq!(token_ids, vec!["111", "222", "333", "444"]);
 }

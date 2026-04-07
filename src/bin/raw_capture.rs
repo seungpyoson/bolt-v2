@@ -5,11 +5,10 @@ use bolt_v2::{
     clients::polymarket::PolymarketDataClientInput,
     config::Config,
     raw_capture_transport::{
-        build_gamma_http_client, gamma_markets_params, gamma_markets_url, market_asset_id,
-        market_subscribe_payload, market_ws_config,
+        build_gamma_http_client, gamma_events_params, gamma_events_url, market_subscribe_payload,
+        market_token_ids_from_gamma_events_json, market_ws_config,
     },
     raw_types::{RawHttpResponse, RawWsMessage, append_jsonl},
-    strategies::exec_tester::ExecTesterInput,
 };
 use clap::Parser;
 use nautilus_network::{
@@ -29,8 +28,6 @@ struct RawCaptureTargets {
     output_dir: String,
     timeout_connection_secs: u64,
     event_slugs: Vec<String>,
-    instrument_ids: Vec<String>,
-    token_ids: Vec<String>,
     subscribe_new_markets: bool,
 }
 
@@ -77,38 +74,10 @@ fn collect_raw_capture_targets(cfg: &Config) -> Result<RawCaptureTargets> {
         "raw capture requires at least one Polymarket event slug in data_clients"
     );
 
-    let mut instrument_ids = Vec::new();
-    for strategy in &cfg.strategies {
-        if strategy.kind != "exec_tester" {
-            continue;
-        }
-
-        let input: ExecTesterInput = strategy.config.clone().try_into()?;
-        instrument_ids.push(input.instrument_id);
-    }
-
-    let instrument_ids: Vec<String> = instrument_ids
-        .into_iter()
-        .filter(|instrument_id| !instrument_id.trim().is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    ensure!(
-        !instrument_ids.is_empty(),
-        "raw capture requires at least one exec_tester instrument_id in strategies"
-    );
-
-    let mut token_ids = Vec::with_capacity(instrument_ids.len());
-    for instrument_id in &instrument_ids {
-        token_ids.push(market_asset_id(instrument_id)?);
-    }
-
     Ok(RawCaptureTargets {
         output_dir: cfg.raw_capture.output_dir.clone(),
         timeout_connection_secs: cfg.node.timeout_connection_secs,
         event_slugs,
-        instrument_ids,
-        token_ids,
         subscribe_new_markets,
     })
 }
@@ -123,12 +92,13 @@ async fn main() -> Result<()> {
     let http_client = build_gamma_http_client(targets.timeout_connection_secs)?;
     let http_path = http_output_path(&targets.output_dir, &ingest_date);
 
+    let mut token_ids = Vec::new();
     for event_slug in &targets.event_slugs {
         let response = http_client
             .request_with_params(
                 Method::GET,
-                gamma_markets_url(),
-                Some(&gamma_markets_params(event_slug)),
+                gamma_events_url(),
+                Some(&gamma_events_params(event_slug)),
                 None,
                 None,
                 None,
@@ -137,12 +107,13 @@ async fn main() -> Result<()> {
             .await?;
         ensure!(
             response.status.is_success(),
-            "Gamma markets request failed with status {}",
+            "Gamma events request failed with status {}",
             response.status.as_u16()
         );
         let body = String::from_utf8(response.body.to_vec())?;
+        token_ids.extend(market_token_ids_from_gamma_events_json(&body)?);
         let http_row = RawHttpResponse {
-            endpoint: "/markets".to_string(),
+            endpoint: "/events".to_string(),
             request_params_json: format!("{{\"slug\":\"{event_slug}\"}}"),
             received_ts: now_unix_nanos(),
             payload_json: body,
@@ -152,6 +123,12 @@ async fn main() -> Result<()> {
         };
         append_jsonl(&http_path, &http_row)?;
     }
+    token_ids.sort();
+    token_ids.dedup();
+    ensure!(
+        !token_ids.is_empty() || targets.subscribe_new_markets,
+        "raw capture could not resolve any Polymarket token IDs from event slugs"
+    );
 
     let (message_handler, mut raw_rx) = channel_message_handler();
     let ws_client = WebSocketClient::connect(
@@ -163,16 +140,10 @@ async fn main() -> Result<()> {
         None,
     )
     .await?;
-    let subscribe_payload =
-        market_subscribe_payload(targets.token_ids.clone(), targets.subscribe_new_markets)?;
+    let subscribe_payload = market_subscribe_payload(token_ids, targets.subscribe_new_markets)?;
     ws_client.send_text(subscribe_payload.clone(), None).await?;
 
     let ws_path = ws_output_path(&targets.output_dir, &ingest_date);
-    let single_instrument_id = if targets.instrument_ids.len() == 1 {
-        Some(targets.instrument_ids[0].clone())
-    } else {
-        None
-    };
 
     while let Some(message) = raw_rx.recv().await {
         if let Ok(text) = message.to_text() {
@@ -185,7 +156,7 @@ async fn main() -> Result<()> {
                 stream_type: "market".to_string(),
                 channel: "market".to_string(),
                 market_id: None,
-                instrument_id: single_instrument_id.clone(),
+                instrument_id: None,
                 received_ts: now_unix_nanos(),
                 exchange_ts: None,
                 payload_json: text.to_string(),

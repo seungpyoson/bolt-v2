@@ -205,8 +205,6 @@ fn validate_run_config(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
             "node.timeout_disconnection_secs",
             cfg.node.timeout_disconnection_secs,
         ),
-        ("node.delay_post_stop_secs", cfg.node.delay_post_stop_secs),
-        ("node.delay_shutdown_secs", cfg.node.delay_shutdown_secs),
     ] {
         if value == 0 {
             return Err(format!("Config field {field} must be greater than 0").into());

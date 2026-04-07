@@ -335,7 +335,9 @@ impl LiveLocalConfig {
     }
 }
 
-pub fn render_runtime_config(input: &LiveLocalConfig) -> Result<String, Box<dyn std::error::Error>> {
+pub fn render_runtime_config(
+    input: &LiveLocalConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
     let rendered = RenderedConfig {
         node: RenderedNodeConfig {
             name: input.node.name.clone(),

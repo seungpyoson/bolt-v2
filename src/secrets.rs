@@ -84,7 +84,7 @@ fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
 
 fn pad_base64(mut secret: String) -> String {
     let pad_len = (4 - secret.len() % 4) % 4;
-    secret.extend(std::iter::repeat('=').take(pad_len));
+    secret.extend(std::iter::repeat_n('=', pad_len));
     secret
 }
 

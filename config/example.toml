@@ -1,0 +1,46 @@
+[node]
+name = ""
+trader_id = ""
+account_id = ""
+client_id = ""
+environment = ""        # "Live" or "Sandbox"
+load_state = false
+save_state = false
+
+[logging]
+stdout_level = ""       # "Trace", "Debug", "Info", "Warn", "Error", "Off"
+file_level = ""         # "Off" to disable file logging
+
+[timeouts]
+connection_secs = 60
+reconciliation_secs = 30
+portfolio_secs = 10
+disconnection_secs = 10
+post_stop_delay_secs = 10
+shutdown_delay_secs = 5
+
+[venue]
+event_slug = ""
+instrument_id = ""
+reconciliation_enabled = true
+reconciliation_lookback_mins = 120
+
+[strategy]
+strategy_id = ""
+log_data = false
+order_qty = ""
+tob_offset_ticks = 5
+use_post_only = true
+
+# Everything wallet-related in one place. Change wallets = change this section.
+[wallet]
+signature_type_id = 0   # 0=EOA, 1=PolyProxy, 2=PolyGnosisSafe
+funder = ""             # Gnosis Safe proxy address (public, on-chain)
+
+# SSM parameter paths — resolved via `aws ssm get-parameter --with-decryption` at startup.
+[wallet.secrets]
+region = "eu-west-1"
+pk = "/bolt/polymarket/private-key"
+api_key = "/bolt/polymarket/api-key"
+api_secret = "/bolt/polymarket/api-secret"
+passphrase = "/bolt/polymarket/api-passphrase"

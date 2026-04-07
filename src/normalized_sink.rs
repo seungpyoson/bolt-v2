@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fs,
     path::PathBuf,
     sync::{
@@ -66,10 +67,10 @@ impl SinkFailureState {
         let (notifier, receiver) = oneshot::channel();
         (
             Self {
-            unhealthy: Arc::new(AtomicBool::new(false)),
-            first_error: Arc::new(Mutex::new(None)),
-            notifier: Arc::new(Mutex::new(Some(notifier))),
-            stop_handle,
+                unhealthy: Arc::new(AtomicBool::new(false)),
+                first_error: Arc::new(Mutex::new(None)),
+                notifier: Arc::new(Mutex::new(Some(notifier))),
+                stop_handle,
             },
             receiver,
         )
@@ -273,56 +274,45 @@ async fn run_sink_worker(
     failure_state: SinkFailureState,
 ) -> Result<()> {
     let mut primary_error: Option<anyhow::Error> = None;
+    let mut startup_buffer = VecDeque::new();
+    let mut writes_enabled = failure_state.stop_handle.is_running();
 
-    while let Some(message) = receiver.recv().await {
-        let write_result: Result<()> = match message {
-            SinkMessage::Quote(quote) => writer
-                .write(quote)
-                .await
-                .map_err(|e| anyhow!("QuoteTick write failed: {e}")),
-            SinkMessage::Trade(trade) => writer
-                .write(trade)
-                .await
-                .map_err(|e| anyhow!("TradeTick write failed: {e}")),
-            SinkMessage::Bar(bar) => writer
-                .write(bar)
-                .await
-                .map_err(|e| anyhow!("Bar write failed: {e}")),
-            SinkMessage::Deltas(deltas) => {
-                let mut deltas_result = Ok(());
-                for delta in deltas.deltas {
-                    if let Err(error) = writer.write(delta).await {
-                        deltas_result = Err(anyhow!("OrderBookDelta write failed: {error}"));
-                        break;
-                    }
-                }
-                deltas_result
+    loop {
+        let message = if writes_enabled {
+            if let Some(message) = startup_buffer.pop_front() {
+                Some(message)
+            } else {
+                receiver.recv().await
             }
-            SinkMessage::Depth10(depth) => writer
-                .write(depth)
-                .await
-                .map_err(|e| anyhow!("OrderBookDepth10 write failed: {e}")),
-            SinkMessage::MarkPrice(price) => writer
-                .write(price)
-                .await
-                .map_err(|e| anyhow!("MarkPriceUpdate write failed: {e}")),
-            SinkMessage::IndexPrice(price) => writer
-                .write(price)
-                .await
-                .map_err(|e| anyhow!("IndexPriceUpdate write failed: {e}")),
-            SinkMessage::Instrument(instrument) => writer
-                .write_instrument(instrument)
-                .await
-                .map_err(|e| anyhow!("InstrumentAny write failed: {e}")),
-            SinkMessage::InstrumentClose(close) => writer
-                .write(close)
-                .await
-                .map_err(|e| anyhow!("InstrumentClose write failed: {e}")),
-            SinkMessage::InstrumentStatus(status) => append_jsonl(&status_path, &status)
-                .map_err(|e| anyhow!("InstrumentStatus JSONL write failed: {e}")),
+        } else {
+            tokio::select! {
+                maybe_message = receiver.recv() => maybe_message,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
+                    if failure_state.stop_handle.is_running() {
+                        writes_enabled = true;
+                    }
+                    continue;
+                }
+            }
         };
 
-        if let Err(error) = write_result {
+        let Some(message) = message else {
+            writes_enabled = true;
+            if startup_buffer.is_empty() {
+                break;
+            }
+            continue;
+        };
+
+        if !writes_enabled {
+            startup_buffer.push_back(message);
+            if failure_state.stop_handle.is_running() {
+                writes_enabled = true;
+            }
+            continue;
+        }
+
+        if let Err(error) = write_sink_message(&mut writer, &status_path, message).await {
             failure_state.record_failure(error.to_string());
             primary_error = Some(error);
             break;
@@ -343,6 +333,58 @@ async fn run_sink_worker(
         Err(error)
     } else {
         Ok(())
+    }
+}
+
+async fn write_sink_message(
+    writer: &mut FeatherWriter,
+    status_path: &PathBuf,
+    message: SinkMessage,
+) -> Result<()> {
+    match message {
+        SinkMessage::Quote(quote) => writer
+            .write(quote)
+            .await
+            .map_err(|e| anyhow!("QuoteTick write failed: {e}")),
+        SinkMessage::Trade(trade) => writer
+            .write(trade)
+            .await
+            .map_err(|e| anyhow!("TradeTick write failed: {e}")),
+        SinkMessage::Bar(bar) => writer
+            .write(bar)
+            .await
+            .map_err(|e| anyhow!("Bar write failed: {e}")),
+        SinkMessage::Deltas(deltas) => {
+            for delta in deltas.deltas {
+                writer
+                    .write(delta)
+                    .await
+                    .map_err(|e| anyhow!("OrderBookDelta write failed: {e}"))?;
+            }
+            Ok(())
+        }
+        SinkMessage::Depth10(depth) => writer
+            .write(depth)
+            .await
+            .map_err(|e| anyhow!("OrderBookDepth10 write failed: {e}")),
+        SinkMessage::MarkPrice(price) => writer
+            .write(price)
+            .await
+            .map_err(|e| anyhow!("MarkPriceUpdate write failed: {e}")),
+        SinkMessage::IndexPrice(price) => writer
+            .write(price)
+            .await
+            .map_err(|e| anyhow!("IndexPriceUpdate write failed: {e}")),
+        SinkMessage::Instrument(instrument) => writer
+            .write_instrument(instrument)
+            .await
+            .map_err(|e| anyhow!("InstrumentAny write failed: {e}")),
+        SinkMessage::InstrumentClose(close) => writer
+            .write(close)
+            .await
+            .map_err(|e| anyhow!("InstrumentClose write failed: {e}")),
+        SinkMessage::InstrumentStatus(status) => append_jsonl(status_path, &status)
+            .map_err(|e| anyhow!("InstrumentStatus JSONL write failed: {e}")),
     }
 }
 
@@ -426,7 +468,12 @@ pub fn wire_normalized_sinks(
     let bars_sender = sender.clone();
     let bars_failure_state = failure_state.clone();
     let bars = TypedHandler::from(move |bar: &Bar| {
-        send_sink_message(&bars_sender, SinkMessage::Bar(*bar), "Bar", &bars_failure_state);
+        send_sink_message(
+            &bars_sender,
+            SinkMessage::Bar(*bar),
+            "Bar",
+            &bars_failure_state,
+        );
     });
     subscribe_bars(bars_pattern(), bars.clone(), None);
 
@@ -505,11 +552,7 @@ pub fn wire_normalized_sinks(
                 );
             }
         });
-    subscribe_instrument_close(
-        instrument_closes_pattern(),
-        instrument_closes.clone(),
-        None,
-    );
+    subscribe_instrument_close(instrument_closes_pattern(), instrument_closes.clone(), None);
 
     let status_sender = sender.clone();
     let status_failure_state = failure_state.clone();
@@ -561,7 +604,7 @@ mod tests {
     use super::*;
     use nautilus_model::{
         data::QuoteTick,
-        identifiers::{InstrumentId, TraderId},
+        identifiers::InstrumentId,
         types::{Price, Quantity},
     };
 

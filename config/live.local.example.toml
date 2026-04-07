@@ -40,3 +40,7 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+
+[streaming]
+catalog_path = ""
+flush_interval_ms = 1000

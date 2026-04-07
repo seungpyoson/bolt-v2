@@ -76,6 +76,7 @@ pub fn check_polymarket_secret_config(secrets: &ExecClientSecrets) -> SecretConf
     let mut missing = Vec::new();
 
     for (field, configured) in [
+        ("region", !secrets.region.trim().is_empty()),
         ("pk", is_present(secrets.pk.as_ref())),
         ("api_key", is_present(secrets.api_key.as_ref())),
         ("api_secret", is_present(secrets.api_secret.as_ref())),

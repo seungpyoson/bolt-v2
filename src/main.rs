@@ -2,12 +2,7 @@ use clap::Parser;
 use log::LevelFilter;
 use std::path::PathBuf;
 
-use bolt_v2::{
-    clients::polymarket,
-    config::Config,
-    secrets,
-    strategies::exec_tester,
-};
+use bolt_v2::{clients::polymarket, config::Config, secrets, strategies::exec_tester};
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;

@@ -163,10 +163,18 @@ setup:
         cargo install cargo-zigbuild --version {{zigbuild_version}} --locked
     fi
 
-    if command -v zig >/dev/null 2>&1 && [ "$(zig version)" = "{{zig_version}}" ]; then
-        echo "Zig {{zig_version}} already installed"
-    else
-        echo "Zig {{zig_version}} required; install it locally with 'brew install zig'"
+    if ! command -v zig >/dev/null 2>&1; then
+        echo "ERROR: Zig {{zig_version}} is required for just build"
+        echo "Install it locally with 'brew install zig'"
+        exit 1
     fi
+
+    if [ "$(zig version)" != "{{zig_version}}" ]; then
+        echo "ERROR: Zig {{zig_version}} is required for just build"
+        echo "Found Zig $(zig version)"
+        exit 1
+    fi
+
+    echo "Zig {{zig_version}} already installed"
 
     echo "Setup complete."

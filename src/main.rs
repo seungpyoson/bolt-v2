@@ -2,7 +2,12 @@ use clap::Parser;
 use log::LevelFilter;
 use std::path::PathBuf;
 
-use bolt_v2::{clients::polymarket, config::Config, secrets, strategies::exec_tester};
+use bolt_v2::{
+    clients::polymarket,
+    config::Config,
+    secrets,
+    strategies::exec_tester,
+};
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;
@@ -45,7 +50,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Secrets { command } => run_secrets_command(command),
         Command::Run { config } => {
             let cfg = Config::load(&config)?;
-            validate_run_config(&cfg)?;
 
             let node = cfg.node;
             let logging = cfg.logging;
@@ -122,7 +126,6 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
     match command {
         SecretsCommand::Check { config } => {
             let cfg = Config::load(&config)?;
-            validate_exec_clients_present(&cfg)?;
             let mut has_errors = false;
 
             for client in &cfg.exec_clients {
@@ -156,7 +159,6 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
         }
         SecretsCommand::Resolve { config } => {
             let cfg = Config::load(&config)?;
-            validate_exec_clients_present(&cfg)?;
 
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {
@@ -171,47 +173,6 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             Ok(())
         }
     }
-}
-
-fn validate_exec_clients_present(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    if cfg.exec_clients.is_empty() {
-        Err("Missing required config section: [[exec_clients]]".into())
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_run_config(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    validate_exec_clients_present(cfg)?;
-
-    if cfg.strategies.is_empty() {
-        return Err("Missing required config section: [[strategies]]".into());
-    }
-
-    for (field, value) in [
-        (
-            "node.timeout_connection_secs",
-            cfg.node.timeout_connection_secs,
-        ),
-        (
-            "node.timeout_reconciliation_secs",
-            cfg.node.timeout_reconciliation_secs,
-        ),
-        (
-            "node.timeout_portfolio_secs",
-            cfg.node.timeout_portfolio_secs,
-        ),
-        (
-            "node.timeout_disconnection_secs",
-            cfg.node.timeout_disconnection_secs,
-        ),
-    ] {
-        if value == 0 {
-            return Err(format!("Config field {field} must be greater than 0").into());
-        }
-    }
-
-    Ok(())
 }
 
 fn parse_environment(s: &str) -> Result<Environment, Box<dyn std::error::Error>> {

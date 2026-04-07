@@ -68,11 +68,7 @@ fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
             "text",
         ])
         .output()
-        .map_err(|e| {
-            SecretError(format!(
-                "Failed to run aws ssm get-parameter for {ssm_path}: {e}"
-            ))
-        })?;
+        .map_err(|e| SecretError(format!("Failed to run aws ssm get-parameter for {ssm_path}: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

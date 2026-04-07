@@ -1,5 +1,7 @@
 use bolt_v2::{
-    clients::polymarket, config::Config, secrets::ResolvedPolymarketSecrets,
+    clients::polymarket,
+    config::Config,
+    secrets::ResolvedPolymarketSecrets,
     strategies::exec_tester,
 };
 use log::LevelFilter;
@@ -31,10 +33,8 @@ fn seam_test_uses_non_secret_placeholders() {
 
 #[test]
 fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymarket_seam() {
-    let cfg = Config::load(std::path::Path::new(
-        "config/examples/polymarket-exec-tester.toml",
-    ))
-    .expect("example config should load");
+    let cfg = Config::load(std::path::Path::new("config/examples/polymarket-exec-tester.toml"))
+        .expect("example config should load");
 
     let trader_id = TraderId::from(cfg.node.trader_id.as_str());
     let environment = Environment::Live;
@@ -64,17 +64,9 @@ fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymar
         .with_timeout_disconnection_secs(cfg.node.timeout_disconnection_secs)
         .with_delay_post_stop_secs(cfg.node.delay_post_stop_secs)
         .with_delay_shutdown_secs(cfg.node.delay_shutdown_secs)
-        .add_data_client(
-            Some(cfg.data_clients[0].name.clone()),
-            data_factory,
-            data_config,
-        )
+        .add_data_client(Some(cfg.data_clients[0].name.clone()), data_factory, data_config)
         .expect("data client should register")
-        .add_exec_client(
-            Some(cfg.exec_clients[0].name.clone()),
-            exec_factory,
-            exec_config,
-        )
+        .add_exec_client(Some(cfg.exec_clients[0].name.clone()), exec_factory, exec_config)
         .expect("exec client should register")
         .build()
         .expect("node should build");

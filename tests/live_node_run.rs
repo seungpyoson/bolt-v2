@@ -16,21 +16,19 @@ fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
 
-    let strategy = exec_tester::build_exec_tester(
-        &toml::toml! {
-            strategy_id = "EXEC_TESTER-001"
-            instrument_id = "TOKEN.TESTVENUE"
-            client_id = "TEST"
-            order_qty = "5"
-            log_data = false
-            tob_offset_ticks = 5
-            use_post_only = true
-            enable_limit_sells = false
-            enable_stop_buys = false
-            enable_stop_sells = false
-        }
-        .into(),
-    )
+    let strategy = exec_tester::build_exec_tester(&toml::toml! {
+        strategy_id = "EXEC_TESTER-001"
+        instrument_id = "TOKEN.TESTVENUE"
+        client_id = "TEST"
+        order_qty = "5"
+        log_data = false
+        tob_offset_ticks = 5
+        use_post_only = true
+        enable_limit_sells = false
+        enable_stop_buys = false
+        enable_stop_sells = false
+    }
+    .into())
     .expect("strategy should translate");
 
     let mut node = LiveNode::builder(trader_id, Environment::Live)

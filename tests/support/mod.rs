@@ -102,9 +102,7 @@ impl ExecutionClientFactory for MockExecutionClientFactory {
         let cfg = config
             .as_any()
             .downcast_ref::<MockExecClientConfig>()
-            .ok_or_else(|| {
-                anyhow::anyhow!("MockExecutionClientFactory received wrong config type")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("MockExecutionClientFactory received wrong config type"))?;
 
         Ok(Box::new(MockExecutionClient::new(
             ClientId::from(cfg.client_id.as_str()),

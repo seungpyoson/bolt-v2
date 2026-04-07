@@ -76,3 +76,25 @@ fn library_exports_secrets_module() {
             .contains("ResolvedPolymarketSecrets")
     );
 }
+
+#[test]
+fn tracked_live_local_example_renders_to_runtime_schema_via_library_entrypoint() {
+    let rendered = bolt_v2::render_live_config_from_path(
+        std::path::Path::new("config/live.local.example.toml"),
+        std::path::Path::new("config/live.toml"),
+    )
+    .expect("tracked operator template should render");
+
+    let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+
+    assert!(rendered.contains("# Source of truth: config/live.local.example.toml"));
+    assert_eq!(cfg.data_clients.len(), 1);
+    assert_eq!(cfg.exec_clients.len(), 1);
+    assert_eq!(cfg.strategies.len(), 1);
+    assert_eq!(
+        cfg.exec_clients[0].config["account_id"]
+            .as_str()
+            .expect("account id should be present"),
+        "POLYMARKET-001"
+    );
+}

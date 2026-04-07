@@ -3,12 +3,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use bolt_v2::render_live_config_from_path;
 use clap::Parser;
-
-#[path = "../live_config_impl.rs"]
-mod live_config;
-
-use live_config::{LiveLocalConfig, render_runtime_config};
 
 #[derive(Parser)]
 #[command(name = "render_live_config")]
@@ -21,8 +17,7 @@ struct Cli {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let input = LiveLocalConfig::load(&cli.input)?;
-    let rendered = render_runtime_config(&input, &cli.input, &cli.output)?;
+    let rendered = render_live_config_from_path(&cli.input, &cli.output)?;
 
     let existed = cli.output.exists();
     let existing = std::fs::read_to_string(&cli.output).ok();
@@ -50,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn write_output(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
 

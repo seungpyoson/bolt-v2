@@ -38,7 +38,7 @@ let handler = FeatherWriter::subscribe_to_message_bus(Rc::new(RefCell::new(write
 ### Integration point
 After `node = LiveNode::builder(...).build()`, before `node.run()`. The writer needs the kernel's clock, which is accessible via `kernel.clock()`. But LiveNode may not expose the kernel directly — need to check `LiveNode` struct fields.
 
-### Config already exists in live.toml
+### Streaming config does not survive generation yet
 ```toml
 [streaming]
 enabled = true
@@ -47,9 +47,10 @@ flush_interval_ms = 1000
 replace_existing = false
 ```
 
-This section is currently ignored by serde (unknown section). Need to either:
-1. Add `StreamingConfig` to our `Config` struct and parse it
-2. Or hardcode the values (violates NO HARDCODES rule)
+This section is not part of the current generated runtime shape. To make streaming work end-to-end, the next change must update all three layers together:
+1. operator input schema (`config/live.local.toml` / `config/live.local.example.toml`)
+2. generator schema (`LiveLocalConfig` and render path)
+3. runtime schema (`Config`)
 
 ## Changes Required
 

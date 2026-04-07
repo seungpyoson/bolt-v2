@@ -21,7 +21,7 @@ Current config flow on `main`:
 ### Code Changes
 1. **Config alignment** — `src/config.rs` updated: `signature_type_id: u8` (was `signature_type: String`), `LoggingConfig` stripped of unused fields, `StrategyConfig` fields defaulted with `#[serde(default)]`.
 2. **Panic removal** — All `panic!` calls on config errors converted to `Result` returns.
-3. **Secrets consolidation** — Added `bolt-v2 secrets` CLI subcommand that resolves secrets from the TOML and outputs `KEY=VALUE` for `--env-file`. Single source of truth: TOML `[secrets]` section with `source = "op"` and op:// references. `secrets.env` deleted. `run.sh` has zero hardcoded op:// paths.
+3. **Secrets consolidation** — Added `bolt-v2 secrets` CLI subcommands for `check` and `resolve`. Single source of truth is the generated runtime config derived from `config/live.local.toml`; no 1Password/env-file path remains in the current operator flow.
 4. **DRY fix** — Base64 padding logic extracted to `pad_base64()`. Secret resolution unified through `SECRET_FIELDS` constant and `resolve_field()`.
 5. **Partial env check fix** — `inject()` now checks all 5 env vars before skipping, not just `POLYMARKET_PK`.
 6. **Dead code removal** — `main.py`, `strategy.py`, `requirements.txt`, `test_latency.py`, `.env.example`, `.venv/`, `__pycache__/` all removed.
@@ -70,7 +70,7 @@ bolt-v2/
 - `signature_type_id` is `u8`: 0=EOA, 1=PolyProxy, 2=PolyGnosisSafe
 - API secret needs base64 padding (handled in `pad_base64()`)
 - serde/toml silently ignores unknown TOML sections (streaming, portfolio, cache, msgbus pass through without dead structs)
-- Secret sources: `"op"` (1Password CLI), `"env"` (environment variables). SSM not yet implemented.
+- Secret source is SSM-only on the current path. `secrets check` validates required config fields; `secrets resolve` performs actual resolution.
 
 ## Task 1: Replace All Secret Sources with SSM Only
 
@@ -83,18 +83,13 @@ Three secret sources = three paths to maintain. SSM works everywhere: EC2 reads 
 ### Changes Required
 
 **`src/config.rs`:**
-- Remove `source` field from `SecretsConfig` — it's always SSM
-- `resolve_secret()` becomes SSM-only: calls `aws ssm get-parameter --name <field> --with-decryption --query 'Parameter.Value' --output text`
-- Remove the `"op"` branch (1Password CLI)
-- Remove the `"env"` branch (environment variables)
-- Remove the `inject()` method's "all env vars already set" shortcut — no longer needed
-- `inject()` resolves from SSM and sets env vars for NT
-- `print_env()` resolves from SSM and prints KEY=VALUE (for Docker `--env-file`)
+- Secret resolution is SSM-only: `aws ssm get-parameter --name <field> --with-decryption --query 'Parameter.Value' --output text`
+- The old `"op"` and `"env"` branches are gone on the current path
+- Secret completeness and actual resolution are now split into explicit `check` and `resolve` flows
 
 **`src/main.rs`:**
-- Remove the `secrets` subcommand — no longer needed if we're not piping secrets to Docker
-- OR keep it as a diagnostic tool (resolve from SSM, print to verify)
-- Decision: keep it. Useful for verifying SSM connectivity.
+- `secrets check` validates required secret configuration fields
+- `secrets resolve` performs actual secret resolution and is the diagnostic path for SSM connectivity
 
 **`config/live.local.example.toml`:**
 - Tracked template for the operator-owned local input file `config/live.local.toml`
@@ -134,7 +129,8 @@ SSM prefix from bolt v1 configs: `/bolt/polymarket`
 Note: bolt v1 has `rpc-url` but bolt v2 doesn't use it (NT handles RPC internally). Bolt v1 has `private-key-b64` but bolt v2's field is `polymarket_pk` — verify these map correctly. NT expects `POLYMARKET_PK` env var with the raw private key, not base64-encoded.
 
 ### Verification
-- `just live-check` regenerates `config/live.toml` and verifies the generated runtime config resolves secrets correctly
+- `just live-check` regenerates `config/live.toml` and verifies the generated runtime config has complete secret configuration
+- `just live-resolve` regenerates `config/live.toml` and performs actual secret resolution
 - `just live` regenerates `config/live.toml` and starts the generated runtime config
 - Test locally with AWS CLI configured
 - Test on EC2 with instance profile
@@ -165,14 +161,15 @@ Snapshot the current state of `/opt/bolt/` on the `bolt-polymarket` instance (eu
 Cross-compile bolt v2 for aarch64 Linux, upload to the strategy instance, configure, and run.
 
 ### Steps
-1. Cross-compile: `cross build --release --target aarch64-unknown-linux-gnu` (requires `cross` tool + Docker)
+1. Cross-compile: `cargo zigbuild --release --target aarch64-unknown-linux-gnu`
 2. Upload binary to instance: via SSM/S3
-3. Create EC2 config: `config/ec2.toml` with `source = "ssm"` and SSM parameter paths
-4. Upload config to `/opt/bolt/config/bolt-v2.toml`
-5. Create systemd unit or reuse `bolt@bolt-v2.service` template
-6. Create env file at `/opt/bolt/.env.bolt-v2` with `BOLT_CONFIG=/opt/bolt/config/bolt-v2.toml`
-7. Start: `sudo systemctl start bolt@bolt-v2.service`
-8. Verify: `journalctl -u bolt@bolt-v2 -f` — should show NT banner, Polymarket connection, instrument loading, order lifecycle
+3. Prepare local operator input config at `config/live.local.toml`
+4. Generate runtime config locally: `cargo run --bin render_live_config -- --input config/live.local.toml --output config/live.toml`
+5. Upload generated config to `/opt/bolt-v2/config/live.toml`
+6. Create systemd unit or reuse `bolt@bolt-v2.service` template
+7. Create env file at `/opt/bolt/.env.bolt-v2` with `BOLT_CONFIG=/opt/bolt-v2/config/live.toml`
+8. Start: `sudo systemctl start bolt@bolt-v2.service`
+9. Verify: `journalctl -u bolt@bolt-v2 -f` — should show NT banner, Polymarket connection, instrument loading, order lifecycle
 
 ### EC2 Architecture
 - Target: `aarch64-unknown-linux-gnu` (ARM64, Ubuntu 22.04)

@@ -78,6 +78,10 @@ fn default_streaming_flush_interval_ms() -> u64 {
     1_000
 }
 
+fn default_raw_capture_output_dir() -> String {
+    "var/raw".to_string()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LiveLocalConfig {
     pub node: LiveNodeInput,
@@ -89,6 +93,8 @@ pub struct LiveLocalConfig {
     #[serde(default)]
     pub strategy: LiveStrategyInput,
     pub secrets: LiveSecretsInput,
+    #[serde(default)]
+    pub raw_capture: LiveRawCaptureInput,
     #[serde(default)]
     pub streaming: LiveStreamingInput,
 }
@@ -215,6 +221,20 @@ pub struct LiveSecretsInput {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct LiveRawCaptureInput {
+    #[serde(default = "default_raw_capture_output_dir")]
+    pub output_dir: String,
+}
+
+impl Default for LiveRawCaptureInput {
+    fn default() -> Self {
+        Self {
+            output_dir: default_raw_capture_output_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct LiveStreamingInput {
     #[serde(default)]
     pub catalog_path: String,
@@ -235,6 +255,7 @@ impl Default for LiveStreamingInput {
 struct RenderedConfig {
     node: RenderedNodeConfig,
     logging: RenderedLoggingConfig,
+    raw_capture: RenderedRawCaptureConfig,
     data_clients: Vec<RenderedDataClientEntry>,
     exec_clients: Vec<RenderedExecClientEntry>,
     strategies: Vec<RenderedStrategyEntry>,
@@ -261,6 +282,11 @@ struct RenderedNodeConfig {
 struct RenderedLoggingConfig {
     stdout_level: String,
     file_level: String,
+}
+
+#[derive(Serialize)]
+struct RenderedRawCaptureConfig {
+    output_dir: String,
 }
 
 #[derive(Serialize)]
@@ -363,6 +389,9 @@ pub fn render_runtime_config(
         logging: RenderedLoggingConfig {
             stdout_level: input.logging.stdout_level.clone(),
             file_level: input.logging.file_level.clone(),
+        },
+        raw_capture: RenderedRawCaptureConfig {
+            output_dir: input.raw_capture.output_dir.clone(),
         },
         data_clients: vec![RenderedDataClientEntry {
             name: input.polymarket.client_name.clone(),

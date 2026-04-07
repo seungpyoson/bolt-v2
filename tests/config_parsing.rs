@@ -58,6 +58,9 @@ fn parses_runtime_config_with_optional_streaming_section() {
         tob_offset_ticks = 1
         use_post_only = true
 
+        [raw_capture]
+        output_dir = "var/raw"
+
         [streaming]
         catalog_path = "var/catalog"
         flush_interval_ms = 1000
@@ -66,6 +69,7 @@ fn parses_runtime_config_with_optional_streaming_section() {
     let cfg: Config = toml::from_str(toml).unwrap();
 
     assert_eq!(cfg.node.timeout_connection_secs, 60);
+    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 1000);
 }
@@ -89,6 +93,9 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
         api_secret = "/secret"
         passphrase = "/pass"
 
+        [raw_capture]
+        output_dir = "var/raw"
+
         [streaming]
         catalog_path = "var/catalog"
         flush_interval_ms = 250
@@ -104,7 +111,9 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
     let cfg: Config = toml::from_str(&rendered).unwrap();
 
     assert!(rendered.contains("[streaming]"));
+    assert!(rendered.contains("[raw_capture]"));
     assert_eq!(cfg.node.timeout_connection_secs, 60);
+    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 250);
 }

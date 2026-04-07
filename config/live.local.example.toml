@@ -41,6 +41,9 @@ api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
 
+[raw_capture]
+output_dir = "var/raw"
+
 [streaming]
 catalog_path = ""
 flush_interval_ms = 1000

@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn failure_state_latches_first_error_and_sets_stop_flag() {
         let handle = LiveNodeHandle::new();
-        let state = SinkFailureState::new(handle.clone());
+        let (state, _receiver) = SinkFailureState::new(handle.clone());
 
         state.record_failure("first failure");
         state.record_failure("second failure");

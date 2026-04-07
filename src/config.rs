@@ -155,67 +155,6 @@ pub struct WalletSecretsConfig {
     pub passphrase: String,
 }
 
-fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("aws")
-        .args([
-            "ssm",
-            "get-parameter",
-            "--region",
-            region,
-            "--name",
-            ssm_path,
-            "--with-decryption",
-            "--query",
-            "Parameter.Value",
-            "--output",
-            "text",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run `aws ssm get-parameter --name {ssm_path}`: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("aws ssm get-parameter --name {ssm_path} failed: {stderr}").into());
-    }
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
-}
-
-fn pad_base64(mut secret: String) -> String {
-    let pad_len = (4 - secret.len() % 4) % 4;
-    secret.extend(std::iter::repeat_n('=', pad_len));
-    secret
-}
-
-impl WalletConfig {
-    fn resolve_env_vars(&self) -> Result<Vec<(&str, String)>, Box<dyn std::error::Error>> {
-        let r = &self.secrets.region;
-        Ok(vec![
-            ("POLYMARKET_PK", resolve_secret(r, &self.secrets.pk)?),
-            (
-                "POLYMARKET_API_KEY",
-                resolve_secret(r, &self.secrets.api_key)?,
-            ),
-            (
-                "POLYMARKET_API_SECRET",
-                pad_base64(resolve_secret(r, &self.secrets.api_secret)?),
-            ),
-            (
-                "POLYMARKET_PASSPHRASE",
-                resolve_secret(r, &self.secrets.passphrase)?,
-            ),
-            ("POLYMARKET_FUNDER", self.funder.clone()),
-        ])
-    }
-
-    pub fn inject(&self) -> Result<(), Box<dyn std::error::Error>> {
-        for (env_name, value) in self.resolve_env_vars()? {
-            unsafe {
-                std::env::set_var(env_name, value);
-            }
-        }
-        Ok(())
-    }
-}
-
 impl Config {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(path)

@@ -57,7 +57,6 @@ jobs:
           )"
           gh issue create \
             --title "Dependency advisory found ($(date +%Y-%m-%d))" \
-            --body "$BODY" \
-            --label "security"
+            --body "$BODY"
         env:
           GH_TOKEN: ${{ github.token }}

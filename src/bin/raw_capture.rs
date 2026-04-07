@@ -36,6 +36,10 @@ fn http_output_path(base: &str, ingest_date: &str) -> PathBuf {
         .join("responses.jsonl")
 }
 
+fn current_ingest_date() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
 fn now_unix_nanos() -> u64 {
     chrono::Utc::now().timestamp_nanos_opt().unwrap() as u64
 }
@@ -44,7 +48,7 @@ fn now_unix_nanos() -> u64 {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load(&cli.config).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let ingest_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let ingest_date = current_ingest_date();
     let token_id = market_asset_id(&cfg.venue.instrument_id)?;
 
     let http_client = build_gamma_http_client(cfg.timeouts.connection_secs)?;
@@ -91,7 +95,6 @@ async fn main() -> anyhow::Result<()> {
         market_subscribe_payload(token_id.clone(), cfg.venue.subscribe_new_markets)?;
     ws_client.send_text(subscribe_payload.clone(), None).await?;
 
-    let ws_path = ws_output_path(&cfg.raw_capture.output_dir, &ingest_date);
     while let Some(message) = raw_rx.recv().await {
         if let Ok(text) = message.to_text() {
             if text == RECONNECTED {
@@ -99,6 +102,8 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
 
+            let ingest_date = current_ingest_date();
+            let ws_path = ws_output_path(&cfg.raw_capture.output_dir, &ingest_date);
             let row = RawWsMessage {
                 stream_type: "market".to_string(),
                 channel: "market".to_string(),

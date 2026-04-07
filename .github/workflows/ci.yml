@@ -33,6 +33,9 @@ jobs:
         run: |
           curl -sSf https://just.systems/install.sh | sudo bash -s -- --to /usr/local/bin --tag "$JUST_VERSION"
 
+      - name: Lint workflow contract
+        run: just ci-lint-workflow
+
       - name: Read shared values
         id: shared
         shell: bash
@@ -161,7 +164,8 @@ jobs:
       - name: Checksum
         run: |
           TARGET="${{ steps.shared.outputs.target }}"
-          sha256sum "target/$TARGET/release/bolt-v2" > "target/$TARGET/release/bolt-v2.sha256"
+          cd "target/$TARGET/release"
+          sha256sum bolt-v2 > bolt-v2.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

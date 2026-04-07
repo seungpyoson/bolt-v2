@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bolt_v2::live_config::{render_runtime_config, LiveLocalConfig};
+use bolt_v2::live_config::{LiveLocalConfig, render_runtime_config};
 use clap::Parser;
 
 #[derive(Parser)]

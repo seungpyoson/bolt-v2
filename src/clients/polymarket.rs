@@ -51,7 +51,10 @@ fn map_signature_type(value: u8) -> Result<SignatureType, Box<dyn std::error::Er
 pub fn build_data_client(
     raw: &Value,
 ) -> Result<
-    (Box<PolymarketDataClientFactory>, Box<PolymarketDataClientConfig>),
+    (
+        Box<PolymarketDataClientFactory>,
+        Box<PolymarketDataClientConfig>,
+    ),
     Box<dyn std::error::Error>,
 > {
     let input: PolymarketDataClientInput = raw.clone().try_into()?;
@@ -77,7 +80,10 @@ pub fn build_exec_client(
     trader_id: TraderId,
     secrets: ResolvedPolymarketSecrets,
 ) -> Result<
-    (Box<PolymarketExecutionClientFactory>, Box<PolymarketExecClientConfig>),
+    (
+        Box<PolymarketExecutionClientFactory>,
+        Box<PolymarketExecClientConfig>,
+    ),
     Box<dyn std::error::Error>,
 > {
     let input: PolymarketExecClientInput = raw.clone().try_into()?;

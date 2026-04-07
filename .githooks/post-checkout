@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Warns if a newly created worktree lives under a foreign Cargo workspace.
+# Read-only warning hook.
+set -euo pipefail
+
+prev_head="${1:-}"
+
+if [ "$prev_head" != "0000000000000000000000000000000000000000" ]; then
+    exit 0
+fi
+
+project_root="$(git rev-parse --show-toplevel 2>/dev/null || exit 0)"
+dir="$(dirname "$project_root")"
+
+while true; do
+    candidate="$dir/Cargo.toml"
+    if [ -f "$candidate" ] && grep -q '^\[workspace\]' "$candidate"; then
+        echo
+        echo "=========================================="
+        echo "WARNING: Foreign Cargo workspace detected!"
+        echo "=========================================="
+        echo "This worktree is under: $dir"
+        echo "Which has a Cargo.toml with [workspace]."
+        echo "Cargo will capture this project into that workspace."
+        echo
+        echo "Fix: remove this worktree and recreate with:"
+        echo "  just worktree <branch-name>"
+        echo "=========================================="
+        echo
+        exit 0
+    fi
+
+    if [ "$dir" = "/" ]; then
+        break
+    fi
+
+    parent="$(dirname "$dir")"
+    if [ "$parent" = "$dir" ]; then
+        break
+    fi
+    dir="$parent"
+done

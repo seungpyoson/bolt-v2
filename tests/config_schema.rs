@@ -1,5 +1,5 @@
 use bolt_v2::config::Config;
-use bolt_v2::live_config::{render_runtime_config, LiveLocalConfig};
+use bolt_v2::live_config::{LiveLocalConfig, render_runtime_config};
 
 #[test]
 fn library_exports_config_module() {

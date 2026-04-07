@@ -14,7 +14,7 @@ worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
 [private]
 check-workspace:
     #!/usr/bin/env bash
-    project_root="$(git rev-parse --show-toplevel)"
+    project_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s\n' '{{justfile_directory()}}')"
     dir="$(dirname "$project_root")"
 
     while true; do

@@ -1,4 +1,5 @@
 use bolt_v2::config::Config;
+use bolt_v2::raw_capture_transport::market_asset_id;
 use bolt_v2::live_config::{LiveLocalConfig, render_runtime_config};
 
 #[test]
@@ -80,10 +81,18 @@ fn library_exports_secrets_module() {
 
 #[test]
 fn rendered_live_config_uses_wrapper_schema_for_operator_lane() {
-    let input = LiveLocalConfig::load(std::path::Path::new("config/live.local.example.toml"))
+    let source_path = std::path::Path::new("config/live.local.example.toml");
+    let output_path = std::path::Path::new("config/live.toml");
+    let input = LiveLocalConfig::load(source_path)
         .expect("live local example should parse");
-    let rendered = render_runtime_config(&input).expect("rendered config should serialize");
+    let rendered =
+        render_runtime_config(&input, source_path, output_path).expect("rendered config should serialize");
     let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+
+    assert!(rendered.contains("# Source of truth: config/live.local.example.toml"));
+    assert!(rendered.contains(
+        "# Regenerate with: cargo run --bin render_live_config -- --input config/live.local.example.toml --output config/live.toml"
+    ));
 
     assert_eq!(cfg.node.timeout_connection_secs, 60);
     assert_eq!(cfg.node.timeout_reconciliation_secs, 60);
@@ -123,4 +132,8 @@ fn rendered_live_config_uses_wrapper_schema_for_operator_lane() {
     );
     assert_eq!(cfg.raw_capture.output_dir, "var/raw");
     assert_eq!(cfg.venue.event_slug, "btc-updown-5m");
+    assert_eq!(
+        market_asset_id(&cfg.venue.instrument_id).expect("raw capture instrument id should parse"),
+        "12345678901234567890"
+    );
 }

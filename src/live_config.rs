@@ -337,6 +337,8 @@ impl LiveLocalConfig {
 
 pub fn render_runtime_config(
     input: &LiveLocalConfig,
+    source_path: &Path,
+    output_path: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let rendered = RenderedConfig {
         node: RenderedNodeConfig {
@@ -442,6 +444,9 @@ pub fn render_runtime_config(
 
     let body = toml::to_string_pretty(&rendered)?;
     Ok(format!(
-        "# GENERATED FILE - DO NOT EDIT.\n# Source of truth: config/live.local.toml\n# Regenerate with: cargo run --bin render_live_config -- --input config/live.local.toml --output config/live.toml\n\n{body}"
+        "# GENERATED FILE - DO NOT EDIT.\n# Source of truth: {}\n# Regenerate with: cargo run --bin render_live_config -- --input {} --output {}\n\n{body}",
+        source_path.display(),
+        source_path.display(),
+        output_path.display()
     ))
 }

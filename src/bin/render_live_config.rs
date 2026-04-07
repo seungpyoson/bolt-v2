@@ -15,7 +15,7 @@ struct Cli {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let input = LiveLocalConfig::load(&cli.input)?;
-    let rendered = render_runtime_config(&input)?;
+    let rendered = render_runtime_config(&input, &cli.input, &cli.output)?;
 
     let existed = cli.output.exists();
     let existing = std::fs::read_to_string(&cli.output).ok();
@@ -47,26 +47,37 @@ fn write_output(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::E
         std::fs::create_dir_all(parent)?;
     }
 
+    let staged = staged_output_path(path)?;
+    std::fs::write(&staged, contents)?;
+    set_read_only(&staged)?;
+
+    #[cfg(windows)]
     if path.exists() {
         set_writable(path)?;
+        std::fs::remove_file(path)?;
     }
 
-    std::fs::write(path, contents)?;
-    set_read_only(path)?;
+    std::fs::rename(&staged, path)?;
     Ok(())
 }
 
-#[cfg(unix)]
-fn set_writable(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_mode(0o644);
-    std::fs::set_permissions(path, permissions)?;
-    Ok(())
+fn staged_output_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", path.display()))?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Output path has no file name: {}", path.display()))?;
+    Ok(parent.join(format!(
+        ".{}.tmp-{}-{}",
+        filename,
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    )))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn set_writable(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut permissions = std::fs::metadata(path)?.permissions();
     permissions.set_readonly(false);

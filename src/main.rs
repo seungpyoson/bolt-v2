@@ -3,14 +3,11 @@ use log::LevelFilter;
 use std::path::PathBuf;
 
 use bolt_v2::{
-<<<<<<< HEAD
     clients::polymarket,
     config::Config,
+    normalized_sink,
     secrets,
     strategies::exec_tester,
-=======
-    clients::polymarket, config::Config, normalized_sink, secrets, strategies::exec_tester,
->>>>>>> 39dd0f6 (feat: wire NT normalized sink)
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;

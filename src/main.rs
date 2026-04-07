@@ -3,10 +3,14 @@ use log::LevelFilter;
 use std::path::PathBuf;
 
 use bolt_v2::{
+<<<<<<< HEAD
     clients::polymarket,
     config::Config,
     secrets,
     strategies::exec_tester,
+=======
+    clients::polymarket, config::Config, normalized_sink, secrets, strategies::exec_tester,
+>>>>>>> 39dd0f6 (feat: wire NT normalized sink)
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
@@ -56,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let data_clients = cfg.data_clients;
             let exec_clients = cfg.exec_clients;
             let strategies = cfg.strategies;
+            let streaming = cfg.streaming;
 
             let trader_id = TraderId::from(node.trader_id.as_str());
             let environment = parse_environment(&node.environment)?;
@@ -102,6 +107,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let mut node = builder.build()?;
+            let _normalized_sink_guards = if streaming.catalog_path.trim().is_empty() {
+                None
+            } else {
+                Some(normalized_sink::wire_normalized_sinks(
+                    &node,
+                    &streaming.catalog_path,
+                    streaming.flush_interval_ms,
+                )?)
+            };
 
             for strategy in &strategies {
                 match strategy.kind.as_str() {

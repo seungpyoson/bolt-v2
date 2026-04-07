@@ -106,32 +106,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            let mut node = builder.build()?;
-            let _normalized_sink_guards = if streaming.catalog_path.trim().is_empty() {
-                None
-            } else {
-                Some(normalized_sink::wire_normalized_sinks(
-                    &node,
-                    &streaming.catalog_path,
-                    streaming.flush_interval_ms,
-                )?)
-            };
-
-            for strategy in &strategies {
-                match strategy.kind.as_str() {
-                    "exec_tester" => {
-                        node.add_strategy(exec_tester::build_exec_tester(&strategy.config)?)?;
-                    }
-                    other => return Err(format!("Unsupported strategy type: {other}").into()),
-                }
-            }
-
-            tokio::runtime::Builder::new_multi_thread()
+            let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .build()?
-                .block_on(node.run())?;
+                .build()?;
+            let local = tokio::task::LocalSet::new();
 
-            Ok(())
+            runtime.block_on(local.run_until(async move {
+                let mut node = builder.build()?;
+                let normalized_sink_guards = if streaming.catalog_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(normalized_sink::wire_normalized_sinks(
+                        &node,
+                        &streaming.catalog_path,
+                        streaming.flush_interval_ms,
+                    )?)
+                };
+
+                for strategy in &strategies {
+                    match strategy.kind.as_str() {
+                        "exec_tester" => {
+                            node.add_strategy(exec_tester::build_exec_tester(&strategy.config)?)?;
+                        }
+                        other => return Err(format!("Unsupported strategy type: {other}").into()),
+                    }
+                }
+
+                let run_result = node.run().await;
+
+                if let Some(guards) = normalized_sink_guards {
+                    guards.shutdown().await?;
+                }
+
+                run_result?;
+                Ok(())
+            }))
         }
     }
 }

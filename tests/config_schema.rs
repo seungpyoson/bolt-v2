@@ -1,0 +1,76 @@
+use bolt_v2::config::Config;
+
+#[test]
+fn library_exports_config_module() {
+    assert!(std::any::type_name::<Config>().contains("Config"));
+}
+
+#[test]
+fn parses_minimal_polymarket_wrapper_config() {
+    let raw = r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 60
+timeout_reconciliation_secs = 30
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 10
+delay_shutdown_secs = 5
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[data_clients.config]
+subscribe_new_markets = false
+update_instruments_interval_mins = 60
+ws_max_subscriptions = 200
+event_slugs = ["btc-updown-5m"]
+
+[[exec_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[exec_clients.config]
+account_id = "POLYMARKET-001"
+signature_type = 2
+funder = "0xabc"
+[exec_clients.secrets]
+region = "eu-west-1"
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[[strategies]]
+type = "exec_tester"
+[strategies.config]
+strategy_id = "EXEC_TESTER-001"
+instrument_id = "TOKEN.POLYMARKET"
+client_id = "POLYMARKET"
+order_qty = "5"
+log_data = false
+tob_offset_ticks = 5
+use_post_only = true
+enable_limit_sells = false
+enable_stop_buys = false
+enable_stop_sells = false
+"#;
+
+    let cfg: Config = toml::from_str(raw).expect("config should parse");
+    assert_eq!(cfg.data_clients.len(), 1);
+    assert_eq!(cfg.exec_clients.len(), 1);
+    assert_eq!(cfg.strategies.len(), 1);
+}
+
+#[test]
+fn library_exports_secrets_module() {
+    assert!(std::any::type_name::<bolt_v2::secrets::ResolvedPolymarketSecrets>()
+        .contains("ResolvedPolymarketSecrets"));
+}

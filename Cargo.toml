@@ -17,3 +17,10 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+anyhow = "1"
+async-trait = "0.1"
+nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-execution = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-system = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }

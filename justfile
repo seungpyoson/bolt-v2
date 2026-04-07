@@ -95,10 +95,9 @@ ci-lint-workflow:
 
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
-    install_pattern='(^|[^[:alnum:]_])cargo[[:space:]]+install([^[:alnum:]_]|$)'
 
     for f in "${files[@]}"; do
-        if grep -En "$pattern" "$f" | grep -Ev "$install_pattern"; then
+        if grep -En "$pattern" "$f"; then
             echo "ERROR: Raw cargo commands found in $f"
             failed=1
         fi

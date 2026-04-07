@@ -1,4 +1,4 @@
-set shell := ["zsh", "-e", "-u", "-o", "pipefail", "-c"]
+set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # bolt-v2 build commands — single source of truth.
 # CI and local both call these recipes. No raw cargo build/check commands in workflow YAML.

@@ -192,16 +192,43 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
 }
 
 #[test]
-fn fails_when_output_root_matches_catalog_path() {
-    let source_root = Path::new("var/catalog");
+fn fails_when_output_root_overlaps_catalog_path() {
+    let source_root = tempdir().unwrap();
+    let instance_dir = source_root.path().join("live").join("instance-123");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    let output_root = source_root.path().join("nested-output");
 
-    let result = convert_live_spool_to_parquet(source_root, "instance-123", source_root);
+    let result = convert_live_spool_to_parquet(source_root.path(), "instance-123", &output_root);
 
     let error = result.unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("output_root must differ from catalog_path"),
+            .contains("output_root must not overlap catalog_path"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn fails_when_output_root_is_not_empty() {
+    let source_root = tempdir().unwrap();
+    let instance_dir = source_root.path().join("live").join("instance-123");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+
+    let output_root = tempdir().unwrap();
+    std::fs::write(output_root.path().join("sentinel.txt"), "existing").unwrap();
+
+    let error = convert_live_spool_to_parquet(
+        source_root.path(),
+        "instance-123",
+        output_root.path(),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("output_root must be empty before conversion"),
         "{error:?}"
     );
 }

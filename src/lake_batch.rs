@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs,
     io::Cursor,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -37,10 +38,8 @@ pub fn convert_live_spool_to_parquet(
 ) -> Result<StreamToLakeReport> {
     ensure_local_path(catalog_path, "catalog_path")?;
     ensure_local_path(output_root, "output_root")?;
-    ensure!(
-        !paths_match(catalog_path, output_root),
-        "output_root must differ from catalog_path for reduced Task 4 staging"
-    );
+    ensure_disjoint_paths(catalog_path, output_root)?;
+    ensure_empty_output_root(output_root)?;
 
     let source_instance_dir = catalog_path.join("live").join(instance_id);
     ensure!(
@@ -70,6 +69,31 @@ fn ensure_local_path(path: &Path, label: &str) -> Result<()> {
             path.display()
         );
     }
+
+    Ok(())
+}
+
+fn ensure_disjoint_paths(catalog_path: &Path, output_root: &Path) -> Result<()> {
+    let catalog_path = absolute_path(catalog_path)?;
+    let output_root = absolute_path(output_root)?;
+
+    ensure!(
+        !paths_overlap(&catalog_path, &output_root),
+        "output_root must not overlap catalog_path"
+    );
+
+    Ok(())
+}
+
+fn ensure_empty_output_root(output_root: &Path) -> Result<()> {
+    if !output_root.exists() {
+        return Ok(());
+    }
+
+    ensure!(
+        fs::read_dir(output_root)?.next().is_none(),
+        "output_root must be empty before conversion"
+    );
 
     Ok(())
 }
@@ -197,13 +221,6 @@ fn copy_tree_if_exists(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn paths_match(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
-    }
-}
-
 fn type_name_for_data_class(data_cls: &str) -> &'static str {
     match data_cls {
         "quotes" => "QuoteTick",
@@ -215,4 +232,39 @@ fn type_name_for_data_class(data_cls: &str) -> &'static str {
         "instrument_closes" => "InstrumentClose",
         other => panic!("unsupported reduced Task 4 data class: {other}"),
     }
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        Ok(fs::canonicalize(path)?)
+    }
+    else {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+
+        let mut tail = Vec::<OsString>::new();
+        let mut cursor = absolute.as_path();
+        while !cursor.exists() {
+            let name = cursor
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("unable to normalize path {}", absolute.display()))?;
+            tail.push(name.to_os_string());
+            cursor = cursor.parent().ok_or_else(|| {
+                anyhow::anyhow!("unable to find existing ancestor for {}", absolute.display())
+            })?;
+        }
+
+        let mut resolved = fs::canonicalize(cursor)?;
+        for component in tail.iter().rev() {
+            resolved.push(component);
+        }
+        Ok(resolved)
+    }
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -240,6 +240,24 @@ fn instrument_statuses_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("data.status.*.*")
 }
 
+fn per_instrument_stream_types() -> HashSet<String> {
+    // Bars are intentionally excluded. FeatherWriter keys per-instrument writers by
+    // (type, instrument_id), but Bar schema metadata is also bar_type-specific. Grouping all
+    // bars for one instrument into a single per-instrument writer would mix multiple bar_type
+    // streams behind the first bar_type metadata seen. Bars therefore remain on the legacy flat
+    // spool contract until a bar-type-safe offline path is introduced.
+    HashSet::from([
+        "quotes".to_string(),
+        "trades".to_string(),
+        "order_book_deltas".to_string(),
+        "order_book_depths".to_string(),
+        "index_prices".to_string(),
+        "mark_prices".to_string(),
+        "instrument_closes".to_string(),
+        "instruments".to_string(),
+    ])
+}
+
 fn ensure_local_catalog_path(catalog_path: &str) -> Result<()> {
     if catalog_path.contains("://") {
         bail!(
@@ -429,7 +447,7 @@ pub fn wire_normalized_sinks(
         node.kernel().clock(),
         RotationConfig::NoRotation,
         None,
-        None,
+        Some(per_instrument_stream_types()),
         Some(flush_interval_ms),
     );
 

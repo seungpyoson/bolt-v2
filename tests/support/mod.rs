@@ -48,6 +48,10 @@ impl TempCaseDir {
     }
 }
 
+pub fn repo_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
 impl Drop for TempCaseDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);

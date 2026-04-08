@@ -2,11 +2,8 @@ mod support;
 
 use bolt_v2::config::Config;
 use bolt_v2::{MaterializationOutcome, materialize_live_config};
-use std::{
-    fs,
-    path::Path,
-};
-use support::TempCaseDir;
+use std::fs;
+use support::{TempCaseDir, repo_path};
 
 #[test]
 fn parses_minimal_polymarket_wrapper_config() {
@@ -76,16 +73,18 @@ enable_stop_sells = false
 fn tracked_template_materializes_to_parseable_runtime_config() {
     let tempdir = TempCaseDir::new("config-schema");
     let output_path = tempdir.path().join("live.toml");
+    let source_path = repo_path("config/live.local.example.toml");
 
-    let outcome = materialize_live_config(Path::new("config/live.local.example.toml"), &output_path)
+    let outcome = materialize_live_config(&source_path, &output_path)
         .expect("tracked template should materialize");
 
     assert_eq!(outcome, MaterializationOutcome::Created);
 
-    let rendered = fs::read_to_string(&output_path).expect("materialized config should be readable");
+    let rendered =
+        fs::read_to_string(&output_path).expect("materialized config should be readable");
     let cfg = Config::load(&output_path).expect("materialized config should parse");
 
-    assert!(rendered.contains("# Source of truth: config/live.local.example.toml"));
+    assert!(rendered.contains(&format!("# Source of truth: {}", source_path.display())));
     assert!(!rendered.contains("Regenerate with:"));
     assert_eq!(cfg.data_clients.len(), 1);
     assert_eq!(cfg.exec_clients.len(), 1);

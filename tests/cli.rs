@@ -1,12 +1,13 @@
 use std::{
     fs,
-    path::Path,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use bolt_v2::materialize_live_config;
+mod support;
+use support::repo_path;
 
 static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -316,7 +317,7 @@ fn write_generated_runtime_config() -> std::path::PathBuf {
         .expect("time should move forward")
         .as_nanos();
     let path = temp_config_path_for_timestamp(timestamp_nanos);
-    materialize_live_config(Path::new("config/live.local.example.toml"), &path)
+    materialize_live_config(&repo_path("config/live.local.example.toml"), &path)
         .expect("tracked template should materialize");
     path
 }

@@ -368,7 +368,7 @@ pub enum MaterializationOutcome {
 
 impl LiveLocalConfig {
     fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = std::fs::read_to_string(path)
+        let contents = read_to_string_at(path, "read config file")
             .map_err(|e| format!("Failed to read config file {}: {e}", path.display()))?;
         let config: LiveLocalConfig = toml::from_str(&contents)
             .map_err(|e| format!("Failed to parse config file {}: {e}", path.display()))?;
@@ -479,8 +479,12 @@ fn materialize_output(
         return Ok(MaterializationOutcome::Created);
     }
 
-    let existing = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read existing config file {}: {e}", path.display()))?;
+    let existing = read_to_string_at(path, "read existing config file").map_err(|e| {
+        format!(
+            "Failed to read existing config file {}: {e}",
+            path.display()
+        )
+    })?;
 
     if existing != contents {
         write_output(path, contents)?;
@@ -498,7 +502,7 @@ fn materialize_output(
 fn ensure_parent_dir(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
+            create_dir_all_at(parent, "create output directory")?;
         }
     }
     Ok(())
@@ -511,7 +515,7 @@ fn write_output(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::E
     let target_mode = existing_read_only_mode(path)?;
 
     let staged = staged_output_path(path)?;
-    std::fs::write(&staged, contents)?;
+    write_contents_at(&staged, contents, "stage rendered config")?;
     #[cfg(unix)]
     set_staged_read_only(&staged, target_mode)?;
     #[cfg(not(unix))]
@@ -520,10 +524,10 @@ fn write_output(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::E
     #[cfg(windows)]
     if path.exists() {
         set_writable(path)?;
-        std::fs::remove_file(path)?;
+        remove_file_at(path, "replace existing output file")?;
     }
 
-    std::fs::rename(&staged, path)?;
+    rename_path(&staged, path, "promote staged config")?;
     Ok(())
 }
 
@@ -554,9 +558,9 @@ fn staged_output_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>
 
 #[cfg(windows)]
 fn set_writable(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
+    let mut permissions = metadata_at(path, "inspect file permissions")?.permissions();
     permissions.set_readonly(false);
-    std::fs::set_permissions(path, permissions)?;
+    set_permissions_at(path, permissions, "mark file writable")?;
     Ok(())
 }
 
@@ -564,13 +568,13 @@ fn set_writable(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 fn is_read_only(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    let metadata = std::fs::metadata(path)?;
+    let metadata = metadata_at(path, "inspect file permissions")?;
     Ok(metadata.permissions().mode() & 0o222 == 0)
 }
 
 #[cfg(not(unix))]
 fn is_read_only(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let metadata = std::fs::metadata(path)?;
+    let metadata = metadata_at(path, "inspect file permissions")?;
     Ok(metadata.permissions().readonly())
 }
 
@@ -579,7 +583,9 @@ fn existing_read_only_mode(path: &Path) -> Result<Option<u32>, Box<dyn std::erro
     use std::os::unix::fs::PermissionsExt;
 
     if path.exists() {
-        let mode = std::fs::metadata(path)?.permissions().mode();
+        let mode = metadata_at(path, "inspect existing output mode")?
+            .permissions()
+            .mode();
         return Ok(Some(mode & !0o222));
     }
 
@@ -593,7 +599,7 @@ fn set_staged_read_only(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    let mut permissions = std::fs::metadata(path)?.permissions();
+    let mut permissions = metadata_at(path, "inspect staged file permissions")?.permissions();
     let current_mode = permissions.mode();
     let read_only_mode = match target_mode {
         Some(mode) => mode,
@@ -601,7 +607,7 @@ fn set_staged_read_only(
     };
 
     permissions.set_mode(read_only_mode);
-    std::fs::set_permissions(path, permissions)?;
+    set_permissions_at(path, permissions, "mark staged file read-only")?;
     Ok(())
 }
 
@@ -609,20 +615,20 @@ fn set_staged_read_only(
 fn set_read_only(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    let mut permissions = std::fs::metadata(path)?.permissions();
+    let mut permissions = metadata_at(path, "inspect file permissions")?.permissions();
     let current_mode = permissions.mode();
     let read_only_mode = current_mode & !0o222;
 
     permissions.set_mode(read_only_mode);
-    std::fs::set_permissions(path, permissions)?;
+    set_permissions_at(path, permissions, "mark file read-only")?;
     Ok(())
 }
 
 #[cfg(not(unix))]
 fn set_read_only(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
+    let mut permissions = metadata_at(path, "inspect file permissions")?.permissions();
     permissions.set_readonly(true);
-    std::fs::set_permissions(path, permissions)?;
+    set_permissions_at(path, permissions, "mark file read-only")?;
     Ok(())
 }
 
@@ -634,35 +640,106 @@ fn set_staged_read_only(
     set_read_only(path)
 }
 
+fn create_dir_all_at(path: &Path, action: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn read_to_string_at(path: &Path, action: &str) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?)
+}
+
+fn write_contents_at(
+    path: &Path,
+    contents: &str,
+    action: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(path, contents)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn metadata_at(path: &Path, action: &str) -> Result<std::fs::Metadata, Box<dyn std::error::Error>> {
+    Ok(std::fs::metadata(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?)
+}
+
+fn set_permissions_at(
+    path: &Path,
+    permissions: std::fs::Permissions,
+    action: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::set_permissions(path, permissions)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_file_at(path: &Path, action: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::remove_file(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn rename_path(from: &Path, to: &Path, action: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::rename(from, to).map_err(|e| {
+        format!(
+            "Failed to {action} {} -> {}: {e}",
+            from.display(),
+            to.display()
+        )
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
+    use std::path::PathBuf;
+
+    fn repo_path(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+    }
 
     #[test]
     fn tracked_template_renders_expected_runtime_mapping() {
-        let source_path = Path::new("config/live.local.example.toml");
-        let input = LiveLocalConfig::load(source_path).expect("tracked template should load");
+        let source_path = repo_path("config/live.local.example.toml");
+        let input = LiveLocalConfig::load(&source_path).expect("tracked template should load");
         let rendered =
-            render_runtime_config(&input, source_path).expect("tracked template should render");
+            render_runtime_config(&input, &source_path).expect("tracked template should render");
         let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
 
         assert!(rendered.contains("# GENERATED FILE - DO NOT EDIT."));
-        assert!(rendered.contains("# Source of truth: config/live.local.example.toml"));
+        assert!(rendered.contains(&format!("# Source of truth: {}", source_path.display())));
         assert!(!rendered.contains("Regenerate with:"));
 
-        assert_eq!(cfg.node.timeout_connection_secs, input.timeouts.connection_secs);
+        assert_eq!(
+            cfg.node.timeout_connection_secs,
+            input.timeouts.connection_secs
+        );
         assert_eq!(
             cfg.node.timeout_reconciliation_secs,
             input.timeouts.reconciliation_secs
         );
-        assert_eq!(cfg.node.timeout_portfolio_secs, input.timeouts.portfolio_secs);
+        assert_eq!(
+            cfg.node.timeout_portfolio_secs,
+            input.timeouts.portfolio_secs
+        );
         assert_eq!(
             cfg.node.timeout_disconnection_secs,
             input.timeouts.disconnection_secs
         );
-        assert_eq!(cfg.node.delay_post_stop_secs, input.timeouts.post_stop_delay_secs);
-        assert_eq!(cfg.node.delay_shutdown_secs, input.timeouts.shutdown_delay_secs);
+        assert_eq!(
+            cfg.node.delay_post_stop_secs,
+            input.timeouts.post_stop_delay_secs
+        );
+        assert_eq!(
+            cfg.node.delay_shutdown_secs,
+            input.timeouts.shutdown_delay_secs
+        );
 
         let client_name = input.polymarket.client_name.as_str();
         assert_eq!(cfg.data_clients.len(), 1);
@@ -744,7 +821,7 @@ passphrase = "/bolt/poly/passphrase"
 
         let input: LiveLocalConfig =
             toml::from_str(raw).expect("minimal operator config should parse");
-        let rendered = render_runtime_config(&input, Path::new("config/live.local.toml"))
+        let rendered = render_runtime_config(&input, &repo_path("config/live.local.toml"))
             .expect("minimal operator config should render");
         let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
 

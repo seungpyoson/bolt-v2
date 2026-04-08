@@ -9,7 +9,7 @@ use std::{
 };
 
 use bolt_v2::{MaterializationOutcome, materialize_live_config};
-use support::TempCaseDir;
+use support::{TempCaseDir, repo_path};
 
 #[test]
 fn materialize_live_config_creates_read_only_output() {
@@ -47,8 +47,7 @@ fn materialize_live_config_updates_drifted_contents() {
     let input_path = write_input(&tempdir, "live.local.toml");
     let output_path = tempdir.path().join("live.toml");
 
-    materialize_live_config(&input_path, &output_path)
-        .expect("first render should succeed");
+    materialize_live_config(&input_path, &output_path).expect("first render should succeed");
 
     #[cfg(unix)]
     set_mode(&output_path, 0o600);
@@ -72,8 +71,7 @@ fn materialize_live_config_repairs_permissions_without_rewriting_contents() {
     let input_path = write_input(&tempdir, "live.local.toml");
     let output_path = tempdir.path().join("live.toml");
 
-    materialize_live_config(&input_path, &output_path)
-        .expect("first render should succeed");
+    materialize_live_config(&input_path, &output_path).expect("first render should succeed");
 
     let modified_before = fs::metadata(&output_path)
         .expect("output metadata should exist")
@@ -111,8 +109,7 @@ fn materialize_live_config_leaves_matching_read_only_output_unchanged() {
     let input_path = write_input(&tempdir, "live.local.toml");
     let output_path = tempdir.path().join("live.toml");
 
-    materialize_live_config(&input_path, &output_path)
-        .expect("first render should succeed");
+    materialize_live_config(&input_path, &output_path).expect("first render should succeed");
 
     let modified_before = fs::metadata(&output_path)
         .expect("output metadata should exist")
@@ -120,8 +117,8 @@ fn materialize_live_config_leaves_matching_read_only_output_unchanged() {
         .expect("output mtime should exist");
     thread::sleep(Duration::from_millis(20));
 
-    let outcome = materialize_live_config(&input_path, &output_path)
-        .expect("second render should succeed");
+    let outcome =
+        materialize_live_config(&input_path, &output_path).expect("second render should succeed");
 
     let modified_after = fs::metadata(&output_path)
         .expect("output metadata should exist")
@@ -198,7 +195,7 @@ fn write_input(tempdir: &TempCaseDir, file_name: &str) -> PathBuf {
 }
 
 fn tracked_live_local_example() -> String {
-    fs::read_to_string("config/live.local.example.toml")
+    fs::read_to_string(repo_path("config/live.local.example.toml"))
         .expect("tracked operator template should be readable")
 }
 

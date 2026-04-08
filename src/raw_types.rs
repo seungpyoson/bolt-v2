@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -33,7 +33,7 @@ pub struct RawHttpResponse {
 
 pub struct JsonlAppender {
     current_path: Option<PathBuf>,
-    writer: Option<BufWriter<File>>,
+    writer: Option<File>,
 }
 
 impl JsonlAppender {
@@ -58,9 +58,7 @@ impl JsonlAppender {
 
     pub fn close(&mut self) -> anyhow::Result<()> {
         self.current_path = None;
-        if let Some(mut writer) = self.writer.take() {
-            writer.flush()?;
-        }
+        self.writer = None;
         Ok(())
     }
 
@@ -76,7 +74,7 @@ impl JsonlAppender {
 
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         self.current_path = Some(path.to_path_buf());
-        self.writer = Some(BufWriter::new(file));
+        self.writer = Some(file);
         Ok(())
     }
 }

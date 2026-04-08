@@ -50,6 +50,28 @@ fn jsonl_appender_reuses_same_path_for_multiple_rows() {
 }
 
 #[test]
+fn jsonl_appender_persists_row_without_explicit_close() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("responses.jsonl");
+    let mut appender = JsonlAppender::new();
+
+    let row = RawHttpResponse {
+        endpoint: "/markets".to_string(),
+        request_params_json: "{\"slug\":\"election-2028\"}".to_string(),
+        received_ts: 1,
+        payload_json: "{\"ok\":true}".to_string(),
+        source: "polymarket".to_string(),
+        parser_version: "v1".to_string(),
+        ingest_date: "2026-04-06".to_string(),
+    };
+
+    appender.append(&path, &row).unwrap();
+
+    let text = fs::read_to_string(path).unwrap();
+    assert_eq!(text.lines().count(), 1);
+}
+
+#[test]
 fn jsonl_appender_reopens_when_target_path_changes() {
     let dir = tempdir().unwrap();
     let day_one = dir.path().join("2026-04-06").join("responses.jsonl");

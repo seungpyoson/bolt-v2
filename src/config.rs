@@ -10,6 +10,10 @@ pub struct Config {
     pub data_clients: Vec<DataClientEntry>,
     pub exec_clients: Vec<ExecClientEntry>,
     pub strategies: Vec<StrategyEntry>,
+    #[serde(default)]
+    pub raw_capture: RawCaptureConfig,
+    #[serde(default)]
+    pub streaming: StreamingCaptureConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +68,30 @@ pub struct StrategyEntry {
     #[serde(rename = "type")]
     pub kind: String,
     pub config: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawCaptureConfig {
+    #[serde(default = "default_raw_capture_output_dir")]
+    pub output_dir: String,
+}
+
+impl Default for RawCaptureConfig {
+    fn default() -> Self {
+        Self {
+            output_dir: default_raw_capture_output_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct StreamingCaptureConfig {
+    pub catalog_path: String,
+    pub flush_interval_ms: u64,
+}
+
+pub(crate) fn default_raw_capture_output_dir() -> String {
+    "var/raw".to_string()
 }
 
 impl Config {

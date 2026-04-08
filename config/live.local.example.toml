@@ -15,8 +15,8 @@ post_stop_delay_secs = 5
 shutdown_delay_secs = 5
 
 [polymarket]
-event_slug = "btc-updown-5m"
-instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+event_slug = "microstrategy-sell-any-bitcoin-in-2025"
+instrument_id = "0x8213d395e079614d6c4d7f4cbb9be9337ab51648a21cc2a334ae8f1966d164b4-111128191581505463501777127559667396812474366956707382672202929745167742497287.POLYMARKET"
 account_id = "POLYMARKET-001"
 funder = "0xabc"
 signature_type = 2
@@ -40,3 +40,10 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+
+[raw_capture]
+output_dir = "var/raw"
+
+[streaming]
+catalog_path = ""
+flush_interval_ms = 1000

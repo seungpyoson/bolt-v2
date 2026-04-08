@@ -67,7 +67,7 @@ fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
         .expect("runtime should build");
 
     let state = runtime.block_on(async move {
-        let run_result = tokio::time::timeout(Duration::from_secs(1), async move {
+        tokio::time::timeout(Duration::from_secs(1), async move {
             let stop_after_startup = async {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 handle.stop();
@@ -81,9 +81,7 @@ fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
             tokio::join!(stop_after_startup, runner).1
         })
         .await
-        .expect("run should finish before timeout");
-
-        run_result
+        .expect("run should finish before timeout")
     });
 
     assert_eq!(state, NodeState::Stopped);

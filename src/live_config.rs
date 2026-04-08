@@ -2,6 +2,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::default_raw_capture_output_dir;
+
 fn default_environment() -> String {
     "Live".to_string()
 }
@@ -74,6 +76,10 @@ fn default_region() -> String {
     "eu-west-1".to_string()
 }
 
+fn default_streaming_flush_interval_ms() -> u64 {
+    1_000
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LiveLocalConfig {
     pub node: LiveNodeInput,
@@ -85,6 +91,10 @@ pub struct LiveLocalConfig {
     #[serde(default)]
     pub strategy: LiveStrategyInput,
     pub secrets: LiveSecretsInput,
+    #[serde(default)]
+    pub raw_capture: LiveRawCaptureInput,
+    #[serde(default)]
+    pub streaming: LiveStreamingInput,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +109,7 @@ pub struct LiveNodeInput {
     pub save_state: bool,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct LiveLoggingInput {
     #[serde(default = "default_stdout_level")]
     pub stdout_level: String,
@@ -107,7 +117,16 @@ pub struct LiveLoggingInput {
     pub file_level: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
+impl Default for LiveLoggingInput {
+    fn default() -> Self {
+        Self {
+            stdout_level: default_stdout_level(),
+            file_level: default_file_level(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct LiveTimeoutsInput {
     #[serde(default = "default_timeout_connection_secs")]
     pub connection_secs: u64,
@@ -121,6 +140,19 @@ pub struct LiveTimeoutsInput {
     pub post_stop_delay_secs: u64,
     #[serde(default = "default_delay_shutdown_secs")]
     pub shutdown_delay_secs: u64,
+}
+
+impl Default for LiveTimeoutsInput {
+    fn default() -> Self {
+        Self {
+            connection_secs: default_timeout_connection_secs(),
+            reconciliation_secs: default_timeout_reconciliation_secs(),
+            portfolio_secs: default_timeout_portfolio_secs(),
+            disconnection_secs: default_timeout_disconnection_secs(),
+            post_stop_delay_secs: default_delay_post_stop_secs(),
+            shutdown_delay_secs: default_delay_shutdown_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,7 +173,7 @@ pub struct LivePolymarketInput {
     pub ws_max_subscriptions: usize,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct LiveStrategyInput {
     #[serde(default = "default_strategy_id")]
     pub strategy_id: String,
@@ -161,6 +193,21 @@ pub struct LiveStrategyInput {
     pub enable_stop_sells: bool,
 }
 
+impl Default for LiveStrategyInput {
+    fn default() -> Self {
+        Self {
+            strategy_id: default_strategy_id(),
+            order_qty: default_order_qty(),
+            log_data: false,
+            tob_offset_ticks: default_tob_offset_ticks(),
+            use_post_only: default_use_post_only(),
+            enable_limit_sells: false,
+            enable_stop_buys: false,
+            enable_stop_sells: false,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LiveSecretsInput {
     #[serde(default = "default_region")]
@@ -171,13 +218,47 @@ pub struct LiveSecretsInput {
     pub passphrase: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LiveRawCaptureInput {
+    #[serde(default = "default_raw_capture_output_dir")]
+    pub output_dir: String,
+}
+
+impl Default for LiveRawCaptureInput {
+    fn default() -> Self {
+        Self {
+            output_dir: default_raw_capture_output_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LiveStreamingInput {
+    #[serde(default)]
+    pub catalog_path: String,
+    #[serde(default = "default_streaming_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+}
+
+impl Default for LiveStreamingInput {
+    fn default() -> Self {
+        Self {
+            catalog_path: String::new(),
+            flush_interval_ms: default_streaming_flush_interval_ms(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct RenderedConfig {
     node: RenderedNodeConfig,
     logging: RenderedLoggingConfig,
+    raw_capture: RenderedRawCaptureConfig,
     data_clients: Vec<RenderedDataClientEntry>,
     exec_clients: Vec<RenderedExecClientEntry>,
     strategies: Vec<RenderedStrategyEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    streaming: Option<RenderedStreamingConfig>,
 }
 
 #[derive(Serialize)]
@@ -199,6 +280,11 @@ struct RenderedNodeConfig {
 struct RenderedLoggingConfig {
     stdout_level: String,
     file_level: String,
+}
+
+#[derive(Serialize)]
+struct RenderedRawCaptureConfig {
+    output_dir: String,
 }
 
 #[derive(Serialize)]
@@ -263,6 +349,12 @@ struct RenderedStrategyConfig {
     enable_stop_sells: bool,
 }
 
+#[derive(Serialize)]
+struct RenderedStreamingConfig {
+    catalog_path: String,
+    flush_interval_ms: u64,
+}
+
 impl LiveLocalConfig {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(path)
@@ -295,6 +387,9 @@ pub fn render_runtime_config(
         logging: RenderedLoggingConfig {
             stdout_level: input.logging.stdout_level.clone(),
             file_level: input.logging.file_level.clone(),
+        },
+        raw_capture: RenderedRawCaptureConfig {
+            output_dir: input.raw_capture.output_dir.clone(),
         },
         data_clients: vec![RenderedDataClientEntry {
             name: input.polymarket.client_name.clone(),
@@ -337,6 +432,14 @@ pub fn render_runtime_config(
                 enable_stop_sells: input.strategy.enable_stop_sells,
             },
         }],
+        streaming: if input.streaming.catalog_path.trim().is_empty() {
+            None
+        } else {
+            Some(RenderedStreamingConfig {
+                catalog_path: input.streaming.catalog_path.clone(),
+                flush_interval_ms: input.streaming.flush_interval_ms,
+            })
+        },
     };
 
     let body = toml::to_string_pretty(&rendered)?;

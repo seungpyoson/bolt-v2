@@ -120,7 +120,10 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
                 2.into(),
                 2.into(),
             );
-            publish_any(switchboard::get_instrument_close_topic(instrument_id), &close);
+            publish_any(
+                switchboard::get_instrument_close_topic(instrument_id),
+                &close,
+            );
 
             publisher_handle.stop();
         });
@@ -136,7 +139,11 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
 
     assert_eq!(report.instance_id, instance_id);
     assert!(
-        output_dir.path().join("live").join(&report.instance_id).exists(),
+        output_dir
+            .path()
+            .join("live")
+            .join(&report.instance_id)
+            .exists(),
         "expected staged live spool under output root"
     );
 
@@ -175,7 +182,9 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
         collect_paths(output_dir.path())
     );
 
-    let close_files = catalog.get_file_list_from_data_cls("instrument_closes").unwrap();
+    let close_files = catalog
+        .get_file_list_from_data_cls("instrument_closes")
+        .unwrap();
     assert!(
         !close_files.is_empty(),
         "close files: {close_files:?}; output tree: {:?}",
@@ -218,12 +227,9 @@ fn fails_when_output_root_is_not_empty() {
     let output_root = tempdir().unwrap();
     std::fs::write(output_root.path().join("sentinel.txt"), "existing").unwrap();
 
-    let error = convert_live_spool_to_parquet(
-        source_root.path(),
-        "instance-123",
-        output_root.path(),
-    )
-    .unwrap_err();
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-123", output_root.path())
+            .unwrap_err();
 
     assert!(
         error

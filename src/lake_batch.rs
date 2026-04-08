@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
+    ffi::OsString,
     fs,
     io::Cursor,
-    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -48,7 +48,10 @@ pub fn convert_live_spool_to_parquet(
         source_instance_dir.display()
     );
 
-    stage_live_instance(&source_instance_dir, &output_root.join("live").join(instance_id))?;
+    stage_live_instance(
+        &source_instance_dir,
+        &output_root.join("live").join(instance_id),
+    )?;
 
     let mut catalog = ParquetDataCatalog::new(output_root, None, None, None, None);
     for data_cls in SUPPORTED_STREAM_CLASSES {
@@ -237,8 +240,7 @@ fn type_name_for_data_class(data_cls: &str) -> &'static str {
 fn absolute_path(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         Ok(fs::canonicalize(path)?)
-    }
-    else {
+    } else {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -248,12 +250,15 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
         let mut tail = Vec::<OsString>::new();
         let mut cursor = absolute.as_path();
         while !cursor.exists() {
-            let name = cursor
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("unable to normalize path {}", absolute.display()))?;
+            let name = cursor.file_name().ok_or_else(|| {
+                anyhow::anyhow!("unable to normalize path {}", absolute.display())
+            })?;
             tail.push(name.to_os_string());
             cursor = cursor.parent().ok_or_else(|| {
-                anyhow::anyhow!("unable to find existing ancestor for {}", absolute.display())
+                anyhow::anyhow!(
+                    "unable to find existing ancestor for {}",
+                    absolute.display()
+                )
             })?;
         }
 

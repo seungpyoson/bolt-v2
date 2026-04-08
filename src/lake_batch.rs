@@ -1,14 +1,14 @@
 use std::{
-    fs::File,
+    collections::BTreeMap,
     ffi::OsString,
     fs,
+    fs::File,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Result, bail, ensure};
 use arrow::ipc::reader::StreamReader;
 use nautilus_persistence::backend::{catalog::ParquetDataCatalog, custom::decode_batch_to_data};
-use tempfile::TempDir;
 
 const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "quotes",
@@ -49,18 +49,16 @@ pub fn convert_live_spool_to_parquet(
         source_instance_dir.display()
     );
 
-    let staging_root = create_staging_root()?;
-    stage_live_instance(
-        &source_instance_dir,
-        &staging_root.path().join("live").join(instance_id),
-    )?;
+    let class_files = discover_source_files(&source_instance_dir)?;
 
-    let mut catalog = ParquetDataCatalog::new(output_root, None, None, None, None);
+    fs::create_dir_all(output_root)?;
+    let catalog = ParquetDataCatalog::new(output_root, None, None, None, None);
     let mut converted_classes = Vec::new();
     for data_cls in SUPPORTED_STREAM_CLASSES {
-        if convert_staged_class_to_parquet(&mut catalog, staging_root.path(), instance_id, data_cls)?
-        {
-            converted_classes.push(*data_cls);
+        if let Some(files) = class_files.get(data_cls) {
+            if convert_class_to_parquet(&catalog, files, data_cls)? {
+                converted_classes.push(*data_cls);
+            }
         }
     }
     ensure!(
@@ -122,70 +120,77 @@ fn ensure_empty_output_root(output_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn create_staging_root() -> Result<TempDir> {
-    Ok(tempfile::Builder::new()
-        .prefix("bolt-v2-stream-to-lake-")
-        .tempdir()?)
-}
+/// Scan a live spool instance directory and build a logical map of
+/// class name → source feather file paths.  Handles both per-class
+/// subdirectories and legacy Task 3 flat spool layouts.  Symlinks
+/// are silently skipped.
+fn discover_source_files(
+    source_instance_dir: &Path,
+) -> Result<BTreeMap<&'static str, Vec<PathBuf>>> {
+    let mut class_files: BTreeMap<&'static str, Vec<PathBuf>> = BTreeMap::new();
 
-fn stage_live_instance(source: &Path, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination)?;
-
-    for entry in fs::read_dir(source)? {
+    for entry in fs::read_dir(source_instance_dir)? {
         let entry = entry?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if path.is_dir() {
-            if SUPPORTED_STREAM_CLASSES.contains(&file_name.as_ref()) {
-                copy_tree_if_exists(&path, &destination.join(file_name.as_ref()))?;
-            }
+        let meta = fs::symlink_metadata(entry.path())?;
+        if meta.is_symlink() {
             continue;
         }
 
-        // Older Task 3 spool output can be flat (`quotes_<ts>.feather` at the instance root).
-        // Normalize those files into the per-class tree the batch converter expects.
-        for data_cls in SUPPORTED_STREAM_CLASSES {
-            if file_name.starts_with(&format!("{data_cls}_")) {
-                copy_tree_if_exists(&path, &destination.join(data_cls).join(file_name.as_ref()))?;
-                break;
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+
+        if meta.is_dir() {
+            for data_cls in SUPPORTED_STREAM_CLASSES {
+                if *data_cls == file_name_str.as_ref() {
+                    let files = collect_feather_files(&entry.path())?;
+                    class_files.entry(data_cls).or_default().extend(files);
+                    break;
+                }
+            }
+        } else if meta.is_file() {
+            // Legacy Task 3 flat spool: `quotes_<ts>.feather` at instance root.
+            if entry.path().extension().and_then(|e| e.to_str()) != Some("feather") {
+                continue;
+            }
+            for data_cls in SUPPORTED_STREAM_CLASSES {
+                if file_name_str.starts_with(&format!("{data_cls}_")) {
+                    class_files.entry(data_cls).or_default().push(entry.path());
+                    break;
+                }
             }
         }
     }
 
-    for data_cls in SUPPORTED_STREAM_CLASSES {
-        fs::create_dir_all(destination.join(data_cls))?;
+    for files in class_files.values_mut() {
+        files.sort();
     }
 
-    Ok(())
+    Ok(class_files)
 }
 
-fn convert_staged_class_to_parquet(
-    catalog: &mut ParquetDataCatalog,
-    staging_root: &Path,
-    instance_id: &str,
+fn convert_class_to_parquet(
+    catalog: &ParquetDataCatalog,
+    files: &[PathBuf],
     data_cls: &'static str,
 ) -> Result<bool> {
-    let class_root = staging_root.join("live").join(instance_id).join(data_cls);
-    let files = collect_feather_files(&class_root)?;
     let type_name = type_name_for_data_class(data_cls)?;
     let mut converted_any = false;
 
     for file in files {
-        let mut reader = open_feather_reader(&file)?;
+        let mut reader = open_feather_reader(file)?;
         let mut metadata = reader.schema().metadata().clone();
         metadata
             .entry("type_name".to_string())
             .or_insert_with(|| type_name.to_string());
 
+        let mut file_data = Vec::new();
         for batch in &mut reader {
             let batch = batch?;
-            let data = decode_batch_to_data(&metadata, batch, false)?;
-            if !data.is_empty() {
-                catalog.write_data_enum(&data, None, None, None)?;
-                converted_any = true;
-            }
+            file_data.extend(decode_batch_to_data(&metadata, batch, false)?);
+        }
+        if !file_data.is_empty() {
+            catalog.write_data_enum(&file_data, None, None, Some(true))?;
+            converted_any = true;
         }
     }
 
@@ -199,6 +204,9 @@ fn collect_feather_files(root: &Path) -> Result<Vec<PathBuf>> {
     }
 
     let metadata = fs::symlink_metadata(root)?;
+    if metadata.is_symlink() {
+        return Ok(files);
+    }
     if metadata.is_file() {
         if root.extension().and_then(|ext| ext.to_str()) == Some("feather") {
             files.push(root.to_path_buf());
@@ -217,35 +225,6 @@ fn collect_feather_files(root: &Path) -> Result<Vec<PathBuf>> {
 
 fn open_feather_reader(path: &Path) -> Result<StreamReader<File>> {
     Ok(StreamReader::try_new(File::open(path)?, None)?)
-}
-
-fn copy_tree_if_exists(source: &Path, destination: &Path) -> Result<()> {
-    if !source.exists() {
-        return Ok(());
-    }
-
-    let metadata = fs::symlink_metadata(source)?;
-    if metadata.is_file() {
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        ensure!(
-            !destination.exists(),
-            "duplicate staged file destination: {}",
-            destination.display()
-        );
-        fs::copy(source, destination)?;
-        return Ok(());
-    }
-
-    fs::create_dir_all(destination)?;
-
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        copy_tree_if_exists(&entry.path(), &destination.join(entry.file_name()))?;
-    }
-
-    Ok(())
 }
 
 fn type_name_for_data_class(data_cls: &str) -> Result<&'static str> {

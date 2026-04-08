@@ -500,10 +500,10 @@ fn materialize_output(
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            create_dir_all_at(parent, "create output directory")?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        create_dir_all_at(parent, "create output directory")?;
     }
     Ok(())
 }

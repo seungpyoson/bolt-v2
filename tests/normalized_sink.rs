@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
-use bolt_v2::normalized_sink::spool_root_for_instance;
 use arrow::ipc::reader::StreamReader;
+use bolt_v2::normalized_sink::spool_root_for_instance;
 use nautilus_common::{
     enums::Environment,
     msgbus::{publish_any, publish_bar, publish_quote, switchboard},

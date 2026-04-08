@@ -1,0 +1,12 @@
+schema_version = 1
+project_id = "bolt-v2"
+target_namespace = "bolt-v2"
+
+[commands]
+test = ["cargo", "nextest", "run", "--locked"]
+clippy = ["cargo", "clippy", "--locked"]
+
+[commands.build]
+argv = ["cargo", "zigbuild", "--release", "--target", "aarch64-unknown-linux-gnu", "--locked"]
+target_dir_mode = "env"
+artifact_layout = "cargo"

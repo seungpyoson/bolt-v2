@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -240,6 +240,19 @@ fn instrument_statuses_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("data.status.*.*")
 }
 
+fn per_instrument_stream_types() -> HashSet<String> {
+    HashSet::from([
+        "quotes".to_string(),
+        "trades".to_string(),
+        "order_book_deltas".to_string(),
+        "order_book_depths".to_string(),
+        "index_prices".to_string(),
+        "mark_prices".to_string(),
+        "instrument_closes".to_string(),
+        "instruments".to_string(),
+    ])
+}
+
 fn ensure_local_catalog_path(catalog_path: &str) -> Result<()> {
     if catalog_path.contains("://") {
         bail!(
@@ -414,7 +427,7 @@ pub fn wire_normalized_sinks(
         node.kernel().clock(),
         RotationConfig::NoRotation,
         None,
-        None,
+        Some(per_instrument_stream_types()),
         Some(flush_interval_ms),
     );
 

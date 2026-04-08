@@ -9,7 +9,7 @@ use bolt_v2::{
         gamma_events_url, market_subscribe_payload, market_token_ids_from_instruments,
         market_ws_config,
     },
-    raw_types::{RawHttpResponse, RawWsMessage, append_jsonl},
+    raw_types::{JsonlAppender, RawHttpResponse, RawWsMessage},
 };
 use clap::Parser;
 use nautilus_network::{
@@ -50,6 +50,10 @@ fn now_unix_nanos() -> u64 {
     chrono::Utc::now().timestamp_nanos_opt().unwrap() as u64
 }
 
+fn current_ingest_date() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
 fn collect_raw_capture_targets(cfg: &Config) -> Result<RawCaptureTargets> {
     let mut event_slugs = Vec::new();
     let mut subscribe_new_markets = false;
@@ -88,11 +92,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load(&cli.config).map_err(|e| anyhow!(e.to_string()))?;
     let targets = collect_raw_capture_targets(&cfg)?;
-    let ingest_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-
     let http_client = build_gamma_http_client(targets.timeout_connection_secs)?;
     let instrument_client = build_gamma_instrument_client(targets.timeout_connection_secs)?;
-    let http_path = http_output_path(&targets.output_dir, &ingest_date);
     let instruments = instrument_client
         .request_instruments_by_event_slugs(targets.event_slugs.clone())
         .await?;
@@ -102,6 +103,7 @@ async fn main() -> Result<()> {
         "raw capture could not resolve any Polymarket token IDs from event slugs"
     );
 
+    let mut http_writer = JsonlAppender::new();
     for event_slug in &targets.event_slugs {
         let response = http_client
             .request_with_params(
@@ -120,6 +122,8 @@ async fn main() -> Result<()> {
             response.status.as_u16()
         );
         let body = String::from_utf8(response.body.to_vec())?;
+        let ingest_date = current_ingest_date();
+        let http_path = http_output_path(&targets.output_dir, &ingest_date);
         let http_row = RawHttpResponse {
             endpoint: "/events".to_string(),
             request_params_json: format!("{{\"slug\":\"{event_slug}\"}}"),
@@ -129,8 +133,9 @@ async fn main() -> Result<()> {
             parser_version: "v1".to_string(),
             ingest_date: ingest_date.clone(),
         };
-        append_jsonl(&http_path, &http_row)?;
+        http_writer.append(&http_path, &http_row)?;
     }
+    http_writer.close()?;
 
     let (message_handler, mut raw_rx) = channel_message_handler();
     let ws_client = WebSocketClient::connect(
@@ -145,7 +150,7 @@ async fn main() -> Result<()> {
     let subscribe_payload = market_subscribe_payload(token_ids, targets.subscribe_new_markets)?;
     ws_client.send_text(subscribe_payload.clone(), None).await?;
 
-    let ws_path = ws_output_path(&targets.output_dir, &ingest_date);
+    let mut ws_writer = JsonlAppender::new();
 
     while let Some(message) = raw_rx.recv().await {
         if let Ok(text) = message.to_text() {
@@ -154,6 +159,8 @@ async fn main() -> Result<()> {
                 continue;
             }
 
+            let ingest_date = current_ingest_date();
+            let ws_path = ws_output_path(&targets.output_dir, &ingest_date);
             let row = RawWsMessage {
                 stream_type: "market".to_string(),
                 channel: "market".to_string(),
@@ -166,9 +173,10 @@ async fn main() -> Result<()> {
                 parser_version: "v1".to_string(),
                 ingest_date: ingest_date.clone(),
             };
-            append_jsonl(&ws_path, &row)?;
+            ws_writer.append(&ws_path, &row)?;
         }
     }
 
+    ws_writer.close()?;
     bail!("WebSocket message channel closed")
 }

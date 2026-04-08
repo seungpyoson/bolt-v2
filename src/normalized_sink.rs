@@ -36,7 +36,7 @@ use tokio::{
     task::{JoinHandle, spawn_local},
 };
 
-use crate::raw_types::append_jsonl;
+use crate::raw_types::JsonlAppender;
 
 struct TypedHandlers {
     quotes: TypedHandler<QuoteTick>,
@@ -270,6 +270,7 @@ fn send_sink_message(
 async fn run_sink_worker(
     mut receiver: UnboundedReceiver<SinkMessage>,
     mut writer: FeatherWriter,
+    mut status_writer: JsonlAppender,
     status_path: PathBuf,
     failure_state: SinkFailureState,
 ) -> Result<()> {
@@ -316,7 +317,9 @@ async fn run_sink_worker(
             continue;
         }
 
-        if let Err(error) = write_sink_message(&mut writer, &status_path, message).await {
+        if let Err(error) =
+            write_sink_message(&mut writer, &mut status_writer, &status_path, message).await
+        {
             failure_state.record_failure(error.to_string());
             primary_error = Some(error);
             break;
@@ -325,6 +328,16 @@ async fn run_sink_worker(
 
     if let Err(error) = writer.close().await {
         let close_error = anyhow!("Failed to close FeatherWriter: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = status_writer.close() {
+        let close_error = anyhow!("Failed to close instrument status JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
             primary_error = Some(close_error);
@@ -342,6 +355,7 @@ async fn run_sink_worker(
 
 async fn write_sink_message(
     writer: &mut FeatherWriter,
+    status_writer: &mut JsonlAppender,
     status_path: &Path,
     message: SinkMessage,
 ) -> Result<()> {
@@ -387,7 +401,8 @@ async fn write_sink_message(
             .write(close)
             .await
             .map_err(|e| anyhow!("InstrumentClose write failed: {e}")),
-        SinkMessage::InstrumentStatus(status) => append_jsonl(status_path, &status)
+        SinkMessage::InstrumentStatus(status) => status_writer
+            .append(status_path, &status)
             .map_err(|e| anyhow!("InstrumentStatus JSONL write failed: {e}")),
     }
 }
@@ -426,6 +441,7 @@ pub fn wire_normalized_sinks(
     let worker_handle = spawn_local(run_sink_worker(
         receiver,
         writer,
+        JsonlAppender::new(),
         status_path,
         failure_state.clone(),
     ));

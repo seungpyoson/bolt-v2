@@ -1,6 +1,7 @@
 pub mod clients;
 pub mod config;
 mod live_config;
+pub mod lake_batch;
 pub mod normalized_sink;
 pub mod raw_capture_transport;
 pub mod raw_types;

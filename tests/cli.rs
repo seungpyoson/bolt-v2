@@ -8,6 +8,7 @@ use std::{
 use bolt_v2::materialize_live_config;
 mod support;
 use support::repo_path;
+use tempfile::tempdir;
 
 static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -299,6 +300,32 @@ order_qty = "5"
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Missing required secret config fields: region"));
+}
+
+#[test]
+fn stream_to_lake_fails_when_live_spool_is_missing() {
+    let source_root = tempdir().unwrap();
+    let output_root = tempdir().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_stream_to_lake"))
+        .args([
+            "--catalog-path",
+            source_root.path().to_str().expect("utf-8 path"),
+            "--instance-id",
+            "missing-instance",
+            "--output-root",
+            output_root.path().to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("stream_to_lake should run");
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("missing live spool instance directory"),
+        "{stderr}"
+    );
 }
 
 fn write_temp_config(contents: &str) -> std::path::PathBuf {

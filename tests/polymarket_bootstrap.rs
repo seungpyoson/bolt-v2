@@ -1,11 +1,14 @@
+mod support;
+
 use bolt_v2::{
-    clients::polymarket, config::Config, secrets::ResolvedPolymarketSecrets,
-    strategies::exec_tester,
+    clients::polymarket, config::Config, materialize_live_config,
+    secrets::ResolvedPolymarketSecrets, strategies::exec_tester,
 };
 use log::LevelFilter;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;
+use support::{TempCaseDir, repo_path};
 
 fn bootstrap_test_secrets() -> ResolvedPolymarketSecrets {
     ResolvedPolymarketSecrets {
@@ -31,10 +34,11 @@ fn seam_test_uses_non_secret_placeholders() {
 
 #[test]
 fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymarket_seam() {
-    let cfg = Config::load(std::path::Path::new(
-        "config/examples/polymarket-exec-tester.toml",
-    ))
-    .expect("example config should load");
+    let tempdir = TempCaseDir::new("polymarket-bootstrap");
+    let config_path = tempdir.path().join("live.toml");
+    materialize_live_config(&repo_path("config/live.local.example.toml"), &config_path)
+        .expect("tracked template should materialize");
+    let cfg = Config::load(&config_path).expect("materialized config should load");
 
     let trader_id = TraderId::from(cfg.node.trader_id.as_str());
     let environment = Environment::Live;

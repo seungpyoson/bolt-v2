@@ -1,3 +1,10 @@
+# Tracked template for the human-edited local operator config.
+# Copy this file to `config/live.local.toml` and edit the local copy.
+# `config/live.toml` is a generated runtime artifact; do not edit it directly.
+# `just live-check` validates secret-config completeness only.
+# `just live-resolve` performs actual secret resolution.
+# `just live` runs using the generated runtime config.
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT-001"

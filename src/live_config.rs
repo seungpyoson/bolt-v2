@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -355,9 +358,17 @@ struct RenderedStreamingConfig {
     flush_interval_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializationOutcome {
+    Created,
+    Updated,
+    PermissionsRepaired,
+    Unchanged,
+}
+
 impl LiveLocalConfig {
-    pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = std::fs::read_to_string(path)
+    fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = read_to_string_at(path, "read config file")
             .map_err(|e| format!("Failed to read config file {}: {e}", path.display()))?;
         let config: LiveLocalConfig = toml::from_str(&contents)
             .map_err(|e| format!("Failed to parse config file {}: {e}", path.display()))?;
@@ -365,10 +376,18 @@ impl LiveLocalConfig {
     }
 }
 
-pub fn render_runtime_config(
+pub fn materialize_live_config(
+    input_path: &Path,
+    output_path: &Path,
+) -> Result<MaterializationOutcome, Box<dyn std::error::Error>> {
+    let input = LiveLocalConfig::load(input_path)?;
+    let rendered = render_runtime_config(&input, input_path)?;
+    materialize_output(output_path, &rendered)
+}
+
+fn render_runtime_config(
     input: &LiveLocalConfig,
     source_path: &Path,
-    output_path: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let rendered = RenderedConfig {
         node: RenderedNodeConfig {
@@ -444,9 +463,392 @@ pub fn render_runtime_config(
 
     let body = toml::to_string_pretty(&rendered)?;
     Ok(format!(
-        "# GENERATED FILE - DO NOT EDIT.\n# Source of truth: {}\n# Regenerate with: cargo run --bin render_live_config -- --input {} --output {}\n\n{body}",
+        "# GENERATED FILE - DO NOT EDIT.\n# Source of truth: {}\n\n{body}",
         source_path.display(),
-        source_path.display(),
-        output_path.display()
     ))
+}
+
+fn materialize_output(
+    path: &Path,
+    contents: &str,
+) -> Result<MaterializationOutcome, Box<dyn std::error::Error>> {
+    ensure_parent_dir(path)?;
+
+    if !path.exists() {
+        write_output(path, contents)?;
+        return Ok(MaterializationOutcome::Created);
+    }
+
+    let existing = read_to_string_at(path, "read existing config file").map_err(|e| {
+        format!(
+            "Failed to read existing config file {}: {e}",
+            path.display()
+        )
+    })?;
+
+    if existing != contents {
+        write_output(path, contents)?;
+        return Ok(MaterializationOutcome::Updated);
+    }
+
+    if !is_read_only(path)? {
+        set_read_only(path)?;
+        return Ok(MaterializationOutcome::PermissionsRepaired);
+    }
+
+    Ok(MaterializationOutcome::Unchanged)
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        create_dir_all_at(parent, "create output directory")?;
+    }
+    Ok(())
+}
+
+fn write_output(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
+    ensure_parent_dir(path)?;
+
+    #[cfg(unix)]
+    let target_mode = existing_read_only_mode(path)?;
+
+    let staged = staged_output_path(path)?;
+    write_contents_at(&staged, contents, "stage rendered config")?;
+    #[cfg(unix)]
+    set_staged_read_only(&staged, target_mode)?;
+    #[cfg(not(unix))]
+    set_read_only(&staged)?;
+
+    #[cfg(windows)]
+    if path.exists() {
+        set_writable(path)?;
+        remove_file_at(path, "replace existing output file")?;
+    }
+
+    rename_path(&staged, path, "promote staged config")?;
+    Ok(())
+}
+
+fn staged_output_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let raw_parent = path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", path.display()))?;
+    let parent = if raw_parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        raw_parent
+    };
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Output path has no file name: {}", path.display()))?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Ok(parent.join(format!(
+        ".{}.tmp-{}-{}",
+        filename,
+        std::process::id(),
+        stamp
+    )))
+}
+
+#[cfg(windows)]
+fn set_writable(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut permissions = metadata_at(path, "inspect file permissions")?.permissions();
+    permissions.set_readonly(false);
+    set_permissions_at(path, permissions, "mark file writable")?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_read_only(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = metadata_at(path, "inspect file permissions")?;
+    Ok(metadata.permissions().mode() & 0o222 == 0)
+}
+
+#[cfg(not(unix))]
+fn is_read_only(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    let metadata = metadata_at(path, "inspect file permissions")?;
+    Ok(metadata.permissions().readonly())
+}
+
+#[cfg(unix)]
+fn existing_read_only_mode(path: &Path) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if path.exists() {
+        let mode = metadata_at(path, "inspect existing output mode")?
+            .permissions()
+            .mode();
+        return Ok(Some(mode & !0o222));
+    }
+
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn set_staged_read_only(
+    path: &Path,
+    target_mode: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = metadata_at(path, "inspect staged file permissions")?.permissions();
+    let current_mode = permissions.mode();
+    let read_only_mode = match target_mode {
+        Some(mode) => mode,
+        None => current_mode & !0o222,
+    };
+
+    permissions.set_mode(read_only_mode);
+    set_permissions_at(path, permissions, "mark staged file read-only")?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_read_only(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = metadata_at(path, "inspect file permissions")?.permissions();
+    let current_mode = permissions.mode();
+    let read_only_mode = current_mode & !0o222;
+
+    permissions.set_mode(read_only_mode);
+    set_permissions_at(path, permissions, "mark file read-only")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_read_only(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut permissions = metadata_at(path, "inspect file permissions")?.permissions();
+    permissions.set_readonly(true);
+    set_permissions_at(path, permissions, "mark file read-only")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_staged_read_only(
+    path: &Path,
+    _target_mode: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    set_read_only(path)
+}
+
+fn create_dir_all_at(path: &Path, action: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn read_to_string_at(path: &Path, action: &str) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?)
+}
+
+fn write_contents_at(
+    path: &Path,
+    contents: &str,
+    action: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(path, contents)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn metadata_at(path: &Path, action: &str) -> Result<std::fs::Metadata, Box<dyn std::error::Error>> {
+    Ok(std::fs::metadata(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?)
+}
+
+fn set_permissions_at(
+    path: &Path,
+    permissions: std::fs::Permissions,
+    action: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::set_permissions(path, permissions)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_file_at(path: &Path, action: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::remove_file(path)
+        .map_err(|e| format!("Failed to {action} {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn rename_path(from: &Path, to: &Path, action: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::rename(from, to).map_err(|e| {
+        format!(
+            "Failed to {action} {} -> {}: {e}",
+            from.display(),
+            to.display()
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    fn repo_path(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+    }
+
+    #[test]
+    fn tracked_template_renders_expected_runtime_mapping() {
+        let source_path = repo_path("config/live.local.example.toml");
+        let input = LiveLocalConfig::load(&source_path).expect("tracked template should load");
+        let rendered =
+            render_runtime_config(&input, &source_path).expect("tracked template should render");
+        let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+
+        assert!(rendered.contains("# GENERATED FILE - DO NOT EDIT."));
+        assert!(rendered.contains(&format!("# Source of truth: {}", source_path.display())));
+        assert!(!rendered.contains("Regenerate with:"));
+
+        assert_eq!(
+            cfg.node.timeout_connection_secs,
+            input.timeouts.connection_secs
+        );
+        assert_eq!(
+            cfg.node.timeout_reconciliation_secs,
+            input.timeouts.reconciliation_secs
+        );
+        assert_eq!(
+            cfg.node.timeout_portfolio_secs,
+            input.timeouts.portfolio_secs
+        );
+        assert_eq!(
+            cfg.node.timeout_disconnection_secs,
+            input.timeouts.disconnection_secs
+        );
+        assert_eq!(
+            cfg.node.delay_post_stop_secs,
+            input.timeouts.post_stop_delay_secs
+        );
+        assert_eq!(
+            cfg.node.delay_shutdown_secs,
+            input.timeouts.shutdown_delay_secs
+        );
+
+        let client_name = input.polymarket.client_name.as_str();
+        assert_eq!(cfg.data_clients.len(), 1);
+        assert_eq!(cfg.exec_clients.len(), 1);
+        assert_eq!(cfg.strategies.len(), 1);
+        assert_eq!(cfg.data_clients[0].name, client_name);
+        assert_eq!(cfg.data_clients[0].kind, "polymarket");
+        assert_eq!(cfg.exec_clients[0].name, client_name);
+        assert_eq!(cfg.exec_clients[0].kind, "polymarket");
+        assert_eq!(cfg.strategies[0].kind, "exec_tester");
+        assert_eq!(
+            cfg.strategies[0].config["client_id"]
+                .as_str()
+                .expect("strategy client_id should exist"),
+            client_name
+        );
+        assert_eq!(
+            cfg.data_clients[0].config["event_slugs"]
+                .as_array()
+                .expect("event slugs should exist"),
+            &vec![toml::Value::String(input.polymarket.event_slug.clone())]
+        );
+        assert_eq!(
+            cfg.strategies[0].config["instrument_id"]
+                .as_str()
+                .expect("instrument_id should exist"),
+            input.polymarket.instrument_id
+        );
+        assert_eq!(
+            cfg.exec_clients[0].config["signature_type"]
+                .as_integer()
+                .expect("signature_type should exist"),
+            i64::from(input.polymarket.signature_type)
+        );
+        assert_eq!(
+            cfg.exec_clients[0].config["funder"]
+                .as_str()
+                .expect("funder should exist"),
+            input.polymarket.funder
+        );
+        assert_eq!(cfg.exec_clients[0].secrets.region, input.secrets.region);
+        assert_eq!(
+            cfg.exec_clients[0].secrets.pk.as_deref(),
+            Some(input.secrets.pk.as_str())
+        );
+        assert_eq!(
+            cfg.exec_clients[0].secrets.api_key.as_deref(),
+            Some(input.secrets.api_key.as_str())
+        );
+        assert_eq!(
+            cfg.exec_clients[0].secrets.api_secret.as_deref(),
+            Some(input.secrets.api_secret.as_str())
+        );
+        assert_eq!(
+            cfg.exec_clients[0].secrets.passphrase.as_deref(),
+            Some(input.secrets.passphrase.as_str())
+        );
+    }
+
+    #[test]
+    fn minimal_operator_input_uses_defaults_and_renders_valid_runtime_config() {
+        let raw = r#"
+[node]
+name = "BOLT-V2-TEST"
+trader_id = "BOLT-TEST"
+
+[polymarket]
+event_slug = "btc-updown-5m"
+instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+
+[secrets]
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+"#;
+
+        let input: LiveLocalConfig =
+            toml::from_str(raw).expect("minimal operator config should parse");
+        let rendered = render_runtime_config(&input, &repo_path("config/live.local.toml"))
+            .expect("minimal operator config should render");
+        let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+
+        assert_eq!(cfg.node.environment, "Live");
+        assert_eq!(cfg.logging.stdout_level, "Info");
+        assert_eq!(cfg.logging.file_level, "Debug");
+        assert_eq!(cfg.node.timeout_connection_secs, 60);
+        assert_eq!(cfg.node.timeout_reconciliation_secs, 60);
+        assert_eq!(cfg.node.timeout_portfolio_secs, 10);
+        assert_eq!(cfg.node.timeout_disconnection_secs, 10);
+        assert_eq!(cfg.node.delay_post_stop_secs, 5);
+        assert_eq!(cfg.node.delay_shutdown_secs, 5);
+        assert_eq!(cfg.data_clients[0].name, "POLYMARKET");
+        assert_eq!(cfg.exec_clients[0].name, "POLYMARKET");
+        assert_eq!(cfg.strategies[0].kind, "exec_tester");
+        assert_eq!(
+            cfg.strategies[0].config["strategy_id"]
+                .as_str()
+                .expect("strategy_id should exist"),
+            "EXEC_TESTER-001"
+        );
+        assert_eq!(
+            cfg.exec_clients[0].config["signature_type"]
+                .as_integer()
+                .expect("signature_type should exist"),
+            2
+        );
+        assert_eq!(cfg.exec_clients[0].secrets.region, "eu-west-1");
+    }
 }

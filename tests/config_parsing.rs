@@ -1,8 +1,8 @@
-use bolt_v2::{
-    config::Config,
-    live_config::{LiveLocalConfig, render_runtime_config},
-};
-use std::path::Path;
+mod support;
+
+use bolt_v2::{config::Config, materialize_live_config};
+use std::fs;
+use support::TempCaseDir;
 
 #[test]
 fn parses_runtime_config_with_optional_streaming_section() {
@@ -76,6 +76,9 @@ fn parses_runtime_config_with_optional_streaming_section() {
 
 #[test]
 fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema() {
+    let tempdir = TempCaseDir::new("config-parsing");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
     let toml = r#"
         [node]
         name = "bolt-v2"
@@ -101,13 +104,9 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
         flush_interval_ms = 250
     "#;
 
-    let input: LiveLocalConfig = toml::from_str(toml).unwrap();
-    let rendered = render_runtime_config(
-        &input,
-        Path::new("config/live.local.toml"),
-        Path::new("config/live.toml"),
-    )
-    .unwrap();
+    fs::write(&input_path, toml).unwrap();
+    materialize_live_config(&input_path, &output_path).unwrap();
+    let rendered = fs::read_to_string(&output_path).unwrap();
     let cfg: Config = toml::from_str(&rendered).unwrap();
 
     assert!(rendered.contains("[streaming]"));

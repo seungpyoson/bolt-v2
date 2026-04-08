@@ -55,10 +55,10 @@ pub fn convert_live_spool_to_parquet(
     let catalog = ParquetDataCatalog::new(output_root, None, None, None, None);
     let mut converted_classes = Vec::new();
     for data_cls in SUPPORTED_STREAM_CLASSES {
-        if let Some(files) = class_files.get(data_cls) {
-            if convert_class_to_parquet(&catalog, files, data_cls)? {
-                converted_classes.push(*data_cls);
-            }
+        if let Some(files) = class_files.get(data_cls)
+            && convert_class_to_parquet(&catalog, files, data_cls)?
+        {
+            converted_classes.push(*data_cls);
         }
     }
     ensure!(

@@ -241,6 +241,11 @@ fn instrument_statuses_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
 }
 
 fn per_instrument_stream_types() -> HashSet<String> {
+    // Bars are intentionally excluded. FeatherWriter keys per-instrument writers by
+    // (type, instrument_id), but Bar schema metadata is also bar_type-specific. Grouping all
+    // bars for one instrument into a single per-instrument writer would mix multiple bar_type
+    // streams behind the first bar_type metadata seen. Bars therefore remain on the legacy flat
+    // spool contract until a bar-type-safe offline path is introduced.
     HashSet::from([
         "quotes".to_string(),
         "trades".to_string(),

@@ -1,9 +1,12 @@
 use std::{
     fs,
+    path::Path,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use bolt_v2::materialize_live_config;
 
 static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -17,12 +20,13 @@ fn temp_config_paths_remain_unique_for_same_timestamp() {
 
 #[test]
 fn secrets_check_reports_complete_secret_config() {
+    let path = write_generated_runtime_config();
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "secrets",
             "check",
             "--config",
-            "config/examples/polymarket-exec-tester.toml",
+            path.to_str().expect("utf-8 path"),
         ])
         .output()
         .expect("secrets check should run");
@@ -303,6 +307,17 @@ fn write_temp_config(contents: &str) -> std::path::PathBuf {
         .as_nanos();
     let path = temp_config_path_for_timestamp(timestamp_nanos);
     fs::write(&path, contents).expect("temp config should be written");
+    path
+}
+
+fn write_generated_runtime_config() -> std::path::PathBuf {
+    let timestamp_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let path = temp_config_path_for_timestamp(timestamp_nanos);
+    materialize_live_config(Path::new("config/live.local.example.toml"), &path)
+        .expect("tracked template should materialize");
     path
 }
 

@@ -1,5 +1,11 @@
 # bolt-v2 Next Session: Deploy to EC2
 
+> Historical handoff. Current operator-config workflow:
+> - `config/live.local.toml` is the human-edited local source of truth.
+> - `config/live.local.example.toml` is the tracked template.
+> - `config/live.toml` is the generated runtime artifact.
+> - Generate before deploy, upload, check, resolve, or run.
+
 ## What Was Done
 
 ### Task 1: SSM-Only Secrets + Config Restructuring (COMPLETE)
@@ -10,8 +16,8 @@
 - Env var mappings consolidated in single `resolve_env_vars()` function
 - `unsafe { set_var() }` moved before tokio runtime creation (no more UB)
 - CLAUDE.md updated: removed stale architecture sections, added rules 5-7
-- `config/live.toml` updated to new structure, funder = `0xA3a5E9c062331237E5f1403b2bba7A184e5de983`
-- All 4 SSM secrets resolve from eu-west-1. Verified with `bolt-v2 secrets --config config/live.toml`
+- Generated `config/live.toml` reflects the intended runtime structure, including funder = `0xA3a5E9c062331237E5f1403b2bba7A184e5de983`
+- All 4 SSM secrets resolve from eu-west-1. Verified against the generated runtime config
 
 ### Task 2: Archive Bolt v1 (COMPLETE)
 - AMIs created for ALL 5 instances — complete disk images, all `available`:
@@ -46,7 +52,7 @@
 1. Cross-compile: `cargo zigbuild --release --target aarch64-unknown-linux-gnu`
 2. Upload binary to S3: `aws s3 cp target/.../bolt-v2 s3://bolt-deploy-artifacts/artifacts/bolt-v2/`
 3. SSM to instance: download from S3, place at `/opt/bolt-v2`
-4. Upload config: `config/live.toml` → instance
+4. Upload generated runtime config: `config/live.toml` → instance
 5. Create systemd service: `bolt-v2.service`
 6. Disable v1 units: `systemctl disable bolt@pm-eth5m-sniper bolt-log-forwarder`
 7. Delete v1 files (AMIs are the backup)
@@ -67,7 +73,7 @@
 - SSH key pair: bolt-polymarket-key (user doesn't have the .pem)
 - v1 services stopped, v1 files still on instance
 
-### Config (live.toml) — READY
+### Generated Runtime Config (`live.toml`) — READY
 - `[wallet]` with signature_type_id=2, funder=0xA3a5E9c0...
 - `[wallet.secrets]` with region=eu-west-1, SSM paths for 4 credentials
 - Verified: all secrets resolve from SSM

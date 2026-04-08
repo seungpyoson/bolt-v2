@@ -63,6 +63,7 @@ build: check-workspace
 
 live-generate: check-workspace
     #!/usr/bin/env bash
+    # Generate the runtime artifact from the human-edited local source of truth.
     if [ ! -f "{{live_input}}" ]; then
         echo "Missing {{live_input}}"
         echo "Create it from {{live_input_example}}, then rerun."
@@ -73,13 +74,16 @@ live-generate: check-workspace
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
 live: live-generate
+    # Run with the generated runtime config artifact.
     cargo run --release --bin bolt-v2 -- run --config {{live_config}}
 
 # Optional diagnostics for the live operator config.
 live-check: live-generate
+    # Validate secret-config completeness only; do not resolve secrets.
     cargo run --release --bin bolt-v2 -- secrets check --config {{live_config}}
 
 live-resolve: live-generate
+    # Perform actual secret resolution against the generated runtime config.
     cargo run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
 
 ci-lint-workflow:

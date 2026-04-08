@@ -1,4 +1,14 @@
-use std::{any::Any, cell::RefCell, rc::Rc};
+#![allow(dead_code)]
+
+use std::{
+    any::Any,
+    cell::RefCell,
+    fs,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use nautilus_common::{
@@ -13,6 +23,36 @@ use nautilus_model::{
     types::{AccountBalance, MarginBalance},
 };
 use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub struct TempCaseDir {
+    path: PathBuf,
+}
+
+impl TempCaseDir {
+    pub fn new(label: &str) -> Self {
+        let timestamp_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dirname = format!("bolt-v2-{label}-{timestamp_nanos}-{counter}");
+        let path = std::env::temp_dir().join(dirname);
+        fs::create_dir_all(&path).expect("temp case dir should be created");
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempCaseDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
 
 #[derive(Debug)]
 pub struct MockDataClientConfig {

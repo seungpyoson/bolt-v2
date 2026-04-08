@@ -9,13 +9,20 @@ use bolt_v2::{
 };
 use nautilus_common::{
     enums::Environment,
-    msgbus::{publish_any, publish_quote, switchboard},
+    msgbus::{
+        publish_any, publish_deltas, publish_depth10, publish_index_price, publish_mark_price,
+        publish_quote, publish_trade, switchboard,
+    },
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    data::{InstrumentClose, QuoteTick},
-    enums::InstrumentCloseType,
-    identifiers::{InstrumentId, TraderId},
+    data::BookOrder,
+    data::{
+        DEPTH10_LEN, IndexPriceUpdate, InstrumentClose, MarkPriceUpdate, OrderBookDelta,
+        OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+    },
+    enums::{AggressorSide, BookAction, InstrumentCloseType, OrderSide},
+    identifiers::{InstrumentId, TradeId, TraderId},
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -287,6 +294,189 @@ fn converts_legacy_flat_spool_layout() {
     let quotes = catalog.quote_ticks(None, None, None).unwrap();
     assert_eq!(quotes.len(), 1);
     assert_eq!(quotes[0].instrument_id, instrument_id);
+}
+
+#[test]
+fn converts_all_seven_stream_classes_with_multi_batch_feather() {
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let catalog_root = source_dir.path().join("catalog");
+    let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+        // flush_interval_ms=1 forces FeatherWriter to flush after each write
+        // when wall-clock time between publishes exceeds 1ms, creating
+        // multiple IPC batches per feather file.
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            1,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            // --- quotes (3x with sleeps to force multi-batch feather) ---
+            // With flush_interval_ms=1, each 5ms sleep guarantees a
+            // FeatherWriter flush between writes, creating separate IPC
+            // batches.  The old per-batch write_data_enum would create
+            // separate parquet files that fail the disjoint interval check.
+            for i in 0..3u64 {
+                let ts = (i + 1).into();
+                let quote = QuoteTick::new(
+                    instrument_id,
+                    Price::from("0.45"),
+                    Price::from("0.55"),
+                    Quantity::from("100"),
+                    Quantity::from("100"),
+                    ts,
+                    ts,
+                );
+                publish_quote(switchboard::get_quotes_topic(instrument_id), &quote);
+                if i < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            }
+
+            // --- trades ---
+            let trade = TradeTick {
+                instrument_id,
+                price: Price::from("0.50"),
+                size: Quantity::from("10"),
+                aggressor_side: AggressorSide::Buyer,
+                trade_id: TradeId::new("t-1"),
+                ts_event: 2.into(),
+                ts_init: 2.into(),
+            };
+            publish_trade(switchboard::get_trades_topic(instrument_id), &trade);
+
+            // --- order_book_deltas ---
+            let delta = OrderBookDelta::new(
+                instrument_id,
+                BookAction::Add,
+                BookOrder::new(OrderSide::Buy, Price::from("0.44"), Quantity::from("50"), 1),
+                0,
+                1,
+                3.into(),
+                3.into(),
+            );
+            let deltas = OrderBookDeltas::new(instrument_id, vec![delta]);
+            publish_deltas(switchboard::get_book_deltas_topic(instrument_id), &deltas);
+
+            // --- order_book_depths ---
+            let bid = BookOrder::new(
+                OrderSide::Buy,
+                Price::from("0.44"),
+                Quantity::from("100"),
+                1,
+            );
+            let ask = BookOrder::new(
+                OrderSide::Sell,
+                Price::from("0.56"),
+                Quantity::from("100"),
+                2,
+            );
+            let depth = OrderBookDepth10::new(
+                instrument_id,
+                [bid; DEPTH10_LEN],
+                [ask; DEPTH10_LEN],
+                [1; DEPTH10_LEN],
+                [1; DEPTH10_LEN],
+                0,
+                1,
+                4.into(),
+                4.into(),
+            );
+            publish_depth10(switchboard::get_book_depth10_topic(instrument_id), &depth);
+
+            // --- index_prices ---
+            let index =
+                IndexPriceUpdate::new(instrument_id, Price::from("0.50"), 5.into(), 5.into());
+            publish_index_price(switchboard::get_index_price_topic(instrument_id), &index);
+
+            // --- mark_prices ---
+            let mark = MarkPriceUpdate::new(instrument_id, Price::from("0.51"), 6.into(), 6.into());
+            publish_mark_price(switchboard::get_mark_price_topic(instrument_id), &mark);
+
+            // --- instrument_closes ---
+            let close = InstrumentClose::new(
+                instrument_id,
+                Price::from("0.50"),
+                InstrumentCloseType::EndOfSession,
+                7.into(),
+                7.into(),
+            );
+            publish_any(
+                switchboard::get_instrument_close_topic(instrument_id),
+                &close,
+            );
+
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, output_dir.path())
+            .unwrap();
+
+    assert_eq!(
+        report.converted_classes,
+        vec![
+            "quotes",
+            "trades",
+            "order_book_deltas",
+            "order_book_depths",
+            "index_prices",
+            "mark_prices",
+            "instrument_closes",
+        ]
+    );
+
+    // Verify round-trip for types with catalog query methods.
+    let mut catalog = ParquetDataCatalog::new(output_dir.path(), None, None, None, None);
+
+    let quotes = catalog.quote_ticks(None, None, None).unwrap();
+    assert_eq!(quotes.len(), 3, "expected 3 multi-batch quotes");
+
+    let trades = catalog.trade_ticks(None, None, None).unwrap();
+    assert_eq!(trades.len(), 1);
+
+    let deltas = catalog.order_book_deltas(None, None, None).unwrap();
+    assert!(!deltas.is_empty(), "expected order_book_deltas");
+
+    let depths = catalog.order_book_depth10(None, None, None).unwrap();
+    assert_eq!(depths.len(), 1);
+
+    let closes = catalog.instrument_closes(None, None, None).unwrap();
+    assert_eq!(closes.len(), 1);
+
+    // mark_prices and index_prices have no typed query method —
+    // verify parquet files exist via file listing.
+    let mark_files = catalog.get_file_list_from_data_cls("mark_prices").unwrap();
+    assert!(!mark_files.is_empty(), "mark_prices parquet missing");
+
+    let index_files = catalog.get_file_list_from_data_cls("index_prices").unwrap();
+    assert!(!index_files.is_empty(), "index_prices parquet missing");
 }
 
 #[test]

@@ -1,14 +1,14 @@
 use std::{
-    collections::HashMap,
+    fs::File,
     ffi::OsString,
     fs,
-    io::Cursor,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Result, bail, ensure};
-use arrow::{ipc::reader::StreamReader, record_batch::RecordBatch};
+use arrow::ipc::reader::StreamReader;
 use nautilus_persistence::backend::{catalog::ParquetDataCatalog, custom::decode_batch_to_data};
+use tempfile::TempDir;
 
 const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "quotes",
@@ -38,6 +38,7 @@ pub fn convert_live_spool_to_parquet(
 ) -> Result<StreamToLakeReport> {
     ensure_local_path(catalog_path, "catalog_path")?;
     ensure_local_path(output_root, "output_root")?;
+    ensure_instance_id_segment(instance_id)?;
     ensure_disjoint_paths(catalog_path, output_root)?;
     ensure_empty_output_root(output_root)?;
 
@@ -48,20 +49,29 @@ pub fn convert_live_spool_to_parquet(
         source_instance_dir.display()
     );
 
+    let staging_root = create_staging_root()?;
     stage_live_instance(
         &source_instance_dir,
-        &output_root.join("live").join(instance_id),
+        &staging_root.path().join("live").join(instance_id),
     )?;
 
     let mut catalog = ParquetDataCatalog::new(output_root, None, None, None, None);
+    let mut converted_classes = Vec::new();
     for data_cls in SUPPORTED_STREAM_CLASSES {
-        convert_staged_class_to_parquet(&mut catalog, output_root, instance_id, data_cls)?;
+        if convert_staged_class_to_parquet(&mut catalog, staging_root.path(), instance_id, data_cls)?
+        {
+            converted_classes.push(*data_cls);
+        }
     }
+    ensure!(
+        !converted_classes.is_empty(),
+        "no supported reduced task 4 data found"
+    );
 
     Ok(StreamToLakeReport {
         instance_id: instance_id.to_string(),
         output_root: output_root.to_path_buf(),
-        converted_classes: SUPPORTED_STREAM_CLASSES.to_vec(),
+        converted_classes,
     })
 }
 
@@ -72,6 +82,17 @@ fn ensure_local_path(path: &Path, label: &str) -> Result<()> {
             path.display()
         );
     }
+
+    Ok(())
+}
+
+fn ensure_instance_id_segment(instance_id: &str) -> Result<()> {
+    let mut components = Path::new(instance_id).components();
+    let component = components.next();
+    ensure!(
+        matches!(component, Some(std::path::Component::Normal(_))) && components.next().is_none(),
+        "instance_id must be a single path segment"
+    );
 
     Ok(())
 }
@@ -99,6 +120,12 @@ fn ensure_empty_output_root(output_root: &Path) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn create_staging_root() -> Result<TempDir> {
+    Ok(tempfile::Builder::new()
+        .prefix("bolt-v2-stream-to-lake-")
+        .tempdir()?)
 }
 
 fn stage_live_instance(source: &Path, destination: &Path) -> Result<()> {
@@ -136,30 +163,33 @@ fn stage_live_instance(source: &Path, destination: &Path) -> Result<()> {
 
 fn convert_staged_class_to_parquet(
     catalog: &mut ParquetDataCatalog,
-    output_root: &Path,
+    staging_root: &Path,
     instance_id: &str,
     data_cls: &'static str,
-) -> Result<()> {
-    let class_root = output_root.join("live").join(instance_id).join(data_cls);
+) -> Result<bool> {
+    let class_root = staging_root.join("live").join(instance_id).join(data_cls);
     let files = collect_feather_files(&class_root)?;
+    let type_name = type_name_for_data_class(data_cls)?;
+    let mut converted_any = false;
 
     for file in files {
-        let (mut metadata, batches) = read_feather_batches(&file)?;
+        let mut reader = open_feather_reader(&file)?;
+        let mut metadata = reader.schema().metadata().clone();
         metadata
             .entry("type_name".to_string())
-            .or_insert_with(|| type_name_for_data_class(data_cls).to_string());
+            .or_insert_with(|| type_name.to_string());
 
-        let mut data = Vec::new();
-        for batch in batches {
-            data.extend(decode_batch_to_data(&metadata, batch, false)?);
-        }
-
-        if !data.is_empty() {
-            catalog.write_data_enum(&data, None, None, None)?;
+        for batch in &mut reader {
+            let batch = batch?;
+            let data = decode_batch_to_data(&metadata, batch, false)?;
+            if !data.is_empty() {
+                catalog.write_data_enum(&data, None, None, None)?;
+                converted_any = true;
+            }
         }
     }
 
-    Ok(())
+    Ok(converted_any)
 }
 
 fn collect_feather_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -185,17 +215,8 @@ fn collect_feather_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn read_feather_batches(path: &Path) -> Result<(HashMap<String, String>, Vec<RecordBatch>)> {
-    let bytes = fs::read(path)?;
-    let reader = StreamReader::try_new(Cursor::new(bytes), None)?;
-    // Arrow stream metadata lives on the reader schema, not each RecordBatch schema.
-    let metadata = reader.schema().metadata().clone();
-    let mut batches = Vec::new();
-    for batch in reader {
-        batches.push(batch?);
-    }
-
-    Ok((metadata, batches))
+fn open_feather_reader(path: &Path) -> Result<StreamReader<File>> {
+    Ok(StreamReader::try_new(File::open(path)?, None)?)
 }
 
 fn copy_tree_if_exists(source: &Path, destination: &Path) -> Result<()> {
@@ -208,9 +229,12 @@ fn copy_tree_if_exists(source: &Path, destination: &Path) -> Result<()> {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        if !destination.exists() {
-            fs::copy(source, destination)?;
-        }
+        ensure!(
+            !destination.exists(),
+            "duplicate staged file destination: {}",
+            destination.display()
+        );
+        fs::copy(source, destination)?;
         return Ok(());
     }
 
@@ -224,16 +248,16 @@ fn copy_tree_if_exists(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn type_name_for_data_class(data_cls: &str) -> &'static str {
+fn type_name_for_data_class(data_cls: &str) -> Result<&'static str> {
     match data_cls {
-        "quotes" => "QuoteTick",
-        "trades" => "TradeTick",
-        "order_book_deltas" => "OrderBookDelta",
-        "order_book_depths" => "OrderBookDepth10",
-        "index_prices" => "IndexPriceUpdate",
-        "mark_prices" => "MarkPriceUpdate",
-        "instrument_closes" => "InstrumentClose",
-        other => panic!("unsupported reduced Task 4 data class: {other}"),
+        "quotes" => Ok("QuoteTick"),
+        "trades" => Ok("TradeTick"),
+        "order_book_deltas" => Ok("OrderBookDelta"),
+        "order_book_depths" => Ok("OrderBookDepth10"),
+        "index_prices" => Ok("IndexPriceUpdate"),
+        "mark_prices" => Ok("MarkPriceUpdate"),
+        "instrument_closes" => Ok("InstrumentClose"),
+        other => bail!("unsupported reduced task 4 data class: {other}"),
     }
 }
 

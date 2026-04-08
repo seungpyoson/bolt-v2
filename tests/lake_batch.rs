@@ -138,17 +138,14 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
             .unwrap();
 
     assert_eq!(report.instance_id, instance_id);
+    assert_eq!(report.converted_classes, vec!["quotes", "instrument_closes"]);
     assert!(
-        output_dir
-            .path()
-            .join("live")
-            .join(&report.instance_id)
-            .exists(),
-        "expected staged live spool under output root"
+        !output_dir.path().join("live").exists(),
+        "output tree: {:?}",
+        collect_paths(output_dir.path())
     );
 
     let source_paths = collect_paths(&catalog_root.join("live").join(&instance_id));
-    let staged_paths = collect_paths(&output_dir.path().join("live").join(&report.instance_id));
     assert!(
         source_paths.iter().any(|path| {
             path.extension().and_then(|ext| ext.to_str()) == Some("feather")
@@ -160,18 +157,6 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
                     == Some("quotes")
         }),
         "source spool tree: {source_paths:?}"
-    );
-    assert!(
-        staged_paths.iter().any(|path| {
-            path.extension().and_then(|ext| ext.to_str()) == Some("feather")
-                && path
-                    .parent()
-                    .and_then(|parent| parent.parent())
-                    .and_then(|parent| parent.file_name())
-                    .and_then(|name| name.to_str())
-                    == Some("quotes")
-        }),
-        "source spool tree: {source_paths:?}; staged spool tree: {staged_paths:?}"
     );
 
     let mut catalog = ParquetDataCatalog::new(output_dir.path(), None, None, None, None);
@@ -235,6 +220,61 @@ fn fails_when_output_root_is_not_empty() {
         error
             .to_string()
             .contains("output_root must be empty before conversion"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn fails_when_instance_id_is_not_a_single_path_segment() {
+    let source_root = tempdir().unwrap();
+    std::fs::create_dir_all(source_root.path().join("live").join("instance-123")).unwrap();
+    let output_root = tempdir().unwrap();
+
+    let error = convert_live_spool_to_parquet(source_root.path(), "../..", output_root.path())
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("instance_id must be a single path segment"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn fails_when_no_supported_stream_data_is_present() {
+    let source_root = tempdir().unwrap();
+    std::fs::create_dir_all(source_root.path().join("live").join("instance-empty")).unwrap();
+    let output_root = tempdir().unwrap();
+
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-empty", output_root.path())
+            .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("no supported reduced task 4 data found"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn fails_when_only_unsupported_stream_data_is_present() {
+    let source_root = tempdir().unwrap();
+    let instance_root = source_root.path().join("live").join("instance-bars");
+    std::fs::create_dir_all(&instance_root).unwrap();
+    std::fs::write(instance_root.join("bars_123.feather"), b"not-used").unwrap();
+    let output_root = tempdir().unwrap();
+
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-bars", output_root.path())
+            .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("no supported reduced task 4 data found"),
         "{error:?}"
     );
 }

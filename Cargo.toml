@@ -6,6 +6,7 @@ rust-version = "1.94.1"
 
 [dependencies]
 anyhow = "1"
+arrow = "58.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 log = "0.4"

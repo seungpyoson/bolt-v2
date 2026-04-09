@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use bolt_v2::lake_batch::convert_live_spool_to_parquet;
-use bolt_v2::venue_contract::VenueContract;
+use bolt_v2::venue_contract::{VenueContract, normalize_local_absolute_contract_path};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -24,7 +24,10 @@ fn main() -> Result<()> {
     let contract = cli
         .contract
         .as_ref()
-        .map(|p| VenueContract::load_and_validate(p))
+        .map(|p| {
+            let normalized = normalize_local_absolute_contract_path(p)?;
+            VenueContract::load_and_validate(&normalized)
+        })
         .transpose()?;
 
     let report = convert_live_spool_to_parquet(

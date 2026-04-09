@@ -665,3 +665,19 @@ contract_path = "contracts/polymarket.toml"
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "streaming.contract_path", "not_absolute");
 }
+
+#[test]
+fn runtime_contract_path_requires_streaming_catalog_path() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        r#"
+[streaming]
+catalog_path = ""
+flush_interval_ms = 1000
+contract_path = "/opt/bolt-v2/contracts/polymarket.toml"
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "requires_catalog_path");
+}

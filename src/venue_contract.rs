@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -102,6 +107,10 @@ impl VenueContract {
         }
 
         for (name, stream) in &self.streams {
+            ensure!(
+                supported_stream_classes().contains(&name.as_str()),
+                "adapter does not implement stream class: {name}"
+            );
             match stream.capability {
                 Capability::Unsupported => {
                     if let Some(ref policy) = stream.policy {
@@ -154,4 +163,44 @@ impl VenueContract {
             })
         })
     }
+}
+
+pub fn normalize_local_absolute_contract_path(path: &Path) -> Result<PathBuf> {
+    let path_str = path.to_string_lossy();
+    ensure!(
+        !path_str.contains("://"),
+        "contract_path must be a local absolute path, got `{}`",
+        path.display()
+    );
+    ensure!(
+        path.is_absolute(),
+        "contract_path must be a local absolute path, got `{}`",
+        path.display()
+    );
+
+    normalize_absolute_path(path)
+}
+
+fn normalize_absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return Ok(fs::canonicalize(path)?);
+    }
+
+    let mut tail = Vec::<OsString>::new();
+    let mut cursor = path;
+    while !cursor.exists() {
+        let name = cursor.file_name().ok_or_else(|| {
+            anyhow::anyhow!("unable to normalize path {}", path.display())
+        })?;
+        tail.push(name.to_os_string());
+        cursor = cursor.parent().ok_or_else(|| {
+            anyhow::anyhow!("unable to find existing ancestor for {}", path.display())
+        })?;
+    }
+
+    let mut resolved = fs::canonicalize(cursor)?;
+    for component in tail.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }

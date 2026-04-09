@@ -31,6 +31,14 @@ fn venue_contract_test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn assert_directory_empty(path: &std::path::Path) {
+    let entries: Vec<_> = std::fs::read_dir(path)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    assert!(entries.is_empty(), "expected empty directory, found {entries:?}");
+}
+
 fn base_polymarket_streams() -> BTreeMap<String, StreamContract> {
     let supported = |policy: Policy| StreamContract {
         capability: Capability::Supported,
@@ -87,6 +95,28 @@ fn rejects_contract_missing_stream_class() {
     assert!(
         err.to_string()
             .contains("contract missing required stream class"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_unknown_stream_class() {
+    let mut streams = base_polymarket_streams();
+    streams.insert(
+        "funding_rates".to_string(),
+        StreamContract {
+            capability: Capability::Supported,
+            policy: Some(Policy::Required),
+            provenance: Provenance::Native,
+            reason: None,
+            derived_from: None,
+        },
+    );
+    let contract = make_contract(streams);
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("adapter does not implement stream class: funding_rates"),
         "unexpected error: {err}"
     );
 }
@@ -321,6 +351,7 @@ fn contract_fails_when_required_class_absent() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_required_absent"), "{msg}");
+    assert_directory_empty(output_dir.path());
 }
 
 #[test]
@@ -423,6 +454,7 @@ fn contract_fails_when_unsupported_class_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_contract_violation"), "{msg}");
+    assert_directory_empty(output_dir.path());
 }
 
 #[test]
@@ -531,6 +563,118 @@ fn contract_fails_when_unknown_class_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_unknown"), "{msg}");
+    assert_directory_empty(output_dir.path());
+}
+
+#[test]
+fn contract_fails_when_unknown_flat_file_has_data() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let contract =
+        VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
+            .unwrap();
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let catalog_root = source_dir.path().join("catalog");
+    let inst = test_instrument_id();
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        let catalog_root_clone = catalog_root.clone();
+        let instance_id_clone = instance_id.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let ts = 1_000_000_000u64;
+
+            let quote = QuoteTick::new(
+                inst,
+                Price::from("0.55"),
+                Price::from("0.56"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                ts.into(),
+                ts.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(inst), &quote);
+
+            let trade = TradeTick {
+                instrument_id: inst,
+                price: Price::from("0.55"),
+                size: Quantity::from("10"),
+                aggressor_side: AggressorSide::Buyer,
+                trade_id: TradeId::new("T1"),
+                ts_event: ts.into(),
+                ts_init: ts.into(),
+            };
+            publish_trade(switchboard::get_trades_topic(inst), &trade);
+
+            let delta = OrderBookDelta::new(
+                inst,
+                BookAction::Add,
+                BookOrder::new(OrderSide::Buy, Price::from("0.54"), Quantity::from("50"), 1),
+                0,
+                0,
+                ts.into(),
+                ts.into(),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(inst),
+                &OrderBookDeltas::new(inst, vec![delta]),
+            );
+
+            std::fs::write(
+                catalog_root_clone
+                    .join("live")
+                    .join(&instance_id_clone)
+                    .join("bars_123.feather"),
+                b"fake feather content",
+            )
+            .unwrap();
+
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let err = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        output_dir.path(),
+        Some(&contract),
+    )
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(msg.contains("contract validation failed"), "{msg}");
+    assert!(msg.contains("fail_unknown"), "{msg}");
+    assert_directory_empty(output_dir.path());
 }
 
 #[test]

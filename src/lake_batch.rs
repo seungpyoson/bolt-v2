@@ -4,6 +4,7 @@ use std::{
     fs,
     fs::File,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Result, bail, ensure};
@@ -54,9 +55,8 @@ pub fn convert_live_spool_to_parquet(
     );
 
     let class_files = discover_source_files(&source_instance_dir)?;
-
-    fs::create_dir_all(output_root)?;
-    let catalog = ParquetDataCatalog::new(output_root, None, None, None, None);
+    let mut staged_output = StagedOutputRoot::create(output_root)?;
+    let catalog = ParquetDataCatalog::new(staged_output.path(), None, None, None, None);
     let mut converted_classes = Vec::new();
     for data_cls in SUPPORTED_STREAM_CLASSES {
         if let Some(files) = class_files.get(data_cls)
@@ -75,7 +75,7 @@ pub fn convert_live_spool_to_parquet(
             &converted_classes,
         )?;
         let json = serde_json::to_string_pretty(&report)?;
-        fs::write(output_root.join("completeness_report.json"), &json)?;
+        fs::write(staged_output.path().join("completeness_report.json"), &json)?;
         if report.outcome == "fail" {
             bail!("contract validation failed:\n{json}");
         }
@@ -87,6 +87,8 @@ pub fn convert_live_spool_to_parquet(
         );
         None
     };
+
+    staged_output.persist(output_root)?;
 
     Ok(StreamToLakeReport {
         instance_id: instance_id.to_string(),
@@ -122,15 +124,42 @@ fn build_completeness_report(
     if source_instance_dir.is_dir() {
         for entry in std::fs::read_dir(source_instance_dir)? {
             let entry = entry?;
-            if !entry.file_type()?.is_dir() {
+            let meta = fs::symlink_metadata(entry.path())?;
+            if meta.is_symlink() {
                 continue;
             }
-            let dir_name = entry.file_name();
-            let name = dir_name.to_string_lossy();
-            if !known_classes.contains(name.as_ref()) {
+
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+
+            if meta.is_dir() {
+                if !known_classes.contains(name.as_str()) {
+                    has_failure = true;
+                    classes.insert(
+                        name,
+                        ClassReport {
+                            capability: "unknown".to_string(),
+                            policy: None,
+                            spool_present: true,
+                            rows_converted: None,
+                            files_converted: None,
+                            status: "fail_unknown".to_string(),
+                            reason: Some("directory not in contract or known classes".into()),
+                        },
+                    );
+                }
+                continue;
+            }
+
+            if meta.is_file()
+                && let Some(class_name) = flat_file_class_name(&entry.path())
+                && !known_classes.contains(class_name.as_str())
+            {
                 has_failure = true;
                 classes.insert(
-                    name.to_string(),
+                    class_name,
                     ClassReport {
                         capability: "unknown".to_string(),
                         policy: None,
@@ -138,7 +167,7 @@ fn build_completeness_report(
                         rows_converted: None,
                         files_converted: None,
                         status: "fail_unknown".to_string(),
-                        reason: Some("directory not in contract or known classes".into()),
+                        reason: Some("flat spool file not in contract or known classes".into()),
                     },
                 );
             }
@@ -264,6 +293,66 @@ fn ensure_empty_output_root(output_root: &Path) -> Result<()> {
     Ok(())
 }
 
+struct StagedOutputRoot {
+    path: PathBuf,
+    persist: bool,
+}
+
+impl StagedOutputRoot {
+    fn create(output_root: &Path) -> Result<Self> {
+        let parent = output_root
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+
+        let file_name = output_root.file_name().ok_or_else(|| {
+            anyhow::anyhow!(
+                "output_root must include a final path component: {}",
+                output_root.display()
+            )
+        })?;
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| anyhow::anyhow!("system clock before UNIX_EPOCH: {e}"))?
+            .as_nanos();
+        let stage_name = format!(
+            ".{}.staging-{}-{}",
+            file_name.to_string_lossy(),
+            std::process::id(),
+            suffix
+        );
+        let path = parent.join(stage_name);
+        fs::create_dir(&path)?;
+
+        Ok(Self {
+            path,
+            persist: false,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn persist(&mut self, output_root: &Path) -> Result<()> {
+        if output_root.exists() {
+            fs::remove_dir(output_root)?;
+        }
+        fs::rename(&self.path, output_root)?;
+        self.persist = true;
+        Ok(())
+    }
+}
+
+impl Drop for StagedOutputRoot {
+    fn drop(&mut self) {
+        if !self.persist {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 /// Scan a live spool instance directory and build a logical map of
 /// class name → source feather file paths.  Handles both per-class
 /// subdirectories and legacy Task 3 flat spool layouts.  Symlinks
@@ -310,6 +399,16 @@ fn discover_source_files(
     }
 
     Ok(class_files)
+}
+
+fn flat_file_class_name(path: &Path) -> Option<String> {
+    if path.extension().and_then(|e| e.to_str()) != Some("feather") {
+        return None;
+    }
+
+    let stem = path.file_stem()?.to_string_lossy();
+    let prefix = stem.split_once('_').map(|(name, _)| name).unwrap_or(&stem);
+    Some(prefix.to_string())
 }
 
 fn convert_class_to_parquet(

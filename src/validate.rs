@@ -345,16 +345,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         &config.secrets.passphrase,
     );
 
-    if let Some(contract_path) = config.streaming.contract_path.as_deref()
-        && !contract_path.trim().is_empty()
-        && config.streaming.catalog_path.trim().is_empty()
-    {
-        errors.push(ValidationError {
-            field: "streaming.contract_path",
-            code: "requires_catalog_path",
-            message: "streaming.contract_path requires non-empty streaming.catalog_path".to_string(),
-        });
-    }
+    check_contract_path_catalog_dependency(
+        &mut errors,
+        &config.streaming.catalog_path,
+        config.streaming.contract_path.as_deref(),
+    );
 
     errors.sort();
     errors
@@ -492,8 +487,31 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         }
     }
 
+    check_contract_path_catalog_dependency(
+        &mut errors,
+        &config.streaming.catalog_path,
+        config.streaming.contract_path.as_deref(),
+    );
+
     errors.sort();
     errors
+}
+
+fn check_contract_path_catalog_dependency(
+    errors: &mut Vec<ValidationError>,
+    catalog_path: &str,
+    contract_path: Option<&str>,
+) {
+    if let Some(contract_path) = contract_path
+        && !contract_path.trim().is_empty()
+        && catalog_path.trim().is_empty()
+    {
+        errors.push(ValidationError {
+            field: "streaming.contract_path",
+            code: "requires_catalog_path",
+            message: "streaming.contract_path requires non-empty streaming.catalog_path".to_string(),
+        });
+    }
 }
 
 #[cfg(test)]

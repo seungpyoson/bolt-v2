@@ -603,7 +603,7 @@ fn fails_when_only_unsupported_stream_data_is_present() {
 }
 
 #[test]
-fn creates_nonexistent_output_root_without_panic() {
+fn cleans_up_nonexistent_output_root_on_failed_conversion() {
     let source_root = tempdir().unwrap();
     let instance_root = source_root.path().join("live").join("instance-fresh");
     std::fs::create_dir_all(instance_root.join("quotes")).unwrap();
@@ -622,7 +622,10 @@ fn creates_nonexistent_output_root_without_panic() {
             .contains("no supported reduced task 4 data found"),
         "expected data error, not a panic: {error:?}"
     );
-    assert!(nonexistent.is_dir(), "output_root should have been created");
+    assert!(
+        !nonexistent.exists(),
+        "failed conversion should not leave a staged output_root behind"
+    );
 }
 
 #[cfg(unix)]

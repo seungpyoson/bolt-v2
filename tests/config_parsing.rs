@@ -82,7 +82,10 @@ fn parses_runtime_config_with_optional_streaming_section() {
 #[test]
 fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema() {
     let tempdir = TempCaseDir::new("config-parsing");
-    let input_path = tempdir.path().join("live.local.toml");
+    std::fs::write(tempdir.path().join("Cargo.toml"), "[package]\nname = \"temp\"\n").unwrap();
+    let config_dir = tempdir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let input_path = config_dir.join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
     let toml = r#"
         [node]
@@ -107,7 +110,7 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
         [streaming]
         catalog_path = "var/catalog"
         flush_interval_ms = 250
-        contract_path = "../contracts/polymarket.toml"
+        contract_path = "contracts/polymarket.toml"
     "#;
 
     fs::write(&input_path, toml).unwrap();
@@ -121,14 +124,9 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
     assert_eq!(cfg.raw_capture.output_dir, "var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 250);
+    let expected_root = std::fs::canonicalize(tempdir.path()).unwrap();
     assert_eq!(
         cfg.streaming.contract_path.as_deref(),
-        Some(
-            tempdir
-                .path()
-                .join("../contracts/polymarket.toml")
-                .to_str()
-                .unwrap()
-        )
+        Some(expected_root.join("contracts/polymarket.toml").to_str().unwrap())
     );
 }

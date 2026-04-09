@@ -435,8 +435,11 @@ pub fn wire_normalized_sinks(
     ensure_local_catalog_path(catalog_path)?;
 
     if let Some(path) = contract_path {
-        let contract =
-            crate::venue_contract::VenueContract::load_and_validate(std::path::Path::new(path))?;
+        let normalized =
+            crate::venue_contract::normalize_local_absolute_contract_path(std::path::Path::new(
+                path,
+            ))?;
+        let contract = crate::venue_contract::VenueContract::load_and_validate(&normalized)?;
 
         let expected: Vec<_> = contract
             .streams

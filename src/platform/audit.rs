@@ -376,7 +376,7 @@ where
         self.roll_current_file()
     }
 
-    fn start_next_upload(&mut self) -> Result<()> {
+    fn start_next_upload(&mut self, ignore_retry_not_before: bool) -> Result<()> {
         if self.active_upload.is_some() {
             return Ok(());
         }
@@ -385,7 +385,12 @@ where
         let Some(ready_index) = self
             .pending_uploads
             .iter()
-            .position(|file| file.retry_not_before.is_none_or(|deadline| deadline <= now))
+            .position(|file| {
+                ignore_retry_not_before
+                    || file
+                        .retry_not_before
+                        .is_none_or(|deadline| deadline <= now)
+            })
         else {
             return Ok(());
         };
@@ -471,7 +476,7 @@ where
 
     async fn finish_all_uploads(&mut self, final_attempt: bool) -> Result<()> {
         loop {
-            self.start_next_upload()?;
+            self.start_next_upload(final_attempt)?;
             let Some(active_upload) = self.active_upload.as_mut() else {
                 return Ok(());
             };
@@ -624,7 +629,7 @@ where
     let mut state = AuditSpoolState::new(config, uploader)?;
     let mut roll_timer = Box::pin(sleep_until(dormant_roll_deadline()));
     reset_roll_timer(roll_timer.as_mut(), &state);
-    state.start_next_upload()?;
+    state.start_next_upload(false)?;
 
     let result = async {
         loop {
@@ -641,17 +646,17 @@ where
                 state.config.upload_attempt_timeout,
             ) => {
                 if state.complete_active_upload(upload_result, false)? {
-                    state.start_next_upload()?;
+                    state.start_next_upload(false)?;
                 }
             }
                 _ = &mut roll_timer => {
                     state.flush_expired_open_file()?;
-                    state.start_next_upload()?;
+                    state.start_next_upload(false)?;
                     reset_roll_timer(roll_timer.as_mut(), &state);
                 }
                 _ = ticker.tick() => {
                     state.flush_expired_open_file()?;
-                    state.start_next_upload()?;
+                    state.start_next_upload(false)?;
                     reset_roll_timer(roll_timer.as_mut(), &state);
                 }
                 maybe_record = audit_rx.rx.recv() => {

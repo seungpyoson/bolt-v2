@@ -218,6 +218,20 @@ async fn wait_for_jsonl_file_count(root: &Path, expected: usize) {
     );
 }
 
+async fn wait_for_no_jsonl_files(root: &Path) {
+    for _ in 0..100 {
+        if jsonl_files(root).is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    panic!(
+        "timed out waiting for all jsonl files under {} to be removed",
+        root.display()
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn audit_records_serialize_as_jsonl() {
     let dir = tempdir().unwrap();
@@ -338,7 +352,7 @@ async fn failed_upload_keeps_local_file_for_retry() {
     );
 
     wait_for_attempts(&uploader, 2).await;
-    assert!(jsonl_files(dir.path()).is_empty());
+    wait_for_no_jsonl_files(dir.path()).await;
 
     drop(audit_tx);
     worker.shutdown().await.unwrap();
@@ -425,6 +439,50 @@ async fn failed_upload_retry_waits_for_ship_interval_even_if_earlier_roll_occurs
 
     drop(audit_tx);
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_attempts_deferred_failed_upload_before_retry_interval_elapses() {
+    let dir = tempdir().unwrap();
+    let uploader = MockUploader::with_outcomes([false, false]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.ship_interval = Duration::from_millis(250);
+    cfg.roll_max_bytes = 1;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+    wait_for_attempts(&uploader, 1).await;
+
+    let failed_path = uploader.calls()[0].local_path.clone();
+    assert_eq!(
+        uploader
+            .calls()
+            .iter()
+            .filter(|call| call.local_path == failed_path)
+            .count(),
+        1,
+        "normal operation should only attempt the failed upload once before shutdown"
+    );
+
+    drop(audit_tx);
+    let error = worker.shutdown().await.unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("final audit upload failed"),
+        "{error:#}"
+    );
+    assert_eq!(
+        uploader
+            .calls()
+            .iter()
+            .filter(|call| call.local_path == failed_path)
+            .count(),
+        2,
+        "shutdown should retry the deferred failed upload once even before ship_interval elapses"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

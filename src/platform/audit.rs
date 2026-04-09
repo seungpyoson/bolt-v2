@@ -292,6 +292,7 @@ struct PendingAuditFile {
     date: String,
     path: PathBuf,
     bytes: u64,
+    retry_not_before: Option<Instant>,
 }
 
 struct ActiveUpload {
@@ -380,7 +381,16 @@ where
             return Ok(());
         }
 
-        let Some(file) = self.pending_uploads.pop_front() else {
+        let now = Instant::now();
+        let Some(ready_index) = self
+            .pending_uploads
+            .iter()
+            .position(|file| file.retry_not_before.is_none_or(|deadline| deadline <= now))
+        else {
+            return Ok(());
+        };
+
+        let Some(file) = self.pending_uploads.remove(ready_index) else {
             return Ok(());
         };
 
@@ -433,7 +443,7 @@ where
                         active_upload.s3_uri
                     ))
                 } else {
-                    self.pending_uploads.push_front(active_upload.file);
+                    self.requeue_failed_upload(active_upload.file);
                     Ok(false)
                 }
             }
@@ -452,7 +462,7 @@ where
                         active_upload.s3_uri
                     ))
                 } else {
-                    self.pending_uploads.push_front(active_upload.file);
+                    self.requeue_failed_upload(active_upload.file);
                     Ok(false)
                 }
             }
@@ -552,9 +562,19 @@ where
             date: file.date,
             path: file.path,
             bytes,
+            retry_not_before: None,
         });
 
         self.ensure_backlog_within_limit()
+    }
+
+    fn requeue_failed_upload(&mut self, mut file: PendingAuditFile) {
+        file.retry_not_before = Some(
+            Instant::now()
+                .checked_add(self.config.ship_interval)
+                .unwrap_or_else(Instant::now),
+        );
+        self.pending_uploads.push_front(file);
     }
 
     fn ensure_backlog_within_limit(&self) -> Result<()> {
@@ -831,6 +851,7 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
         date: date.to_string(),
         path: path.to_path_buf(),
         bytes: file_len(path)?,
+        retry_not_before: None,
     }))
 }
 

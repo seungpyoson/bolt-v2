@@ -373,6 +373,61 @@ async fn failed_retained_upload_waits_until_next_ship_interval_before_retry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn failed_upload_retry_waits_for_ship_interval_even_if_earlier_roll_occurs() {
+    let dir = tempdir().unwrap();
+    let uploader = MockUploader::with_outcomes([false, true, true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.ship_interval = Duration::from_millis(250);
+    cfg.roll_max_secs = 0;
+    cfg.roll_max_bytes = 10_000;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+    wait_for_attempts(&uploader, 1).await;
+    let failed_path = uploader.calls()[0].local_path.clone();
+
+    audit_tx.send(history_record(200)).unwrap();
+    wait_for_attempts(&uploader, 2).await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let calls_before_retry = uploader.calls();
+    assert_eq!(
+        calls_before_retry.len(),
+        2,
+        "roll activity should only upload the newly rolled file before ship_interval elapses"
+    );
+    assert_eq!(
+        calls_before_retry
+            .iter()
+            .filter(|call| call.local_path == failed_path)
+            .count(),
+        1,
+        "failed upload should not retry on the earlier roll timer"
+    );
+    assert!(
+        calls_before_retry
+            .iter()
+            .any(|call| call.local_path != failed_path),
+        "newly rolled files should remain eligible for immediate first upload"
+    );
+
+    wait_for_attempts(&uploader, 3).await;
+    let calls_after_retry = uploader.calls();
+    assert_eq!(
+        calls_after_retry
+            .iter()
+            .filter(|call| call.local_path == failed_path)
+            .count(),
+        2,
+        "failed upload should retry after ship_interval elapses"
+    );
+
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn backlog_limit_breach_returns_error() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([false, false, false, false]);

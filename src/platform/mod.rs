@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod polymarket_catalog;
 pub mod reference;
 pub mod reference_actor;

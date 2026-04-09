@@ -58,7 +58,9 @@ pub fn fuse_reference_snapshot(
     for venue in venue_cfgs {
         total_base_weight += venue.base_weight;
 
-        let observation = latest.get(&venue.name);
+        let observation = latest
+            .get(&venue.name)
+            .filter(|observation| observation.matches_identity(venue));
         let observed_price = observation.map(ReferenceObservation::observed_price);
         let stale = observation
             .map(|observation| now_ms.saturating_sub(observation.ts_ms()) > venue.stale_after_ms)
@@ -113,6 +115,21 @@ pub fn fuse_reference_snapshot(
 }
 
 impl ReferenceObservation {
+    fn matches_identity(&self, venue: &ReferenceVenueEntry) -> bool {
+        match self {
+            Self::Orderbook {
+                venue_name,
+                instrument_id,
+                ..
+            }
+            | Self::Oracle {
+                venue_name,
+                instrument_id,
+                ..
+            } => venue_name == &venue.name && instrument_id == &venue.instrument_id,
+        }
+    }
+
     fn observed_price(&self) -> f64 {
         match self {
             Self::Orderbook { bid, ask, .. } => (bid + ask) / 2.0,

@@ -286,3 +286,38 @@ fn single_oracle_observation_uses_direct_price() {
     assert_eq!(snapshot.confidence, 1.0);
     assert_eq!(snapshot.venues[0].observed_price, Some(104.25));
 }
+
+#[test]
+fn mismatched_observation_identity_is_ignored() {
+    let venues = vec![ReferenceVenueEntry {
+        name: "BINANCE".into(),
+        kind: ReferenceVenueKind::Binance,
+        instrument_id: "BTCUSDT.BINANCE".into(),
+        base_weight: 1.0,
+        stale_after_ms: 1_000,
+        disable_after_ms: 5_000,
+    }];
+    let latest = BTreeMap::from([(
+        "BINANCE".to_string(),
+        ReferenceObservation::Orderbook {
+            venue_name: "BINANCE".into(),
+            instrument_id: "ETHUSDT.BINANCE".into(),
+            bid: 199.0,
+            ask: 201.0,
+            ts_ms: 1_000,
+        },
+    )]);
+
+    let snapshot = fuse_reference_snapshot(
+        "platform.reference.default",
+        1_100,
+        &venues,
+        &latest,
+        &BTreeMap::new(),
+    );
+
+    assert_eq!(snapshot.fair_value, None);
+    assert_eq!(snapshot.confidence, 0.0);
+    assert_eq!(snapshot.venues[0].observed_price, None);
+    assert_eq!(snapshot.venues[0].effective_weight, 0.0);
+}

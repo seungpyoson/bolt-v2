@@ -381,6 +381,19 @@ pub fn materialize_live_config(
     output_path: &Path,
 ) -> Result<MaterializationOutcome, Box<dyn std::error::Error>> {
     let input = LiveLocalConfig::load(input_path)?;
+
+    let validation_errors = crate::validate::validate_live_local(&input);
+    if !validation_errors.is_empty() {
+        let details: Vec<String> = validation_errors.iter().map(|e| format!("  - {e}")).collect();
+        return Err(format!(
+            "Config validation failed ({} error{}):\n{}",
+            validation_errors.len(),
+            if validation_errors.len() == 1 { "" } else { "s" },
+            details.join("\n"),
+        )
+        .into());
+    }
+
     let rendered = render_runtime_config(&input, input_path)?;
     materialize_output(output_path, &rendered)
 }

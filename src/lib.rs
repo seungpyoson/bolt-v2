@@ -7,5 +7,6 @@ pub mod raw_capture_transport;
 pub mod raw_types;
 pub mod secrets;
 pub mod strategies;
+pub mod validate;
 
 pub use live_config::{MaterializationOutcome, materialize_live_config};

@@ -8,5 +8,6 @@ pub mod raw_types;
 pub mod secrets;
 pub mod strategies;
 pub mod validate;
+pub mod venue_contract;
 
 pub use live_config::{MaterializationOutcome, materialize_live_config};

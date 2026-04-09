@@ -83,6 +83,10 @@ fn default_streaming_flush_interval_ms() -> u64 {
     1_000
 }
 
+fn default_min_publish_interval_ms() -> u64 {
+    100
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LiveLocalConfig {
     pub node: LiveNodeInput,
@@ -98,6 +102,12 @@ pub struct LiveLocalConfig {
     pub raw_capture: LiveRawCaptureInput,
     #[serde(default)]
     pub streaming: LiveStreamingInput,
+    #[serde(default)]
+    pub reference: LiveReferenceInput,
+    #[serde(default)]
+    pub rulesets: Vec<LiveRulesetInput>,
+    #[serde(default)]
+    pub audit: Option<LiveAuditInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,6 +270,50 @@ impl Default for LiveStreamingInput {
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct LiveReferenceInput {
+    #[serde(default)]
+    pub publish_topic: String,
+    #[serde(default = "default_min_publish_interval_ms")]
+    pub min_publish_interval_ms: u64,
+    #[serde(default)]
+    pub venues: Vec<LiveReferenceVenueInput>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LiveReferenceVenueInput {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: crate::config::ReferenceVenueKind,
+    pub instrument_id: String,
+    pub base_weight: f64,
+    pub stale_after_ms: u64,
+    pub disable_after_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LiveRulesetInput {
+    pub id: String,
+    pub venue: crate::config::RulesetVenueKind,
+    pub tag_slug: String,
+    pub resolution_basis: String,
+    pub min_time_to_expiry_secs: u64,
+    pub max_time_to_expiry_secs: u64,
+    pub min_liquidity_num: f64,
+    pub require_accepting_orders: bool,
+    pub freeze_before_end_secs: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LiveAuditInput {
+    pub local_dir: String,
+    pub s3_uri: String,
+    pub ship_interval_secs: u64,
+    pub roll_max_bytes: u64,
+    pub roll_max_secs: u64,
+    pub max_local_backlog_bytes: u64,
+}
+
 #[derive(Serialize)]
 struct RenderedConfig {
     node: RenderedNodeConfig,
@@ -270,6 +324,12 @@ struct RenderedConfig {
     strategies: Vec<RenderedStrategyEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     streaming: Option<RenderedStreamingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reference: Option<RenderedReferenceConfig>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    rulesets: Vec<RenderedRulesetConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audit: Option<RenderedAuditConfig>,
 }
 
 #[derive(Serialize)]
@@ -366,6 +426,47 @@ struct RenderedStreamingConfig {
     flush_interval_ms: u64,
 }
 
+#[derive(Serialize)]
+struct RenderedReferenceConfig {
+    publish_topic: String,
+    min_publish_interval_ms: u64,
+    venues: Vec<RenderedReferenceVenueEntry>,
+}
+
+#[derive(Serialize)]
+struct RenderedReferenceVenueEntry {
+    name: String,
+    #[serde(rename = "type")]
+    kind: crate::config::ReferenceVenueKind,
+    instrument_id: String,
+    base_weight: f64,
+    stale_after_ms: u64,
+    disable_after_ms: u64,
+}
+
+#[derive(Serialize)]
+struct RenderedRulesetConfig {
+    id: String,
+    venue: crate::config::RulesetVenueKind,
+    tag_slug: String,
+    resolution_basis: String,
+    min_time_to_expiry_secs: u64,
+    max_time_to_expiry_secs: u64,
+    min_liquidity_num: f64,
+    require_accepting_orders: bool,
+    freeze_before_end_secs: u64,
+}
+
+#[derive(Serialize)]
+struct RenderedAuditConfig {
+    local_dir: String,
+    s3_uri: String,
+    ship_interval_secs: u64,
+    roll_max_bytes: u64,
+    roll_max_secs: u64,
+    max_local_backlog_bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterializationOutcome {
     Created,
@@ -417,6 +518,7 @@ fn render_runtime_config(
     input: &LiveLocalConfig,
     source_path: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let platform_enabled = !input.rulesets.is_empty();
     let rendered = RenderedConfig {
         node: RenderedNodeConfig {
             name: input.node.name.clone(),
@@ -486,6 +588,54 @@ fn render_runtime_config(
                 catalog_path: input.streaming.catalog_path.clone(),
                 flush_interval_ms: input.streaming.flush_interval_ms,
             })
+        },
+        reference: platform_enabled.then(|| RenderedReferenceConfig {
+            publish_topic: input.reference.publish_topic.clone(),
+            min_publish_interval_ms: input.reference.min_publish_interval_ms,
+            venues: input
+                .reference
+                .venues
+                .iter()
+                .map(|venue| RenderedReferenceVenueEntry {
+                    name: venue.name.clone(),
+                    kind: venue.kind.clone(),
+                    instrument_id: venue.instrument_id.clone(),
+                    base_weight: venue.base_weight,
+                    stale_after_ms: venue.stale_after_ms,
+                    disable_after_ms: venue.disable_after_ms,
+                })
+                .collect(),
+        }),
+        rulesets: if platform_enabled {
+            input
+                .rulesets
+                .iter()
+                .map(|ruleset| RenderedRulesetConfig {
+                    id: ruleset.id.clone(),
+                    venue: ruleset.venue.clone(),
+                    tag_slug: ruleset.tag_slug.clone(),
+                    resolution_basis: ruleset.resolution_basis.clone(),
+                    min_time_to_expiry_secs: ruleset.min_time_to_expiry_secs,
+                    max_time_to_expiry_secs: ruleset.max_time_to_expiry_secs,
+                    min_liquidity_num: ruleset.min_liquidity_num,
+                    require_accepting_orders: ruleset.require_accepting_orders,
+                    freeze_before_end_secs: ruleset.freeze_before_end_secs,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        audit: if platform_enabled {
+            input.audit.as_ref().map(|audit| RenderedAuditConfig {
+                local_dir: audit.local_dir.clone(),
+                s3_uri: audit.s3_uri.clone(),
+                ship_interval_secs: audit.ship_interval_secs,
+                roll_max_bytes: audit.roll_max_bytes,
+                roll_max_secs: audit.roll_max_secs,
+                max_local_backlog_bytes: audit.max_local_backlog_bytes,
+            })
+        } else {
+            None
         },
     };
 

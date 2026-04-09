@@ -159,6 +159,43 @@ fn render_live_config_binary_supports_relative_paths() {
     assert_read_only(&output_path);
 }
 
+#[test]
+fn legacy_operator_config_without_phase1_sections_still_materializes() {
+    let tempdir = TempCaseDir::new("legacy-phase1-compat");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = r#"
+[node]
+name = "BOLT-V2-TEST"
+trader_id = "BOLT-TEST"
+
+[polymarket]
+event_slug = "btc-updown-5m"
+instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+
+[secrets]
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+"#;
+
+    fs::write(&input_path, input).expect("input config should be written");
+
+    let outcome = materialize_live_config(&input_path, &output_path)
+        .expect("legacy operator config should still materialize");
+
+    assert_eq!(outcome, MaterializationOutcome::Created);
+
+    let rendered = fs::read_to_string(&output_path).expect("rendered config should be readable");
+    assert!(!rendered.contains("\n[reference]\n"));
+    assert!(!rendered.contains("\n[[rulesets]]\n"));
+    assert!(!rendered.contains("\n[audit]\n"));
+    assert_generated_output(&output_path);
+}
+
 #[cfg(unix)]
 #[test]
 fn render_live_config_binary_respects_restrictive_umask_on_create() {

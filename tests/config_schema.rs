@@ -4,6 +4,7 @@ use bolt_v2::config::Config;
 use bolt_v2::{MaterializationOutcome, materialize_live_config};
 use std::fs;
 use support::{TempCaseDir, repo_path};
+use toml::Value;
 
 #[test]
 fn parses_minimal_polymarket_wrapper_config() {
@@ -92,4 +93,96 @@ fn tracked_template_materializes_to_parseable_runtime_config() {
     assert_eq!(cfg.data_clients[0].kind, "polymarket");
     assert_eq!(cfg.exec_clients[0].kind, "polymarket");
     assert_eq!(cfg.strategies[0].kind, "exec_tester");
+}
+
+#[test]
+fn rendered_operator_config_supports_reference_rulesets_array_and_optional_audit() {
+    let tempdir = TempCaseDir::new("phase1-config-schema");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+
+[polymarket]
+event_slug = "what-price-will-bitcoin-hit-before-2027"
+instrument_id = "0xabc-123.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+signature_type = 2
+
+[strategy]
+strategy_id = "EXEC_TESTER-001"
+order_qty = "5"
+
+[secrets]
+region = "eu-west-1"
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+tag_slug = "bitcoin"
+resolution_basis = "binance_btcusdt_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#;
+
+    fs::write(&input_path, input).expect("input config should be written");
+
+    let outcome = materialize_live_config(&input_path, &output_path)
+        .expect("phase1 operator config should materialize");
+
+    assert_eq!(outcome, MaterializationOutcome::Created);
+
+    let rendered =
+        fs::read_to_string(&output_path).expect("materialized config should be readable");
+    let value: Value = toml::from_str(&rendered).expect("rendered config should stay valid TOML");
+
+    assert_eq!(
+        value["reference"]["publish_topic"].as_str(),
+        Some("platform.reference.default")
+    );
+    assert_eq!(
+        value["reference"]["min_publish_interval_ms"].as_integer(),
+        Some(100)
+    );
+    assert_eq!(
+        value["reference"]["venues"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(value["rulesets"].as_array().map(Vec::len), Some(1));
+    assert_eq!(value["rulesets"][0]["venue"].as_str(), Some("polymarket"));
+    assert_eq!(value["audit"]["local_dir"].as_str(), Some("var/audit"));
+    assert_eq!(
+        value["audit"]["max_local_backlog_bytes"].as_integer(),
+        Some(10_485_760)
+    );
 }

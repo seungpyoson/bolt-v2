@@ -115,12 +115,22 @@ pub struct StreamingCaptureConfig {
     pub flush_interval_ms: u64,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct ReferenceConfig {
     pub publish_topic: String,
     pub min_publish_interval_ms: u64,
     #[serde(default)]
     pub venues: Vec<ReferenceVenueEntry>,
+}
+
+impl Default for ReferenceConfig {
+    fn default() -> Self {
+        Self {
+            publish_topic: String::new(),
+            min_publish_interval_ms: 100,
+            venues: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -270,7 +270,7 @@ impl Default for LiveStreamingInput {
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct LiveReferenceInput {
     #[serde(default)]
     pub publish_topic: String,
@@ -278,6 +278,16 @@ pub struct LiveReferenceInput {
     pub min_publish_interval_ms: u64,
     #[serde(default)]
     pub venues: Vec<LiveReferenceVenueInput>,
+}
+
+impl Default for LiveReferenceInput {
+    fn default() -> Self {
+        Self {
+            publish_topic: String::new(),
+            min_publish_interval_ms: default_min_publish_interval_ms(),
+            venues: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

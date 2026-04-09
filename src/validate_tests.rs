@@ -538,6 +538,28 @@ fn flush_interval_zero_with_catalog_path_rejected() {
     assert_has_error(&errors, "streaming.flush_interval_ms", "not_positive");
 }
 
+#[test]
+fn contract_path_requires_streaming_catalog_path() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "requires_catalog_path");
+}
+
+#[test]
+fn empty_contract_path_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "empty");
+}
+
 // ════════════════════════════════════════════════════════════════
 // Domain-specific: event_slug, funder, SSM paths
 // ════════════════════════════════════════════════════════════════
@@ -1061,6 +1083,28 @@ fn runtime_flush_interval_zero_with_catalog_path_rejected() {
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "streaming.flush_interval_ms", "not_positive");
+}
+
+#[test]
+fn runtime_contract_path_requires_streaming_catalog_path() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"\"\nflush_interval_ms = 1000\ncontract_path = \"/opt/bolt-v2/contracts/polymarket.toml\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "requires_catalog_path");
+}
+
+#[test]
+fn runtime_empty_contract_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "empty");
 }
 
 #[test]

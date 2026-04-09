@@ -415,6 +415,30 @@ fn first_seen_index<'a>(
         }
     }
 }
+
+fn check_contract_path_catalog_dependency(
+    errors: &mut Vec<ValidationError>,
+    catalog_path: &str,
+    contract_path: Option<&str>,
+) {
+    if let Some(contract_path) = contract_path {
+        if contract_path.trim().is_empty() {
+            push_error(
+                errors,
+                "streaming.contract_path",
+                "empty",
+                "streaming.contract_path must not be empty when provided".to_string(),
+            );
+        } else if catalog_path.trim().is_empty() {
+            push_error(
+                errors,
+                "streaming.contract_path",
+                "requires_catalog_path",
+                "streaming.contract_path requires non-empty streaming.catalog_path".to_string(),
+            );
+        }
+    }
+}
 // ═══════════════════════════════════════════════════════════════════
 // Public validators
 // ═══════════════════════════════════════════════════════════════════
@@ -557,6 +581,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
             config.streaming.flush_interval_ms,
         );
     }
+    check_contract_path_catalog_dependency(
+        &mut errors,
+        &config.streaming.catalog_path,
+        config.streaming.contract_path.as_deref(),
+    );
 
     errors.sort();
     errors
@@ -634,6 +663,11 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             config.streaming.flush_interval_ms,
         );
     }
+    check_contract_path_catalog_dependency(
+        &mut errors,
+        &config.streaming.catalog_path,
+        config.streaming.contract_path.as_deref(),
+    );
 
     let mut data_name_indices: HashMap<&str, usize> = HashMap::new();
     for (i, client) in config.data_clients.iter().enumerate() {

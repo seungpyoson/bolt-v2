@@ -204,7 +204,10 @@ fn build_completeness_report(
             }
             (Capability::Supported | Capability::Conditional, Policy::Disabled, true, _) => {
                 has_failure = true;
-                ("fail_contract_violation", Some("class is disabled but spool data is present".into()))
+                (
+                    "fail_contract_violation",
+                    Some("class is disabled but spool data is present".into()),
+                )
             }
             (Capability::Supported | Capability::Conditional, Policy::Disabled, false, _) => {
                 ("pass_disabled", None)
@@ -458,7 +461,9 @@ fn discover_source_files(
             if entry.path().extension().and_then(|e| e.to_str()) != Some("feather") {
                 continue;
             }
-            if let Some(data_cls) = classify_flat_file(&entry.path(), SUPPORTED_STREAM_CLASSES.iter().copied()) {
+            if let Some(data_cls) =
+                classify_flat_file(&entry.path(), SUPPORTED_STREAM_CLASSES.iter().copied())
+            {
                 class_files.entry(data_cls).or_default().push(entry.path());
             }
         }
@@ -491,7 +496,10 @@ fn classify_flat_file<'a>(
         .max_by_key(|class_name| class_name.len())
 }
 
-fn classify_unknown_flat_file<'a>(path: &Path, data_classes: impl IntoIterator<Item = &'a str>) -> Option<String> {
+fn classify_unknown_flat_file<'a>(
+    path: &Path,
+    data_classes: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
     if path.extension().and_then(|ext| ext.to_str()) != Some("feather") {
         return None;
     }

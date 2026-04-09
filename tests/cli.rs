@@ -433,7 +433,10 @@ fn stream_to_lake_rejects_relative_contract_path() {
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("contract_path must be a local absolute path"), "{stderr}");
+    assert!(
+        stderr.contains("contract_path must be a local absolute path"),
+        "{stderr}"
+    );
 }
 
 fn write_temp_config(contents: &str) -> std::path::PathBuf {

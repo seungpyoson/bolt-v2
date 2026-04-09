@@ -189,9 +189,9 @@ fn normalize_absolute_path(path: &Path) -> Result<PathBuf> {
     let mut tail = Vec::<OsString>::new();
     let mut cursor = path;
     while !cursor.exists() {
-        let name = cursor.file_name().ok_or_else(|| {
-            anyhow::anyhow!("unable to normalize path {}", path.display())
-        })?;
+        let name = cursor
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("unable to normalize path {}", path.display()))?;
         tail.push(name.to_os_string());
         cursor = cursor.parent().ok_or_else(|| {
             anyhow::anyhow!("unable to find existing ancestor for {}", path.display())

@@ -67,13 +67,9 @@ fn fails_when_live_spool_instance_is_missing() {
     let source_root = tempdir().unwrap();
     let output_root = tempdir().unwrap().path().join("missing-output");
 
-    let error = convert_live_spool_to_parquet(
-        source_root.path(),
-        "missing-instance",
-        &output_root,
-        None,
-    )
-    .unwrap_err();
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "missing-instance", &output_root, None)
+            .unwrap_err();
 
     assert!(
         error
@@ -149,13 +145,9 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
         instance_id
     }));
 
-    let report = convert_live_spool_to_parquet(
-        catalog_root.as_path(),
-        &instance_id,
-        &output_root,
-        None,
-    )
-    .unwrap();
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
+            .unwrap();
 
     assert_eq!(report.instance_id, instance_id);
     assert_eq!(
@@ -296,13 +288,9 @@ fn converts_legacy_flat_spool_layout() {
         "expected flat layout, found dirs: {remaining:?}"
     );
 
-    let report = convert_live_spool_to_parquet(
-        catalog_root.as_path(),
-        &instance_id,
-        &output_root,
-        None,
-    )
-    .unwrap();
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
+            .unwrap();
 
     assert_eq!(report.converted_classes, vec!["quotes"]);
 
@@ -453,13 +441,9 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
         instance_id
     }));
 
-    let report = convert_live_spool_to_parquet(
-        catalog_root.as_path(),
-        &instance_id,
-        &output_root,
-        None,
-    )
-    .unwrap();
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
+            .unwrap();
 
     assert_eq!(
         report.converted_classes,
@@ -529,13 +513,9 @@ fn fails_when_output_root_already_exists() {
     let output_root = tempdir().unwrap();
     std::fs::write(output_root.path().join("sentinel.txt"), "existing").unwrap();
 
-    let error = convert_live_spool_to_parquet(
-        source_root.path(),
-        "instance-123",
-        output_root.path(),
-        None,
-    )
-    .unwrap_err();
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-123", output_root.path(), None)
+            .unwrap_err();
 
     assert!(
         error
@@ -627,13 +607,9 @@ fn allows_preexisting_empty_output_root() {
         instance_id
     }));
 
-    let report = convert_live_spool_to_parquet(
-        catalog_root.as_path(),
-        &instance_id,
-        &output_root,
-        None,
-    )
-    .unwrap();
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
+            .unwrap();
 
     assert_eq!(report.instance_id, instance_id);
     let mut catalog = ParquetDataCatalog::new(&output_root, None, None, None, None);
@@ -663,7 +639,10 @@ fn fails_loud_when_stale_sibling_staging_dir_exists() {
             .contains("stale staging directory present for output_root `run`"),
         "{error:?}"
     );
-    assert!(stale_stage.exists(), "stale staging dir should not be deleted");
+    assert!(
+        stale_stage.exists(),
+        "stale staging dir should not be deleted"
+    );
 }
 
 #[test]
@@ -673,8 +652,7 @@ fn fails_when_instance_id_is_not_a_single_path_segment() {
     let output_root = tempdir().unwrap().path().join("output-root");
 
     let error =
-        convert_live_spool_to_parquet(source_root.path(), "../..", &output_root, None)
-            .unwrap_err();
+        convert_live_spool_to_parquet(source_root.path(), "../..", &output_root, None).unwrap_err();
 
     assert!(
         error
@@ -690,13 +668,9 @@ fn fails_when_no_supported_stream_data_is_present() {
     std::fs::create_dir_all(source_root.path().join("live").join("instance-empty")).unwrap();
     let output_root = tempdir().unwrap().path().join("output-root");
 
-    let error = convert_live_spool_to_parquet(
-        source_root.path(),
-        "instance-empty",
-        &output_root,
-        None,
-    )
-    .unwrap_err();
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-empty", &output_root, None)
+            .unwrap_err();
 
     assert!(
         error
@@ -714,13 +688,9 @@ fn fails_when_only_unsupported_stream_data_is_present() {
     std::fs::write(instance_root.join("bars_123.feather"), b"not-used").unwrap();
     let output_root = tempdir().unwrap().path().join("output-root");
 
-    let error = convert_live_spool_to_parquet(
-        source_root.path(),
-        "instance-bars",
-        &output_root,
-        None,
-    )
-    .unwrap_err();
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-bars", &output_root, None)
+            .unwrap_err();
 
     assert!(
         error
@@ -775,8 +745,9 @@ fn skips_symlinks_in_spool_tree() {
     symlink(&feather_path, instance_root.join("trades_1.feather")).unwrap();
 
     let output_root = tempdir().unwrap().path().join("output-root");
-    let error = convert_live_spool_to_parquet(source_root.path(), "instance-sym", &output_root, None)
-        .unwrap_err();
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-sym", &output_root, None)
+            .unwrap_err();
 
     // Both symlinked entries should be skipped, leaving no data to convert.
     assert!(

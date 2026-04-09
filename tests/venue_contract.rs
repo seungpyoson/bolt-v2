@@ -56,10 +56,16 @@ fn flatten_spool_to_legacy_layout(instance_root: &std::path::Path) {
     for class_dir in class_dirs {
         let class_name = class_dir.file_name().to_string_lossy().to_string();
         let mut feather_files = Vec::new();
-        for entry in std::fs::read_dir(class_dir.path()).unwrap().filter_map(|entry| entry.ok()) {
+        for entry in std::fs::read_dir(class_dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+        {
             let path = entry.path();
             if path.is_dir() {
-                for nested in std::fs::read_dir(path).unwrap().filter_map(|entry| entry.ok()) {
+                for nested in std::fs::read_dir(path)
+                    .unwrap()
+                    .filter_map(|entry| entry.ok())
+                {
                     let nested_path = nested.path();
                     if nested_path.extension().and_then(|ext| ext.to_str()) == Some("feather") {
                         feather_files.push(nested_path);
@@ -397,7 +403,10 @@ fn contract_fails_when_required_class_absent() {
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_required_absent"), "{msg}");
     let report = assert_failure_report_only(&output_root);
-    assert_eq!(report.classes["order_book_deltas"].status, "fail_required_absent");
+    assert_eq!(
+        report.classes["order_book_deltas"].status,
+        "fail_required_absent"
+    );
 
     let retry_error = convert_live_spool_to_parquet(
         catalog_root.as_path(),
@@ -413,7 +422,10 @@ fn contract_fails_when_required_class_absent() {
         "{retry_error:?}"
     );
     let retry_report = assert_failure_report_only(&output_root);
-    assert_eq!(retry_report.classes["order_book_deltas"].status, "fail_required_absent");
+    assert_eq!(
+        retry_report.classes["order_book_deltas"].status,
+        "fail_required_absent"
+    );
 }
 
 #[test]
@@ -675,7 +687,10 @@ fn contract_fails_when_unsupported_class_has_data() {
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_contract_violation"), "{msg}");
     let report = assert_failure_report_only(&output_root);
-    assert_eq!(report.classes["mark_prices"].status, "fail_contract_violation");
+    assert_eq!(
+        report.classes["mark_prices"].status,
+        "fail_contract_violation"
+    );
 }
 
 #[test]
@@ -1062,13 +1077,9 @@ fn no_contract_mode_behaves_as_before() {
         instance_id
     }));
 
-    let report = convert_live_spool_to_parquet(
-        catalog_root.as_path(),
-        &instance_id,
-        &output_root,
-        None,
-    )
-    .unwrap();
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
+            .unwrap();
 
     assert!(report.completeness.is_none());
     assert!(report.converted_classes.contains(&"quotes"));

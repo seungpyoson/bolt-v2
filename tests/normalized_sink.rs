@@ -147,7 +147,10 @@ async fn rejects_invalid_contract_path_on_sink_startup() {
             .err()
             .expect("invalid contract path should fail");
 
-            assert!(err.to_string().contains("failed to parse contract"), "{err}");
+            assert!(
+                err.to_string().contains("failed to parse contract"),
+                "{err}"
+            );
         })
         .await;
 }

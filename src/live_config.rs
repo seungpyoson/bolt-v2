@@ -1012,8 +1012,11 @@ contract_path = "contracts/polymarket.toml"
         let input: LiveLocalConfig =
             toml::from_str(raw).expect("minimal operator config should parse");
         let tempdir = tempdir().expect("tempdir should be created");
-        std::fs::write(tempdir.path().join("Cargo.toml"), "[package]\nname = \"temp\"\n")
-            .expect("repo marker should exist");
+        std::fs::write(
+            tempdir.path().join("Cargo.toml"),
+            "[package]\nname = \"temp\"\n",
+        )
+        .expect("repo marker should exist");
         let source_dir = tempdir.path().join("config");
         std::fs::create_dir_all(&source_dir).expect("source dir should be created");
         let source_path = source_dir.join("live.local.toml");

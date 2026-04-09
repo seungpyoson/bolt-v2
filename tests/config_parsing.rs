@@ -82,7 +82,11 @@ fn parses_runtime_config_with_optional_streaming_section() {
 #[test]
 fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema() {
     let tempdir = TempCaseDir::new("config-parsing");
-    std::fs::write(tempdir.path().join("Cargo.toml"), "[package]\nname = \"temp\"\n").unwrap();
+    std::fs::write(
+        tempdir.path().join("Cargo.toml"),
+        "[package]\nname = \"temp\"\n",
+    )
+    .unwrap();
     let config_dir = tempdir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
     let input_path = config_dir.join("live.local.toml");
@@ -127,6 +131,11 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
     let expected_root = std::fs::canonicalize(tempdir.path()).unwrap();
     assert_eq!(
         cfg.streaming.contract_path.as_deref(),
-        Some(expected_root.join("contracts/polymarket.toml").to_str().unwrap())
+        Some(
+            expected_root
+                .join("contracts/polymarket.toml")
+                .to_str()
+                .unwrap()
+        )
     );
 }

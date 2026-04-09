@@ -162,11 +162,13 @@ fn render_live_config_binary_supports_relative_paths() {
 #[test]
 fn render_live_config_binary_resolves_contract_path_from_repo_root() {
     let tempdir = TempCaseDir::new("relative-contract-root");
-    std::fs::write(tempdir.path().join("Cargo.toml"), "[package]\nname = \"temp\"\n")
-        .expect("repo marker should be written");
+    std::fs::write(
+        tempdir.path().join("Cargo.toml"),
+        "[package]\nname = \"temp\"\n",
+    )
+    .expect("repo marker should be written");
     std::fs::create_dir_all(tempdir.path().join("config")).expect("config dir should exist");
-    std::fs::create_dir_all(tempdir.path().join("contracts"))
-        .expect("contracts dir should exist");
+    std::fs::create_dir_all(tempdir.path().join("contracts")).expect("contracts dir should exist");
     std::fs::write(
         tempdir.path().join("contracts/polymarket.toml"),
         "schema_version = 1\nvenue = \"test\"\nadapter_version = \"bolt-v2\"\n\n\
@@ -180,11 +182,12 @@ fn render_live_config_binary_resolves_contract_path_from_repo_root() {
     )
     .expect("contract fixture should be written");
 
-    let source = tracked_live_local_example().replace(
-        "# contract_path = \"contracts/polymarket.toml\"",
-        "contract_path = \"contracts/polymarket.toml\"",
-    )
-    .replace("catalog_path = \"\"", "catalog_path = \"var/catalog\"");
+    let source = tracked_live_local_example()
+        .replace(
+            "# contract_path = \"contracts/polymarket.toml\"",
+            "contract_path = \"contracts/polymarket.toml\"",
+        )
+        .replace("catalog_path = \"\"", "catalog_path = \"var/catalog\"");
     fs::write(tempdir.path().join("config/live.local.toml"), source)
         .expect("input config should be written");
 

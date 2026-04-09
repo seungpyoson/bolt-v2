@@ -196,6 +196,80 @@ passphrase = "/bolt/poly/passphrase"
     assert_generated_output(&output_path);
 }
 
+#[test]
+fn materialize_live_config_rejects_rendered_runtime_validation_failures() {
+    let tempdir = TempCaseDir::new("runtime-validation-failure");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = r#"
+[node]
+name = "BOLT-V2-TEST"
+trader_id = "BOLT-TEST"
+
+[polymarket]
+event_slug = "btc-updown-5m"
+instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+
+[secrets]
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+tag_slug = "bitcoin"
+resolution_basis = "kraken_btcusd_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#;
+
+    fs::write(&input_path, input).expect("input config should be written");
+
+    let error = materialize_live_config(&input_path, &output_path)
+        .expect_err("runtime-invalid rendered config should fail materialization")
+        .to_string();
+
+    assert!(
+        error.contains("Runtime config validation failed"),
+        "unexpected materialization error: {error}"
+    );
+    assert!(
+        error.contains("rulesets[0].resolution_basis"),
+        "runtime validation error should mention resolution_basis: {error}"
+    );
+    assert!(
+        !output_path.exists(),
+        "materialization should not write output on runtime validation failure"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn render_live_config_binary_respects_restrictive_umask_on_create() {

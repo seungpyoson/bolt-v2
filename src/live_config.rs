@@ -511,7 +511,34 @@ pub fn materialize_live_config(
     }
 
     let rendered = render_runtime_config(&input, input_path)?;
+    validate_rendered_runtime_config(&rendered)?;
     materialize_output(output_path, &rendered)
+}
+
+fn validate_rendered_runtime_config(rendered: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let config: crate::config::Config = toml::from_str(rendered)
+        .map_err(|e| format!("Failed to parse rendered runtime config: {e}"))?;
+
+    let validation_errors = crate::validate::validate_runtime(&config);
+    if validation_errors.is_empty() {
+        return Ok(());
+    }
+
+    let details: Vec<String> = validation_errors
+        .iter()
+        .map(|e| format!("  - {e}"))
+        .collect();
+    Err(format!(
+        "Runtime config validation failed ({} error{}):\n{}",
+        validation_errors.len(),
+        if validation_errors.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
+        details.join("\n"),
+    )
+    .into())
 }
 
 fn render_runtime_config(

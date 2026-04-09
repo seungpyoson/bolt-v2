@@ -566,6 +566,28 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         &config.secrets.passphrase,
     );
 
+    if config.rulesets.is_empty() {
+        if !config.reference.publish_topic.trim().is_empty() || !config.reference.venues.is_empty()
+        {
+            push_error(
+                &mut errors,
+                "reference",
+                "orphaned_phase1_reference",
+                "reference must not be configured unless at least one ruleset is enabled"
+                    .to_string(),
+            );
+        }
+
+        if config.audit.is_some() {
+            push_error(
+                &mut errors,
+                "audit",
+                "orphaned_phase1_audit",
+                "audit must not be configured unless at least one ruleset is enabled".to_string(),
+            );
+        }
+    }
+
     if !config.rulesets.is_empty() && config.audit.is_none() {
         push_error(
             &mut errors,

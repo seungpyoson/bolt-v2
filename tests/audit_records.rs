@@ -8,12 +8,11 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use bolt_v2::platform::audit::{
-    AuditRecord, AuditSpoolConfig, AuditUploader, SelectorState, TradeEventKind, VenueHealthState,
-    build_s3_key, spawn_audit_worker,
+    AuditRecord, AuditSpoolConfig, AuditUploader, SelectorState, TradeEventKind,
+    VenueHealthState, audit_channel, build_s3_key, spawn_audit_worker,
 };
 use serde_json::Value;
 use tempfile::tempdir;
-use tokio::sync::mpsc::unbounded_channel;
 
 #[derive(Clone, Debug)]
 struct UploadCall {
@@ -85,7 +84,7 @@ fn sample_record(ts_ms: u64) -> AuditRecord {
     AuditRecord::ReferenceSnapshot {
         ts_ms,
         topic: "midpoint".to_string(),
-        fair_value: 0.51,
+        fair_value: Some(0.51),
         confidence: 0.93,
     }
 }
@@ -95,9 +94,9 @@ fn decision_record(ts_ms: u64) -> AuditRecord {
         ts_ms,
         ruleset_id: "ruleset-a".to_string(),
         state: SelectorState::Freeze,
-        market_id: "market-1".to_string(),
-        instrument_id: "instrument-1".to_string(),
-        reason: "venue unhealthy".to_string(),
+        market_id: Some("market-1".to_string()),
+        instrument_id: Some("instrument-1".to_string()),
+        reason: Some("venue unhealthy".to_string()),
     }
 }
 
@@ -108,7 +107,7 @@ fn history_record(ts_ms: u64) -> AuditRecord {
         instrument_id: "instrument-1".to_string(),
         client_order_id: "order-1".to_string(),
         event: TradeEventKind::Filled,
-        pnl_delta: 12.5,
+        pnl_delta: Some(12.5),
     }
 }
 
@@ -117,7 +116,16 @@ fn status_record(ts_ms: u64) -> AuditRecord {
         ts_ms,
         venue_name: "polymarket".to_string(),
         status: VenueHealthState::Disabled,
-        reason: "maintenance".to_string(),
+        reason: Some("maintenance".to_string()),
+    }
+}
+
+fn pnl_snapshot_record(ts_ms: u64) -> AuditRecord {
+    AuditRecord::PnlSnapshot {
+        ts_ms,
+        strategy_id: "strategy-1".to_string(),
+        realized_pnl: 17.5,
+        unrealized_pnl: Some(-2.25),
     }
 }
 
@@ -170,11 +178,32 @@ async fn wait_for_attempts(uploader: &MockUploader, expected: usize) {
 async fn audit_records_serialize_as_jsonl() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([true]);
-    let (audit_tx, audit_rx) = unbounded_channel::<AuditRecord>();
-    let worker = spawn_audit_worker(audit_rx, uploader.clone(), config(dir.path()));
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.roll_max_bytes = 10_000;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
 
     audit_tx.send(sample_record(100)).unwrap();
     audit_tx.send(decision_record(200)).unwrap();
+    audit_tx
+        .send(AuditRecord::VenueStatus {
+            ts_ms: 300,
+            venue_name: "kalshi".to_string(),
+            status: VenueHealthState::Healthy,
+            reason: None,
+        })
+        .unwrap();
+    audit_tx
+        .send(AuditRecord::TradeHistory {
+            ts_ms: 400,
+            strategy_id: "strategy-1".to_string(),
+            instrument_id: "instrument-1".to_string(),
+            client_order_id: "order-2".to_string(),
+            event: TradeEventKind::Accepted,
+            pnl_delta: None,
+        })
+        .unwrap();
+    audit_tx.send(pnl_snapshot_record(500)).unwrap();
     drop(audit_tx);
 
     worker.shutdown().await.unwrap();
@@ -187,19 +216,28 @@ async fn audit_records_serialize_as_jsonl() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
 
-    assert_eq!(lines.len(), 2);
+    assert_eq!(lines.len(), 5);
     assert_eq!(lines[0]["kind"], "reference_snapshot");
     assert_eq!(lines[0]["topic"], "midpoint");
+    assert_eq!(lines[0]["fair_value"], 0.51);
     assert_eq!(lines[1]["kind"], "selector_decision");
     assert_eq!(lines[1]["state"], "freeze");
     assert_eq!(lines[1]["reason"], "venue unhealthy");
+    assert_eq!(lines[1]["market_id"], "market-1");
+    assert_eq!(lines[1]["instrument_id"], "instrument-1");
+    assert_eq!(lines[2]["kind"], "venue_status");
+    assert!(lines[2]["reason"].is_null());
+    assert_eq!(lines[3]["kind"], "trade_history");
+    assert!(lines[3]["pnl_delta"].is_null());
+    assert_eq!(lines[4]["kind"], "pnl_snapshot");
+    assert_eq!(lines[4]["unrealized_pnl"], -2.25);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn rolled_audit_files_are_uploaded_via_async_uploader_trait() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([true, true, true]);
-    let (audit_tx, audit_rx) = unbounded_channel::<AuditRecord>();
+    let (audit_tx, audit_rx) = audit_channel();
     let mut cfg = config(dir.path());
     cfg.roll_max_bytes = 1;
     let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
@@ -239,7 +277,7 @@ fn s3_key_template_is_date_and_node_partitioned() {
 async fn failed_upload_keeps_local_file_for_retry() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([false, true]);
-    let (audit_tx, audit_rx) = unbounded_channel::<AuditRecord>();
+    let (audit_tx, audit_rx) = audit_channel();
     let mut cfg = config(dir.path());
     cfg.roll_max_bytes = 1;
     let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
@@ -266,7 +304,7 @@ async fn failed_upload_keeps_local_file_for_retry() {
 async fn backlog_limit_breach_returns_error() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([false, false, false, false]);
-    let (audit_tx, audit_rx) = unbounded_channel::<AuditRecord>();
+    let (audit_tx, audit_rx) = audit_channel();
     let mut cfg = config(dir.path());
     cfg.roll_max_bytes = 1;
     cfg.max_local_backlog_bytes = 150;
@@ -290,7 +328,7 @@ async fn backlog_limit_breach_returns_error() {
 async fn shutdown_flushes_final_file_and_attempts_final_upload() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([true]);
-    let (audit_tx, audit_rx) = unbounded_channel::<AuditRecord>();
+    let (audit_tx, audit_rx) = audit_channel();
     let mut cfg = config(dir.path());
     cfg.roll_max_bytes = 10_000;
     let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
@@ -309,4 +347,81 @@ async fn shutdown_flushes_final_file_and_attempts_final_upload() {
     );
     assert_eq!(jsonl_files(dir.path()).len(), 0);
     assert_eq!(calls[0].contents.lines().count(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_rejects_sends_after_shutdown_begins() {
+    let dir = tempdir().unwrap();
+    let uploader = MockUploader::with_outcomes([true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let held_sender = audit_tx.clone();
+    let mut cfg = config(dir.path());
+    cfg.roll_max_bytes = 10_000;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+
+    let shutdown_task = tokio::spawn(async move { worker.shutdown().await });
+    tokio::task::yield_now().await;
+
+    assert!(
+        held_sender.send(sample_record(200)).is_err(),
+        "send after shutdown began should be rejected"
+    );
+    drop(audit_tx);
+    drop(held_sender);
+
+    shutdown_task.await.unwrap().unwrap();
+
+    let calls = uploader.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].contents.lines().count(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn idle_open_file_rolls_on_age_even_when_ship_interval_is_longer() {
+    let dir = tempdir().unwrap();
+    let uploader = MockUploader::with_outcomes([true, true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.ship_interval = Duration::from_secs(3);
+    cfg.roll_max_secs = 1;
+    cfg.roll_max_bytes = 10_000;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+
+    wait_for_attempts(&uploader, 1).await;
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+
+    let calls = uploader.calls();
+    assert!(
+        !calls.is_empty(),
+        "expected at least one upload after age-based rolling"
+    );
+    assert_eq!(calls[0].contents.lines().count(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_append_failure_is_fail_closed() {
+    let dir = tempdir().unwrap();
+    let blocked_spool_path = dir.path().join("blocked-spool");
+    fs::write(&blocked_spool_path, b"not a directory").unwrap();
+
+    let uploader = MockUploader::with_outcomes([true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(&blocked_spool_path);
+    cfg.roll_max_bytes = 10_000;
+    let worker = spawn_audit_worker(audit_rx, uploader, cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+    drop(audit_tx);
+
+    let error = worker.shutdown().await.unwrap_err();
+    assert!(
+        error.to_string().contains("failed to create audit spool directory")
+            || error.to_string().contains("failed to append audit record"),
+        "{error:#}"
+    );
 }

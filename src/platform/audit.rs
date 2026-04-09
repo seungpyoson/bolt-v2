@@ -2,7 +2,9 @@ use std::{
     collections::VecDeque,
     fs,
     future::Future,
+    pin::Pin,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -16,7 +18,7 @@ use tokio::{
         oneshot,
     },
     task::JoinHandle,
-    time::{Instant, MissedTickBehavior, interval},
+    time::{Instant, MissedTickBehavior, Sleep, interval, sleep_until},
 };
 
 use crate::raw_types::JsonlAppender;
@@ -52,22 +54,22 @@ pub enum AuditRecord {
     ReferenceSnapshot {
         ts_ms: u64,
         topic: String,
-        fair_value: f64,
+        fair_value: Option<f64>,
         confidence: f64,
     },
     VenueStatus {
         ts_ms: u64,
         venue_name: String,
         status: VenueHealthState,
-        reason: String,
+        reason: Option<String>,
     },
     SelectorDecision {
         ts_ms: u64,
         ruleset_id: String,
         state: SelectorState,
-        market_id: String,
-        instrument_id: String,
-        reason: String,
+        market_id: Option<String>,
+        instrument_id: Option<String>,
+        reason: Option<String>,
     },
     TradeHistory {
         ts_ms: u64,
@@ -75,13 +77,13 @@ pub enum AuditRecord {
         instrument_id: String,
         client_order_id: String,
         event: TradeEventKind,
-        pnl_delta: f64,
+        pnl_delta: Option<f64>,
     },
     PnlSnapshot {
         ts_ms: u64,
         strategy_id: String,
         realized_pnl: f64,
-        unrealized_pnl: f64,
+        unrealized_pnl: Option<f64>,
     },
 }
 
@@ -155,13 +157,70 @@ impl AuditUploader for AwsCliUploader {
     }
 }
 
-pub type AuditSender = UnboundedSender<AuditRecord>;
-pub type AuditReceiver = UnboundedReceiver<AuditRecord>;
+#[derive(Debug)]
+pub struct AuditSendError(pub AuditRecord);
+
+impl std::fmt::Display for AuditSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "audit channel is closed")
+    }
+}
+
+impl std::error::Error for AuditSendError {}
+
+#[derive(Debug)]
+struct AuditChannelState {
+    closed: bool,
+    tx: UnboundedSender<AuditRecord>,
+}
+
+#[derive(Clone, Debug)]
+struct AuditChannelCloser {
+    state: Arc<Mutex<AuditChannelState>>,
+}
+
+impl AuditChannelCloser {
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditSender {
+    state: Arc<Mutex<AuditChannelState>>,
+}
+
+impl AuditSender {
+    pub fn send(&self, record: AuditRecord) -> Result<(), AuditSendError> {
+        let state = self.state.lock().expect("audit channel mutex poisoned");
+        if state.closed {
+            return Err(AuditSendError(record));
+        }
+
+        state.tx.send(record).map_err(|error| AuditSendError(error.0))
+    }
+}
+
+pub struct AuditReceiver {
+    rx: UnboundedReceiver<AuditRecord>,
+    closer: AuditChannelCloser,
+}
 
 pub fn audit_channel() -> (AuditSender, AuditReceiver) {
     // This channel is intentionally unbounded. NautilusTrader producers cannot await, so
     // backpressure is enforced by local spool growth and max_local_backlog_bytes instead.
-    unbounded_channel::<AuditRecord>()
+    let (tx, rx) = unbounded_channel::<AuditRecord>();
+    let state = Arc::new(Mutex::new(AuditChannelState { closed: false, tx }));
+    let closer = AuditChannelCloser {
+        state: Arc::clone(&state),
+    };
+
+    (
+        AuditSender { state },
+        AuditReceiver { rx, closer },
+    )
 }
 
 pub fn build_s3_key(
@@ -176,11 +235,16 @@ pub fn build_s3_key(
 
 pub struct AuditWorkerHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
+    audit_closer: Option<AuditChannelCloser>,
     join_handle: JoinHandle<Result<()>>,
 }
 
 impl AuditWorkerHandle {
     pub async fn shutdown(mut self) -> Result<()> {
+        if let Some(audit_closer) = self.audit_closer.take() {
+            audit_closer.close();
+        }
+
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
         }
@@ -201,10 +265,12 @@ where
     U: AuditUploader,
 {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let audit_closer = audit_rx.closer.clone();
     let join_handle = tokio::spawn(run_audit_worker(audit_rx, shutdown_rx, uploader, config));
 
     AuditWorkerHandle {
         shutdown_tx: Some(shutdown_tx),
+        audit_closer: Some(audit_closer),
         join_handle,
     }
 }
@@ -415,6 +481,14 @@ where
 
         Ok(())
     }
+
+    fn next_roll_deadline(&self) -> Option<Instant> {
+        self.current_file.as_ref().map(|file| {
+            file.opened_at
+                .checked_add(Duration::from_secs(self.config.roll_max_secs))
+                .unwrap_or(file.opened_at)
+        })
+    }
 }
 
 async fn run_audit_worker<U>(
@@ -430,21 +504,34 @@ where
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut state = AuditSpoolState::new(config, uploader);
+    let mut roll_timer = Box::pin(sleep_until(dormant_roll_deadline()));
+    reset_roll_timer(roll_timer.as_mut(), &state);
 
     loop {
         tokio::select! {
             biased;
             _ = &mut shutdown_rx => {
+                audit_rx.closer.close();
+                audit_rx.rx.close();
                 drain_audit_channel(&mut audit_rx, &mut state)?;
                 break;
+            }
+            _ = &mut roll_timer => {
+                state.flush_expired_open_file()?;
+                state.upload_ready_files(false).await?;
+                reset_roll_timer(roll_timer.as_mut(), &state);
             }
             _ = ticker.tick() => {
                 state.flush_expired_open_file()?;
                 state.upload_ready_files(false).await?;
+                reset_roll_timer(roll_timer.as_mut(), &state);
             }
-            maybe_record = audit_rx.recv() => {
+            maybe_record = audit_rx.rx.recv() => {
                 match maybe_record {
-                    Some(record) => state.append_record(record)?,
+                    Some(record) => {
+                        state.append_record(record)?;
+                        reset_roll_timer(roll_timer.as_mut(), &state);
+                    }
                     None => break,
                 }
             }
@@ -469,11 +556,23 @@ where
     U: AuditUploader,
 {
     loop {
-        match audit_rx.try_recv() {
+        match audit_rx.rx.try_recv() {
             Ok(record) => state.append_record(record)?,
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
         }
     }
+}
+
+fn reset_roll_timer<U>(roll_timer: Pin<&mut Sleep>, state: &AuditSpoolState<U>)
+where
+    U: AuditUploader,
+{
+    let deadline = state.next_roll_deadline().unwrap_or_else(dormant_roll_deadline);
+    roll_timer.reset(deadline);
+}
+
+fn dormant_roll_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(60 * 60 * 24 * 365)
 }
 
 fn local_part_path(spool_dir: &Path, date: &str, sequence: u64) -> PathBuf {

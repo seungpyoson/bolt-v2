@@ -1,5 +1,5 @@
-use crate::config::{Config, ReferenceVenueKind};
-use crate::live_config::LiveLocalConfig;
+use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
+use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
 use nautilus_model::types::Quantity;
 use std::collections::{hash_map::Entry, HashMap};
 use std::str::FromStr;
@@ -579,7 +579,10 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
     );
 
     if config.rulesets.is_empty() {
-        if !config.reference.publish_topic.trim().is_empty() || !config.reference.venues.is_empty()
+        let default_reference = LiveReferenceInput::default();
+        if !config.reference.publish_topic.trim().is_empty()
+            || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || !config.reference.venues.is_empty()
         {
             push_error(
                 &mut errors,
@@ -1056,6 +1059,40 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         );
     }
 
+    if config.rulesets.is_empty() {
+        let default_reference = ReferenceConfig::default();
+        if !config.reference.publish_topic.trim().is_empty()
+            || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || !config.reference.venues.is_empty()
+        {
+            push_error(
+                &mut errors,
+                "reference",
+                "orphaned_phase1_reference",
+                "reference must not be configured unless at least one ruleset is enabled"
+                    .to_string(),
+            );
+        }
+
+        if config.audit.is_some() {
+            push_error(
+                &mut errors,
+                "audit",
+                "orphaned_phase1_audit",
+                "audit must not be configured unless at least one ruleset is enabled".to_string(),
+            );
+        }
+    }
+
+    if !config.rulesets.is_empty() && config.audit.is_none() {
+        push_error(
+            &mut errors,
+            "audit",
+            "missing_audit",
+            "audit must be configured when rulesets are enabled".to_string(),
+        );
+    }
+
     if !config.rulesets.is_empty() {
         check_non_empty(
             &mut errors,
@@ -1071,8 +1108,30 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
 
     let mut reference_name_indices: HashMap<&str, usize> = HashMap::new();
     for (i, venue) in config.reference.venues.iter().enumerate() {
+        let name_field = format!("reference.venues[{i}].name");
+        check_non_empty(&mut errors, &name_field, &venue.name);
+
         let instrument_id_field = format!("reference.venues[{i}].instrument_id");
         check_non_empty(&mut errors, &instrument_id_field, &venue.instrument_id);
+
+        let weight_field = format!("reference.venues[{i}].base_weight");
+        check_positive_finite_f64(&mut errors, &weight_field, venue.base_weight);
+
+        let stale_field = format!("reference.venues[{i}].stale_after_ms");
+        check_positive_u64(&mut errors, &stale_field, venue.stale_after_ms);
+
+        let disable_field = format!("reference.venues[{i}].disable_after_ms");
+        if venue.disable_after_ms < venue.stale_after_ms {
+            push_error(
+                &mut errors,
+                &disable_field,
+                "invalid_disable_after_ms",
+                format!(
+                    "{disable_field} must be >= {stale_field}, got {} < {}",
+                    venue.disable_after_ms, venue.stale_after_ms
+                ),
+            );
+        }
 
         if let Some(first_index) = first_seen_index(&mut reference_name_indices, &venue.name, i) {
             push_error(
@@ -1133,7 +1192,11 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         }
     }
 
+    let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, ruleset) in config.rulesets.iter().enumerate() {
+        let id_field = format!("rulesets[{i}].id");
+        check_non_empty(&mut errors, &id_field, &ruleset.id);
+
         let tag_slug_field = format!("rulesets[{i}].tag_slug");
         check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
 
@@ -1171,6 +1234,18 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
 
         let min_liquidity_field = format!("rulesets[{i}].min_liquidity_num");
         check_non_negative_finite_f64(&mut errors, &min_liquidity_field, ruleset.min_liquidity_num);
+
+        if let Some(first_index) = first_seen_index(&mut ruleset_id_indices, &ruleset.id, i) {
+            push_error(
+                &mut errors,
+                "rulesets",
+                "duplicate_ruleset_id",
+                format!(
+                    "rulesets[{i}] has duplicate id \"{}\" (first defined at rulesets[{first_index}])",
+                    ruleset.id
+                ),
+            );
+        }
 
         if let Some(required_kind) = implied_reference_venue_kind(&ruleset.resolution_basis) {
             let has_matching_kind = config

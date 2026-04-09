@@ -682,6 +682,39 @@ fn phase1_reference_rejected_when_rulesets_are_missing() {
 }
 
 #[test]
+fn phase1_reference_min_publish_interval_only_rejected_when_rulesets_are_missing() {
+    let toml = valid_phase1_toml()
+        .replace("[[rulesets]]\n", "")
+        .replace("id = \"PRIMARY\"\n", "")
+        .replace("venue = \"polymarket\"\n", "")
+        .replace("tag_slug = \"bitcoin\"\n", "")
+        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
+        .replace("min_time_to_expiry_secs = 60\n", "")
+        .replace("max_time_to_expiry_secs = 900\n", "")
+        .replace("min_liquidity_num = 1000\n", "")
+        .replace("require_accepting_orders = true\n", "")
+        .replace("freeze_before_end_secs = 30\n", "")
+        .replace("publish_topic = \"platform.reference.default\"\n", "")
+        .replace("[[reference.venues]]\n", "")
+        .replace("name = \"BINANCE-BTC\"\n", "")
+        .replace("type = \"binance\"\n", "")
+        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
+        .replace("base_weight = 0.35\n", "")
+        .replace("stale_after_ms = 1500\n", "")
+        .replace("disable_after_ms = 5000\n", "")
+        .replace("[audit]\n", "")
+        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
+        .replace("ship_interval_secs = 30\n", "")
+        .replace("roll_max_bytes = 1048576\n", "")
+        .replace("roll_max_secs = 300\n", "")
+        .replace("max_local_backlog_bytes = 10485760\n", "")
+        .replace("min_publish_interval_ms = 100", "min_publish_interval_ms = 250");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+}
+
+#[test]
 fn phase1_audit_rejected_when_rulesets_are_missing() {
     let toml = valid_phase1_toml()
         .replace("[[rulesets]]\n", "")
@@ -1385,6 +1418,171 @@ fn phase1_runtime_requires_reference_venues_when_one_ruleset_is_active() {
         .replace("disable_after_ms = 5000\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference.venues", "missing_reference_venues");
+}
+
+#[test]
+fn phase1_runtime_requires_audit_when_ruleset_is_configured() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("[audit]\n", "")
+        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
+        .replace("ship_interval_secs = 30\n", "")
+        .replace("roll_max_bytes = 1048576\n", "")
+        .replace("roll_max_secs = 300\n", "")
+        .replace("max_local_backlog_bytes = 10485760\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "audit", "missing_audit");
+}
+
+#[test]
+fn phase1_runtime_load_rejects_missing_audit_when_ruleset_is_configured() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("[audit]\n", "")
+        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
+        .replace("ship_interval_secs = 30\n", "")
+        .replace("roll_max_bytes = 1048576\n", "")
+        .replace("roll_max_secs = 300\n", "")
+        .replace("max_local_backlog_bytes = 10485760\n", "");
+    let error = runtime_load_error_for(&toml);
+    assert!(
+        error.contains("audit"),
+        "runtime load error should mention audit: {error}"
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_empty_ruleset_id() {
+    let toml = replace(&valid_phase1_runtime_toml(), "id = \"PRIMARY\"", "id = \"\"");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "rulesets[0].id", "empty");
+}
+
+#[test]
+fn phase1_runtime_rejects_duplicate_ruleset_ids() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+tag_slug = "bitcoin-2"
+resolution_basis = "binance_btcusdt_5m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "rulesets", "duplicate_ruleset_id");
+}
+
+#[test]
+fn phase1_runtime_load_rejects_duplicate_ruleset_ids() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+tag_slug = "bitcoin-2"
+resolution_basis = "binance_btcusdt_5m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+"#
+    );
+    let error = runtime_load_error_for(&toml);
+    assert!(
+        error.contains("duplicate id"),
+        "runtime load error should mention duplicate ruleset id: {error}"
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_orphaned_reference_min_publish_interval_without_rulesets() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("[[rulesets]]\n", "")
+        .replace("id = \"PRIMARY\"\n", "")
+        .replace("venue = \"polymarket\"\n", "")
+        .replace("tag_slug = \"bitcoin\"\n", "")
+        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
+        .replace("min_time_to_expiry_secs = 60\n", "")
+        .replace("max_time_to_expiry_secs = 900\n", "")
+        .replace("min_liquidity_num = 1000\n", "")
+        .replace("require_accepting_orders = true\n", "")
+        .replace("freeze_before_end_secs = 30\n", "")
+        .replace(
+            "publish_topic = \"platform.reference.default\"",
+            "publish_topic = \"\"",
+        )
+        .replace("[[reference.venues]]\n", "")
+        .replace("name = \"BINANCE-BTC\"\n", "")
+        .replace("type = \"binance\"\n", "")
+        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
+        .replace("base_weight = 0.35\n", "")
+        .replace("stale_after_ms = 1500\n", "")
+        .replace("disable_after_ms = 5000\n", "")
+        .replace("[audit]\n", "")
+        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
+        .replace("ship_interval_secs = 30\n", "")
+        .replace("roll_max_bytes = 1048576\n", "")
+        .replace("roll_max_secs = 300\n", "")
+        .replace("max_local_backlog_bytes = 10485760\n", "")
+        .replace("min_publish_interval_ms = 100", "min_publish_interval_ms = 250");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+}
+
+#[test]
+fn phase1_runtime_rejects_empty_reference_venue_name() {
+    let toml = replace(&valid_phase1_runtime_toml(), "name = \"BINANCE-BTC\"", "name = \"\"");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.venues[0].name", "empty");
+}
+
+#[test]
+fn phase1_runtime_rejects_reference_venue_non_positive_weight() {
+    let toml = replace(&valid_phase1_runtime_toml(), "base_weight = 0.35", "base_weight = 0.0");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].base_weight",
+        "not_positive_finite",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_reference_venue_non_positive_stale_after_ms() {
+    let toml = replace(&valid_phase1_runtime_toml(), "stale_after_ms = 1500", "stale_after_ms = 0");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].stale_after_ms",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_reference_venue_disable_after_ms_before_stale_after_ms() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "disable_after_ms = 5000",
+        "disable_after_ms = 1000",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].disable_after_ms",
+        "invalid_disable_after_ms",
+    );
 }
 
 #[test]

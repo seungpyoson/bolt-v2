@@ -495,6 +495,85 @@ fn contract_fails_when_disabled_supported_stream_has_data() {
 }
 
 #[test]
+fn contract_fails_when_disabled_conditional_stream_has_data() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let mut streams = base_polymarket_streams();
+    streams.get_mut("quotes").unwrap().capability = Capability::Conditional;
+    streams.get_mut("quotes").unwrap().policy = Some(Policy::Disabled);
+    streams.get_mut("trades").unwrap().policy = Some(Policy::Optional);
+    streams.get_mut("order_book_deltas").unwrap().policy = Some(Policy::Optional);
+    let contract = make_contract(streams);
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
+    let catalog_root = source_dir.path().join("catalog");
+    let inst = test_instrument_id();
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let ts = 1_000_000_000u64;
+            let quote = QuoteTick::new(
+                inst,
+                Price::from("0.55"),
+                Price::from("0.56"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                ts.into(),
+                ts.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(inst), &quote);
+
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let err = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        &output_root,
+        Some(&contract),
+    )
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(msg.contains("contract validation failed"), "{msg}");
+    assert!(msg.contains("fail_contract_violation"), "{msg}");
+    let report = assert_failure_report_only(&output_root);
+    assert_eq!(report.classes["quotes"].status, "fail_contract_violation");
+}
+
+#[test]
 fn contract_fails_when_unsupported_class_has_data() {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =

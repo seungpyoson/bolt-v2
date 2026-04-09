@@ -55,6 +55,12 @@ fn check_non_empty(errors: &mut Vec<ValidationError>, field: &'static str, value
             code: "empty",
             message: format!("{field} must not be empty"),
         });
+    } else if value.trim().is_empty() {
+        errors.push(ValidationError {
+            field,
+            code: "whitespace_only",
+            message: format!("{field} must not be whitespace-only"),
+        });
     }
 }
 
@@ -119,7 +125,9 @@ fn check_hex_prefixed(errors: &mut Vec<ValidationError>, field: &'static str, va
 
 fn check_positive_qty(errors: &mut Vec<ValidationError>, value: &str) {
     let field = "strategy.order_qty";
-    match value.parse::<f64>() {
+    // Strip underscores to match NT's Quantity::from_str behavior
+    let normalized: String = value.chars().filter(|&c| c != '_').collect();
+    match normalized.parse::<f64>() {
         Ok(v) if v.is_finite() && v > 0.0 => {}
         _ => {
             errors.push(ValidationError {
@@ -172,6 +180,22 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                 field: "exec_clients",
                 code: "duplicate_name",
                 message: format!("duplicate exec client name: \"{}\"", client.name),
+            });
+        }
+    }
+
+    // ── Duplicate strategy IDs ─────────────────────────────────
+    let mut strategy_ids: HashSet<&str> = HashSet::new();
+    for (i, strategy) in config.strategies.iter().enumerate() {
+        if let Some(sid) = strategy.config.get("strategy_id").and_then(|v| v.as_str())
+            && !strategy_ids.insert(sid)
+        {
+            errors.push(ValidationError {
+                field: "strategies",
+                code: "duplicate_strategy_id",
+                message: format!(
+                    "strategies[{i}] has duplicate strategy_id \"{sid}\""
+                ),
             });
         }
     }
@@ -658,5 +682,69 @@ passphrase = "/bolt/poly/passphrase2"
             !errors.iter().any(|e| e.code == "unknown_client_id"),
             "valid client_id should not produce errors"
         );
+    }
+
+    #[test]
+    fn duplicate_strategy_ids_rejected() {
+        let toml = format!(
+            "{}\n{}",
+            valid_runtime_toml(),
+            r#"
+[[strategies]]
+type = "exec_tester"
+[strategies.config]
+strategy_id = "EXEC_TESTER-001"
+instrument_id = "0xdef-67890.POLYMARKET"
+client_id = "POLYMARKET"
+order_qty = "10"
+"#
+        );
+        let errors = runtime_errors_for(&toml);
+        assert_has_error(&errors, "strategies", "duplicate_strategy_id");
+    }
+
+    // ── Codex adversarial review fixes ──────────────────────────
+
+    #[test]
+    fn order_qty_with_underscores_accepted() {
+        let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1_000\"");
+        let errors = errors_for(&toml);
+        assert_no_errors(&errors);
+    }
+
+    #[test]
+    fn whitespace_only_node_name_rejected() {
+        let toml = replace(&valid_toml(), "name = \"BOLT-V2-001\"", "name = \"   \"");
+        let errors = errors_for(&toml);
+        assert_has_error(&errors, "node.name", "whitespace_only");
+    }
+
+    #[test]
+    fn whitespace_only_trader_id_rejected() {
+        let toml = replace(&valid_toml(), "trader_id = \"BOLT-001\"", "trader_id = \"   \"");
+        let errors = errors_for(&toml);
+        assert_has_error(&errors, "node.trader_id", "whitespace_only");
+    }
+
+    #[test]
+    fn whitespace_only_strategy_id_rejected() {
+        let toml = replace(
+            &valid_toml(),
+            "strategy_id = \"EXEC_TESTER-001\"",
+            "strategy_id = \"   \"",
+        );
+        let errors = errors_for(&toml);
+        assert_has_error(&errors, "strategy.strategy_id", "whitespace_only");
+    }
+
+    #[test]
+    fn whitespace_only_account_id_rejected() {
+        let toml = replace(
+            &valid_toml(),
+            "account_id = \"POLYMARKET-001\"",
+            "account_id = \"   \"",
+        );
+        let errors = errors_for(&toml);
+        assert_has_error(&errors, "polymarket.account_id", "whitespace_only");
     }
 }

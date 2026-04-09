@@ -149,6 +149,31 @@ fn trader_id_with_empty_tag_part_rejected() {
 }
 
 #[test]
+fn trader_id_trailing_hyphen_rejected_via_rsplit() {
+    // "BOLT-V2-" → rsplit_once('-') → ("BOLT-V2", "") → empty tag
+    // split_once('-') would give ("BOLT", "V2-") which wrongly passes.
+    let toml = replace(
+        &valid_toml(),
+        "trader_id = \"BOLT-001\"",
+        "trader_id = \"BOLT-V2-\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.trader_id", "empty_tag_part");
+}
+
+#[test]
+fn trader_id_multi_hyphen_accepted() {
+    // "BOLT-V2-001" is valid: rsplit_once('-') → ("BOLT-V2", "001")
+    let toml = replace(
+        &valid_toml(),
+        "trader_id = \"BOLT-001\"",
+        "trader_id = \"BOLT-V2-001\"",
+    );
+    let errors = errors_for(&toml);
+    assert_no_errors(&errors);
+}
+
+#[test]
 fn account_id_without_hyphen_rejected() {
     let toml = replace(
         &valid_toml(),

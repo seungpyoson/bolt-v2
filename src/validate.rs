@@ -44,9 +44,14 @@ fn check_nt_ascii(errors: &mut Vec<ValidationError>, field: &'static str, value:
     }
 }
 
-/// Mirrors NT's NAME-TAG pattern: `check_nt_ascii` + must contain `-` with both
-/// parts non-empty.  Used for `TraderId`, `AccountId`, `StrategyId`.
-fn check_nt_name_tag(errors: &mut Vec<ValidationError>, field: &'static str, value: &str) {
+/// Shared hyphen-check logic. `split_fn` selects the split direction to
+/// match the exact NT constructor for each identifier type.
+fn check_nt_hyphenated(
+    errors: &mut Vec<ValidationError>,
+    field: &'static str,
+    value: &str,
+    split_fn: fn(&str) -> Option<(&str, &str)>,
+) {
     // Run the base ASCII checks first.  If any fail, don't pile on with
     // hyphen checks (the value is already structurally invalid).
     if value.is_empty() || value.trim().is_empty() || !value.is_ascii() {
@@ -54,8 +59,7 @@ fn check_nt_name_tag(errors: &mut Vec<ValidationError>, field: &'static str, val
         return;
     }
 
-    // Hyphen structure: split_once gives (name, tag).
-    match value.split_once('-') {
+    match split_fn(value) {
         None => {
             errors.push(ValidationError {
                 field,
@@ -85,6 +89,14 @@ fn check_nt_name_tag(errors: &mut Vec<ValidationError>, field: &'static str, val
         }
         Some(_) => {} // valid
     }
+}
+
+fn split_first_hyphen(s: &str) -> Option<(&str, &str)> {
+    s.split_once('-')
+}
+
+fn split_last_hyphen(s: &str) -> Option<(&str, &str)> {
+    s.rsplit_once('-')
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -257,7 +269,13 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
 
     // -- node --------------------------------------------------------
     check_nt_ascii(&mut errors, "node.name", &config.node.name);
-    check_nt_name_tag(&mut errors, "node.trader_id", &config.node.trader_id);
+    // NT TraderId uses rsplit_once('-')
+    check_nt_hyphenated(
+        &mut errors,
+        "node.trader_id",
+        &config.node.trader_id,
+        split_last_hyphen,
+    );
     check_allowlist(
         &mut errors,
         "node.environment",
@@ -294,20 +312,24 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         &config.polymarket.event_slug,
     );
     check_instrument_id(&mut errors, &config.polymarket.instrument_id);
-    check_nt_name_tag(
+    // NT AccountId uses split_once('-')
+    check_nt_hyphenated(
         &mut errors,
         "polymarket.account_id",
         &config.polymarket.account_id,
+        split_first_hyphen,
     );
     check_hex_prefixed(&mut errors, "polymarket.funder", &config.polymarket.funder);
 
     // -- strategy ----------------------------------------------------
     // StrategyId: must be NAME-TAG *or* literal "EXTERNAL"
     if config.strategy.strategy_id != "EXTERNAL" {
-        check_nt_name_tag(
+        // NT StrategyId uses rsplit_once('-')
+        check_nt_hyphenated(
             &mut errors,
             "strategy.strategy_id",
             &config.strategy.strategy_id,
+            split_last_hyphen,
         );
     }
     check_positive_qty(&mut errors, &config.strategy.order_qty);

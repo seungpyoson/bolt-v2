@@ -179,6 +179,15 @@ fn check_instrument_id(errors: &mut Vec<ValidationError>, field: &str, value: &s
                 "empty_symbol",
                 format!("symbol part before .POLYMARKET must not be empty, got \"{value}\""),
             );
+        } else if symbol.trim().is_empty() {
+            push_error(
+                errors,
+                field,
+                "whitespace_only_symbol",
+                format!(
+                    "symbol part before .POLYMARKET must not be whitespace-only, got \"{value}\""
+                ),
+            );
         }
     }
 }
@@ -212,11 +221,11 @@ fn check_strictly_positive_qty(errors: &mut Vec<ValidationError>, field: &str, v
             format!("must be a positive number, got \"{value}\""),
         ),
         Ok(_) => {}
-        Err(_) => push_error(
+        Err(e) => push_error(
             errors,
             field,
             "not_parseable",
-            format!("must be parseable by Quantity::from_str, got \"{value}\""),
+            format!("must be a valid Quantity, got \"{value}\" ({e})"),
         ),
     }
 }
@@ -412,6 +421,9 @@ fn first_seen_index<'a>(
 
 const VALID_ENVIRONMENTS: &[&str] = &["Live", "Sandbox"];
 const VALID_LOG_LEVELS: &[&str] = &["Trace", "Debug", "Info", "Warn", "Error", "Off"];
+const VALID_DATA_CLIENT_TYPES: &[&str] = &["polymarket"];
+const VALID_EXEC_CLIENT_TYPES: &[&str] = &["polymarket"];
+const VALID_STRATEGY_TYPES: &[&str] = &["exec_tester"];
 
 /// Validate a human-edited live local config before rendering.
 /// Returns all validation errors found, sorted by field path for deterministic output.
@@ -538,6 +550,14 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         &config.secrets.passphrase,
     );
 
+    if !config.streaming.catalog_path.trim().is_empty() {
+        check_positive_u64(
+            &mut errors,
+            "streaming.flush_interval_ms",
+            config.streaming.flush_interval_ms,
+        );
+    }
+
     errors.sort();
     errors
 }
@@ -607,9 +627,26 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         "node.delay_shutdown_secs",
         config.node.delay_shutdown_secs,
     );
+    if !config.streaming.catalog_path.trim().is_empty() {
+        check_positive_u64(
+            &mut errors,
+            "streaming.flush_interval_ms",
+            config.streaming.flush_interval_ms,
+        );
+    }
 
     let mut data_name_indices: HashMap<&str, usize> = HashMap::new();
     for (i, client) in config.data_clients.iter().enumerate() {
+        let name_field = format!("data_clients[{i}].name");
+        let type_field = format!("data_clients[{i}].type");
+        check_nt_ascii(&mut errors, &name_field, &client.name);
+        check_allowlist(
+            &mut errors,
+            &type_field,
+            &client.kind,
+            VALID_DATA_CLIENT_TYPES,
+            "unsupported_type",
+        );
         if let Some(first_index) = first_seen_index(&mut data_name_indices, &client.name, i) {
             push_error(
                 &mut errors,
@@ -644,11 +681,29 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                     ),
                 }
             }
+            if event_slugs.is_empty() {
+                push_error(
+                    &mut errors,
+                    &event_slugs_field,
+                    "empty",
+                    "must not be empty, got []".to_string(),
+                );
+            }
         }
     }
 
     let mut exec_name_indices: HashMap<&str, usize> = HashMap::new();
     for (i, client) in config.exec_clients.iter().enumerate() {
+        let name_field = format!("exec_clients[{i}].name");
+        let type_field = format!("exec_clients[{i}].type");
+        check_nt_ascii(&mut errors, &name_field, &client.name);
+        check_allowlist(
+            &mut errors,
+            &type_field,
+            &client.kind,
+            VALID_EXEC_CLIENT_TYPES,
+            "unsupported_type",
+        );
         if let Some(first_index) = first_seen_index(&mut exec_name_indices, &client.name, i) {
             push_error(
                 &mut errors,
@@ -731,12 +786,20 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
 
     let mut strategy_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, strategy) in config.strategies.iter().enumerate() {
+        let strategy_type_field = format!("strategies[{i}].type");
+        check_allowlist(
+            &mut errors,
+            &strategy_type_field,
+            &strategy.kind,
+            VALID_STRATEGY_TYPES,
+            "unsupported_type",
+        );
         match strategy.config.get("client_id") {
             None => push_error(
                 &mut errors,
-                "strategies",
+                &format!("strategies[{i}].config.client_id"),
                 "missing_client_id",
-                format!("strategies[{i}] is missing required client_id field"),
+                "is missing required string field".to_string(),
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.client_id");
@@ -766,9 +829,9 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         match strategy.config.get("strategy_id") {
             None => push_error(
                 &mut errors,
-                "strategies",
+                &format!("strategies[{i}].config.strategy_id"),
                 "missing_strategy_id",
-                format!("strategies[{i}] is missing required strategy_id field"),
+                "is missing required string field".to_string(),
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.strategy_id");
@@ -809,9 +872,9 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         match strategy.config.get("instrument_id") {
             None => push_error(
                 &mut errors,
-                "strategies",
+                &format!("strategies[{i}].config.instrument_id"),
                 "missing_instrument_id",
-                format!("strategies[{i}] is missing required instrument_id field"),
+                "is missing required string field".to_string(),
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.instrument_id");
@@ -831,9 +894,9 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         match strategy.config.get("order_qty") {
             None => push_error(
                 &mut errors,
-                "strategies",
+                &format!("strategies[{i}].config.order_qty"),
                 "missing_order_qty",
-                format!("strategies[{i}] is missing required order_qty field"),
+                "is missing required string field".to_string(),
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.order_qty");

@@ -83,16 +83,24 @@ fn default_streaming_flush_interval_ms() -> u64 {
     1_000
 }
 
+fn default_live_raw_capture_output_dir() -> String {
+    default_raw_capture_output_dir()
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveLocalConfig {
+    #[serde(default)]
     pub node: LiveNodeInput,
     #[serde(default)]
     pub logging: LiveLoggingInput,
     #[serde(default)]
     pub timeouts: LiveTimeoutsInput,
+    #[serde(default)]
     pub polymarket: LivePolymarketInput,
     #[serde(default)]
     pub strategy: LiveStrategyInput,
+    #[serde(default)]
     pub secrets: LiveSecretsInput,
     #[serde(default)]
     pub raw_capture: LiveRawCaptureInput,
@@ -101,6 +109,7 @@ pub struct LiveLocalConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveNodeInput {
     pub name: String,
     pub trader_id: String,
@@ -112,7 +121,20 @@ pub struct LiveNodeInput {
     pub save_state: bool,
 }
 
+impl Default for LiveNodeInput {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            trader_id: String::new(),
+            environment: default_environment(),
+            load_state: false,
+            save_state: false,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveLoggingInput {
     #[serde(default = "default_stdout_level")]
     pub stdout_level: String,
@@ -130,6 +152,7 @@ impl Default for LiveLoggingInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveTimeoutsInput {
     #[serde(default = "default_timeout_connection_secs")]
     pub connection_secs: u64,
@@ -159,6 +182,7 @@ impl Default for LiveTimeoutsInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LivePolymarketInput {
     #[serde(default = "default_client_name")]
     pub client_name: String,
@@ -180,7 +204,24 @@ pub struct LivePolymarketInput {
     pub ws_max_subscriptions: usize,
 }
 
+impl Default for LivePolymarketInput {
+    fn default() -> Self {
+        Self {
+            client_name: default_client_name(),
+            event_slug: String::new(),
+            instrument_id: String::new(),
+            account_id: String::new(),
+            funder: String::new(),
+            signature_type: default_signature_type(),
+            subscribe_new_markets: false,
+            update_instruments_interval_mins: default_update_instruments_interval_mins(),
+            ws_max_subscriptions: default_ws_max_subscriptions(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveStrategyInput {
     #[serde(default = "default_strategy_id")]
     pub strategy_id: String,
@@ -215,8 +256,12 @@ impl Default for LiveStrategyInput {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveSecretsInput {
+    // Whole-section defaults intentionally differ from serde field defaults.
+    // `Default::default()` here yields empty strings, while a present
+    // `[secrets]` section can still rely on field-level serde defaults.
     #[serde(default = "default_region")]
     pub region: String,
     #[serde(default)]
@@ -230,20 +275,22 @@ pub struct LiveSecretsInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveRawCaptureInput {
-    #[serde(default = "default_raw_capture_output_dir")]
+    #[serde(default = "default_live_raw_capture_output_dir")]
     pub output_dir: String,
 }
 
 impl Default for LiveRawCaptureInput {
     fn default() -> Self {
         Self {
-            output_dir: default_raw_capture_output_dir(),
+            output_dir: default_live_raw_capture_output_dir(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveStreamingInput {
     #[serde(default)]
     pub catalog_path: String,

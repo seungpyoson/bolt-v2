@@ -403,6 +403,68 @@ async fn failed_retained_upload_retries_on_next_ship_tick_not_failure_deadline()
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn failed_upload_immediately_starts_next_ready_file_without_retrying_failed_one() {
+    let dir = tempdir().unwrap();
+    let retained_dir = dir.path().join("date=1970-01-01");
+    fs::create_dir_all(&retained_dir).unwrap();
+    let failed_path = retained_dir.join("part-00000000000000000007.jsonl");
+    let ready_path = retained_dir.join("part-00000000000000000008.jsonl");
+    write_retained_jsonl(&failed_path, &[sample_record(1_000)]);
+    write_retained_jsonl(&ready_path, &[history_record(2_000)]);
+
+    let uploader = MockUploader::with_outcomes([
+        UploadOutcome::DelayFail(Duration::from_millis(50)),
+        UploadOutcome::Succeed,
+        UploadOutcome::Succeed,
+    ]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.ship_interval = Duration::from_millis(250);
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    wait_for_attempts(&uploader, 1).await;
+    tokio::time::timeout(Duration::from_millis(150), wait_for_attempts(&uploader, 2))
+        .await
+        .expect("ready retained file should start immediately after a non-final failure");
+
+    let calls_after_ready_upload = uploader.calls();
+    assert_eq!(calls_after_ready_upload[0].local_path, failed_path);
+    assert_eq!(calls_after_ready_upload[1].local_path, ready_path);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let calls_before_retry = uploader.calls();
+    assert_eq!(
+        calls_before_retry.len(),
+        2,
+        "failed upload should stay deferred until the next ship tick"
+    );
+    assert_eq!(
+        calls_before_retry
+            .iter()
+            .filter(|call| call.local_path == failed_path)
+            .count(),
+        1,
+        "failed file should not retry before the next ship tick"
+    );
+
+    tokio::time::timeout(Duration::from_millis(250), wait_for_attempts(&uploader, 3))
+        .await
+        .expect("failed upload should retry on the next ship tick");
+    assert_eq!(
+        uploader
+            .calls()
+            .iter()
+            .filter(|call| call.local_path == failed_path)
+            .count(),
+        2,
+        "failed file should retry once the next ship tick releases it"
+    );
+
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn failed_upload_retry_waits_for_ship_interval_even_if_earlier_roll_occurs() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([false, true, true]);

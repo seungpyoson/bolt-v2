@@ -421,7 +421,7 @@ where
         &mut self,
         upload_result: UploadAttemptResult,
         final_attempt: bool,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let active_upload = self
             .active_upload
             .take()
@@ -435,7 +435,7 @@ where
                         active_upload.file.path.display()
                     )
                 })?;
-                Ok(true)
+                Ok(())
             }
             UploadAttemptResult::Completed(Ok(Err(error))) => {
                 if final_attempt {
@@ -446,7 +446,7 @@ where
                     ))
                 } else {
                     self.requeue_failed_upload(active_upload.file);
-                    Ok(false)
+                    Ok(())
                 }
             }
             UploadAttemptResult::Completed(Err(error)) => Err(anyhow!(
@@ -465,7 +465,7 @@ where
                     ))
                 } else {
                     self.requeue_failed_upload(active_upload.file);
-                    Ok(false)
+                    Ok(())
                 }
             }
         }
@@ -493,7 +493,7 @@ where
                 Err(_) => UploadAttemptResult::TimedOut,
             };
             match self.complete_active_upload(upload_result, final_attempt) {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(error) if final_attempt => {
                     if first_error.is_none() {
                         first_error = Some(error);
@@ -660,9 +660,8 @@ where
                 state.active_upload.as_mut(),
                 state.config.upload_attempt_timeout,
             ) => {
-                if state.complete_active_upload(upload_result, false)? {
-                    state.start_next_upload(false)?;
-                }
+                state.complete_active_upload(upload_result, false)?;
+                state.start_next_upload(false)?;
             }
                 _ = &mut roll_timer => {
                     state.flush_expired_open_file()?;

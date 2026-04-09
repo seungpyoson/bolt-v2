@@ -720,6 +720,39 @@ fn phase1_reference_venue_name_must_be_non_empty() {
 }
 
 #[test]
+fn phase1_reference_publish_topic_must_be_non_empty_when_rulesets_are_configured() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "publish_topic = \"platform.reference.default\"",
+        "publish_topic = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "reference.publish_topic", "empty");
+}
+
+#[test]
+fn phase1_reference_min_publish_interval_ms_must_be_positive_when_rulesets_are_configured() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "min_publish_interval_ms = 100",
+        "min_publish_interval_ms = 0",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "reference.min_publish_interval_ms", "not_positive");
+}
+
+#[test]
+fn phase1_reference_venue_instrument_id_must_be_non_empty() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "instrument_id = \"BTCUSDT.BINANCE\"",
+        "instrument_id = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "reference.venues[0].instrument_id", "empty");
+}
+
+#[test]
 fn phase1_reference_venue_weight_must_be_positive_and_finite() {
     let toml = replace(
         &valid_phase1_toml(),
@@ -761,6 +794,166 @@ fn phase1_reference_venue_disable_after_ms_must_not_precede_stale_after_ms() {
         &errors,
         "reference.venues[0].disable_after_ms",
         "invalid_disable_after_ms",
+    );
+}
+
+#[test]
+fn phase1_ruleset_tag_slug_must_be_non_empty() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "tag_slug = \"bitcoin\"",
+        "tag_slug = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "rulesets[0].tag_slug", "empty");
+}
+
+#[test]
+fn phase1_ruleset_resolution_basis_must_be_non_empty() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "rulesets[0].resolution_basis", "empty");
+}
+
+#[test]
+fn phase1_ruleset_min_time_to_expiry_secs_must_be_positive() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "min_time_to_expiry_secs = 60",
+        "min_time_to_expiry_secs = 0",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].min_time_to_expiry_secs",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_ruleset_max_time_to_expiry_secs_must_be_positive() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "max_time_to_expiry_secs = 900",
+        "max_time_to_expiry_secs = 0",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].max_time_to_expiry_secs",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_ruleset_max_time_to_expiry_secs_must_not_be_less_than_min_time_to_expiry_secs() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "max_time_to_expiry_secs = 900",
+        "max_time_to_expiry_secs = 30",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].max_time_to_expiry_secs",
+        "invalid_max_time_to_expiry_secs",
+    );
+}
+
+#[test]
+fn phase1_ruleset_min_liquidity_num_must_be_non_negative_and_finite() {
+    let negative = replace(
+        &valid_phase1_toml(),
+        "min_liquidity_num = 1000",
+        "min_liquidity_num = -1.0",
+    );
+    let negative_errors = errors_for(&negative);
+    assert_has_error(
+        &negative_errors,
+        "rulesets[0].min_liquidity_num",
+        "not_non_negative_finite",
+    );
+
+    let nan = replace(
+        &valid_phase1_toml(),
+        "min_liquidity_num = 1000",
+        "min_liquidity_num = nan",
+    );
+    let nan_errors = errors_for(&nan);
+    assert_has_error(
+        &nan_errors,
+        "rulesets[0].min_liquidity_num",
+        "not_non_negative_finite",
+    );
+}
+
+#[test]
+fn phase1_audit_paths_must_be_non_empty() {
+    let local_dir = replace(
+        &valid_phase1_toml(),
+        "local_dir = \"var/audit\"",
+        "local_dir = \"\"",
+    );
+    let local_dir_errors = errors_for(&local_dir);
+    assert_has_error(&local_dir_errors, "audit.local_dir", "empty");
+
+    let s3_uri = replace(
+        &valid_phase1_toml(),
+        "s3_uri = \"s3://bolt-runtime-history/phase1\"",
+        "s3_uri = \"\"",
+    );
+    let s3_uri_errors = errors_for(&s3_uri);
+    assert_has_error(&s3_uri_errors, "audit.s3_uri", "empty");
+}
+
+#[test]
+fn phase1_audit_intervals_and_limits_must_be_positive() {
+    let ship_interval = replace(
+        &valid_phase1_toml(),
+        "ship_interval_secs = 30",
+        "ship_interval_secs = 0",
+    );
+    let ship_interval_errors = errors_for(&ship_interval);
+    assert_has_error(
+        &ship_interval_errors,
+        "audit.ship_interval_secs",
+        "not_positive",
+    );
+
+    let roll_max_bytes = replace(
+        &valid_phase1_toml(),
+        "roll_max_bytes = 1048576",
+        "roll_max_bytes = 0",
+    );
+    let roll_max_bytes_errors = errors_for(&roll_max_bytes);
+    assert_has_error(
+        &roll_max_bytes_errors,
+        "audit.roll_max_bytes",
+        "not_positive",
+    );
+
+    let roll_max_secs = replace(
+        &valid_phase1_toml(),
+        "roll_max_secs = 300",
+        "roll_max_secs = 0",
+    );
+    let roll_max_secs_errors = errors_for(&roll_max_secs);
+    assert_has_error(&roll_max_secs_errors, "audit.roll_max_secs", "not_positive");
+
+    let backlog = replace(
+        &valid_phase1_toml(),
+        "max_local_backlog_bytes = 10485760",
+        "max_local_backlog_bytes = 0",
+    );
+    let backlog_errors = errors_for(&backlog);
+    assert_has_error(
+        &backlog_errors,
+        "audit.max_local_backlog_bytes",
+        "not_positive",
     );
 }
 // ════════════════════════════════════════════════════════════════

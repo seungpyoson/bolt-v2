@@ -42,7 +42,11 @@ pub fn select_market(ruleset: &RulesetConfig, candidates: &[CandidateMarket]) ->
         .filter(|market| market.seconds_to_end <= ruleset.max_time_to_expiry_secs)
         .cloned()
         .collect();
-    eligible.sort_by(|lhs, rhs| rhs.liquidity_num.total_cmp(&lhs.liquidity_num));
+    eligible.sort_by(|lhs, rhs| {
+        rhs.liquidity_num
+            .total_cmp(&lhs.liquidity_num)
+            .then_with(|| lhs.market_id.cmp(&rhs.market_id))
+    });
 
     let state = match eligible.into_iter().next() {
         None => SelectionState::Idle {

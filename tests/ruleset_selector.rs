@@ -88,6 +88,27 @@ fn selects_best_eligible_market_within_ruleset_window() {
 }
 
 #[test]
+fn selects_deterministic_winner_when_liquidity_ties() {
+    let ruleset = ruleset();
+    let candidates = vec![
+        candidate("market-b", "binance_btcusdt_1m", 7_500.0, 1_200),
+        candidate("market-a", "binance_btcusdt_1m", 7_500.0, 1_200),
+    ];
+
+    let decision = select_market(&ruleset, &candidates);
+
+    assert_eq!(
+        decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Active {
+                market: candidate("market-a", "binance_btcusdt_1m", 7_500.0, 1_200),
+            },
+        }
+    );
+}
+
+#[test]
 fn returns_idle_when_no_market_is_eligible() {
     let ruleset = ruleset();
     let candidates = vec![
@@ -134,6 +155,30 @@ fn enters_freeze_state_near_market_end() {
             ruleset_id: "btc-5m".to_string(),
             state: SelectionState::Freeze {
                 market: candidate("market-freeze", "binance_btcusdt_1m", 9_000.0, 250),
+                reason: "freeze window".to_string(),
+            },
+        }
+    );
+}
+
+#[test]
+fn enters_freeze_state_at_exact_freeze_boundary() {
+    let ruleset = ruleset();
+    let candidates = vec![candidate(
+        "market-freeze-boundary",
+        "binance_btcusdt_1m",
+        9_000.0,
+        300,
+    )];
+
+    let decision = select_market(&ruleset, &candidates);
+
+    assert_eq!(
+        decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Freeze {
+                market: candidate("market-freeze-boundary", "binance_btcusdt_1m", 9_000.0, 300),
                 reason: "freeze window".to_string(),
             },
         }

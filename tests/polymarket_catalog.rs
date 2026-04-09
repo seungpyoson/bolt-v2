@@ -106,6 +106,45 @@ fn test_gamma_client(addr: SocketAddr) -> PolymarketGammaRawHttpClient {
     PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap()
 }
 
+async fn load_markets_from_event_markets(
+    markets: Vec<Value>,
+) -> (
+    Vec<bolt_v2::platform::ruleset::CandidateMarket>,
+    Arc<AtomicUsize>,
+) {
+    let response_body = json!([
+        {
+            "id": "event-1",
+            "slug": "bitcoin",
+            "title": "Bitcoin 5m",
+            "markets": markets
+        }
+    ]);
+    let (addr, request_count) = spawn_test_server(response_body).await;
+    let client = test_gamma_client(addr);
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset(), &client)
+        .await
+        .unwrap();
+
+    (markets, request_count)
+}
+
+fn valid_market(end_date: String) -> Value {
+    json!({
+        "id": "market-good",
+        "questionID": "0xquestion1",
+        "conditionId": "0xcondition1",
+        "clobTokenIds": "[\"111\",\"222\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
+        "acceptingOrders": true,
+        "liquidityNum": 4567.0,
+        "endDate": end_date,
+        "slug": "market-good"
+    })
+}
+
 #[test]
 fn parses_chainlink_basis_from_structured_resolution_source() {
     assert_eq!(
@@ -155,47 +194,23 @@ fn parses_chainlink_basis_from_known_description_patterns() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
-    let response_body = json!([
-        {
-            "id": "event-1",
-            "slug": "bitcoin",
-            "title": "Bitcoin 5m",
-            "markets": [
-                {
-                    "id": "market-good",
-                    "questionID": "0xquestion1",
-                    "conditionId": "0xcondition1",
-                    "clobTokenIds": "[\"111\",\"222\"]",
-                    "outcomes": "[\"Yes\",\"No\"]",
-                    "question": "Will BTC finish green?",
-                    "description": "The resolution source for this market is Binance spot BTC/USDT data.",
-                    "acceptingOrders": true,
-                    "liquidityNum": 4567.0,
-                    "endDate": end_date,
-                    "slug": "market-good"
-                },
-                {
-                    "id": "market-missing-basis",
-                    "questionID": "0xquestion2",
-                    "conditionId": "0xcondition2",
-                    "clobTokenIds": "[\"333\",\"444\"]",
-                    "outcomes": "[\"Yes\",\"No\"]",
-                    "question": "Will BTC finish red?",
-                    "description": "No known basis here.",
-                    "acceptingOrders": true,
-                    "liquidityNum": 9999.0,
-                    "endDate": end_date,
-                    "slug": "market-missing-basis"
-                }
-            ]
-        }
-    ]);
-    let (addr, request_count) = spawn_test_server(response_body).await;
-    let client = test_gamma_client(addr);
-
-    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset(), &client)
-        .await
-        .unwrap();
+    let (markets, request_count) = load_markets_from_event_markets(vec![
+        valid_market(end_date.clone()),
+        json!({
+            "id": "market-missing-basis",
+            "questionID": "0xquestion2",
+            "conditionId": "0xcondition2",
+            "clobTokenIds": "[\"333\",\"444\"]",
+            "outcomes": "[\"Yes\",\"No\"]",
+            "question": "Will BTC finish red?",
+            "description": "No known basis here.",
+            "acceptingOrders": true,
+            "liquidityNum": 9999.0,
+            "endDate": end_date,
+            "slug": "market-missing-basis"
+        }),
+    ])
+    .await;
 
     assert_eq!(request_count.load(Ordering::Relaxed), 1);
     assert_eq!(markets.len(), 1);
@@ -206,4 +221,111 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert!(markets[0].accepting_orders);
     assert_eq!(markets[0].liquidity_num, 4567.0);
     assert!((1190..=1200).contains(&markets[0].seconds_to_end));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_catalog_row_with_invalid_end_date() {
+    let (markets, request_count) = load_markets_from_event_markets(vec![json!({
+        "id": "market-invalid-end-date",
+        "questionID": "0xquestion3",
+        "conditionId": "0xcondition3",
+        "clobTokenIds": "[\"111\",\"222\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
+        "acceptingOrders": true,
+        "liquidityNum": 4567.0,
+        "endDate": "not-a-date",
+        "slug": "market-invalid-end-date"
+    })])
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert!(markets.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_catalog_row_with_missing_accepting_orders() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets(vec![json!({
+        "id": "market-missing-accepting-orders",
+        "questionID": "0xquestion4",
+        "conditionId": "0xcondition4",
+        "clobTokenIds": "[\"111\",\"222\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
+        "liquidityNum": 4567.0,
+        "endDate": end_date,
+        "slug": "market-missing-accepting-orders"
+    })])
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert!(markets.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_catalog_row_with_missing_liquidity_num() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets(vec![json!({
+        "id": "market-missing-liquidity",
+        "questionID": "0xquestion5",
+        "conditionId": "0xcondition5",
+        "clobTokenIds": "[\"111\",\"222\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
+        "acceptingOrders": true,
+        "endDate": end_date,
+        "slug": "market-missing-liquidity"
+    })])
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert!(markets.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_catalog_row_with_malformed_clob_token_ids() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets(vec![json!({
+        "id": "market-malformed-clob-token-ids",
+        "questionID": "0xquestion6",
+        "conditionId": "0xcondition6",
+        "clobTokenIds": "not-json",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
+        "acceptingOrders": true,
+        "liquidityNum": 4567.0,
+        "endDate": end_date,
+        "slug": "market-malformed-clob-token-ids"
+    })])
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert!(markets.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_catalog_row_with_unknown_basis() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets(vec![json!({
+        "id": "market-unknown-basis",
+        "questionID": "0xquestion7",
+        "conditionId": "0xcondition7",
+        "clobTokenIds": "[\"111\",\"222\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "No known basis here.",
+        "acceptingOrders": true,
+        "liquidityNum": 4567.0,
+        "endDate": end_date,
+        "slug": "market-unknown-basis"
+    })])
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert!(markets.is_empty());
 }

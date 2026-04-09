@@ -603,7 +603,115 @@ fn multiple_errors_accumulated_not_just_first() {
 // ════════════════════════════════════════════════════════════════
 // Phase 1 render-time validation
 // ════════════════════════════════════════════════════════════════
+#[test]
+fn phase1_ruleset_venue_unknown_value_rejected_during_parse() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "venue = \"polymarket\"",
+        "venue = \"kalshi\"",
+    );
+    let error = parse_error_for(&toml);
+    assert!(
+        error.contains("unknown variant"),
+        "unexpected parse error: {error}"
+    );
+    assert!(
+        error.contains("kalshi"),
+        "parse error should mention invalid venue: {error}"
+    );
+}
 
+#[test]
+fn phase1_audit_required_when_rulesets_are_configured() {
+    let toml = valid_phase1_toml()
+        .replace("[audit]\n", "")
+        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
+        .replace("ship_interval_secs = 30\n", "")
+        .replace("roll_max_bytes = 1048576\n", "")
+        .replace("roll_max_secs = 300\n", "")
+        .replace("max_local_backlog_bytes = 10485760\n", "");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "audit", "missing_audit");
+}
+
+#[test]
+fn phase1_duplicate_ruleset_ids_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_toml(),
+        r#"
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+tag_slug = "bitcoin-2"
+resolution_basis = "binance_btcusdt_5m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+"#
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "rulesets", "duplicate_ruleset_id");
+}
+
+#[test]
+fn phase1_reference_venue_name_must_be_non_empty() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "name = \"BINANCE-BTC\"",
+        "name = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "reference.venues[0].name", "empty");
+}
+
+#[test]
+fn phase1_reference_venue_weight_must_be_positive_and_finite() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "base_weight = 0.35",
+        "base_weight = 0.0",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].base_weight",
+        "not_positive_finite",
+    );
+}
+
+#[test]
+fn phase1_reference_venue_stale_after_ms_must_be_positive() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "stale_after_ms = 1500",
+        "stale_after_ms = 0",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].stale_after_ms",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_reference_venue_disable_after_ms_must_not_precede_stale_after_ms() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "disable_after_ms = 5000",
+        "disable_after_ms = 1000",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].disable_after_ms",
+        "invalid_disable_after_ms",
+    );
+}
 // ════════════════════════════════════════════════════════════════
 // Runtime config validation
 // ════════════════════════════════════════════════════════════════
@@ -655,6 +763,84 @@ instrument_id = "0xabc-12345.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "5"
 "#
+}
+
+fn valid_phase1_toml() -> String {
+    format!(
+        "{}\n{}",
+        valid_toml(),
+        r#"
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+tag_slug = "bitcoin"
+resolution_basis = "binance_btcusdt_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#
+    )
+}
+
+fn valid_phase1_runtime_toml() -> String {
+    format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        r#"
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+tag_slug = "bitcoin"
+resolution_basis = "binance_btcusdt_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#
+    )
 }
 
 fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
@@ -915,5 +1101,107 @@ fn runtime_validation_via_config_load() {
     assert!(
         error.contains("node.trader_id"),
         "runtime load error should mention trader_id: {error}"
+    );
+}
+
+#[test]
+fn phase1_runtime_requires_exactly_one_active_ruleset() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[rulesets]]
+id = "SECONDARY"
+venue = "polymarket"
+tag_slug = "bitcoin-2"
+resolution_basis = "binance_btcusdt_5m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 30
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "rulesets", "phase1_single_active_ruleset");
+}
+
+#[test]
+fn phase1_runtime_requires_reference_venues_when_one_ruleset_is_active() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("[reference]\n", "")
+        .replace("publish_topic = \"platform.reference.default\"\n", "")
+        .replace("min_publish_interval_ms = 100\n", "")
+        .replace("[[reference.venues]]\n", "")
+        .replace("name = \"BINANCE-BTC\"\n", "")
+        .replace("type = \"binance\"\n", "")
+        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
+        .replace("base_weight = 0.35\n", "")
+        .replace("stale_after_ms = 1500\n", "")
+        .replace("disable_after_ms = 5000\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.venues", "missing_reference_venues");
+}
+
+#[test]
+fn phase1_runtime_rejects_duplicate_reference_venue_names() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "deribit"
+instrument_id = "BTC-PERPETUAL.DERIBIT"
+base_weight = 0.20
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.venues", "duplicate_name");
+}
+
+#[test]
+fn phase1_runtime_resolution_basis_requires_matching_reference_venue_family() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"kraken_btcusd_1m\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].resolution_basis",
+        "missing_reference_venue_family",
+    );
+}
+
+#[test]
+fn phase1_runtime_polymarket_reference_must_reuse_primary_client() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[reference.venues]]
+name = "POLY-REF"
+type = "polymarket"
+instrument_id = "0xabc-12345.POLYMARKET"
+base_weight = 0.25
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[data_clients]]
+name = "POLYMARKET-REF"
+type = "polymarket"
+[data_clients.config]
+event_slugs = ["btc-updown-5m"]
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients",
+        "duplicate_polymarket_client_for_reference",
     );
 }

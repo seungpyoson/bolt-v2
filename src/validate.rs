@@ -37,21 +37,21 @@ fn check_nt_ascii(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
             errors,
             field,
             "empty",
-            format!("{field} must not be empty, got \"\""),
+            "must not be empty, got \"\"".to_string(),
         );
     } else if value.trim().is_empty() {
         push_error(
             errors,
             field,
             "whitespace_only",
-            format!("{field} must not be whitespace-only, got \"{value}\""),
+            format!("must not be whitespace-only, got \"{value}\""),
         );
     } else if !value.is_ascii() {
         push_error(
             errors,
             field,
             "non_ascii",
-            format!("{field} must be ASCII-only, got \"{value}\""),
+            format!("must be ASCII-only, got \"{value}\""),
         );
     }
 }
@@ -62,14 +62,14 @@ fn check_non_empty(errors: &mut Vec<ValidationError>, field: &str, value: &str) 
             errors,
             field,
             "empty",
-            format!("{field} must not be empty, got \"\""),
+            "must not be empty, got \"\"".to_string(),
         );
     } else if value.trim().is_empty() {
         push_error(
             errors,
             field,
             "whitespace_only",
-            format!("{field} must not be whitespace-only, got \"{value}\""),
+            format!("must not be whitespace-only, got \"{value}\""),
         );
     }
 }
@@ -81,6 +81,7 @@ fn check_nt_hyphenated(
     field: &str,
     value: &str,
     split_fn: fn(&str) -> Option<(&str, &str)>,
+    example: &str,
 ) {
     if value.is_empty() || value.trim().is_empty() || !value.is_ascii() {
         check_nt_ascii(errors, field, value);
@@ -92,19 +93,21 @@ fn check_nt_hyphenated(
             errors,
             field,
             "missing_hyphen",
-            format!("{field} must contain a hyphen separating name and tag, got \"{value}\""),
+            format!(
+                "must contain a hyphen separating name and tag, got \"{value}\" (example: \"{example}\")"
+            ),
         ),
         Some(("", _)) => push_error(
             errors,
             field,
             "empty_name_part",
-            format!("{field} has empty name part before hyphen, got \"{value}\""),
+            format!("has empty name part before hyphen, got \"{value}\""),
         ),
         Some((_, "")) => push_error(
             errors,
             field,
             "empty_tag_part",
-            format!("{field} has empty tag part after hyphen, got \"{value}\""),
+            format!("has empty tag part after hyphen, got \"{value}\""),
         ),
         Some(_) => {}
     }
@@ -129,21 +132,21 @@ fn check_non_empty_no_whitespace(errors: &mut Vec<ValidationError>, field: &str,
             errors,
             field,
             "empty",
-            format!("{field} must not be empty, got \"\""),
+            "must not be empty, got \"\"".to_string(),
         );
     } else if value.trim().is_empty() {
         push_error(
             errors,
             field,
             "whitespace_only",
-            format!("{field} must not be whitespace-only, got \"{value}\""),
+            format!("must not be whitespace-only, got \"{value}\""),
         );
     } else if value.contains(char::is_whitespace) {
         push_error(
             errors,
             field,
             "contains_whitespace",
-            format!("{field} must not contain whitespace, got \"{value}\""),
+            format!("must not contain whitespace, got \"{value}\""),
         );
     }
 }
@@ -156,14 +159,16 @@ fn check_instrument_id(errors: &mut Vec<ValidationError>, field: &str, value: &s
             errors,
             field,
             "empty",
-            format!("{field} must not be empty, got \"\""),
+            "must not be empty, got \"\"".to_string(),
         );
     } else if !value.ends_with(".POLYMARKET") {
         push_error(
             errors,
             field,
             "missing_venue_suffix",
-            format!("{field} must end with .POLYMARKET, got \"{value}\""),
+            format!(
+                "must end with .POLYMARKET, got \"{value}\" (example: \"0xabc-12345.POLYMARKET\")"
+            ),
         );
     } else {
         let symbol = &value[..value.len() - ".POLYMARKET".len()];
@@ -172,9 +177,7 @@ fn check_instrument_id(errors: &mut Vec<ValidationError>, field: &str, value: &s
                 errors,
                 field,
                 "empty_symbol",
-                format!(
-                    "{field} symbol part before .POLYMARKET must not be empty, got \"{value}\""
-                ),
+                format!("symbol part before .POLYMARKET must not be empty, got \"{value}\""),
             );
         }
     }
@@ -186,14 +189,14 @@ fn check_hex_prefixed(errors: &mut Vec<ValidationError>, field: &str, value: &st
             errors,
             field,
             "empty",
-            format!("{field} must not be empty, got \"\""),
+            "must not be empty, got \"\"".to_string(),
         );
     } else if !value.starts_with("0x") {
         push_error(
             errors,
             field,
             "missing_hex_prefix",
-            format!("{field} must start with 0x, got \"{value}\""),
+            format!("must start with 0x, got \"{value}\" (example: \"0xabc...\")"),
         );
     }
 }
@@ -206,14 +209,14 @@ fn check_strictly_positive_qty(errors: &mut Vec<ValidationError>, field: &str, v
             errors,
             field,
             "not_positive_number",
-            format!("{field} must be a positive number, got \"{value}\""),
+            format!("must be a positive number, got \"{value}\""),
         ),
         Ok(_) => {}
         Err(_) => push_error(
             errors,
             field,
             "not_parseable",
-            format!("{field} must be parseable by Quantity::from_str, got \"{value}\""),
+            format!("must be parseable by Quantity::from_str, got \"{value}\""),
         ),
     }
 }
@@ -224,18 +227,17 @@ fn check_positive_u64(errors: &mut Vec<ValidationError>, field: &str, value: u64
             errors,
             field,
             "not_positive",
-            format!("{field} must be > 0, got {value}"),
+            format!("must be > 0, got {value}"),
         );
     }
 }
-
 fn check_signature_type(errors: &mut Vec<ValidationError>, field: &str, value: i64) {
     if !(0..=2).contains(&value) {
         push_error(
             errors,
             field,
             "invalid_signature_type",
-            format!("{field} must be one of [0, 1, 2], got {value}"),
+            format!("must be one of [0, 1, 2], got {value} (valid values: 0, 1, 2)"),
         );
     }
 }
@@ -246,14 +248,16 @@ fn check_ssm_path(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
             errors,
             field,
             "empty",
-            format!("{field} must not be empty, got \"\""),
+            "must not be empty, got \"\"".to_string(),
         );
     } else if !value.starts_with('/') {
         push_error(
             errors,
             field,
             "missing_leading_slash",
-            format!("{field} must be an absolute SSM path starting with /, got \"{value}\""),
+            format!(
+                "must be an absolute SSM path starting with /, got \"{value}\" (example: \"/bolt/poly/pk\")"
+            ),
         );
     }
 }
@@ -271,7 +275,7 @@ fn check_allowlist(
             errors,
             field,
             code,
-            format!("{field} must be one of {allowed:?}, got \"{value}\""),
+            format!("must be one of {allowed:?}, got \"{value}\""),
         );
     }
 }
@@ -283,17 +287,28 @@ fn get_required_str<'a>(
     field: &str,
     code: &'static str,
 ) -> Option<&'a str> {
-    match table.get(key).and_then(Value::as_str) {
-        Some(value) => Some(value),
+    match table.get(key) {
         None => {
             push_error(
                 errors,
                 field,
                 code,
-                format!("{field} is missing required string field"),
+                "is missing required string field".to_string(),
             );
             None
         }
+        Some(value) => match value.as_str() {
+            Some(value) => Some(value),
+            None => {
+                push_error(
+                    errors,
+                    field,
+                    "wrong_type",
+                    format!("must be a string, got {} value", value.type_str()),
+                );
+                None
+            }
+        },
     }
 }
 
@@ -304,17 +319,28 @@ fn get_required_i64(
     field: &str,
     code: &'static str,
 ) -> Option<i64> {
-    match table.get(key).and_then(Value::as_integer) {
-        Some(value) => Some(value),
+    match table.get(key) {
         None => {
             push_error(
                 errors,
                 field,
                 code,
-                format!("{field} is missing required integer field"),
+                "is missing required integer field".to_string(),
             );
             None
         }
+        Some(value) => match value.as_integer() {
+            Some(value) => Some(value),
+            None => {
+                push_error(
+                    errors,
+                    field,
+                    "wrong_type",
+                    format!("must be an integer, got {} value", value.type_str()),
+                );
+                None
+            }
+        },
     }
 }
 
@@ -325,21 +351,32 @@ fn get_required_array<'a>(
     field: &str,
     code: &'static str,
 ) -> Option<&'a [Value]> {
-    match table.get(key).and_then(Value::as_array) {
-        Some(value) => Some(value),
+    match table.get(key) {
         None => {
             push_error(
                 errors,
                 field,
                 code,
-                format!("{field} is missing required array field"),
+                "is missing required array field".to_string(),
             );
             None
         }
+        Some(value) => match value.as_array() {
+            Some(value) => Some(value),
+            None => {
+                push_error(
+                    errors,
+                    field,
+                    "wrong_type",
+                    format!("must be an array, got {} value", value.type_str()),
+                );
+                None
+            }
+        },
     }
 }
 
-fn check_optional_ssm_path(
+fn check_required_ssm_path_opt(
     errors: &mut Vec<ValidationError>,
     field: &str,
     value: Option<&String>,
@@ -351,7 +388,7 @@ fn check_optional_ssm_path(
             errors,
             field,
             missing_code,
-            format!("{field} is missing required string field"),
+            "is missing required string field".to_string(),
         ),
     }
 }
@@ -369,7 +406,6 @@ fn first_seen_index<'a>(
         }
     }
 }
-
 // ═══════════════════════════════════════════════════════════════════
 // Public validators
 // ═══════════════════════════════════════════════════════════════════
@@ -388,6 +424,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "node.trader_id",
         &config.node.trader_id,
         split_last_hyphen,
+        "NAME-TAG",
     );
     check_allowlist(
         &mut errors,
@@ -463,6 +500,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.account_id",
         &config.polymarket.account_id,
         split_first_hyphen,
+        "ISSUER-ACCOUNT",
     );
     check_hex_prefixed(&mut errors, "polymarket.funder", &config.polymarket.funder);
     check_signature_type(
@@ -477,6 +515,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
             "strategy.strategy_id",
             &config.strategy.strategy_id,
             split_last_hyphen,
+            "NAME-TAG",
         );
     }
     check_strictly_positive_qty(
@@ -515,6 +554,7 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         "node.trader_id",
         &config.node.trader_id,
         split_last_hyphen,
+        "NAME-TAG",
     );
     check_allowlist(
         &mut errors,
@@ -600,7 +640,7 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                         &mut errors,
                         &field,
                         "invalid_type",
-                        format!("{field} must be a string"),
+                        "must be a string".to_string(),
                     ),
                 }
             }
@@ -634,6 +674,7 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                 &account_id_field,
                 account_id,
                 split_first_hyphen,
+                "ISSUER-ACCOUNT",
             );
         }
 
@@ -662,25 +703,25 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         let region_field = format!("exec_clients[{i}].secrets.region");
         check_non_empty(&mut errors, &region_field, &client.secrets.region);
 
-        check_optional_ssm_path(
+        check_required_ssm_path_opt(
             &mut errors,
             &format!("exec_clients[{i}].secrets.pk"),
             client.secrets.pk.as_ref(),
             "missing_pk",
         );
-        check_optional_ssm_path(
+        check_required_ssm_path_opt(
             &mut errors,
             &format!("exec_clients[{i}].secrets.api_key"),
             client.secrets.api_key.as_ref(),
             "missing_api_key",
         );
-        check_optional_ssm_path(
+        check_required_ssm_path_opt(
             &mut errors,
             &format!("exec_clients[{i}].secrets.api_secret"),
             client.secrets.api_secret.as_ref(),
             "missing_api_secret",
         );
-        check_optional_ssm_path(
+        check_required_ssm_path_opt(
             &mut errors,
             &format!("exec_clients[{i}].secrets.passphrase"),
             client.secrets.passphrase.as_ref(),
@@ -690,84 +731,122 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
 
     let mut strategy_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, strategy) in config.strategies.iter().enumerate() {
-        match strategy.config.get("client_id").and_then(|v| v.as_str()) {
+        match strategy.config.get("client_id") {
             None => push_error(
                 &mut errors,
                 "strategies",
                 "missing_client_id",
                 format!("strategies[{i}] is missing required client_id field"),
             ),
-            Some(client_id) => {
+            Some(value) => {
                 let field = format!("strategies[{i}].config.client_id");
-                check_nt_ascii(&mut errors, &field, client_id);
-                if !exec_name_indices.contains_key(client_id) {
+                if let Some(client_id) = value.as_str() {
+                    check_nt_ascii(&mut errors, &field, client_id);
+                    if !exec_name_indices.contains_key(client_id) {
+                        push_error(
+                            &mut errors,
+                            "strategies",
+                            "unknown_client_id",
+                            format!(
+                                "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
+                            ),
+                        );
+                    }
+                } else {
                     push_error(
                         &mut errors,
-                        "strategies",
-                        "unknown_client_id",
-                        format!(
-                            "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
-                        ),
+                        &field,
+                        "wrong_type",
+                        format!("must be a string, got {} value", value.type_str()),
                     );
                 }
             }
         }
 
-        match strategy.config.get("strategy_id").and_then(|v| v.as_str()) {
+        match strategy.config.get("strategy_id") {
             None => push_error(
                 &mut errors,
                 "strategies",
                 "missing_strategy_id",
                 format!("strategies[{i}] is missing required strategy_id field"),
             ),
-            Some(strategy_id) => {
-                if let Some(first_index) =
-                    first_seen_index(&mut strategy_id_indices, strategy_id, i)
-                {
+            Some(value) => {
+                let field = format!("strategies[{i}].config.strategy_id");
+                if let Some(strategy_id) = value.as_str() {
+                    if let Some(first_index) =
+                        first_seen_index(&mut strategy_id_indices, strategy_id, i)
+                    {
+                        push_error(
+                            &mut errors,
+                            "strategies",
+                            "duplicate_strategy_id",
+                            format!(
+                                "strategies[{i}] has duplicate strategy_id \"{strategy_id}\" (first defined at strategies[{first_index}])"
+                            ),
+                        );
+                    }
+
+                    if strategy_id != "EXTERNAL" {
+                        check_nt_hyphenated(
+                            &mut errors,
+                            &field,
+                            strategy_id,
+                            split_last_hyphen,
+                            "NAME-TAG",
+                        );
+                    }
+                } else {
                     push_error(
                         &mut errors,
-                        "strategies",
-                        "duplicate_strategy_id",
-                        format!(
-                            "strategies[{i}] has duplicate strategy_id \"{strategy_id}\" (first defined at strategies[{first_index}])"
-                        ),
+                        &field,
+                        "wrong_type",
+                        format!("must be a string, got {} value", value.type_str()),
                     );
-                }
-
-                if strategy_id != "EXTERNAL" {
-                    let field = format!("strategies[{i}].config.strategy_id");
-                    check_nt_hyphenated(&mut errors, &field, strategy_id, split_last_hyphen);
                 }
             }
         }
 
-        match strategy
-            .config
-            .get("instrument_id")
-            .and_then(|v| v.as_str())
-        {
+        match strategy.config.get("instrument_id") {
             None => push_error(
                 &mut errors,
                 "strategies",
                 "missing_instrument_id",
                 format!("strategies[{i}] is missing required instrument_id field"),
             ),
-            Some(instrument_id) => {
+            Some(value) => {
                 let field = format!("strategies[{i}].config.instrument_id");
-                check_instrument_id(&mut errors, &field, instrument_id);
+                if let Some(instrument_id) = value.as_str() {
+                    check_instrument_id(&mut errors, &field, instrument_id);
+                } else {
+                    push_error(
+                        &mut errors,
+                        &field,
+                        "wrong_type",
+                        format!("must be a string, got {} value", value.type_str()),
+                    );
+                }
             }
         }
 
-        match strategy.config.get("order_qty").and_then(|v| v.as_str()) {
+        match strategy.config.get("order_qty") {
             None => push_error(
                 &mut errors,
                 "strategies",
                 "missing_order_qty",
                 format!("strategies[{i}] is missing required order_qty field"),
             ),
-            Some(order_qty) => {
+            Some(value) => {
                 let field = format!("strategies[{i}].config.order_qty");
-                check_strictly_positive_qty(&mut errors, &field, order_qty);
+                if let Some(order_qty) = value.as_str() {
+                    check_strictly_positive_qty(&mut errors, &field, order_qty);
+                } else {
+                    push_error(
+                        &mut errors,
+                        &field,
+                        "wrong_type",
+                        format!("must be a string, got {} value", value.type_str()),
+                    );
+                }
             }
         }
     }

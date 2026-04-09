@@ -34,9 +34,10 @@ passphrase = "/bolt/poly/passphrase"
 }
 
 fn replace(base: &str, old: &str, new: &str) -> String {
-    assert!(
-        base.contains(old),
-        "test helper: '{old}' not found in base config"
+    let count = base.matches(old).count();
+    assert_eq!(
+        count, 1,
+        "test helper: '{old}' must appear exactly once in base config (found {count})"
     );
     base.replacen(old, new, 1)
 }
@@ -45,11 +46,15 @@ fn parse(toml: &str) -> LiveLocalConfig {
     toml::from_str(toml).expect("test config should parse")
 }
 
+fn parse_error_for(toml: &str) -> String {
+    toml::from_str::<LiveLocalConfig>(toml)
+        .expect_err("test config should fail to parse")
+        .to_string()
+}
+
 fn errors_for(toml: &str) -> Vec<ValidationError> {
     let config = parse(toml);
-    let mut errors = validate_live_local(&config);
-    errors.sort();
-    errors
+    validate_live_local(&config)
 }
 
 fn assert_has_error(errors: &[ValidationError], field: &str, code: &str) {
@@ -72,6 +77,23 @@ fn assert_error_message_contains(
     assert!(
         error.message.contains(needle),
         "expected error message to contain {needle:?}, got: {:?}",
+        error.message
+    );
+}
+
+fn assert_error_message_not_contains(
+    errors: &[ValidationError],
+    field: &str,
+    code: &str,
+    needle: &str,
+) {
+    let error = errors
+        .iter()
+        .find(|e| e.field == field && e.code == code)
+        .unwrap_or_else(|| panic!("expected error field={field} code={code}, got: {errors:?}"));
+    assert!(
+        !error.message.contains(needle),
+        "expected error message not to contain {needle:?}, got: {:?}",
         error.message
     );
 }
@@ -142,6 +164,24 @@ fn trader_id_without_hyphen_rejected() {
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "node.trader_id", "missing_hyphen");
+    assert_error_message_contains(
+        &errors,
+        "node.trader_id",
+        "missing_hyphen",
+        "must contain a hyphen separating name and tag, got \"BOLT001\"",
+    );
+    assert_error_message_contains(
+        &errors,
+        "node.trader_id",
+        "missing_hyphen",
+        "(example: \"NAME-TAG\")",
+    );
+    assert_error_message_not_contains(
+        &errors,
+        "node.trader_id",
+        "missing_hyphen",
+        "node.trader_id must",
+    );
 }
 
 #[test]
@@ -200,6 +240,12 @@ fn account_id_without_hyphen_rejected() {
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "polymarket.account_id", "missing_hyphen");
+    assert_error_message_contains(
+        &errors,
+        "polymarket.account_id",
+        "missing_hyphen",
+        "(example: \"ISSUER-ACCOUNT\")",
+    );
 }
 
 #[test]
@@ -251,6 +297,12 @@ fn instrument_id_missing_venue_suffix_rejected() {
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "polymarket.instrument_id", "missing_venue_suffix");
+    assert_error_message_contains(
+        &errors,
+        "polymarket.instrument_id",
+        "missing_venue_suffix",
+        "(example: \"0xabc-12345.POLYMARKET\")",
+    );
 }
 
 #[test]
@@ -375,6 +427,12 @@ fn signature_type_out_of_range_rejected() {
         "polymarket.signature_type",
         "invalid_signature_type",
     );
+    assert_error_message_contains(
+        &errors,
+        "polymarket.signature_type",
+        "invalid_signature_type",
+        "(valid values: 0, 1, 2)",
+    );
 }
 
 #[test]
@@ -454,6 +512,12 @@ fn funder_missing_hex_prefix_rejected() {
     let toml = replace(&valid_toml(), "funder = \"0xabc\"", "funder = \"abc\"");
     let errors = errors_for(&toml);
     assert_has_error(&errors, "polymarket.funder", "missing_hex_prefix");
+    assert_error_message_contains(
+        &errors,
+        "polymarket.funder",
+        "missing_hex_prefix",
+        "(example: \"0xabc...\")",
+    );
 }
 
 #[test]
@@ -465,6 +529,12 @@ fn ssm_path_missing_leading_slash_rejected() {
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "secrets.pk", "missing_leading_slash");
+    assert_error_message_contains(
+        &errors,
+        "secrets.pk",
+        "missing_leading_slash",
+        "(example: \"/bolt/poly/pk\")",
+    );
 }
 
 #[test]
@@ -531,6 +601,10 @@ fn multiple_errors_accumulated_not_just_first() {
 }
 
 // ════════════════════════════════════════════════════════════════
+// Phase 1 render-time validation
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
 // Runtime config validation
 // ════════════════════════════════════════════════════════════════
 
@@ -585,9 +659,7 @@ order_qty = "5"
 
 fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
     let config: Config = toml::from_str(toml_str).expect("runtime test config should parse");
-    let mut errors = validate_runtime(&config);
-    errors.sort();
-    errors
+    validate_runtime(&config)
 }
 
 fn runtime_load_error_for(toml_str: &str) -> String {
@@ -606,10 +678,43 @@ fn valid_runtime_config_passes() {
 }
 
 #[test]
+fn runtime_event_slugs_wrong_type_rejected() {
+    let toml = valid_runtime_toml().replace(
+        "event_slugs = [\"btc-updown-5m\"]",
+        "event_slugs = \"not-an-array\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "data_clients[0].config.event_slugs", "wrong_type");
+    assert_error_message_contains(
+        &errors,
+        "data_clients[0].config.event_slugs",
+        "wrong_type",
+        "must be an array, got string value",
+    );
+}
+
+#[test]
 fn runtime_invalid_trader_id_rejected() {
     let toml = valid_runtime_toml().replace("trader_id = \"BOLT-001\"", "trader_id = \"BOLT001\"");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "node.trader_id", "missing_hyphen");
+}
+
+#[test]
+fn runtime_signature_type_wrong_type_rejected() {
+    let toml = valid_runtime_toml().replace("signature_type = 2", "signature_type = \"2\"");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "exec_clients[0].config.signature_type",
+        "wrong_type",
+    );
+    assert_error_message_contains(
+        &errors,
+        "exec_clients[0].config.signature_type",
+        "wrong_type",
+        "must be an integer, got string value",
+    );
 }
 
 #[test]
@@ -744,6 +849,20 @@ fn runtime_missing_strategy_id_rejected() {
     let toml = valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "missing_strategy_id");
+}
+
+#[test]
+fn runtime_strategy_id_wrong_type_rejected() {
+    let toml =
+        valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"", "strategy_id = 42");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies[0].config.strategy_id", "wrong_type");
+    assert_error_message_contains(
+        &errors,
+        "strategies[0].config.strategy_id",
+        "wrong_type",
+        "must be a string, got integer value",
+    );
 }
 
 #[test]

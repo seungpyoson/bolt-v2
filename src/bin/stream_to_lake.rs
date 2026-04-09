@@ -17,8 +17,12 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let report =
-        convert_live_spool_to_parquet(&cli.catalog_path, &cli.instance_id, &cli.output_root)?;
+    let report = convert_live_spool_to_parquet(
+        &cli.catalog_path,
+        &cli.instance_id,
+        &cli.output_root,
+        None,
+    )?;
 
     println!(
         "Converted {} live stream classes for instance {} into {}",

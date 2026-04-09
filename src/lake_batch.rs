@@ -10,6 +10,10 @@ use anyhow::{Result, bail, ensure};
 use arrow::ipc::reader::StreamReader;
 use nautilus_persistence::backend::{catalog::ParquetDataCatalog, custom::decode_batch_to_data};
 
+use crate::venue_contract::{
+    Capability, ClassReport, CompletenessReport, Policy, VenueContract,
+};
+
 const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "quotes",
     "trades",
@@ -20,11 +24,12 @@ const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "instrument_closes",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StreamToLakeReport {
     pub instance_id: String,
     pub output_root: PathBuf,
     pub converted_classes: Vec<&'static str>,
+    pub completeness: Option<CompletenessReport>,
 }
 
 pub fn supported_stream_classes() -> &'static [&'static str] {
@@ -35,6 +40,7 @@ pub fn convert_live_spool_to_parquet(
     catalog_path: &Path,
     instance_id: &str,
     output_root: &Path,
+    contract: Option<&VenueContract>,
 ) -> Result<StreamToLakeReport> {
     ensure_local_path(catalog_path, "catalog_path")?;
     ensure_local_path(output_root, "output_root")?;
@@ -61,15 +67,155 @@ pub fn convert_live_spool_to_parquet(
             converted_classes.push(*data_cls);
         }
     }
-    ensure!(
-        !converted_classes.is_empty(),
-        "no supported reduced task 4 data found"
-    );
+
+    let completeness = if let Some(contract) = contract {
+        let report = build_completeness_report(
+            contract,
+            instance_id,
+            &source_instance_dir,
+            &class_files,
+            &converted_classes,
+        )?;
+        let json = serde_json::to_string_pretty(&report)?;
+        fs::write(output_root.join("completeness_report.json"), &json)?;
+        if report.outcome == "fail" {
+            bail!("contract validation failed:\n{json}");
+        }
+        Some(report)
+    } else {
+        ensure!(
+            !converted_classes.is_empty(),
+            "no supported reduced task 4 data found"
+        );
+        None
+    };
 
     Ok(StreamToLakeReport {
         instance_id: instance_id.to_string(),
         output_root: output_root.to_path_buf(),
         converted_classes,
+        completeness,
+    })
+}
+
+/// Build a completeness report without bailing — the caller decides
+/// whether a "fail" outcome is fatal.
+fn build_completeness_report(
+    contract: &VenueContract,
+    instance_id: &str,
+    source_instance_dir: &Path,
+    class_files: &BTreeMap<&'static str, Vec<PathBuf>>,
+    converted_classes: &[&'static str],
+) -> Result<CompletenessReport> {
+    let mut classes = BTreeMap::new();
+    let mut has_failure = false;
+
+    // ── Unknown-class discovery ──
+    const SPOOL_INFRASTRUCTURE_DIRS: &[&str] = &["instruments", "status"];
+
+    let known_classes: std::collections::HashSet<&str> = contract
+        .streams
+        .keys()
+        .map(String::as_str)
+        .chain(supported_stream_classes().iter().copied())
+        .chain(SPOOL_INFRASTRUCTURE_DIRS.iter().copied())
+        .collect();
+
+    if source_instance_dir.is_dir() {
+        for entry in std::fs::read_dir(source_instance_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name();
+            let name = dir_name.to_string_lossy();
+            if !known_classes.contains(name.as_ref()) {
+                has_failure = true;
+                classes.insert(
+                    name.to_string(),
+                    ClassReport {
+                        capability: "unknown".to_string(),
+                        policy: None,
+                        spool_present: true,
+                        rows_converted: None,
+                        files_converted: None,
+                        status: "fail_unknown".to_string(),
+                        reason: Some("directory not in contract or known classes".into()),
+                    },
+                );
+            }
+        }
+    }
+
+    // ── Per-stream classification ──
+    for (name, stream) in &contract.streams {
+        let spool_present = class_files.get(name.as_str()).is_some_and(|f| !f.is_empty());
+        let was_converted = converted_classes.contains(&name.as_str());
+        let effective_policy = contract.effective_policy(name).unwrap_or(Policy::Disabled);
+
+        let (status, reason) = match (&stream.capability, spool_present, was_converted) {
+            (Capability::Unsupported, false, _) => ("pass_unsupported", None),
+            (Capability::Unsupported, true, _) => {
+                has_failure = true;
+                ("fail_contract_violation", None)
+            }
+            (Capability::Supported | Capability::Conditional, true, true) => ("pass", None),
+            (Capability::Supported | Capability::Conditional, true, false) => {
+                match effective_policy {
+                    Policy::Required => {
+                        has_failure = true;
+                        (
+                            "spool_present_conversion_empty",
+                            Some("required class has spool data but zero converted rows".into()),
+                        )
+                    }
+                    _ => ("spool_present_conversion_empty", None),
+                }
+            }
+            (Capability::Supported | Capability::Conditional, false, _) => {
+                match effective_policy {
+                    Policy::Required => {
+                        has_failure = true;
+                        ("fail_required_absent", Some("no_spool_data".to_string()))
+                    }
+                    Policy::Optional => ("warn_optional_absent", None),
+                    Policy::Disabled => ("pass_disabled", None),
+                }
+            }
+        };
+
+        let cap_str = match stream.capability {
+            Capability::Supported => "supported",
+            Capability::Unsupported => "unsupported",
+            Capability::Conditional => "conditional",
+        };
+        let policy_str = match effective_policy {
+            Policy::Required => Some("required".to_string()),
+            Policy::Optional => Some("optional".to_string()),
+            Policy::Disabled => None,
+        };
+
+        classes.insert(
+            name.clone(),
+            ClassReport {
+                capability: cap_str.to_string(),
+                policy: policy_str,
+                spool_present,
+                rows_converted: None,
+                files_converted: None,
+                status: status.to_string(),
+                reason: reason,
+            },
+        );
+    }
+
+    Ok(CompletenessReport {
+        schema_version: 1,
+        venue: contract.venue.clone(),
+        contract_version: contract.schema_version,
+        instance_id: instance_id.to_string(),
+        outcome: if has_failure { "fail" } else { "pass" }.to_string(),
+        classes,
     })
 }
 

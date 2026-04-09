@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use bolt_v2::{
     clients::polymarket, config::Config, normalized_sink, secrets, strategies::exec_tester,
-    validate,
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
@@ -51,19 +50,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Secrets { command } => run_secrets_command(command),
         Command::Run { config } => {
             let cfg = Config::load(&config)?;
-
-            let validation_errors = validate::validate_runtime(&cfg);
-            if !validation_errors.is_empty() {
-                let details: Vec<String> =
-                    validation_errors.iter().map(|e| format!("  - {e}")).collect();
-                return Err(format!(
-                    "Runtime config validation failed ({} error{}):\n{}",
-                    validation_errors.len(),
-                    if validation_errors.len() == 1 { "" } else { "s" },
-                    details.join("\n"),
-                )
-                .into());
-            }
 
             let node = cfg.node;
             let logging = cfg.logging;

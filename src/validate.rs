@@ -1,12 +1,13 @@
 use crate::config::Config;
 use crate::live_config::LiveLocalConfig;
-use rust_decimal::Decimal;
-use std::collections::HashSet;
+use nautilus_model::types::Quantity;
+use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;
+use toml::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValidationError {
-    pub field: &'static str,
+    pub field: String,
     pub code: &'static str,
     pub message: String,
 }
@@ -17,30 +18,59 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
+fn push_error(errors: &mut Vec<ValidationError>, field: &str, code: &'static str, message: String) {
+    errors.push(ValidationError {
+        field: field.to_string(),
+        code,
+        message,
+    });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // NT-contract-derived helpers
 // ═══════════════════════════════════════════════════════════════════
 
 /// Mirrors NT's `check_valid_string_ascii`: non-empty, non-whitespace-only, ASCII-only.
-fn check_nt_ascii(errors: &mut Vec<ValidationError>, field: &'static str, value: &str) {
+fn check_nt_ascii(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     if value.is_empty() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "empty",
-            message: format!("{field} must not be empty, got \"\""),
-        });
+            "empty",
+            format!("{field} must not be empty, got \"\""),
+        );
     } else if value.trim().is_empty() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "whitespace_only",
-            message: format!("{field} must not be whitespace-only, got \"{value}\""),
-        });
+            "whitespace_only",
+            format!("{field} must not be whitespace-only, got \"{value}\""),
+        );
     } else if !value.is_ascii() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "non_ascii",
-            message: format!("{field} must be ASCII-only, got \"{value}\""),
-        });
+            "non_ascii",
+            format!("{field} must be ASCII-only, got \"{value}\""),
+        );
+    }
+}
+
+fn check_non_empty(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+    if value.is_empty() {
+        push_error(
+            errors,
+            field,
+            "empty",
+            format!("{field} must not be empty, got \"\""),
+        );
+    } else if value.trim().is_empty() {
+        push_error(
+            errors,
+            field,
+            "whitespace_only",
+            format!("{field} must not be whitespace-only, got \"{value}\""),
+        );
     }
 }
 
@@ -48,46 +78,35 @@ fn check_nt_ascii(errors: &mut Vec<ValidationError>, field: &'static str, value:
 /// match the exact NT constructor for each identifier type.
 fn check_nt_hyphenated(
     errors: &mut Vec<ValidationError>,
-    field: &'static str,
+    field: &str,
     value: &str,
     split_fn: fn(&str) -> Option<(&str, &str)>,
 ) {
-    // Run the base ASCII checks first.  If any fail, don't pile on with
-    // hyphen checks (the value is already structurally invalid).
     if value.is_empty() || value.trim().is_empty() || !value.is_ascii() {
         check_nt_ascii(errors, field, value);
         return;
     }
 
     match split_fn(value) {
-        None => {
-            errors.push(ValidationError {
-                field,
-                code: "missing_hyphen",
-                message: format!(
-                    "{field} must contain a hyphen separating name and tag, got \"{value}\""
-                ),
-            });
-        }
-        Some(("", _)) => {
-            errors.push(ValidationError {
-                field,
-                code: "empty_name_part",
-                message: format!(
-                    "{field} has empty name part before hyphen, got \"{value}\""
-                ),
-            });
-        }
-        Some((_, "")) => {
-            errors.push(ValidationError {
-                field,
-                code: "empty_tag_part",
-                message: format!(
-                    "{field} has empty tag part after hyphen, got \"{value}\""
-                ),
-            });
-        }
-        Some(_) => {} // valid
+        None => push_error(
+            errors,
+            field,
+            "missing_hyphen",
+            format!("{field} must contain a hyphen separating name and tag, got \"{value}\""),
+        ),
+        Some(("", _)) => push_error(
+            errors,
+            field,
+            "empty_name_part",
+            format!("{field} has empty name part before hyphen, got \"{value}\""),
+        ),
+        Some((_, "")) => push_error(
+            errors,
+            field,
+            "empty_tag_part",
+            format!("{field} has empty tag part after hyphen, got \"{value}\""),
+        ),
+        Some(_) => {}
     }
 }
 
@@ -104,154 +123,250 @@ fn split_last_hyphen(s: &str) -> Option<(&str, &str)> {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Non-empty, no whitespace anywhere (domain rule for event slugs).
-fn check_non_empty_no_whitespace(
-    errors: &mut Vec<ValidationError>,
-    field: &'static str,
-    value: &str,
-) {
+fn check_non_empty_no_whitespace(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     if value.is_empty() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "empty",
-            message: format!("{field} must not be empty, got \"\""),
-        });
+            "empty",
+            format!("{field} must not be empty, got \"\""),
+        );
     } else if value.trim().is_empty() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "whitespace_only",
-            message: format!("{field} must not be whitespace-only, got \"{value}\""),
-        });
+            "whitespace_only",
+            format!("{field} must not be whitespace-only, got \"{value}\""),
+        );
     } else if value.contains(char::is_whitespace) {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "contains_whitespace",
-            message: format!("{field} must not contain whitespace, got \"{value}\""),
-        });
+            "contains_whitespace",
+            format!("{field} must not contain whitespace, got \"{value}\""),
+        );
     }
 }
 
 /// NT `InstrumentId::from` uses `rsplit_once('.')` -> (symbol, venue).
 /// We enforce venue == "POLYMARKET" and symbol non-empty.
-fn check_instrument_id(errors: &mut Vec<ValidationError>, value: &str) {
-    let field = "polymarket.instrument_id";
+fn check_instrument_id(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     if value.is_empty() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "empty",
-            message: format!("{field} must not be empty, got \"\""),
-        });
+            "empty",
+            format!("{field} must not be empty, got \"\""),
+        );
     } else if !value.ends_with(".POLYMARKET") {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "missing_venue_suffix",
-            message: format!("{field} must end with .POLYMARKET, got \"{value}\""),
-        });
+            "missing_venue_suffix",
+            format!("{field} must end with .POLYMARKET, got \"{value}\""),
+        );
     } else {
-        // value ends with ".POLYMARKET" -- check symbol part is non-empty.
         let symbol = &value[..value.len() - ".POLYMARKET".len()];
         if symbol.is_empty() {
-            errors.push(ValidationError {
+            push_error(
+                errors,
                 field,
-                code: "empty_symbol",
-                message: format!(
+                "empty_symbol",
+                format!(
                     "{field} symbol part before .POLYMARKET must not be empty, got \"{value}\""
                 ),
-            });
+            );
         }
     }
 }
 
-fn check_hex_prefixed(errors: &mut Vec<ValidationError>, field: &'static str, value: &str) {
+fn check_hex_prefixed(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     if value.is_empty() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "empty",
-            message: format!("{field} must not be empty, got \"\""),
-        });
+            "empty",
+            format!("{field} must not be empty, got \"\""),
+        );
     } else if !value.starts_with("0x") {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "missing_hex_prefix",
-            message: format!("{field} must start with 0x, got \"{value}\""),
-        });
+            "missing_hex_prefix",
+            format!("{field} must start with 0x, got \"{value}\""),
+        );
     }
 }
 
-/// Mirrors NT's `Quantity::from_str` exactly: strip underscores, parse via
-/// `rust_decimal::Decimal` (same crate NT uses), check non-negative, check
-/// `decimal.scale() <= 9` (FIXED_PRECISION without high-precision feature).
-fn check_positive_qty(errors: &mut Vec<ValidationError>, value: &str) {
-    let field = "strategy.order_qty";
-    let clean = value.replace('_', "");
-
-    let decimal = if clean.contains('e') || clean.contains('E') {
-        Decimal::from_scientific(&clean)
-    } else {
-        Decimal::from_str(&clean)
-    };
-
-    match decimal {
-        Ok(d) if d.is_sign_negative() || d.is_zero() => {
-            errors.push(ValidationError {
-                field,
-                code: "not_positive_number",
-                message: format!("{field} must be a positive number, got \"{value}\""),
-            });
-        }
-        Ok(d) => {
-            let precision = d.scale();
-            if precision > 9 {
-                errors.push(ValidationError {
-                    field,
-                    code: "excessive_precision",
-                    message: format!(
-                        "{field} precision must be <= 9 decimal digits, got \"{value}\""
-                    ),
-                });
-            }
-        }
-        Err(_) => {
-            errors.push(ValidationError {
-                field,
-                code: "not_positive_number",
-                message: format!("{field} must be a positive number, got \"{value}\""),
-            });
-        }
+/// Bolt policy: quantities must be strictly positive even though NT accepts zero.
+/// Parsing delegates entirely to NT's `Quantity::from_str`.
+fn check_strictly_positive_qty(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+    match Quantity::from_str(value) {
+        Ok(qty) if qty.raw == 0 => push_error(
+            errors,
+            field,
+            "not_positive_number",
+            format!("{field} must be a positive number, got \"{value}\""),
+        ),
+        Ok(_) => {}
+        Err(_) => push_error(
+            errors,
+            field,
+            "not_parseable",
+            format!("{field} must be parseable by Quantity::from_str, got \"{value}\""),
+        ),
     }
 }
 
-fn check_ssm_path(errors: &mut Vec<ValidationError>, field: &'static str, value: &str) {
+fn check_positive_u64(errors: &mut Vec<ValidationError>, field: &str, value: u64) {
+    if value == 0 {
+        push_error(
+            errors,
+            field,
+            "not_positive",
+            format!("{field} must be > 0, got {value}"),
+        );
+    }
+}
+
+fn check_signature_type(errors: &mut Vec<ValidationError>, field: &str, value: i64) {
+    if !(0..=2).contains(&value) {
+        push_error(
+            errors,
+            field,
+            "invalid_signature_type",
+            format!("{field} must be one of [0, 1, 2], got {value}"),
+        );
+    }
+}
+
+fn check_ssm_path(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     if value.is_empty() {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "empty",
-            message: format!("{field} must not be empty, got \"\""),
-        });
+            "empty",
+            format!("{field} must not be empty, got \"\""),
+        );
     } else if !value.starts_with('/') {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
-            code: "missing_leading_slash",
-            message: format!(
-                "{field} must be an absolute SSM path starting with /, got \"{value}\""
-            ),
-        });
+            "missing_leading_slash",
+            format!("{field} must be an absolute SSM path starting with /, got \"{value}\""),
+        );
     }
 }
 
 /// Allowlist check for a field that must be one of an exact set of values.
 fn check_allowlist(
     errors: &mut Vec<ValidationError>,
-    field: &'static str,
+    field: &str,
     value: &str,
     allowed: &[&str],
     code: &'static str,
 ) {
     if !allowed.contains(&value) {
-        errors.push(ValidationError {
+        push_error(
+            errors,
             field,
             code,
-            message: format!("{field} must be one of {allowed:?}, got \"{value}\""),
-        });
+            format!("{field} must be one of {allowed:?}, got \"{value}\""),
+        );
+    }
+}
+
+fn get_required_str<'a>(
+    errors: &mut Vec<ValidationError>,
+    table: &'a Value,
+    key: &str,
+    field: &str,
+    code: &'static str,
+) -> Option<&'a str> {
+    match table.get(key).and_then(Value::as_str) {
+        Some(value) => Some(value),
+        None => {
+            push_error(
+                errors,
+                field,
+                code,
+                format!("{field} is missing required string field"),
+            );
+            None
+        }
+    }
+}
+
+fn get_required_i64(
+    errors: &mut Vec<ValidationError>,
+    table: &Value,
+    key: &str,
+    field: &str,
+    code: &'static str,
+) -> Option<i64> {
+    match table.get(key).and_then(Value::as_integer) {
+        Some(value) => Some(value),
+        None => {
+            push_error(
+                errors,
+                field,
+                code,
+                format!("{field} is missing required integer field"),
+            );
+            None
+        }
+    }
+}
+
+fn get_required_array<'a>(
+    errors: &mut Vec<ValidationError>,
+    table: &'a Value,
+    key: &str,
+    field: &str,
+    code: &'static str,
+) -> Option<&'a [Value]> {
+    match table.get(key).and_then(Value::as_array) {
+        Some(value) => Some(value),
+        None => {
+            push_error(
+                errors,
+                field,
+                code,
+                format!("{field} is missing required array field"),
+            );
+            None
+        }
+    }
+}
+
+fn check_optional_ssm_path(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    value: Option<&String>,
+    missing_code: &'static str,
+) {
+    match value {
+        Some(value) => check_ssm_path(errors, field, value),
+        None => push_error(
+            errors,
+            field,
+            missing_code,
+            format!("{field} is missing required string field"),
+        ),
+    }
+}
+
+fn first_seen_index<'a>(
+    seen: &mut HashMap<&'a str, usize>,
+    key: &'a str,
+    index: usize,
+) -> Option<usize> {
+    match seen.entry(key) {
+        Entry::Occupied(entry) => Some(*entry.get()),
+        Entry::Vacant(entry) => {
+            entry.insert(index);
+            None
+        }
     }
 }
 
@@ -267,9 +382,7 @@ const VALID_LOG_LEVELS: &[&str] = &["Trace", "Debug", "Info", "Warn", "Error", "
 pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
-    // -- node --------------------------------------------------------
-    check_nt_ascii(&mut errors, "node.name", &config.node.name);
-    // NT TraderId uses rsplit_once('-')
+    check_non_empty(&mut errors, "node.name", &config.node.name);
     check_nt_hyphenated(
         &mut errors,
         "node.trader_id",
@@ -284,7 +397,6 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "invalid_environment",
     );
 
-    // -- logging -----------------------------------------------------
     check_allowlist(
         &mut errors,
         "logging.stdout_level",
@@ -300,7 +412,37 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "invalid_log_level",
     );
 
-    // -- polymarket ---------------------------------------------------
+    check_positive_u64(
+        &mut errors,
+        "timeouts.connection_secs",
+        config.timeouts.connection_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "timeouts.reconciliation_secs",
+        config.timeouts.reconciliation_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "timeouts.portfolio_secs",
+        config.timeouts.portfolio_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "timeouts.disconnection_secs",
+        config.timeouts.disconnection_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "timeouts.post_stop_delay_secs",
+        config.timeouts.post_stop_delay_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "timeouts.shutdown_delay_secs",
+        config.timeouts.shutdown_delay_secs,
+    );
+
     check_nt_ascii(
         &mut errors,
         "polymarket.client_name",
@@ -311,8 +453,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.event_slug",
         &config.polymarket.event_slug,
     );
-    check_instrument_id(&mut errors, &config.polymarket.instrument_id);
-    // NT AccountId uses split_once('-')
+    check_instrument_id(
+        &mut errors,
+        "polymarket.instrument_id",
+        &config.polymarket.instrument_id,
+    );
     check_nt_hyphenated(
         &mut errors,
         "polymarket.account_id",
@@ -320,11 +465,13 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         split_first_hyphen,
     );
     check_hex_prefixed(&mut errors, "polymarket.funder", &config.polymarket.funder);
+    check_signature_type(
+        &mut errors,
+        "polymarket.signature_type",
+        i64::from(config.polymarket.signature_type),
+    );
 
-    // -- strategy ----------------------------------------------------
-    // StrategyId: must be NAME-TAG *or* literal "EXTERNAL"
     if config.strategy.strategy_id != "EXTERNAL" {
-        // NT StrategyId uses rsplit_once('-')
         check_nt_hyphenated(
             &mut errors,
             "strategy.strategy_id",
@@ -332,12 +479,20 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
             split_last_hyphen,
         );
     }
-    check_positive_qty(&mut errors, &config.strategy.order_qty);
+    check_strictly_positive_qty(
+        &mut errors,
+        "strategy.order_qty",
+        &config.strategy.order_qty,
+    );
 
-    // -- secrets (SSM paths) -----------------------------------------
+    check_non_empty(&mut errors, "secrets.region", &config.secrets.region);
     check_ssm_path(&mut errors, "secrets.pk", &config.secrets.pk);
     check_ssm_path(&mut errors, "secrets.api_key", &config.secrets.api_key);
-    check_ssm_path(&mut errors, "secrets.api_secret", &config.secrets.api_secret);
+    check_ssm_path(
+        &mut errors,
+        "secrets.api_secret",
+        &config.secrets.api_secret,
+    );
     check_ssm_path(
         &mut errors,
         "secrets.passphrase",
@@ -349,110 +504,271 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
 }
 
 /// Validate a rendered runtime config before it reaches the NT builder.
-/// Checks cross-section consistency that only exists at the runtime layer
-/// (multiple clients, strategies referencing clients by name).
+/// Checks cross-section consistency and re-applies the same domain validation
+/// that the local live config uses.
 pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
-    // -- Duplicate client names --------------------------------------
-    let mut data_names: HashSet<&str> = HashSet::new();
-    for client in &config.data_clients {
-        if !data_names.insert(&client.name) {
-            errors.push(ValidationError {
-                field: "data_clients",
-                code: "duplicate_name",
-                message: format!("duplicate data client name: \"{}\"", client.name),
-            });
+    check_non_empty(&mut errors, "node.name", &config.node.name);
+    check_nt_hyphenated(
+        &mut errors,
+        "node.trader_id",
+        &config.node.trader_id,
+        split_last_hyphen,
+    );
+    check_allowlist(
+        &mut errors,
+        "node.environment",
+        &config.node.environment,
+        VALID_ENVIRONMENTS,
+        "invalid_environment",
+    );
+    check_allowlist(
+        &mut errors,
+        "logging.stdout_level",
+        &config.logging.stdout_level,
+        VALID_LOG_LEVELS,
+        "invalid_log_level",
+    );
+    check_allowlist(
+        &mut errors,
+        "logging.file_level",
+        &config.logging.file_level,
+        VALID_LOG_LEVELS,
+        "invalid_log_level",
+    );
+    check_positive_u64(
+        &mut errors,
+        "node.timeout_connection_secs",
+        config.node.timeout_connection_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "node.timeout_reconciliation_secs",
+        config.node.timeout_reconciliation_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "node.timeout_portfolio_secs",
+        config.node.timeout_portfolio_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "node.timeout_disconnection_secs",
+        config.node.timeout_disconnection_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "node.delay_post_stop_secs",
+        config.node.delay_post_stop_secs,
+    );
+    check_positive_u64(
+        &mut errors,
+        "node.delay_shutdown_secs",
+        config.node.delay_shutdown_secs,
+    );
+
+    let mut data_name_indices: HashMap<&str, usize> = HashMap::new();
+    for (i, client) in config.data_clients.iter().enumerate() {
+        if let Some(first_index) = first_seen_index(&mut data_name_indices, &client.name, i) {
+            push_error(
+                &mut errors,
+                "data_clients",
+                "duplicate_name",
+                format!(
+                    "data_clients[{i}] has duplicate name \"{}\" (first defined at data_clients[{first_index}])",
+                    client.name
+                ),
+            );
+        }
+
+        let event_slugs_field = format!("data_clients[{i}].config.event_slugs");
+        if let Some(event_slugs) = get_required_array(
+            &mut errors,
+            &client.config,
+            "event_slugs",
+            &event_slugs_field,
+            "missing_event_slugs",
+        ) {
+            for (j, event_slug) in event_slugs.iter().enumerate() {
+                let field = format!("data_clients[{i}].config.event_slugs[{j}]");
+                match event_slug.as_str() {
+                    Some(event_slug) => {
+                        check_non_empty_no_whitespace(&mut errors, &field, event_slug)
+                    }
+                    None => push_error(
+                        &mut errors,
+                        &field,
+                        "invalid_type",
+                        format!("{field} must be a string"),
+                    ),
+                }
+            }
         }
     }
 
-    let mut exec_names: HashSet<&str> = HashSet::new();
-    for client in &config.exec_clients {
-        if !exec_names.insert(&client.name) {
-            errors.push(ValidationError {
-                field: "exec_clients",
-                code: "duplicate_name",
-                message: format!("duplicate exec client name: \"{}\"", client.name),
-            });
+    let mut exec_name_indices: HashMap<&str, usize> = HashMap::new();
+    for (i, client) in config.exec_clients.iter().enumerate() {
+        if let Some(first_index) = first_seen_index(&mut exec_name_indices, &client.name, i) {
+            push_error(
+                &mut errors,
+                "exec_clients",
+                "duplicate_name",
+                format!(
+                    "exec_clients[{i}] has duplicate name \"{}\" (first defined at exec_clients[{first_index}])",
+                    client.name
+                ),
+            );
         }
+
+        let account_id_field = format!("exec_clients[{i}].config.account_id");
+        if let Some(account_id) = get_required_str(
+            &mut errors,
+            &client.config,
+            "account_id",
+            &account_id_field,
+            "missing_account_id",
+        ) {
+            check_nt_hyphenated(
+                &mut errors,
+                &account_id_field,
+                account_id,
+                split_first_hyphen,
+            );
+        }
+
+        let funder_field = format!("exec_clients[{i}].config.funder");
+        if let Some(funder) = get_required_str(
+            &mut errors,
+            &client.config,
+            "funder",
+            &funder_field,
+            "missing_funder",
+        ) {
+            check_hex_prefixed(&mut errors, &funder_field, funder);
+        }
+
+        let signature_type_field = format!("exec_clients[{i}].config.signature_type");
+        if let Some(signature_type) = get_required_i64(
+            &mut errors,
+            &client.config,
+            "signature_type",
+            &signature_type_field,
+            "missing_signature_type",
+        ) {
+            check_signature_type(&mut errors, &signature_type_field, signature_type);
+        }
+
+        let region_field = format!("exec_clients[{i}].secrets.region");
+        check_non_empty(&mut errors, &region_field, &client.secrets.region);
+
+        check_optional_ssm_path(
+            &mut errors,
+            &format!("exec_clients[{i}].secrets.pk"),
+            client.secrets.pk.as_ref(),
+            "missing_pk",
+        );
+        check_optional_ssm_path(
+            &mut errors,
+            &format!("exec_clients[{i}].secrets.api_key"),
+            client.secrets.api_key.as_ref(),
+            "missing_api_key",
+        );
+        check_optional_ssm_path(
+            &mut errors,
+            &format!("exec_clients[{i}].secrets.api_secret"),
+            client.secrets.api_secret.as_ref(),
+            "missing_api_secret",
+        );
+        check_optional_ssm_path(
+            &mut errors,
+            &format!("exec_clients[{i}].secrets.passphrase"),
+            client.secrets.passphrase.as_ref(),
+            "missing_passphrase",
+        );
     }
 
-    // -- Duplicate strategy IDs --------------------------------------
-    let mut strategy_ids: HashSet<&str> = HashSet::new();
-    for (i, strategy) in config.strategies.iter().enumerate() {
-        if let Some(sid) = strategy.config.get("strategy_id").and_then(|v| v.as_str())
-            && !strategy_ids.insert(sid)
-        {
-            errors.push(ValidationError {
-                field: "strategies",
-                code: "duplicate_strategy_id",
-                message: format!("strategies[{i}] has duplicate strategy_id \"{sid}\""),
-            });
-        }
-    }
-
-    // -- Strategy required fields and client_id references -----------
+    let mut strategy_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, strategy) in config.strategies.iter().enumerate() {
         match strategy.config.get("client_id").and_then(|v| v.as_str()) {
-            None => {
-                errors.push(ValidationError {
-                    field: "strategies",
-                    code: "missing_client_id",
-                    message: format!("strategies[{i}] is missing required client_id field"),
-                });
+            None => push_error(
+                &mut errors,
+                "strategies",
+                "missing_client_id",
+                format!("strategies[{i}] is missing required client_id field"),
+            ),
+            Some(client_id) => {
+                let field = format!("strategies[{i}].config.client_id");
+                check_nt_ascii(&mut errors, &field, client_id);
+                if !exec_name_indices.contains_key(client_id) {
+                    push_error(
+                        &mut errors,
+                        "strategies",
+                        "unknown_client_id",
+                        format!(
+                            "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
+                        ),
+                    );
+                }
             }
-            Some(client_id) if !exec_names.contains(client_id) => {
-                errors.push(ValidationError {
-                    field: "strategies",
-                    code: "unknown_client_id",
-                    message: format!(
-                        "strategies[{i}] references client_id \"{client_id}\" \
-                         which does not match any exec_client name"
-                    ),
-                });
-            }
-            Some(_) => {}
         }
 
-        if strategy
-            .config
-            .get("strategy_id")
-            .and_then(|v| v.as_str())
-            .is_none()
-        {
-            errors.push(ValidationError {
-                field: "strategies",
-                code: "missing_strategy_id",
-                message: format!("strategies[{i}] is missing required strategy_id field"),
-            });
+        match strategy.config.get("strategy_id").and_then(|v| v.as_str()) {
+            None => push_error(
+                &mut errors,
+                "strategies",
+                "missing_strategy_id",
+                format!("strategies[{i}] is missing required strategy_id field"),
+            ),
+            Some(strategy_id) => {
+                if let Some(first_index) =
+                    first_seen_index(&mut strategy_id_indices, strategy_id, i)
+                {
+                    push_error(
+                        &mut errors,
+                        "strategies",
+                        "duplicate_strategy_id",
+                        format!(
+                            "strategies[{i}] has duplicate strategy_id \"{strategy_id}\" (first defined at strategies[{first_index}])"
+                        ),
+                    );
+                }
+
+                if strategy_id != "EXTERNAL" {
+                    let field = format!("strategies[{i}].config.strategy_id");
+                    check_nt_hyphenated(&mut errors, &field, strategy_id, split_last_hyphen);
+                }
+            }
         }
 
-        if strategy
+        match strategy
             .config
             .get("instrument_id")
             .and_then(|v| v.as_str())
-            .is_none()
         {
-            errors.push(ValidationError {
-                field: "strategies",
-                code: "missing_instrument_id",
-                message: format!(
-                    "strategies[{i}] is missing required instrument_id field"
-                ),
-            });
+            None => push_error(
+                &mut errors,
+                "strategies",
+                "missing_instrument_id",
+                format!("strategies[{i}] is missing required instrument_id field"),
+            ),
+            Some(instrument_id) => {
+                let field = format!("strategies[{i}].config.instrument_id");
+                check_instrument_id(&mut errors, &field, instrument_id);
+            }
         }
 
-        if strategy
-            .config
-            .get("order_qty")
-            .and_then(|v| v.as_str())
-            .is_none()
-        {
-            errors.push(ValidationError {
-                field: "strategies",
-                code: "missing_order_qty",
-                message: format!("strategies[{i}] is missing required order_qty field"),
-            });
+        match strategy.config.get("order_qty").and_then(|v| v.as_str()) {
+            None => push_error(
+                &mut errors,
+                "strategies",
+                "missing_order_qty",
+                format!("strategies[{i}] is missing required order_qty field"),
+            ),
+            Some(order_qty) => {
+                let field = format!("strategies[{i}].config.order_qty");
+                check_strictly_positive_qty(&mut errors, &field, order_qty);
+            }
         }
     }
 

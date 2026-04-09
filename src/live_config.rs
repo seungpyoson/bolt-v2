@@ -162,9 +162,13 @@ impl Default for LiveTimeoutsInput {
 pub struct LivePolymarketInput {
     #[serde(default = "default_client_name")]
     pub client_name: String,
+    #[serde(default)]
     pub event_slug: String,
+    #[serde(default)]
     pub instrument_id: String,
+    #[serde(default)]
     pub account_id: String,
+    #[serde(default)]
     pub funder: String,
     #[serde(default = "default_signature_type")]
     pub signature_type: u8,
@@ -215,9 +219,13 @@ impl Default for LiveStrategyInput {
 pub struct LiveSecretsInput {
     #[serde(default = "default_region")]
     pub region: String,
+    #[serde(default)]
     pub pk: String,
+    #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
     pub api_secret: String,
+    #[serde(default)]
     pub passphrase: String,
 }
 
@@ -384,11 +392,18 @@ pub fn materialize_live_config(
 
     let validation_errors = crate::validate::validate_live_local(&input);
     if !validation_errors.is_empty() {
-        let details: Vec<String> = validation_errors.iter().map(|e| format!("  - {e}")).collect();
+        let details: Vec<String> = validation_errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect();
         return Err(format!(
             "Config validation failed ({} error{}):\n{}",
             validation_errors.len(),
-            if validation_errors.len() == 1 { "" } else { "s" },
+            if validation_errors.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
             details.join("\n"),
         )
         .into());

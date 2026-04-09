@@ -1,4 +1,6 @@
 use super::*;
+use std::io::Write;
+use tempfile::NamedTempFile;
 
 // ════════════════════════════════════════════════════════════════
 // Test infrastructure
@@ -57,6 +59,23 @@ fn assert_has_error(errors: &[ValidationError], field: &str, code: &str) {
     );
 }
 
+fn assert_error_message_contains(
+    errors: &[ValidationError],
+    field: &str,
+    code: &str,
+    needle: &str,
+) {
+    let error = errors
+        .iter()
+        .find(|e| e.field == field && e.code == code)
+        .unwrap_or_else(|| panic!("expected error field={field} code={code}, got: {errors:?}"));
+    assert!(
+        error.message.contains(needle),
+        "expected error message to contain {needle:?}, got: {:?}",
+        error.message
+    );
+}
+
 fn assert_no_errors(errors: &[ValidationError]) {
     assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
 }
@@ -73,11 +92,10 @@ fn valid_config_passes_all_validation() {
 
 #[test]
 fn tracked_template_passes_validation() {
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("config/live.local.example.toml");
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/live.local.example.toml");
     let contents = std::fs::read_to_string(&source).expect("tracked template should exist");
-    let config: LiveLocalConfig =
-        toml::from_str(&contents).expect("tracked template should parse");
+    let config: LiveLocalConfig = toml::from_str(&contents).expect("tracked template should parse");
     let errors = validate_live_local(&config);
     assert_no_errors(&errors);
 }
@@ -101,14 +119,14 @@ fn whitespace_only_node_name_rejected() {
 }
 
 #[test]
-fn non_ascii_node_name_rejected() {
+fn node_name_unicode_accepted() {
     let toml = replace(
         &valid_toml(),
         "name = \"BOLT-V2-001\"",
         "name = \"BOLT-V2-\u{00e9}\"",
     );
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "node.name", "non_ascii");
+    assert_no_errors(&errors);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -254,7 +272,7 @@ fn instrument_id_bare_suffix_rejected() {
 fn order_qty_non_numeric_rejected() {
     let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"abc\"");
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
+    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
 }
 
 #[test]
@@ -268,14 +286,14 @@ fn order_qty_zero_rejected() {
 fn order_qty_negative_rejected() {
     let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"-1\"");
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
+    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
 }
 
 #[test]
 fn order_qty_infinity_rejected() {
     let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"inf\"");
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
+    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
 }
 
 #[test]
@@ -293,22 +311,21 @@ fn order_qty_scientific_notation_accepted() {
 }
 
 #[test]
-fn order_qty_excessive_precision_rejected() {
+fn order_qty_high_precision_accepted() {
     let toml = replace(
         &valid_toml(),
         "order_qty = \"5\"",
         "order_qty = \"0.0000000001\"",
     );
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "excessive_precision");
+    assert_no_errors(&errors);
 }
 
 #[test]
-fn order_qty_scientific_negative_exponent_excessive_precision_rejected() {
-    // "1e-10" = 0.0000000001 → scale 10 > FIXED_PRECISION 9
+fn order_qty_scientific_negative_exponent_accepted() {
     let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1e-10\"");
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "excessive_precision");
+    assert_no_errors(&errors);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -343,6 +360,49 @@ fn invalid_log_level_rejected() {
     let errors = errors_for(&toml);
     assert_has_error(&errors, "logging.stdout_level", "invalid_log_level");
     assert_has_error(&errors, "logging.file_level", "invalid_log_level");
+}
+
+#[test]
+fn signature_type_out_of_range_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "funder = \"0xabc\"",
+        "funder = \"0xabc\"\nsignature_type = 3",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "polymarket.signature_type",
+        "invalid_signature_type",
+    );
+}
+
+#[test]
+fn timeouts_zero_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "[polymarket]",
+        r#"[timeouts]
+connection_secs = 0
+reconciliation_secs = 0
+portfolio_secs = 0
+disconnection_secs = 0
+post_stop_delay_secs = 0
+shutdown_delay_secs = 0
+
+[polymarket]"#,
+    );
+    let errors = errors_for(&toml);
+    for field in [
+        "timeouts.connection_secs",
+        "timeouts.reconciliation_secs",
+        "timeouts.portfolio_secs",
+        "timeouts.disconnection_secs",
+        "timeouts.post_stop_delay_secs",
+        "timeouts.shutdown_delay_secs",
+    ] {
+        assert_has_error(&errors, field, "not_positive");
+    }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -441,6 +501,13 @@ fn all_ssm_paths_validated() {
     assert_has_error(&errors, "secrets.passphrase", "missing_leading_slash");
 }
 
+#[test]
+fn secrets_region_empty_rejected() {
+    let toml = replace(&valid_toml(), "[secrets]", "[secrets]\nregion = \"\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "secrets.region", "empty");
+}
+
 // ════════════════════════════════════════════════════════════════
 // Error accumulation
 // ════════════════════════════════════════════════════════════════
@@ -449,11 +516,7 @@ fn all_ssm_paths_validated() {
 fn multiple_errors_accumulated_not_just_first() {
     let mut toml = valid_toml();
     toml = replace(&toml, "name = \"BOLT-V2-001\"", "name = \"\"");
-    toml = replace(
-        &toml,
-        "event_slug = \"btc-updown-5m\"",
-        "event_slug = \"\"",
-    );
+    toml = replace(&toml, "event_slug = \"btc-updown-5m\"", "event_slug = \"\"");
     toml = replace(&toml, "funder = \"0xabc\"", "funder = \"\"");
 
     let errors = errors_for(&toml);
@@ -521,17 +584,32 @@ order_qty = "5"
 }
 
 fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
-    let config: Config =
-        toml::from_str(toml_str).expect("runtime test config should parse");
+    let config: Config = toml::from_str(toml_str).expect("runtime test config should parse");
     let mut errors = validate_runtime(&config);
     errors.sort();
     errors
+}
+
+fn runtime_load_error_for(toml_str: &str) -> String {
+    let mut file = NamedTempFile::new().expect("runtime temp file should be created");
+    file.write_all(toml_str.as_bytes())
+        .expect("runtime temp file should be written");
+    Config::load(file.path())
+        .expect_err("runtime config should fail validation")
+        .to_string()
 }
 
 #[test]
 fn valid_runtime_config_passes() {
     let errors = runtime_errors_for(valid_runtime_toml());
     assert_no_errors(&errors);
+}
+
+#[test]
+fn runtime_invalid_trader_id_rejected() {
+    let toml = valid_runtime_toml().replace("trader_id = \"BOLT-001\"", "trader_id = \"BOLT001\"");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "node.trader_id", "missing_hyphen");
 }
 
 #[test]
@@ -549,6 +627,12 @@ event_slugs = ["other-slug"]
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "data_clients", "duplicate_name");
+    assert_error_message_contains(
+        &errors,
+        "data_clients",
+        "duplicate_name",
+        "first defined at data_clients[0]",
+    );
 }
 
 #[test]
@@ -574,12 +658,18 @@ passphrase = "/bolt/poly/passphrase2"
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "exec_clients", "duplicate_name");
+    assert_error_message_contains(
+        &errors,
+        "exec_clients",
+        "duplicate_name",
+        "first defined at exec_clients[0]",
+    );
 }
 
 #[test]
-fn duplicate_strategy_ids_rejected() {
+fn duplicate_strategy_id_names_first_occurrence() {
     let toml = format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         valid_runtime_toml(),
         r#"
 [[strategies]]
@@ -589,18 +679,46 @@ strategy_id = "EXEC_TESTER-001"
 instrument_id = "0xdef-67890.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "10"
+"#,
+        r#"
+[[strategies]]
+type = "exec_tester"
+[strategies.config]
+strategy_id = "EXEC_TESTER-001"
+instrument_id = "0xghi-13579.POLYMARKET"
+client_id = "POLYMARKET"
+order_qty = "15"
 "#
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "duplicate_strategy_id");
+    assert_error_message_contains(
+        &errors,
+        "strategies",
+        "duplicate_strategy_id",
+        "strategies[1] has duplicate strategy_id \"EXEC_TESTER-001\"",
+    );
+    assert!(
+        errors.iter().any(|e| {
+            e.field == "strategies"
+                && e.code == "duplicate_strategy_id"
+                && e.message
+                    .contains("strategies[2] has duplicate strategy_id \"EXEC_TESTER-001\" (first defined at strategies[0])")
+        }),
+        "expected third duplicate to reference the original first occurrence, got: {errors:?}"
+    );
+    assert_error_message_contains(
+        &errors,
+        "strategies",
+        "duplicate_strategy_id",
+        "first defined at strategies[0]",
+    );
 }
 
 #[test]
 fn strategy_referencing_nonexistent_client_rejected() {
-    let toml = valid_runtime_toml().replace(
-        "client_id = \"POLYMARKET\"",
-        "client_id = \"NONEXISTENT\"",
-    );
+    let toml =
+        valid_runtime_toml().replace("client_id = \"POLYMARKET\"", "client_id = \"NONEXISTENT\"");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "unknown_client_id");
 }
@@ -623,16 +741,14 @@ fn strategy_referencing_existing_client_accepted() {
 
 #[test]
 fn runtime_missing_strategy_id_rejected() {
-    let toml =
-        valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
+    let toml = valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "missing_strategy_id");
 }
 
 #[test]
 fn runtime_missing_instrument_id_rejected() {
-    let toml = valid_runtime_toml()
-        .replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
+    let toml = valid_runtime_toml().replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "missing_instrument_id");
 }
@@ -642,4 +758,43 @@ fn runtime_missing_order_qty_rejected() {
     let toml = valid_runtime_toml().replace("order_qty = \"5\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "missing_order_qty");
+}
+
+#[test]
+fn runtime_invalid_instrument_id_rejected() {
+    let toml = valid_runtime_toml().replace(
+        "instrument_id = \"0xabc-12345.POLYMARKET\"",
+        "instrument_id = \"TOKEN.TEST\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.instrument_id",
+        "missing_venue_suffix",
+    );
+}
+
+#[test]
+fn runtime_invalid_order_qty_rejected() {
+    let toml = valid_runtime_toml().replace("order_qty = \"5\"", "order_qty = \"0\"");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.order_qty",
+        "not_positive_number",
+    );
+}
+
+#[test]
+fn runtime_validation_via_config_load() {
+    let toml = valid_runtime_toml().replace("trader_id = \"BOLT-001\"", "trader_id = \"BOLT001\"");
+    let error = runtime_load_error_for(&toml);
+    assert!(
+        error.contains("Runtime config validation failed"),
+        "unexpected load error: {error}"
+    );
+    assert!(
+        error.contains("node.trader_id"),
+        "runtime load error should mention trader_id: {error}"
+    );
 }

@@ -136,6 +136,15 @@ fn reference_actor_subscribes_to_quotes_for_configured_venues() {
     );
     let snapshots = collect_snapshots(publish_topic);
 
+    msgbus::publish_quote(
+        get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
+        &quote("BTCUSDT.BINANCE", "99.0", "101.0", 900),
+    );
+    assert!(
+        snapshots.borrow().is_empty(),
+        "actor should not receive quotes before start"
+    );
+
     let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
     actor.start().unwrap();
 
@@ -203,6 +212,46 @@ fn quote_events_update_latest_observation_and_publish_snapshot() {
     assert_eq!(snapshot.venues[0].venue_name, "BINANCE");
     assert_eq!(snapshot.venues[0].observed_price, Some(100.0));
     assert_eq!(snapshot.venues[0].effective_weight, 1.0);
+}
+
+#[test]
+fn min_publish_interval_throttles_snapshot_emission() {
+    let publish_topic = "platform.reference.test.throttle";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            100,
+            vec![subscription("BINANCE", "BTCUSDT.BINANCE", "BINANCE")],
+        ),
+        vec![reference_venue(
+            "BINANCE",
+            "BTCUSDT.BINANCE",
+            ReferenceVenueKind::Binance,
+            1.0,
+        )],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+
+    msgbus::publish_quote(
+        get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
+        &quote("BTCUSDT.BINANCE", "99.5", "100.5", 1_000),
+    );
+    msgbus::publish_quote(
+        get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
+        &quote("BTCUSDT.BINANCE", "109.5", "110.5", 1_050),
+    );
+    msgbus::publish_quote(
+        get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
+        &quote("BTCUSDT.BINANCE", "119.5", "120.5", 1_100),
+    );
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].fair_value, Some(100.0));
+    assert_eq!(snapshots[1].fair_value, Some(120.0));
 }
 
 #[test]

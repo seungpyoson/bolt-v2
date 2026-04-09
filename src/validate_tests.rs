@@ -1,0 +1,620 @@
+use super::*;
+
+// ════════════════════════════════════════════════════════════════
+// Test infrastructure
+// ════════════════════════════════════════════════════════════════
+
+/// Minimal valid config -- all fields satisfy validation rules.
+/// Each test overrides one field to trigger a specific error.
+fn valid_toml() -> String {
+    r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+
+[polymarket]
+event_slug = "btc-updown-5m"
+instrument_id = "0xabc-12345.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+
+[strategy]
+strategy_id = "EXEC_TESTER-001"
+order_qty = "5"
+
+[secrets]
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+"#
+    .to_string()
+}
+
+fn replace(base: &str, old: &str, new: &str) -> String {
+    assert!(
+        base.contains(old),
+        "test helper: '{old}' not found in base config"
+    );
+    base.replacen(old, new, 1)
+}
+
+fn parse(toml: &str) -> LiveLocalConfig {
+    toml::from_str(toml).expect("test config should parse")
+}
+
+fn errors_for(toml: &str) -> Vec<ValidationError> {
+    let config = parse(toml);
+    let mut errors = validate_live_local(&config);
+    errors.sort();
+    errors
+}
+
+fn assert_has_error(errors: &[ValidationError], field: &str, code: &str) {
+    assert!(
+        errors.iter().any(|e| e.field == field && e.code == code),
+        "expected error field={field} code={code}, got: {errors:?}"
+    );
+}
+
+fn assert_no_errors(errors: &[ValidationError]) {
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+}
+
+// ════════════════════════════════════════════════════════════════
+// Golden path
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn valid_config_passes_all_validation() {
+    let errors = errors_for(&valid_toml());
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn tracked_template_passes_validation() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("config/live.local.example.toml");
+    let contents = std::fs::read_to_string(&source).expect("tracked template should exist");
+    let config: LiveLocalConfig =
+        toml::from_str(&contents).expect("tracked template should parse");
+    let errors = validate_live_local(&config);
+    assert_no_errors(&errors);
+}
+
+// ════════════════════════════════════════════════════════════════
+// NT ASCII contract (check_nt_ascii)
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn empty_node_name_rejected() {
+    let toml = replace(&valid_toml(), "name = \"BOLT-V2-001\"", "name = \"\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.name", "empty");
+}
+
+#[test]
+fn whitespace_only_node_name_rejected() {
+    let toml = replace(&valid_toml(), "name = \"BOLT-V2-001\"", "name = \"   \"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.name", "whitespace_only");
+}
+
+#[test]
+fn non_ascii_node_name_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "name = \"BOLT-V2-001\"",
+        "name = \"BOLT-V2-\u{00e9}\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.name", "non_ascii");
+}
+
+// ════════════════════════════════════════════════════════════════
+// NT NAME-TAG contract (check_nt_name_tag)
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn trader_id_without_hyphen_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "trader_id = \"BOLT-001\"",
+        "trader_id = \"BOLT001\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.trader_id", "missing_hyphen");
+}
+
+#[test]
+fn trader_id_with_empty_name_part_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "trader_id = \"BOLT-001\"",
+        "trader_id = \"-001\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.trader_id", "empty_name_part");
+}
+
+#[test]
+fn trader_id_with_empty_tag_part_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "trader_id = \"BOLT-001\"",
+        "trader_id = \"BOLT-\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.trader_id", "empty_tag_part");
+}
+
+#[test]
+fn account_id_without_hyphen_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "account_id = \"POLYMARKET-001\"",
+        "account_id = \"POLYMARKET001\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.account_id", "missing_hyphen");
+}
+
+#[test]
+fn strategy_id_without_hyphen_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "strategy_id = \"EXEC_TESTER-001\"",
+        "strategy_id = \"EXECTESTER001\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.strategy_id", "missing_hyphen");
+}
+
+#[test]
+fn strategy_id_external_accepted() {
+    let toml = replace(
+        &valid_toml(),
+        "strategy_id = \"EXEC_TESTER-001\"",
+        "strategy_id = \"EXTERNAL\"",
+    );
+    let errors = errors_for(&toml);
+    assert!(
+        !errors.iter().any(|e| e.field == "strategy.strategy_id"),
+        "EXTERNAL should not produce strategy_id errors, got: {errors:?}"
+    );
+}
+
+// ════════════════════════════════════════════════════════════════
+// Instrument ID
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn empty_instrument_id_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "instrument_id = \"0xabc-12345.POLYMARKET\"",
+        "instrument_id = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.instrument_id", "empty");
+}
+
+#[test]
+fn instrument_id_missing_venue_suffix_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "instrument_id = \"0xabc-12345.POLYMARKET\"",
+        "instrument_id = \"0xabc-12345\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.instrument_id", "missing_venue_suffix");
+}
+
+#[test]
+fn instrument_id_bare_suffix_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "instrument_id = \"0xabc-12345.POLYMARKET\"",
+        "instrument_id = \".POLYMARKET\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.instrument_id", "empty_symbol");
+}
+
+// ════════════════════════════════════════════════════════════════
+// Quantity (check_positive_qty)
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn order_qty_non_numeric_rejected() {
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"abc\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
+}
+
+#[test]
+fn order_qty_zero_rejected() {
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"0\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
+}
+
+#[test]
+fn order_qty_negative_rejected() {
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"-1\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
+}
+
+#[test]
+fn order_qty_infinity_rejected() {
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"inf\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
+}
+
+#[test]
+fn order_qty_with_underscores_accepted() {
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1_000\"");
+    let errors = errors_for(&toml);
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn order_qty_scientific_notation_accepted() {
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1e3\"");
+    let errors = errors_for(&toml);
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn order_qty_excessive_precision_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"0.0000000001\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.order_qty", "excessive_precision");
+}
+
+#[test]
+fn order_qty_scientific_negative_exponent_excessive_precision_rejected() {
+    // "1e-10" = 0.0000000001 → scale 10 > FIXED_PRECISION 9
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1e-10\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.order_qty", "excessive_precision");
+}
+
+// ════════════════════════════════════════════════════════════════
+// New fields: client_name, environment, log_level
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn empty_client_name_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "[polymarket]",
+        "[polymarket]\nclient_name = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.client_name", "empty");
+}
+
+#[test]
+fn invalid_environment_rejected() {
+    let toml = replace(&valid_toml(), "[node]", "[node]\nenvironment = \"live\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "node.environment", "invalid_environment");
+}
+
+#[test]
+fn invalid_log_level_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[logging]\nstdout_level = \"info\"\nfile_level = \"debug\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "logging.stdout_level", "invalid_log_level");
+    assert_has_error(&errors, "logging.file_level", "invalid_log_level");
+}
+
+// ════════════════════════════════════════════════════════════════
+// Domain-specific: event_slug, funder, SSM paths
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn empty_event_slug_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "event_slug = \"btc-updown-5m\"",
+        "event_slug = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.event_slug", "empty");
+}
+
+#[test]
+fn whitespace_event_slug_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "event_slug = \"btc-updown-5m\"",
+        "event_slug = \"  \"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.event_slug", "whitespace_only");
+}
+
+#[test]
+fn event_slug_with_embedded_whitespace_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "event_slug = \"btc-updown-5m\"",
+        "event_slug = \"btc updown 5m\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.event_slug", "contains_whitespace");
+}
+
+#[test]
+fn empty_funder_rejected() {
+    let toml = replace(&valid_toml(), "funder = \"0xabc\"", "funder = \"\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.funder", "empty");
+}
+
+#[test]
+fn funder_missing_hex_prefix_rejected() {
+    let toml = replace(&valid_toml(), "funder = \"0xabc\"", "funder = \"abc\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.funder", "missing_hex_prefix");
+}
+
+#[test]
+fn ssm_path_missing_leading_slash_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "pk = \"/bolt/poly/pk\"",
+        "pk = \"bolt/poly/pk\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "secrets.pk", "missing_leading_slash");
+}
+
+#[test]
+fn empty_ssm_path_reports_empty_not_missing_slash() {
+    let toml = replace(&valid_toml(), "pk = \"/bolt/poly/pk\"", "pk = \"\"");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "secrets.pk", "empty");
+}
+
+#[test]
+fn all_ssm_paths_validated() {
+    let mut toml = valid_toml();
+    toml = replace(&toml, "pk = \"/bolt/poly/pk\"", "pk = \"bolt/poly/pk\"");
+    toml = replace(
+        &toml,
+        "api_key = \"/bolt/poly/key\"",
+        "api_key = \"bolt/poly/key\"",
+    );
+    toml = replace(
+        &toml,
+        "api_secret = \"/bolt/poly/secret\"",
+        "api_secret = \"bolt/poly/secret\"",
+    );
+    toml = replace(
+        &toml,
+        "passphrase = \"/bolt/poly/passphrase\"",
+        "passphrase = \"bolt/poly/passphrase\"",
+    );
+
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "secrets.pk", "missing_leading_slash");
+    assert_has_error(&errors, "secrets.api_key", "missing_leading_slash");
+    assert_has_error(&errors, "secrets.api_secret", "missing_leading_slash");
+    assert_has_error(&errors, "secrets.passphrase", "missing_leading_slash");
+}
+
+// ════════════════════════════════════════════════════════════════
+// Error accumulation
+// ════════════════════════════════════════════════════════════════
+
+#[test]
+fn multiple_errors_accumulated_not_just_first() {
+    let mut toml = valid_toml();
+    toml = replace(&toml, "name = \"BOLT-V2-001\"", "name = \"\"");
+    toml = replace(
+        &toml,
+        "event_slug = \"btc-updown-5m\"",
+        "event_slug = \"\"",
+    );
+    toml = replace(&toml, "funder = \"0xabc\"", "funder = \"\"");
+
+    let errors = errors_for(&toml);
+    assert!(
+        errors.len() >= 3,
+        "expected at least 3 errors, got {}: {errors:?}",
+        errors.len()
+    );
+    assert_has_error(&errors, "node.name", "empty");
+    assert_has_error(&errors, "polymarket.event_slug", "empty");
+    assert_has_error(&errors, "polymarket.funder", "empty");
+}
+
+// ════════════════════════════════════════════════════════════════
+// Runtime config validation
+// ════════════════════════════════════════════════════════════════
+
+fn valid_runtime_toml() -> &'static str {
+    r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 60
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+delay_shutdown_secs = 5
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[data_clients.config]
+event_slugs = ["btc-updown-5m"]
+
+[[exec_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[exec_clients.config]
+account_id = "POLYMARKET-001"
+signature_type = 2
+funder = "0xabc"
+[exec_clients.secrets]
+region = "eu-west-1"
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[[strategies]]
+type = "exec_tester"
+[strategies.config]
+strategy_id = "EXEC_TESTER-001"
+instrument_id = "0xabc-12345.POLYMARKET"
+client_id = "POLYMARKET"
+order_qty = "5"
+"#
+}
+
+fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
+    let config: Config =
+        toml::from_str(toml_str).expect("runtime test config should parse");
+    let mut errors = validate_runtime(&config);
+    errors.sort();
+    errors
+}
+
+#[test]
+fn valid_runtime_config_passes() {
+    let errors = runtime_errors_for(valid_runtime_toml());
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn duplicate_data_client_names_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        r#"
+[[data_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[data_clients.config]
+event_slugs = ["other-slug"]
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "data_clients", "duplicate_name");
+}
+
+#[test]
+fn duplicate_exec_client_names_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        r#"
+[[exec_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[exec_clients.config]
+account_id = "POLYMARKET-002"
+signature_type = 2
+funder = "0xdef"
+[exec_clients.secrets]
+region = "eu-west-1"
+pk = "/bolt/poly/pk2"
+api_key = "/bolt/poly/key2"
+api_secret = "/bolt/poly/secret2"
+passphrase = "/bolt/poly/passphrase2"
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "exec_clients", "duplicate_name");
+}
+
+#[test]
+fn duplicate_strategy_ids_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        r#"
+[[strategies]]
+type = "exec_tester"
+[strategies.config]
+strategy_id = "EXEC_TESTER-001"
+instrument_id = "0xdef-67890.POLYMARKET"
+client_id = "POLYMARKET"
+order_qty = "10"
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies", "duplicate_strategy_id");
+}
+
+#[test]
+fn strategy_referencing_nonexistent_client_rejected() {
+    let toml = valid_runtime_toml().replace(
+        "client_id = \"POLYMARKET\"",
+        "client_id = \"NONEXISTENT\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies", "unknown_client_id");
+}
+
+#[test]
+fn strategy_missing_client_id_rejected() {
+    let toml = valid_runtime_toml().replace("client_id = \"POLYMARKET\"\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies", "missing_client_id");
+}
+
+#[test]
+fn strategy_referencing_existing_client_accepted() {
+    let errors = runtime_errors_for(valid_runtime_toml());
+    assert!(
+        !errors.iter().any(|e| e.code == "unknown_client_id"),
+        "valid client_id should not produce errors"
+    );
+}
+
+#[test]
+fn runtime_missing_strategy_id_rejected() {
+    let toml =
+        valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies", "missing_strategy_id");
+}
+
+#[test]
+fn runtime_missing_instrument_id_rejected() {
+    let toml = valid_runtime_toml()
+        .replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies", "missing_instrument_id");
+}
+
+#[test]
+fn runtime_missing_order_qty_rejected() {
+    let toml = valid_runtime_toml().replace("order_qty = \"5\"\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies", "missing_order_qty");
+}

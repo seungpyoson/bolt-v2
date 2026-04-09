@@ -191,33 +191,47 @@ fn build_completeness_report(
         let was_converted = converted_classes.contains(&name.as_str());
         let effective_policy = contract.effective_policy(name).unwrap_or(Policy::Disabled);
 
-        let (status, reason) = match (&stream.capability, spool_present, was_converted) {
-            (Capability::Unsupported, false, _) => ("pass_unsupported", None),
-            (Capability::Unsupported, true, _) => {
+        let (status, reason) = match (
+            &stream.capability,
+            &effective_policy,
+            spool_present,
+            was_converted,
+        ) {
+            (Capability::Unsupported, _, false, _) => ("pass_unsupported", None),
+            (Capability::Unsupported, _, true, _) => {
                 has_failure = true;
                 ("fail_contract_violation", None)
             }
-            (Capability::Supported | Capability::Conditional, true, true) => ("pass", None),
-            (Capability::Supported | Capability::Conditional, true, false) => {
-                match effective_policy {
-                    Policy::Required => {
-                        has_failure = true;
-                        (
-                            "spool_present_conversion_empty",
-                            Some("required class has spool data but zero converted rows".into()),
-                        )
-                    }
-                    _ => ("spool_present_conversion_empty", None),
-                }
+            (Capability::Supported | Capability::Conditional, Policy::Disabled, true, _) => {
+                has_failure = true;
+                ("fail_contract_violation", Some("class is disabled but spool data is present".into()))
             }
-            (Capability::Supported | Capability::Conditional, false, _) => match effective_policy {
-                Policy::Required => {
-                    has_failure = true;
-                    ("fail_required_absent", Some("no_spool_data".to_string()))
-                }
-                Policy::Optional => ("warn_optional_absent", None),
-                Policy::Disabled => ("pass_disabled", None),
-            },
+            (Capability::Supported | Capability::Conditional, Policy::Disabled, false, _) => {
+                ("pass_disabled", None)
+            }
+            (Capability::Supported | Capability::Conditional, Policy::Required, true, true) => {
+                ("pass", None)
+            }
+            (Capability::Supported | Capability::Conditional, Policy::Optional, true, true) => {
+                ("pass", None)
+            }
+            (Capability::Supported | Capability::Conditional, Policy::Required, true, false) => {
+                has_failure = true;
+                (
+                    "spool_present_conversion_empty",
+                    Some("required class has spool data but zero converted rows".into()),
+                )
+            }
+            (Capability::Supported | Capability::Conditional, Policy::Optional, true, false) => {
+                ("spool_present_conversion_empty", None)
+            }
+            (Capability::Supported | Capability::Conditional, Policy::Required, false, _) => {
+                has_failure = true;
+                ("fail_required_absent", Some("no_spool_data".to_string()))
+            }
+            (Capability::Supported | Capability::Conditional, Policy::Optional, false, _) => {
+                ("warn_optional_absent", None)
+            }
         };
 
         let cap_str = match stream.capability {

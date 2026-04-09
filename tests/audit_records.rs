@@ -156,6 +156,7 @@ fn config(spool_dir: &Path) -> AuditSpoolConfig {
         node_name: "node-a".to_string(),
         run_id: "run-42".to_string(),
         ship_interval: Duration::from_millis(25),
+        upload_attempt_timeout: Duration::from_secs(30),
         roll_max_bytes: 200,
         roll_max_secs: 60,
         max_local_backlog_bytes: 4 * 1024 * 1024,
@@ -599,4 +600,33 @@ async fn blocked_upload_does_not_prevent_continued_spooling_or_backlog_enforceme
         jsonl_files(dir.path()).len() >= 2,
         "expected continued local spooling while upload was blocked"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocked_inflight_upload_times_out_on_shutdown_and_retains_spool_file() {
+    let dir = tempdir().unwrap();
+    let release_upload = Arc::new(Notify::new());
+    let uploader = MockUploader::with_outcomes([UploadOutcome::Block(Arc::clone(&release_upload))]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.roll_max_bytes = 1;
+    cfg.upload_attempt_timeout = Duration::from_millis(100);
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+    wait_for_attempts(&uploader, 1).await;
+
+    let blocked_call_path = uploader.calls()[0].local_path.clone();
+    assert!(blocked_call_path.exists());
+
+    drop(audit_tx);
+    let error = tokio::time::timeout(Duration::from_millis(500), worker.shutdown())
+        .await
+        .expect("shutdown should error instead of hanging")
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error:#}");
+    assert!(blocked_call_path.exists());
+    assert_eq!(jsonl_files(dir.path()), vec![blocked_call_path.clone()]);
+
+    release_upload.notify_waiters();
 }

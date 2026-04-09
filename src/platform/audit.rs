@@ -19,7 +19,7 @@ use tokio::{
         oneshot,
     },
     task::{JoinError, JoinHandle},
-    time::{Instant, MissedTickBehavior, Sleep, interval, sleep_until},
+    time::{Instant, MissedTickBehavior, Sleep, interval, sleep_until, timeout},
 };
 
 use crate::raw_types::JsonlAppender;
@@ -107,6 +107,7 @@ pub struct AuditSpoolConfig {
     pub node_name: String,
     pub run_id: String,
     pub ship_interval: Duration,
+    pub upload_attempt_timeout: Duration,
     pub roll_max_bytes: u64,
     pub roll_max_secs: u64,
     pub max_local_backlog_bytes: u64,
@@ -131,7 +132,9 @@ impl AuditUploader for AwsCliUploader {
         let local_path = local_path.to_path_buf();
         let s3_uri = s3_uri.to_string();
         async move {
-            let output = Command::new("aws")
+            let mut command = Command::new("aws");
+            command.kill_on_drop(true);
+            let output = command
                 .args(["s3", "cp"])
                 .arg(&local_path)
                 .arg(&s3_uri)
@@ -297,6 +300,11 @@ struct ActiveUpload {
     join_handle: JoinHandle<Result<()>>,
 }
 
+enum UploadAttemptResult {
+    Completed(std::result::Result<Result<()>, JoinError>),
+    TimedOut,
+}
+
 struct AuditSpoolState<U> {
     config: AuditSpoolConfig,
     uploader: Arc<U>,
@@ -399,7 +407,7 @@ where
 
     fn complete_active_upload(
         &mut self,
-        upload_result: std::result::Result<Result<()>, JoinError>,
+        upload_result: UploadAttemptResult,
         final_attempt: bool,
     ) -> Result<bool> {
         let active_upload = self
@@ -408,7 +416,7 @@ where
             .expect("active upload must exist when completion is handled");
 
         match upload_result {
-            Ok(Ok(())) => {
+            UploadAttemptResult::Completed(Ok(Ok(()))) => {
                 fs::remove_file(&active_upload.file.path).with_context(|| {
                     format!(
                         "failed to remove uploaded audit spool file {}",
@@ -417,7 +425,7 @@ where
                 })?;
                 Ok(true)
             }
-            Ok(Err(error)) => {
+            UploadAttemptResult::Completed(Ok(Err(error))) => {
                 if final_attempt {
                     Err(anyhow!(
                         "final audit upload failed for {} -> {}: {error}",
@@ -429,11 +437,25 @@ where
                     Ok(false)
                 }
             }
-            Err(error) => Err(anyhow!(
+            UploadAttemptResult::Completed(Err(error)) => Err(anyhow!(
                 "audit upload task join failed for {} -> {}: {error}",
                 active_upload.file.path.display(),
                 active_upload.s3_uri
             )),
+            UploadAttemptResult::TimedOut => {
+                active_upload.join_handle.abort();
+                if final_attempt {
+                    Err(anyhow!(
+                        "final audit upload timed out after {:?} for {} -> {}",
+                        self.config.upload_attempt_timeout,
+                        active_upload.file.path.display(),
+                        active_upload.s3_uri
+                    ))
+                } else {
+                    self.pending_uploads.push_front(active_upload.file);
+                    Ok(false)
+                }
+            }
         }
     }
 
@@ -444,7 +466,15 @@ where
                 return Ok(());
             };
 
-            let upload_result = (&mut active_upload.join_handle).await;
+            let upload_result = match timeout(
+                self.config.upload_attempt_timeout,
+                &mut active_upload.join_handle,
+            )
+            .await
+            {
+                Ok(upload_result) => UploadAttemptResult::Completed(upload_result),
+                Err(_) => UploadAttemptResult::TimedOut,
+            };
             self.complete_active_upload(upload_result, final_attempt)?;
         }
     }
@@ -588,6 +618,7 @@ where
                 }
             upload_result = wait_for_active_upload(
                 state.active_upload.as_mut(),
+                state.config.upload_attempt_timeout,
             ) => {
                 if state.complete_active_upload(upload_result, false)? {
                     state.start_next_upload()?;
@@ -664,10 +695,16 @@ fn dormant_roll_deadline() -> Instant {
 
 async fn wait_for_active_upload(
     active_upload: Option<&mut ActiveUpload>,
-) -> std::result::Result<Result<()>, JoinError> {
+    upload_attempt_timeout: Duration,
+) -> UploadAttemptResult {
     match active_upload {
-        Some(active_upload) => (&mut active_upload.join_handle).await,
-        None => std::future::pending::<std::result::Result<Result<()>, JoinError>>().await,
+        Some(active_upload) => {
+            match timeout(upload_attempt_timeout, &mut active_upload.join_handle).await {
+                Ok(upload_result) => UploadAttemptResult::Completed(upload_result),
+                Err(_) => UploadAttemptResult::TimedOut,
+            }
+        }
+        None => std::future::pending::<UploadAttemptResult>().await,
     }
 }
 
@@ -798,8 +835,12 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
 }
 
 fn validate_retained_spool_file(path: &Path) -> Result<()> {
-    let file = fs::File::open(path)
-        .with_context(|| format!("failed to open retained audit spool file {}", path.display()))?;
+    let file = fs::File::open(path).with_context(|| {
+        format!(
+            "failed to open retained audit spool file {}",
+            path.display()
+        )
+    })?;
     let reader = BufReader::new(file);
 
     for (index, line) in reader.lines().enumerate() {

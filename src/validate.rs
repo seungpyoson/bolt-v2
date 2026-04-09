@@ -819,24 +819,24 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.client_id");
-                let Some(client_id) = value.as_str() else {
+                if let Some(client_id) = value.as_str() {
+                    check_nt_ascii(&mut errors, &field, client_id);
+                    if !exec_name_indices.contains_key(client_id) {
+                        push_error(
+                            &mut errors,
+                            "strategies",
+                            "unknown_client_id",
+                            format!(
+                                "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
+                            ),
+                        );
+                    }
+                } else {
                     push_error(
                         &mut errors,
                         &field,
                         "wrong_type",
                         format!("must be a string, got {} value", value.type_str()),
-                    );
-                    continue;
-                };
-                check_nt_ascii(&mut errors, &field, client_id);
-                if !exec_name_indices.contains_key(client_id) {
-                    push_error(
-                        &mut errors,
-                        "strategies",
-                        "unknown_client_id",
-                        format!(
-                            "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
-                        ),
                     );
                 }
             }
@@ -851,35 +851,35 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.strategy_id");
-                let Some(strategy_id) = value.as_str() else {
+                if let Some(strategy_id) = value.as_str() {
+                    if let Some(first_index) =
+                        first_seen_index(&mut strategy_id_indices, strategy_id, i)
+                    {
+                        push_error(
+                            &mut errors,
+                            "strategies",
+                            "duplicate_strategy_id",
+                            format!(
+                                "strategies[{i}] has duplicate strategy_id \"{strategy_id}\" (first defined at strategies[{first_index}])"
+                            ),
+                        );
+                    }
+
+                    if strategy_id != "EXTERNAL" {
+                        check_nt_hyphenated(
+                            &mut errors,
+                            &field,
+                            strategy_id,
+                            split_last_hyphen,
+                            "NAME-TAG",
+                        );
+                    }
+                } else {
                     push_error(
                         &mut errors,
                         &field,
                         "wrong_type",
                         format!("must be a string, got {} value", value.type_str()),
-                    );
-                    continue;
-                };
-                if let Some(first_index) =
-                    first_seen_index(&mut strategy_id_indices, strategy_id, i)
-                {
-                    push_error(
-                        &mut errors,
-                        "strategies",
-                        "duplicate_strategy_id",
-                        format!(
-                            "strategies[{i}] has duplicate strategy_id \"{strategy_id}\" (first defined at strategies[{first_index}])"
-                        ),
-                    );
-                }
-
-                if strategy_id != "EXTERNAL" {
-                    check_nt_hyphenated(
-                        &mut errors,
-                        &field,
-                        strategy_id,
-                        split_last_hyphen,
-                        "NAME-TAG",
                     );
                 }
             }
@@ -894,16 +894,16 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.instrument_id");
-                let Some(instrument_id) = value.as_str() else {
+                if let Some(instrument_id) = value.as_str() {
+                    check_instrument_id(&mut errors, &field, instrument_id);
+                } else {
                     push_error(
                         &mut errors,
                         &field,
                         "wrong_type",
                         format!("must be a string, got {} value", value.type_str()),
                     );
-                    continue;
-                };
-                check_instrument_id(&mut errors, &field, instrument_id);
+                }
             }
         }
 
@@ -916,16 +916,16 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             ),
             Some(value) => {
                 let field = format!("strategies[{i}].config.order_qty");
-                let Some(order_qty) = value.as_str() else {
+                if let Some(order_qty) = value.as_str() {
+                    check_strictly_positive_qty(&mut errors, &field, order_qty);
+                } else {
                     push_error(
                         &mut errors,
                         &field,
                         "wrong_type",
                         format!("must be a string, got {} value", value.type_str()),
                     );
-                    continue;
-                };
-                check_strictly_positive_qty(&mut errors, &field, order_qty);
+                }
             }
         }
     }

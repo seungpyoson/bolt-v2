@@ -81,13 +81,13 @@ async fn spawn_test_server(response_body: Value) -> (SocketAddr, Arc<AtomicUsize
                 state.request_count.fetch_add(1, Ordering::Relaxed);
 
                 let (status_line, body) = if path == "/events"
-                    && params.get("slug").map(String::as_str) == Some("bitcoin")
+                    && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
                 {
                     ("HTTP/1.1 200 OK", state.response_body.to_string())
                 } else {
                     (
                         "HTTP/1.1 400 Bad Request",
-                        "expected /events?slug=bitcoin".to_string(),
+                        "expected /events?tag_slug=bitcoin".to_string(),
                     )
                 };
                 let response = format!(
@@ -186,6 +186,28 @@ fn parses_chainlink_basis_from_known_description_patterns() {
             Some(
                 "The resolution source for this market is information from Chainlink BTC/USD feeds."
             ),
+        ),
+        Some("chainlink_btcusd".to_string())
+    );
+}
+
+#[test]
+fn parses_binance_basis_from_variant_description_formatting() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            None,
+            Some("RESOLUTION SOURCE: Binance spot btc/usdt data will be used."),
+        ),
+        Some("binance_btcusdt_1m".to_string())
+    );
+}
+
+#[test]
+fn parses_chainlink_basis_from_variant_description_formatting() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            None,
+            Some("Resolution Source: information from CHAINLINK btc / usd feeds."),
         ),
         Some("chainlink_btcusd".to_string())
     );

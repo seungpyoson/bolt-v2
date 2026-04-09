@@ -1,6 +1,8 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use nautilus_polymarket::http::{gamma::PolymarketGammaRawHttpClient, models::GammaMarket};
+use nautilus_polymarket::http::{
+    gamma::PolymarketGammaRawHttpClient, models::GammaMarket, query::GetGammaEventsParams,
+};
 
 use crate::{
     config::RulesetConfig,
@@ -21,7 +23,10 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
     client: &PolymarketGammaRawHttpClient,
 ) -> anyhow::Result<Vec<CandidateMarket>> {
     let events = client
-        .get_gamma_events_by_slug(&ruleset.tag_slug)
+        .get_gamma_events(GetGammaEventsParams {
+            tag_slug: Some(ruleset.tag_slug.clone()),
+            ..Default::default()
+        })
         .await
         .context("failed to fetch gamma events")?;
     let now = Utc::now();

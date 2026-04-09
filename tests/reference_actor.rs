@@ -15,6 +15,7 @@ use bolt_v2::{
 use nautilus_common::{
     actor::{
         Component,
+        DataActor,
         registry::{get_actor_unchecked, register_actor},
     },
     cache::Cache,
@@ -97,6 +98,14 @@ fn collect_snapshots(topic: &str) -> Rc<RefCell<Vec<ReferenceSnapshot>>> {
     });
     msgbus::subscribe_any(topic.into(), handler, None);
     snapshots
+}
+
+fn set_actor_clock_ms(actor: &mut ReferenceActor, ts_ms: u64) {
+    let mut clock = actor.clock();
+    let test_clock = (&mut *clock as &mut dyn Any)
+        .downcast_mut::<TestClock>()
+        .expect("reference actor should be registered with TestClock");
+    test_clock.set_time(UnixNanos::from(ts_ms * 1_000_000));
 }
 
 fn actor_config(
@@ -235,14 +244,17 @@ fn min_publish_interval_throttles_snapshot_emission() {
     let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
     actor.start().unwrap();
 
+    set_actor_clock_ms(&mut actor, 1_000);
     msgbus::publish_quote(
         get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
         &quote("BTCUSDT.BINANCE", "99.5", "100.5", 1_000),
     );
+    set_actor_clock_ms(&mut actor, 1_050);
     msgbus::publish_quote(
         get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
         &quote("BTCUSDT.BINANCE", "109.5", "110.5", 1_050),
     );
+    set_actor_clock_ms(&mut actor, 1_100);
     msgbus::publish_quote(
         get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
         &quote("BTCUSDT.BINANCE", "119.5", "120.5", 1_100),
@@ -252,6 +264,181 @@ fn min_publish_interval_throttles_snapshot_emission() {
     assert_eq!(snapshots.len(), 2);
     assert_eq!(snapshots[0].fair_value, Some(100.0));
     assert_eq!(snapshots[1].fair_value, Some(120.0));
+}
+
+#[test]
+fn publish_throttle_uses_actor_clock_not_quote_timestamp() {
+    let publish_topic = "platform.reference.test.clock-throttle";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            100,
+            vec![subscription("BINANCE", "BTCUSDT.BINANCE", "BINANCE")],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "BINANCE".into(),
+            kind: ReferenceVenueKind::Binance,
+            instrument_id: "BTCUSDT.BINANCE".into(),
+            base_weight: 1.0,
+            stale_after_ms: 20_000,
+            disable_after_ms: 25_000,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+
+    set_actor_clock_ms(&mut actor, 10_000);
+    msgbus::publish_quote(
+        get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
+        &quote("BTCUSDT.BINANCE", "99.5", "100.5", 1_000),
+    );
+
+    set_actor_clock_ms(&mut actor, 10_050);
+    msgbus::publish_quote(
+        get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
+        &quote("BTCUSDT.BINANCE", "109.5", "110.5", 1_500),
+    );
+
+    set_actor_clock_ms(&mut actor, 10_100);
+    msgbus::publish_quote(
+        get_quotes_topic(InstrumentId::from("BTCUSDT.BINANCE")),
+        &quote("BTCUSDT.BINANCE", "119.5", "120.5", 1_600),
+    );
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].fair_value, Some(100.0));
+    assert_eq!(snapshots[1].fair_value, Some(120.0));
+}
+
+#[test]
+fn staleness_uses_actor_clock_while_observation_timestamp_uses_quote_timestamp() {
+    let publish_topic = "platform.reference.test.clock-stale";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription("BINANCE", "BTCUSDT.BINANCE", "BINANCE")],
+        ),
+        vec![reference_venue(
+            "BINANCE",
+            "BTCUSDT.BINANCE",
+            ReferenceVenueKind::Binance,
+            1.0,
+        )],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+    set_actor_clock_ms(&mut actor, 2_500);
+
+    actor
+        .on_quote(&quote("BTCUSDT.BINANCE", "99.5", "100.5", 1_000))
+        .unwrap();
+
+    let stored = actor
+        .latest
+        .get("BINANCE")
+        .expect("latest observation should be stored");
+    match stored {
+        bolt_v2::platform::reference::ReferenceObservation::Orderbook { ts_ms, .. } => {
+            assert_eq!(*ts_ms, 1_000);
+        }
+        other => panic!("expected orderbook observation, got {other:?}"),
+    }
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].fair_value, None);
+    assert_eq!(snapshots[0].confidence, 0.0);
+    assert!(snapshots[0].venues[0].stale);
+}
+
+#[test]
+fn unmapped_instrument_returns_error_instead_of_succeeding() {
+    let publish_topic = "platform.reference.test.unmapped";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription("BINANCE", "BTCUSDT.BINANCE", "BINANCE")],
+        ),
+        vec![reference_venue(
+            "BINANCE",
+            "BTCUSDT.BINANCE",
+            ReferenceVenueKind::Binance,
+            1.0,
+        )],
+    );
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+
+    let err = actor
+        .on_quote(&quote("BTCUSDT.KRAKEN", "1.0", "2.0", 1_000))
+        .expect_err("unmapped instrument should fail closed");
+    assert!(
+        err.to_string().contains("BTCUSDT.KRAKEN"),
+        "error should identify the unmapped instrument: {err:#}"
+    );
+}
+
+#[test]
+fn out_of_order_quotes_do_not_replace_latest_or_publish() {
+    let publish_topic = "platform.reference.test.out-of-order";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription("BINANCE", "BTCUSDT.BINANCE", "BINANCE")],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "BINANCE".into(),
+            kind: ReferenceVenueKind::Binance,
+            instrument_id: "BTCUSDT.BINANCE".into(),
+            base_weight: 1.0,
+            stale_after_ms: 20_000,
+            disable_after_ms: 25_000,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+
+    set_actor_clock_ms(&mut actor, 5_000);
+    actor
+        .on_quote(&quote("BTCUSDT.BINANCE", "99.5", "100.5", 2_000))
+        .unwrap();
+    set_actor_clock_ms(&mut actor, 5_100);
+    actor
+        .on_quote(&quote("BTCUSDT.BINANCE", "89.5", "90.5", 1_999))
+        .unwrap();
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].fair_value, Some(100.0));
+
+    let stored = actor
+        .latest
+        .get("BINANCE")
+        .expect("latest observation should be retained");
+    match stored {
+        bolt_v2::platform::reference::ReferenceObservation::Orderbook {
+            bid,
+            ask,
+            ts_ms,
+            ..
+        } => {
+            assert_eq!(*bid, 99.5);
+            assert_eq!(*ask, 100.5);
+            assert_eq!(*ts_ms, 2_000);
+        }
+        other => panic!("expected orderbook observation, got {other:?}"),
+    }
 }
 
 #[test]

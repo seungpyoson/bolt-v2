@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
+use anyhow::anyhow;
 use nautilus_common::{
     actor::{DataActor, DataActorConfig, DataActorCore},
     msgbus::publish_any,
@@ -69,6 +70,18 @@ impl ReferenceActor {
         &mut self.disabled
     }
 
+    fn now_ms(&mut self) -> u64 {
+        self.clock().timestamp_ns().as_u64() / 1_000_000
+    }
+
+    fn latest_ts_ms(&self, venue_name: &str) -> Option<u64> {
+        match self.latest.get(venue_name) {
+            Some(ReferenceObservation::Orderbook { ts_ms, .. })
+            | Some(ReferenceObservation::Oracle { ts_ms, .. }) => Some(*ts_ms),
+            None => None,
+        }
+    }
+
     fn should_publish(&self, ts_ms: u64) -> bool {
         match self.last_publish_ms {
             None => true,
@@ -112,15 +125,25 @@ impl DataActor for ReferenceActor {
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        let Some(venue_name) = self
+        let venue_name = self
             .instrument_to_venue_name
             .get(&quote.instrument_id)
             .cloned()
-        else {
-            return Ok(());
-        };
+            .ok_or_else(|| {
+                anyhow!(
+                    "reference_actor received quote for unmapped instrument {}",
+                    quote.instrument_id
+                )
+            })?;
 
         let ts_ms = u64::from(quote.ts_init) / 1_000_000;
+        if self
+            .latest_ts_ms(&venue_name)
+            .is_some_and(|latest_ts_ms| latest_ts_ms >= ts_ms)
+        {
+            return Ok(());
+        }
+
         self.latest.insert(
             venue_name.clone(),
             ReferenceObservation::Orderbook {
@@ -131,7 +154,8 @@ impl DataActor for ReferenceActor {
                 ts_ms,
             },
         );
-        self.publish_snapshot(ts_ms);
+        let now_ms = self.now_ms();
+        self.publish_snapshot(now_ms);
 
         Ok(())
     }

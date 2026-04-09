@@ -8,11 +8,12 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use bolt_v2::platform::audit::{
-    AuditRecord, AuditSpoolConfig, AuditUploader, SelectorState, TradeEventKind,
-    VenueHealthState, audit_channel, build_s3_key, spawn_audit_worker,
+    AuditRecord, AuditSpoolConfig, AuditUploader, SelectorState, TradeEventKind, VenueHealthState,
+    audit_channel, build_s3_key, spawn_audit_worker,
 };
 use serde_json::Value;
 use tempfile::tempdir;
+use tokio::sync::Notify;
 
 #[derive(Clone, Debug)]
 struct UploadCall {
@@ -26,17 +27,30 @@ struct MockUploader {
     state: Arc<Mutex<MockUploaderState>>,
 }
 
+#[derive(Clone)]
+enum UploadOutcome {
+    Succeed,
+    Fail,
+    Block(Arc<Notify>),
+}
+
+impl From<bool> for UploadOutcome {
+    fn from(value: bool) -> Self {
+        if value { Self::Succeed } else { Self::Fail }
+    }
+}
+
 #[derive(Default)]
 struct MockUploaderState {
-    outcomes: VecDeque<bool>,
+    outcomes: VecDeque<UploadOutcome>,
     calls: Vec<UploadCall>,
 }
 
 impl MockUploader {
-    fn with_outcomes(outcomes: impl IntoIterator<Item = bool>) -> Self {
+    fn with_outcomes(outcomes: impl IntoIterator<Item = impl Into<UploadOutcome>>) -> Self {
         Self {
             state: Arc::new(Mutex::new(MockUploaderState {
-                outcomes: outcomes.into_iter().collect(),
+                outcomes: outcomes.into_iter().map(Into::into).collect(),
                 calls: Vec::new(),
             })),
         }
@@ -63,18 +77,24 @@ impl AuditUploader for MockUploader {
 
         async move {
             let contents = fs::read_to_string(&local_path)?;
-            let mut state = state.lock().unwrap();
-            state.calls.push(UploadCall {
-                local_path,
-                s3_uri,
-                contents,
-            });
+            let outcome = {
+                let mut state = state.lock().unwrap();
+                state.calls.push(UploadCall {
+                    local_path,
+                    s3_uri,
+                    contents,
+                });
 
-            let succeeds = state.outcomes.pop_front().unwrap_or(true);
-            if succeeds {
-                Ok(())
-            } else {
-                Err(anyhow!("mock upload failure"))
+                state.outcomes.pop_front().unwrap_or(UploadOutcome::Succeed)
+            };
+
+            match outcome {
+                UploadOutcome::Succeed => Ok(()),
+                UploadOutcome::Fail => Err(anyhow!("mock upload failure")),
+                UploadOutcome::Block(release) => {
+                    release.notified().await;
+                    Ok(())
+                }
             }
         }
     }
@@ -171,6 +191,20 @@ async fn wait_for_attempts(uploader: &MockUploader, expected: usize) {
     panic!(
         "timed out waiting for {expected} upload attempts, saw {}",
         uploader.attempt_count()
+    );
+}
+
+async fn wait_for_jsonl_file_count(root: &Path, expected: usize) {
+    for _ in 0..100 {
+        if jsonl_files(root).len() >= expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    panic!(
+        "timed out waiting for at least {expected} jsonl files under {}",
+        root.display()
     );
 }
 
@@ -420,8 +454,112 @@ async fn local_append_failure_is_fail_closed() {
 
     let error = worker.shutdown().await.unwrap_err();
     assert!(
-        error.to_string().contains("failed to create audit spool directory")
+        error
+            .to_string()
+            .contains("failed to create audit spool directory")
+            || error
+                .to_string()
+                .contains("failed to read audit spool directory")
             || error.to_string().contains("failed to append audit record"),
         "{error:#}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn restart_uploads_retained_files_before_reusing_sequence_numbers() {
+    let dir = tempdir().unwrap();
+    let retained_dir = dir.path().join("date=1970-01-01");
+    fs::create_dir_all(&retained_dir).unwrap();
+    let retained_path = retained_dir.join("part-00000000000000000007.jsonl");
+    fs::write(
+        &retained_path,
+        "{\"kind\":\"reference_snapshot\",\"ts_ms\":1000}\n",
+    )
+    .unwrap();
+
+    let uploader = MockUploader::with_outcomes([true, true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.roll_max_bytes = 1;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    wait_for_attempts(&uploader, 1).await;
+    audit_tx.send(sample_record(2_000)).unwrap();
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+
+    let calls = uploader.calls();
+    assert!(
+        calls.len() >= 2,
+        "expected retained upload plus new upload, got {calls:?}"
+    );
+    assert_eq!(
+        calls[0]
+            .local_path
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("part-00000000000000000007.jsonl")
+    );
+    assert!(
+        calls[0]
+            .s3_uri
+            .ends_with("/part-00000000000000000007.jsonl"),
+        "retained file should keep its sequence in S3 key: {}",
+        calls[0].s3_uri
+    );
+    assert!(
+        calls[1]
+            .local_path
+            .ends_with("part-00000000000000000008.jsonl"),
+        "new file should continue at the next sequence: {}",
+        calls[1].local_path.display()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocked_upload_does_not_prevent_continued_spooling_or_backlog_enforcement() {
+    let dir = tempdir().unwrap();
+    let release_upload = Arc::new(Notify::new());
+    let uploader = MockUploader::with_outcomes([
+        UploadOutcome::Block(Arc::clone(&release_upload)),
+        UploadOutcome::Fail,
+        UploadOutcome::Fail,
+        UploadOutcome::Fail,
+    ]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.roll_max_bytes = 1;
+    cfg.max_local_backlog_bytes = 220;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+    wait_for_attempts(&uploader, 1).await;
+
+    audit_tx.send(history_record(200)).unwrap();
+    wait_for_jsonl_file_count(dir.path(), 2).await;
+    assert_eq!(
+        uploader.attempt_count(),
+        1,
+        "blocked upload should not allow a second upload to start yet"
+    );
+
+    let _ = audit_tx.send(decision_record(300));
+    drop(audit_tx);
+
+    let error = tokio::time::timeout(Duration::from_millis(500), worker.shutdown())
+        .await
+        .expect("shutdown should surface backlog failure even with a blocked upload")
+        .unwrap_err();
+    release_upload.notify_waiters();
+
+    assert!(
+        error
+            .to_string()
+            .contains("max_local_backlog_bytes exceeded"),
+        "{error:#}"
+    );
+    assert!(
+        jsonl_files(dir.path()).len() >= 2,
+        "expected continued local spooling while upload was blocked"
     );
 }

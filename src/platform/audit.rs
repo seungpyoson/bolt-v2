@@ -2,8 +2,8 @@ use std::{
     collections::VecDeque,
     fs,
     future::Future,
-    pin::Pin,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -17,7 +17,7 @@ use tokio::{
         mpsc::{UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel},
         oneshot,
     },
-    task::JoinHandle,
+    task::{JoinError, JoinHandle},
     time::{Instant, MissedTickBehavior, Sleep, interval, sleep_until},
 };
 
@@ -199,7 +199,10 @@ impl AuditSender {
             return Err(AuditSendError(record));
         }
 
-        state.tx.send(record).map_err(|error| AuditSendError(error.0))
+        state
+            .tx
+            .send(record)
+            .map_err(|error| AuditSendError(error.0))
     }
 }
 
@@ -217,10 +220,7 @@ pub fn audit_channel() -> (AuditSender, AuditReceiver) {
         state: Arc::clone(&state),
     };
 
-    (
-        AuditSender { state },
-        AuditReceiver { rx, closer },
-    )
+    (AuditSender { state }, AuditReceiver { rx, closer })
 }
 
 pub fn build_s3_key(
@@ -290,12 +290,19 @@ struct PendingAuditFile {
     bytes: u64,
 }
 
+struct ActiveUpload {
+    file: PendingAuditFile,
+    s3_uri: String,
+    join_handle: JoinHandle<Result<()>>,
+}
+
 struct AuditSpoolState<U> {
     config: AuditSpoolConfig,
-    uploader: U,
+    uploader: Arc<U>,
     appender: JsonlAppender,
     current_file: Option<OpenAuditFile>,
     pending_uploads: VecDeque<PendingAuditFile>,
+    active_upload: Option<ActiveUpload>,
     next_sequence: u64,
 }
 
@@ -303,15 +310,19 @@ impl<U> AuditSpoolState<U>
 where
     U: AuditUploader,
 {
-    fn new(config: AuditSpoolConfig, uploader: U) -> Self {
-        Self {
+    fn new(config: AuditSpoolConfig, uploader: U) -> Result<Self> {
+        let (pending_uploads, next_sequence) = discover_retained_spool_files(&config.spool_dir)?;
+        let state = Self {
             config,
-            uploader,
+            uploader: Arc::new(uploader),
             appender: JsonlAppender::new(),
             current_file: None,
-            pending_uploads: VecDeque::new(),
-            next_sequence: 0,
-        }
+            pending_uploads,
+            active_upload: None,
+            next_sequence,
+        };
+        state.ensure_backlog_within_limit()?;
+        Ok(state)
     }
 
     fn append_record(&mut self, record: AuditRecord) -> Result<()> {
@@ -355,41 +366,91 @@ where
         self.roll_current_file()
     }
 
-    async fn upload_ready_files(&mut self, final_attempt: bool) -> Result<()> {
+    fn start_next_upload(&mut self) -> Result<()> {
+        if self.active_upload.is_some() {
+            return Ok(());
+        }
+
+        let Some(file) = self.pending_uploads.pop_front() else {
+            return Ok(());
+        };
+
+        let s3_uri = build_s3_key(
+            &self.config.s3_prefix,
+            &self.config.node_name,
+            &self.config.run_id,
+            &file.date,
+            file.sequence,
+        );
+        let uploader = Arc::clone(&self.uploader);
+        let local_path = file.path.clone();
+        let s3_uri_for_task = s3_uri.clone();
+        let join_handle =
+            tokio::spawn(async move { uploader.upload_file(&local_path, &s3_uri_for_task).await });
+
+        self.active_upload = Some(ActiveUpload {
+            file,
+            s3_uri,
+            join_handle,
+        });
+        Ok(())
+    }
+
+    fn complete_active_upload(
+        &mut self,
+        upload_result: std::result::Result<Result<()>, JoinError>,
+        final_attempt: bool,
+    ) -> Result<bool> {
+        let active_upload = self
+            .active_upload
+            .take()
+            .expect("active upload must exist when completion is handled");
+
+        match upload_result {
+            Ok(Ok(())) => {
+                fs::remove_file(&active_upload.file.path).with_context(|| {
+                    format!(
+                        "failed to remove uploaded audit spool file {}",
+                        active_upload.file.path.display()
+                    )
+                })?;
+                Ok(true)
+            }
+            Ok(Err(error)) => {
+                if final_attempt {
+                    Err(anyhow!(
+                        "final audit upload failed for {} -> {}: {error}",
+                        active_upload.file.path.display(),
+                        active_upload.s3_uri
+                    ))
+                } else {
+                    self.pending_uploads.push_front(active_upload.file);
+                    Ok(false)
+                }
+            }
+            Err(error) => Err(anyhow!(
+                "audit upload task join failed for {} -> {}: {error}",
+                active_upload.file.path.display(),
+                active_upload.s3_uri
+            )),
+        }
+    }
+
+    async fn finish_all_uploads(&mut self, final_attempt: bool) -> Result<()> {
         loop {
-            let Some(next_file) = self.pending_uploads.front() else {
+            self.start_next_upload()?;
+            let Some(active_upload) = self.active_upload.as_mut() else {
                 return Ok(());
             };
 
-            let s3_uri = build_s3_key(
-                &self.config.s3_prefix,
-                &self.config.node_name,
-                &self.config.run_id,
-                &next_file.date,
-                next_file.sequence,
-            );
+            let upload_result = (&mut active_upload.join_handle).await;
+            self.complete_active_upload(upload_result, final_attempt)?;
+        }
+    }
 
-            match self.uploader.upload_file(&next_file.path, &s3_uri).await {
-                Ok(()) => {
-                    fs::remove_file(&next_file.path).with_context(|| {
-                        format!(
-                            "failed to remove uploaded audit spool file {}",
-                            next_file.path.display()
-                        )
-                    })?;
-                    self.pending_uploads.pop_front();
-                }
-                Err(error) => {
-                    if final_attempt {
-                        return Err(anyhow!(
-                            "final audit upload failed for {} -> {}: {error}",
-                            next_file.path.display(),
-                            s3_uri
-                        ));
-                    }
-                    return Ok(());
-                }
-            }
+    fn abort_active_upload(&mut self) {
+        if let Some(active_upload) = self.active_upload.take() {
+            active_upload.join_handle.abort();
         }
     }
 
@@ -468,7 +529,13 @@ where
     fn ensure_backlog_within_limit(&self) -> Result<()> {
         let pending_bytes: u64 = self.pending_uploads.iter().map(|file| file.bytes).sum();
         let open_bytes = self.current_file.as_ref().map_or(0, |file| file.bytes);
-        let total = pending_bytes.saturating_add(open_bytes);
+        let active_bytes = self
+            .active_upload
+            .as_ref()
+            .map_or(0, |upload| upload.file.bytes);
+        let total = pending_bytes
+            .saturating_add(open_bytes)
+            .saturating_add(active_bytes);
 
         if total > self.config.max_local_backlog_bytes {
             bail!(
@@ -503,30 +570,39 @@ where
     let mut ticker = interval(config.ship_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let mut state = AuditSpoolState::new(config, uploader);
+    let mut state = AuditSpoolState::new(config, uploader)?;
     let mut roll_timer = Box::pin(sleep_until(dormant_roll_deadline()));
     reset_roll_timer(roll_timer.as_mut(), &state);
+    state.start_next_upload()?;
 
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut shutdown_rx => {
-                audit_rx.closer.close();
-                audit_rx.rx.close();
-                drain_audit_channel(&mut audit_rx, &mut state)?;
-                break;
+    let result = async {
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut shutdown_rx => {
+                    audit_rx.closer.close();
+                    audit_rx.rx.close();
+                    drain_audit_channel(&mut audit_rx, &mut state)?;
+                    break;
+                }
+            upload_result = wait_for_active_upload(
+                state.active_upload.as_mut(),
+            ) => {
+                if state.complete_active_upload(upload_result, false)? {
+                    state.start_next_upload()?;
+                }
             }
-            _ = &mut roll_timer => {
-                state.flush_expired_open_file()?;
-                state.upload_ready_files(false).await?;
-                reset_roll_timer(roll_timer.as_mut(), &state);
-            }
-            _ = ticker.tick() => {
-                state.flush_expired_open_file()?;
-                state.upload_ready_files(false).await?;
-                reset_roll_timer(roll_timer.as_mut(), &state);
-            }
-            maybe_record = audit_rx.rx.recv() => {
+                _ = &mut roll_timer => {
+                    state.flush_expired_open_file()?;
+                    state.start_next_upload()?;
+                    reset_roll_timer(roll_timer.as_mut(), &state);
+                }
+                _ = ticker.tick() => {
+                    state.flush_expired_open_file()?;
+                    state.start_next_upload()?;
+                    reset_roll_timer(roll_timer.as_mut(), &state);
+                }
+                maybe_record = audit_rx.rx.recv() => {
                 match maybe_record {
                     Some(record) => {
                         state.append_record(record)?;
@@ -534,18 +610,26 @@ where
                     }
                     None => break,
                 }
+                }
             }
         }
+
+        drain_audit_channel(&mut audit_rx, &mut state)?;
+        state.finalize_current_file()?;
+        state.finish_all_uploads(true).await?;
+        state
+            .appender
+            .close()
+            .context("failed to close audit appender during shutdown")?;
+        Ok(())
+    }
+    .await;
+
+    if result.is_err() {
+        state.abort_active_upload();
     }
 
-    drain_audit_channel(&mut audit_rx, &mut state)?;
-    state.finalize_current_file()?;
-    state.upload_ready_files(true).await?;
-    state
-        .appender
-        .close()
-        .context("failed to close audit appender during shutdown")?;
-    Ok(())
+    result
 }
 
 fn drain_audit_channel<U>(
@@ -567,12 +651,23 @@ fn reset_roll_timer<U>(roll_timer: Pin<&mut Sleep>, state: &AuditSpoolState<U>)
 where
     U: AuditUploader,
 {
-    let deadline = state.next_roll_deadline().unwrap_or_else(dormant_roll_deadline);
+    let deadline = state
+        .next_roll_deadline()
+        .unwrap_or_else(dormant_roll_deadline);
     roll_timer.reset(deadline);
 }
 
 fn dormant_roll_deadline() -> Instant {
     Instant::now() + Duration::from_secs(60 * 60 * 24 * 365)
+}
+
+async fn wait_for_active_upload(
+    active_upload: Option<&mut ActiveUpload>,
+) -> std::result::Result<Result<()>, JoinError> {
+    match active_upload {
+        Some(active_upload) => (&mut active_upload.join_handle).await,
+        None => std::future::pending::<std::result::Result<Result<()>, JoinError>>().await,
+    }
 }
 
 fn local_part_path(spool_dir: &Path, date: &str, sequence: u64) -> PathBuf {
@@ -593,4 +688,109 @@ fn date_from_ts_ms(ts_ms: u64) -> Result<String> {
     let timestamp = DateTime::<Utc>::from_timestamp(seconds, nanos)
         .ok_or_else(|| anyhow!("invalid audit timestamp millis: {ts_ms}"))?;
     Ok(timestamp.format("%Y-%m-%d").to_string())
+}
+
+fn discover_retained_spool_files(spool_dir: &Path) -> Result<(VecDeque<PendingAuditFile>, u64)> {
+    let mut retained_files = Vec::new();
+    collect_retained_spool_files(spool_dir, spool_dir, &mut retained_files)?;
+    retained_files.sort_by(|left, right| {
+        left.sequence
+            .cmp(&right.sequence)
+            .then_with(|| left.date.cmp(&right.date))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    let next_sequence = retained_files
+        .iter()
+        .map(|file| file.sequence)
+        .max()
+        .map_or(0, |max_sequence| max_sequence.saturating_add(1));
+
+    Ok((retained_files.into_iter().collect(), next_sequence))
+}
+
+fn collect_retained_spool_files(
+    root: &Path,
+    path: &Path,
+    retained_files: &mut Vec<PendingAuditFile>,
+) -> Result<()> {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read audit spool directory {}", path.display())
+            });
+        }
+    };
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!("failed to inspect audit spool directory {}", path.display())
+        })?;
+        let entry_path = entry.path();
+
+        if entry
+            .file_type()
+            .with_context(|| format!("failed to stat audit spool entry {}", entry_path.display()))?
+            .is_dir()
+        {
+            collect_retained_spool_files(root, &entry_path, retained_files)?;
+            continue;
+        }
+
+        if entry_path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+
+        let Some(retained_file) = parse_retained_spool_file(root, &entry_path)? else {
+            continue;
+        };
+        retained_files.push(retained_file);
+    }
+
+    Ok(())
+}
+
+fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingAuditFile>> {
+    let relative = path.strip_prefix(root).with_context(|| {
+        format!(
+            "audit spool file {} is not rooted under {}",
+            path.display(),
+            root.display()
+        )
+    })?;
+    let mut components = relative.iter();
+    let Some(date_component) = components.next().and_then(|component| component.to_str()) else {
+        return Ok(None);
+    };
+    let Some(file_component) = components.next().and_then(|component| component.to_str()) else {
+        return Ok(None);
+    };
+
+    if components.next().is_some() {
+        return Ok(None);
+    }
+
+    let Some(date) = date_component.strip_prefix("date=") else {
+        return Ok(None);
+    };
+    let Some(sequence) = file_component
+        .strip_prefix("part-")
+        .and_then(|name| name.strip_suffix(".jsonl"))
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(PendingAuditFile {
+        sequence: sequence.parse().with_context(|| {
+            format!(
+                "failed to parse audit spool sequence from {}",
+                path.display()
+            )
+        })?,
+        date: date.to_string(),
+        path: path.to_path_buf(),
+        bytes: file_len(path)?,
+    }))
 }

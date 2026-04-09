@@ -322,6 +322,9 @@ where
 {
     fn new(config: AuditSpoolConfig, uploader: U) -> Result<Self> {
         let (pending_uploads, next_sequence) = discover_retained_spool_files(&config.spool_dir)?;
+        if next_sequence > 0 {
+            persist_sequence_watermark(&config.spool_dir, next_sequence)?;
+        }
         let state = Self {
             config,
             uploader: Arc::new(uploader),
@@ -382,16 +385,9 @@ where
         }
 
         let now = Instant::now();
-        let Some(ready_index) = self
-            .pending_uploads
-            .iter()
-            .position(|file| {
-                ignore_retry_not_before
-                    || file
-                        .retry_not_before
-                        .is_none_or(|deadline| deadline <= now)
-            })
-        else {
+        let Some(ready_index) = self.pending_uploads.iter().position(|file| {
+            ignore_retry_not_before || file.retry_not_before.is_none_or(|deadline| deadline <= now)
+        }) else {
             return Ok(());
         };
 
@@ -517,6 +513,7 @@ where
         if self.current_file.is_none() {
             let sequence = self.next_sequence;
             self.next_sequence += 1;
+            persist_sequence_watermark(&self.config.spool_dir, self.next_sequence)?;
             let path = local_part_path(&self.config.spool_dir, &date, sequence);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).with_context(|| {
@@ -752,6 +749,10 @@ fn local_part_path(spool_dir: &Path, date: &str, sequence: u64) -> PathBuf {
         .join(format!("part-{sequence:020}.jsonl"))
 }
 
+fn sequence_watermark_path(spool_dir: &Path) -> PathBuf {
+    spool_dir.join(".sequence-watermark")
+}
+
 fn file_len(path: &Path) -> Result<u64> {
     Ok(fs::metadata(path)
         .with_context(|| format!("failed to stat audit spool file {}", path.display()))?
@@ -781,8 +782,59 @@ fn discover_retained_spool_files(spool_dir: &Path) -> Result<(VecDeque<PendingAu
         .map(|file| file.sequence)
         .max()
         .map_or(0, |max_sequence| max_sequence.saturating_add(1));
+    let next_sequence = next_sequence.max(read_sequence_watermark(spool_dir)?.unwrap_or(0));
 
     Ok((retained_files.into_iter().collect(), next_sequence))
+}
+
+fn read_sequence_watermark(spool_dir: &Path) -> Result<Option<u64>> {
+    let path = sequence_watermark_path(spool_dir);
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read audit sequence watermark {}", path.display())
+            });
+        }
+    };
+
+    let value = contents.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    value.parse().map(Some).with_context(|| {
+        format!(
+            "failed to parse audit sequence watermark from {}",
+            path.display()
+        )
+    })
+}
+
+fn persist_sequence_watermark(spool_dir: &Path, next_sequence: u64) -> Result<()> {
+    fs::create_dir_all(spool_dir).with_context(|| {
+        format!(
+            "failed to create audit spool directory {}",
+            spool_dir.display()
+        )
+    })?;
+
+    let path = sequence_watermark_path(spool_dir);
+    let temp_path = spool_dir.join(".sequence-watermark.tmp");
+    fs::write(&temp_path, format!("{next_sequence}\n")).with_context(|| {
+        format!(
+            "failed to write audit sequence watermark {}",
+            temp_path.display()
+        )
+    })?;
+    fs::rename(&temp_path, &path).with_context(|| {
+        format!(
+            "failed to persist audit sequence watermark {}",
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn collect_retained_spool_files(

@@ -469,9 +469,7 @@ async fn shutdown_attempts_deferred_failed_upload_before_retry_interval_elapses(
     let error = worker.shutdown().await.unwrap_err();
 
     assert!(
-        error
-            .to_string()
-            .contains("final audit upload failed"),
+        error.to_string().contains("final audit upload failed"),
         "{error:#}"
     );
     assert_eq!(
@@ -506,11 +504,14 @@ async fn shutdown_exhausts_final_upload_queue_before_returning_first_error() {
     let calls = uploader.calls();
 
     assert!(
-        error.to_string().contains(&failed_path.display().to_string()),
+        error
+            .to_string()
+            .contains(&failed_path.display().to_string()),
         "{error:#}"
     );
     assert_eq!(
-        calls.iter()
+        calls
+            .iter()
             .filter(|call| call.local_path == failed_path)
             .count(),
         2,
@@ -532,7 +533,10 @@ async fn shutdown_exhausts_final_upload_queue_before_returning_first_error() {
         !final_call_path.exists(),
         "successful final uploads should still be removed after queue exhaustion"
     );
-    assert!(failed_path.exists(), "failed final uploads must remain local");
+    assert!(
+        failed_path.exists(),
+        "failed final uploads must remain local"
+    );
     assert_eq!(jsonl_files(dir.path()), vec![failed_path]);
 }
 
@@ -744,12 +748,57 @@ async fn restart_prunes_empty_retained_jsonl_files_before_reusing_sequence_numbe
     worker.shutdown().await.unwrap();
 
     let calls = uploader.calls();
-    assert_eq!(calls.len(), 1, "expected only the new upload, got {calls:?}");
+    assert_eq!(
+        calls.len(),
+        1,
+        "expected only the new upload, got {calls:?}"
+    );
     assert!(
         calls[0]
             .local_path
             .ends_with("part-00000000000000000000.jsonl"),
         "new file should reuse the pruned empty sequence: {}",
+        calls[0].local_path.display()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn restart_preserves_next_sequence_after_successful_upload_clears_local_spool() {
+    let dir = tempdir().unwrap();
+
+    let uploader = MockUploader::with_outcomes([true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.roll_max_bytes = 10_000;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg.clone());
+
+    audit_tx.send(sample_record(1_000)).unwrap();
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+
+    wait_for_no_jsonl_files(dir.path()).await;
+    assert_eq!(uploader.calls().len(), 1);
+    assert!(
+        uploader.calls()[0]
+            .local_path
+            .ends_with("part-00000000000000000000.jsonl")
+    );
+
+    let restarted_uploader = MockUploader::with_outcomes([true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let restarted_worker = spawn_audit_worker(audit_rx, restarted_uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(2_000)).unwrap();
+    drop(audit_tx);
+    restarted_worker.shutdown().await.unwrap();
+
+    let calls = restarted_uploader.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0]
+            .local_path
+            .ends_with("part-00000000000000000001.jsonl"),
+        "restart should continue from the last issued sequence even after the spool is emptied: {}",
         calls[0].local_path.display()
     );
 }

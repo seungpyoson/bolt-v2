@@ -24,7 +24,7 @@ use tokio::{
 
 #[derive(Clone)]
 struct TestServerState {
-    response_body: Arc<Value>,
+    response_bodies: Arc<Vec<Value>>,
     request_count: Arc<AtomicUsize>,
 }
 
@@ -60,10 +60,10 @@ fn parse_request_target(request: &str) -> (&str, HashMap<String, String>) {
     (path, params)
 }
 
-async fn spawn_test_server(response_body: Value) -> (SocketAddr, Arc<AtomicUsize>) {
+async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<AtomicUsize>) {
     let request_count = Arc::new(AtomicUsize::new(0));
     let state = TestServerState {
-        response_body: Arc::new(response_body),
+        response_bodies: Arc::new(response_bodies),
         request_count: request_count.clone(),
     };
 
@@ -80,10 +80,24 @@ async fn spawn_test_server(response_body: Value) -> (SocketAddr, Arc<AtomicUsize
                 let (path, params) = parse_request_target(&request);
                 state.request_count.fetch_add(1, Ordering::Relaxed);
 
+                let limit = params
+                    .get("limit")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(100);
+                let offset = params
+                    .get("offset")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let page_index = offset / limit.max(1);
                 let (status_line, body) = if path == "/events"
                     && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
                 {
-                    ("HTTP/1.1 200 OK", state.response_body.to_string())
+                    let body = state
+                        .response_bodies
+                        .get(page_index)
+                        .cloned()
+                        .unwrap_or_else(|| json!([]));
+                    ("HTTP/1.1 200 OK", body.to_string())
                 } else {
                     (
                         "HTTP/1.1 400 Bad Request",
@@ -112,15 +126,8 @@ async fn load_markets_from_event_markets(
     Vec<bolt_v2::platform::ruleset::CandidateMarket>,
     Arc<AtomicUsize>,
 ) {
-    let response_body = json!([
-        {
-            "id": "event-1",
-            "slug": "bitcoin",
-            "title": "Bitcoin 5m",
-            "markets": markets
-        }
-    ]);
-    let (addr, request_count) = spawn_test_server(response_body).await;
+    let (addr, request_count) =
+        spawn_test_server(vec![json!([event_with_markets("event-1", markets)])]).await;
     let client = test_gamma_client(addr);
     let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset(), &client)
         .await
@@ -129,19 +136,48 @@ async fn load_markets_from_event_markets(
     (markets, request_count)
 }
 
-fn valid_market(end_date: String) -> Value {
+async fn load_markets_from_event_pages(
+    event_pages: Vec<Vec<Value>>,
+) -> (
+    Vec<bolt_v2::platform::ruleset::CandidateMarket>,
+    Arc<AtomicUsize>,
+) {
+    let response_bodies = event_pages.into_iter().map(Value::Array).collect();
+    let (addr, request_count) = spawn_test_server(response_bodies).await;
+    let client = test_gamma_client(addr);
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset(), &client)
+        .await
+        .unwrap();
+
+    (markets, request_count)
+}
+
+fn event_with_markets(id: &str, markets: Vec<Value>) -> Value {
     json!({
-        "id": "market-good",
+        "id": id,
+        "slug": "bitcoin",
+        "title": "Bitcoin 5m",
+        "markets": markets
+    })
+}
+
+fn valid_market(end_date: String) -> Value {
+    valid_market_with("market-good", "[\"111\",\"222\"]", end_date)
+}
+
+fn valid_market_with(id: &str, clob_token_ids: &str, end_date: String) -> Value {
+    json!({
+        "id": id,
         "questionID": "0xquestion1",
         "conditionId": "0xcondition1",
-        "clobTokenIds": "[\"111\",\"222\"]",
+        "clobTokenIds": clob_token_ids,
         "outcomes": "[\"Yes\",\"No\"]",
         "question": "Will BTC finish green?",
         "description": "The resolution source for this market is Binance spot BTC/USDT data.",
         "acceptingOrders": true,
         "liquidityNum": 4567.0,
         "endDate": end_date,
-        "slug": "market-good"
+        "slug": id
     })
 }
 
@@ -243,6 +279,56 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert!(markets[0].accepting_orders);
     assert_eq!(markets[0].liquidity_num, 4567.0);
     assert!((1190..=1200).contains(&markets[0].seconds_to_end));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paginates_gamma_events_for_multi_page_tag_queries() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let mut first_page = Vec::with_capacity(100);
+    first_page.push(event_with_markets(
+        "event-page-1",
+        vec![valid_market_with(
+            "market-page-1",
+            "[\"111\",\"222\"]",
+            end_date.clone(),
+        )],
+    ));
+    for index in 0..99 {
+        first_page.push(event_with_markets(
+            &format!("event-empty-{index}"),
+            Vec::new(),
+        ));
+    }
+
+    let second_page = vec![event_with_markets(
+        "event-page-2",
+        vec![valid_market_with(
+            "market-page-2",
+            "[\"333\",\"444\"]",
+            end_date,
+        )],
+    )];
+
+    let (markets, request_count) =
+        load_markets_from_event_pages(vec![first_page, second_page]).await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
+    assert_eq!(markets.len(), 2);
+    assert_eq!(
+        markets
+            .iter()
+            .map(|market| market.market_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["market-page-1", "market-page-2"]
+    );
+    assert_eq!(
+        markets
+            .iter()
+            .map(|market| market.instrument_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["111", "333"]
+    );
+    assert!(markets.iter().all(|market| market.tag_slug == "bitcoin"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

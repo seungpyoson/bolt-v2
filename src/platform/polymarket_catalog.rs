@@ -22,13 +22,15 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
     ruleset: &RulesetConfig,
     client: &PolymarketGammaRawHttpClient,
 ) -> anyhow::Result<Vec<CandidateMarket>> {
-    let events = client
-        .get_gamma_events(GetGammaEventsParams {
+    let events = fetch_gamma_events_paginated(
+        client,
+        GetGammaEventsParams {
             tag_slug: Some(ruleset.tag_slug.clone()),
             ..Default::default()
-        })
-        .await
-        .context("failed to fetch gamma events")?;
+        },
+    )
+    .await
+    .context("failed to fetch gamma events")?;
     let now = Utc::now();
 
     Ok(events
@@ -36,6 +38,45 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
         .flat_map(|event| event.markets.into_iter())
         .filter_map(|market| translate_market(market, &ruleset.tag_slug, now))
         .collect())
+}
+
+async fn fetch_gamma_events_paginated(
+    client: &PolymarketGammaRawHttpClient,
+    base_params: GetGammaEventsParams,
+) -> anyhow::Result<Vec<nautilus_polymarket::http::models::GammaEvent>> {
+    const PAGE_LIMIT: u32 = 100;
+
+    let page_size = base_params.limit.unwrap_or(PAGE_LIMIT);
+    let max_events = base_params.max_events;
+    let mut all_events = Vec::new();
+    let mut offset = base_params.offset.unwrap_or(0);
+
+    loop {
+        let page = client
+            .get_gamma_events(GetGammaEventsParams {
+                limit: Some(page_size),
+                offset: Some(offset),
+                ..base_params.clone()
+            })
+            .await?;
+        let page_len = page.len() as u32;
+        all_events.extend(page);
+
+        if let Some(cap) = max_events
+            && all_events.len() as u32 >= cap
+        {
+            all_events.truncate(cap as usize);
+            break;
+        }
+
+        if page_len < page_size {
+            break;
+        }
+
+        offset += page_size;
+    }
+
+    Ok(all_events)
 }
 
 fn translate_market(

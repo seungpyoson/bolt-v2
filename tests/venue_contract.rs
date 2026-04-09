@@ -228,6 +228,7 @@ fn contract_happy_path_polymarket() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
 
@@ -301,7 +302,7 @@ fn contract_happy_path_polymarket() {
     let report = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
-        output_dir.path(),
+        &output_root,
         Some(&contract),
     )
     .unwrap();
@@ -316,7 +317,7 @@ fn contract_happy_path_polymarket() {
     assert_eq!(cr.classes["mark_prices"].status, "pass_unsupported");
     assert_eq!(cr.classes["instrument_closes"].status, "pass_unsupported");
 
-    let report_path = output_dir.path().join("completeness_report.json");
+    let report_path = output_root.join("completeness_report.json");
     assert!(report_path.exists());
     let json_str = std::fs::read_to_string(&report_path).unwrap();
     let from_disk: CompletenessReport = serde_json::from_str(&json_str).unwrap();
@@ -337,6 +338,7 @@ fn contract_fails_when_required_class_absent() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
 
@@ -386,7 +388,7 @@ fn contract_fails_when_required_class_absent() {
     let err = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
-        output_dir.path(),
+        &output_root,
         Some(&contract),
     )
     .unwrap_err();
@@ -394,8 +396,24 @@ fn contract_fails_when_required_class_absent() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_required_absent"), "{msg}");
-    let report = assert_failure_report_only(output_dir.path());
+    let report = assert_failure_report_only(&output_root);
     assert_eq!(report.classes["order_book_deltas"].status, "fail_required_absent");
+
+    let retry_error = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        &output_root,
+        Some(&contract),
+    )
+    .unwrap_err();
+    assert!(
+        retry_error
+            .to_string()
+            .contains("output_root must not exist before conversion"),
+        "{retry_error:?}"
+    );
+    let retry_report = assert_failure_report_only(&output_root);
+    assert_eq!(retry_report.classes["order_book_deltas"].status, "fail_required_absent");
 }
 
 #[test]
@@ -412,6 +430,7 @@ fn contract_fails_when_unsupported_class_has_data() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
 
@@ -490,7 +509,7 @@ fn contract_fails_when_unsupported_class_has_data() {
     let err = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
-        output_dir.path(),
+        &output_root,
         Some(&contract),
     )
     .unwrap_err();
@@ -498,7 +517,7 @@ fn contract_fails_when_unsupported_class_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_contract_violation"), "{msg}");
-    let report = assert_failure_report_only(output_dir.path());
+    let report = assert_failure_report_only(&output_root);
     assert_eq!(report.classes["mark_prices"].status, "fail_contract_violation");
 }
 
@@ -516,6 +535,7 @@ fn contract_fails_when_unknown_class_has_data() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
 
@@ -600,7 +620,7 @@ fn contract_fails_when_unknown_class_has_data() {
     let err = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
-        output_dir.path(),
+        &output_root,
         Some(&contract),
     )
     .unwrap_err();
@@ -608,7 +628,7 @@ fn contract_fails_when_unknown_class_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_unknown"), "{msg}");
-    let report = assert_failure_report_only(output_dir.path());
+    let report = assert_failure_report_only(&output_root);
     assert_eq!(report.classes["funding_rates"].status, "fail_unknown");
 }
 
@@ -626,6 +646,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
 
@@ -712,7 +733,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
     let err = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
-        output_dir.path(),
+        &output_root,
         Some(&contract),
     )
     .unwrap_err();
@@ -720,7 +741,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_unknown"), "{msg}");
-    let report = assert_failure_report_only(output_dir.path());
+    let report = assert_failure_report_only(&output_root);
     assert_eq!(report.classes["bars"].status, "fail_unknown");
 }
 
@@ -738,6 +759,7 @@ fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
 
@@ -816,7 +838,7 @@ fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
     let report = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
-        output_dir.path(),
+        &output_root,
         Some(&contract),
     )
     .unwrap();
@@ -836,6 +858,7 @@ fn no_contract_mode_behaves_as_before() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
 
@@ -885,7 +908,7 @@ fn no_contract_mode_behaves_as_before() {
     let report = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
-        output_dir.path(),
+        &output_root,
         None,
     )
     .unwrap();

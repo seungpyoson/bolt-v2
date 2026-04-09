@@ -3,6 +3,7 @@ use std::{
     ffi::OsString,
     fs,
     fs::File,
+    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -22,6 +23,7 @@ const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "mark_prices",
     "instrument_closes",
 ];
+const COMPLETENESS_REPORT_FILE: &str = "completeness_report.json";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamToLakeReport {
@@ -53,6 +55,7 @@ pub fn convert_live_spool_to_parquet(
         source_instance_dir.display()
     );
 
+    let _output_lock = OutputRootLock::acquire(output_root)?;
     let class_files = discover_source_files(&source_instance_dir)?;
     let mut staged_output = StagedOutputRoot::create(output_root)?;
     let catalog = ParquetDataCatalog::new(staged_output.path(), None, None, None, None);
@@ -75,6 +78,7 @@ pub fn convert_live_spool_to_parquet(
         )?;
         let json = serde_json::to_string_pretty(&report)?;
         if report.outcome == "fail" {
+            staged_output.discard()?;
             if let Err(error) = staged_output.write_failure_report(&json) {
                 bail!(
                     "contract validation failed:\n{json}\n(additionally failed to write completeness_report.json: {error})"
@@ -116,14 +120,15 @@ fn build_completeness_report(
 
     // ── Unknown-class discovery ──
     const SPOOL_INFRASTRUCTURE_DIRS: &[&str] = &["instruments", "status"];
-
-    let known_classes: std::collections::HashSet<&str> = contract
+    let known_dir_names: std::collections::HashSet<&str> = contract
         .streams
         .keys()
         .map(String::as_str)
         .chain(supported_stream_classes().iter().copied())
         .chain(SPOOL_INFRASTRUCTURE_DIRS.iter().copied())
         .collect();
+    let known_flat_classes: std::collections::HashSet<&str> =
+        contract.streams.keys().map(String::as_str).collect();
 
     if source_instance_dir.is_dir() {
         for entry in std::fs::read_dir(source_instance_dir)? {
@@ -139,7 +144,7 @@ fn build_completeness_report(
             }
 
             if meta.is_dir() {
-                if !known_classes.contains(name.as_str()) {
+                if !known_dir_names.contains(name.as_str()) {
                     has_failure = true;
                     classes.insert(
                         name,
@@ -159,8 +164,7 @@ fn build_completeness_report(
 
             if meta.is_file()
                 && let Some(class_name) =
-                    classify_unknown_flat_file(&entry.path(), known_classes.iter().copied())
-                && !known_classes.contains(class_name.as_str())
+                    classify_unknown_flat_file(&entry.path(), known_flat_classes.iter().copied())
             {
                 has_failure = true;
                 classes.insert(
@@ -285,51 +289,67 @@ fn ensure_disjoint_paths(catalog_path: &Path, output_root: &Path) -> Result<()> 
     Ok(())
 }
 
+struct OutputRootLock {
+    lock_path: PathBuf,
+}
+
+impl OutputRootLock {
+    fn acquire(output_root: &Path) -> Result<Self> {
+        let parent = output_root
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        ensure_output_root_absent(output_root)?;
+
+        let output_root_name = output_root_name(output_root)?;
+        ensure_no_stale_stage_dirs(parent, output_root_name)?;
+
+        let lock_path = parent.join(lock_file_name(output_root_name));
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(
+                    "output_root is locked by another or stale run: {}",
+                    lock_path.display()
+                ),
+                _ => error.into(),
+            })?;
+
+        Ok(Self { lock_path })
+    }
+}
+
+impl Drop for OutputRootLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
 struct StagedOutputRoot {
     output_root: PathBuf,
     stage_path: PathBuf,
-    stage_name: OsString,
-    created_output_root: bool,
-    persist: bool,
-    preserve_output_root: bool,
+    discarded: bool,
+    published: bool,
 }
 
 impl StagedOutputRoot {
     fn create(output_root: &Path) -> Result<Self> {
-        let file_name = output_root.file_name().ok_or_else(|| {
-            anyhow::anyhow!(
-                "output_root must include a final path component: {}",
-                output_root.display()
-            )
-        })?;
-        let created_output_root = if output_root.exists() {
-            false
-        } else {
-            fs::create_dir_all(output_root)?;
-            true
-        };
-        ensure_empty_output_root(output_root)?;
-
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| anyhow::anyhow!("system clock before UNIX_EPOCH: {e}"))?
-            .as_nanos();
-        let stage_name = OsString::from(format!(
-            ".{}.staging-{}-{}",
-            file_name.to_string_lossy(),
-            std::process::id(),
-            suffix
-        ));
-        let stage_path = output_root.join(&stage_name);
+        let parent = output_root
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let output_root_name = output_root_name(output_root)?;
+        let stage_path = parent.join(stage_dir_name(output_root_name));
         fs::create_dir(&stage_path)?;
 
         Ok(Self {
             output_root: output_root.to_path_buf(),
             stage_path,
-            stage_name,
-            created_output_root,
-            persist: false,
-            preserve_output_root: false,
+            discarded: false,
+            published: false,
         })
     }
 
@@ -338,42 +358,34 @@ impl StagedOutputRoot {
     }
 
     fn write_success_report(&self, json: &str) -> Result<()> {
-        fs::write(self.stage_path.join("completeness_report.json"), json)?;
+        write_atomic_file(&self.stage_path.join(COMPLETENESS_REPORT_FILE), json)?;
         Ok(())
     }
 
-    fn write_failure_report(&mut self, json: &str) -> Result<()> {
-        fs::write(self.output_root.join("completeness_report.json"), json)?;
-        self.preserve_output_root = true;
+    fn write_failure_report(&self, json: &str) -> Result<()> {
+        write_failure_output_root(&self.output_root, json)?;
         Ok(())
     }
 
     fn persist(&mut self, output_root: &Path) -> Result<()> {
-        ensure_publish_target_empty(output_root, &self.stage_name)?;
+        fs::rename(&self.stage_path, output_root)?;
+        self.published = true;
+        Ok(())
+    }
 
-        for entry in fs::read_dir(&self.stage_path)? {
-            let entry = entry?;
-            fs::rename(entry.path(), output_root.join(entry.file_name()))?;
+    fn discard(&mut self) -> Result<()> {
+        if self.stage_path.exists() {
+            fs::remove_dir_all(&self.stage_path)?;
         }
-        fs::remove_dir(&self.stage_path)?;
-        self.persist = true;
-        self.preserve_output_root = true;
+        self.discarded = true;
         Ok(())
     }
 }
 
 impl Drop for StagedOutputRoot {
     fn drop(&mut self) {
-        if !self.persist {
+        if !self.discarded && !self.published {
             let _ = fs::remove_dir_all(&self.stage_path);
-        }
-        if self.created_output_root && !self.preserve_output_root {
-            let is_empty = fs::read_dir(&self.output_root)
-                .map(|mut entries| entries.next().is_none())
-                .unwrap_or(false);
-            if is_empty {
-                let _ = fs::remove_dir(&self.output_root);
-            }
         }
     }
 }
@@ -443,70 +455,133 @@ fn classify_flat_file<'a>(
         .max_by_key(|class_name| class_name.len())
 }
 
-fn classify_unknown_flat_file<'a>(
-    path: &Path,
-    known_classes: impl IntoIterator<Item = &'a str>,
-) -> Option<String> {
-    if classify_flat_file(path, known_classes).is_some() {
+fn classify_unknown_flat_file<'a>(path: &Path, data_classes: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("feather") {
+        return None;
+    }
+
+    if classify_flat_file(path, data_classes).is_some() {
         return None;
     }
 
     let stem = path.file_stem()?.to_string_lossy();
-    Some(
-        stem.rsplit_once('_')
-            .map(|(name, _)| name)
-            .unwrap_or(&stem)
-            .to_string(),
-    )
+    let class_name = stem
+        .rsplit_once('_')
+        .map(|(name, _)| if name.is_empty() { stem.as_ref() } else { name })
+        .unwrap_or(&stem);
+    Some(class_name.to_string())
 }
 
-fn ensure_empty_output_root(output_root: &Path) -> Result<()> {
-    if !output_root.exists() {
-        return Ok(());
-    }
+fn ensure_output_root_absent(output_root: &Path) -> Result<()> {
     ensure!(
-        output_root.is_dir(),
-        "output_root must be a directory: {}",
+        !output_root.exists(),
+        "output_root must not exist before conversion: {}",
         output_root.display()
     );
-
-    for entry in fs::read_dir(output_root)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        let path = entry.path();
-        if is_staging_dir_name(&name) && path.is_dir() {
-            fs::remove_dir_all(path)?;
-            continue;
-        }
-        if name == "completeness_report.json" && path.is_file() {
-            fs::remove_file(path)?;
-        }
-    }
-
-    ensure!(
-        fs::read_dir(output_root)?.next().is_none(),
-        "output_root must be empty before conversion"
-    );
-
     Ok(())
 }
 
-fn ensure_publish_target_empty(output_root: &Path, stage_name: &OsString) -> Result<()> {
-    for entry in fs::read_dir(output_root)? {
+fn ensure_no_stale_stage_dirs(parent: &Path, output_root_name: &str) -> Result<()> {
+    for entry in fs::read_dir(parent)? {
         let entry = entry?;
-        if entry.file_name() != *stage_name {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if entry.file_type()?.is_dir() && is_stage_dir_name_for_output_root(&name, output_root_name)
+        {
             bail!(
-                "output_root received unexpected contents before publish: {}",
+                "stale staging directory present for output_root `{output_root_name}`: {}",
                 entry.path().display()
             );
         }
     }
-
     Ok(())
 }
 
-fn is_staging_dir_name(name: &str) -> bool {
-    name.starts_with('.') && name.contains(".staging-")
+fn lock_file_name(output_root_name: &str) -> String {
+    format!(".{output_root_name}.lock")
+}
+
+fn stage_dir_name(output_root_name: &str) -> String {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX_EPOCH")
+        .as_nanos();
+    format!(
+        ".{output_root_name}.staging-{}-{suffix}",
+        std::process::id()
+    )
+}
+
+fn is_stage_dir_name_for_output_root(name: &str, output_root_name: &str) -> bool {
+    let prefix = format!(".{output_root_name}.staging-");
+    let Some(rest) = name.strip_prefix(&prefix) else {
+        return false;
+    };
+    let Some((pid, nonce)) = rest.split_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && !nonce.is_empty()
+        && pid.chars().all(|ch| ch.is_ascii_digit())
+        && nonce.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn output_root_name(output_root: &Path) -> Result<&str> {
+    output_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "output_root must include a UTF-8 final path component: {}",
+                output_root.display()
+            )
+        })
+}
+
+fn write_failure_output_root(output_root: &Path, json: &str) -> Result<()> {
+    fs::create_dir(output_root)?;
+    if let Err(error) = write_atomic_file(&output_root.join(COMPLETENESS_REPORT_FILE), json) {
+        let _ = fs::remove_dir_all(output_root);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn write_atomic_file(path: &Path, contents: &str) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("path is missing a UTF-8 filename: {}", path.display()))?;
+    let tmp_name = format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| anyhow::anyhow!("system clock before UNIX_EPOCH: {e}"))?
+            .as_nanos()
+    );
+    let tmp_path = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(tmp_name);
+
+    let result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    result
 }
 
 fn convert_class_to_parquet(

@@ -31,12 +31,55 @@ fn venue_contract_test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn assert_directory_empty(path: &std::path::Path) {
-    let entries: Vec<_> = std::fs::read_dir(path)
+fn assert_failure_report_only(path: &std::path::Path) -> CompletenessReport {
+    let mut entries: Vec<_> = std::fs::read_dir(path)
         .unwrap()
         .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
         .collect();
-    assert!(entries.is_empty(), "expected empty directory, found {entries:?}");
+    entries.sort();
+    assert_eq!(entries, vec!["completeness_report.json"]);
+
+    let json = std::fs::read_to_string(path.join("completeness_report.json")).unwrap();
+    let report: CompletenessReport = serde_json::from_str(&json).unwrap();
+    assert_eq!(report.outcome, "fail");
+    report
+}
+
+fn flatten_spool_to_legacy_layout(instance_root: &std::path::Path) {
+    let class_dirs: Vec<_> = std::fs::read_dir(instance_root)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+
+    for class_dir in class_dirs {
+        let class_name = class_dir.file_name().to_string_lossy().to_string();
+        let mut feather_files = Vec::new();
+        for entry in std::fs::read_dir(class_dir.path()).unwrap().filter_map(|entry| entry.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                for nested in std::fs::read_dir(path).unwrap().filter_map(|entry| entry.ok()) {
+                    let nested_path = nested.path();
+                    if nested_path.extension().and_then(|ext| ext.to_str()) == Some("feather") {
+                        feather_files.push(nested_path);
+                    }
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("feather") {
+                feather_files.push(path);
+            }
+        }
+
+        for (idx, feather_path) in feather_files.iter().enumerate() {
+            std::fs::rename(
+                feather_path,
+                instance_root.join(format!("{class_name}_{idx}.feather")),
+            )
+            .unwrap();
+        }
+
+        std::fs::remove_dir_all(class_dir.path()).unwrap();
+    }
 }
 
 fn base_polymarket_streams() -> BTreeMap<String, StreamContract> {
@@ -351,7 +394,8 @@ fn contract_fails_when_required_class_absent() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_required_absent"), "{msg}");
-    assert_directory_empty(output_dir.path());
+    let report = assert_failure_report_only(output_dir.path());
+    assert_eq!(report.classes["order_book_deltas"].status, "fail_required_absent");
 }
 
 #[test]
@@ -454,7 +498,8 @@ fn contract_fails_when_unsupported_class_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_contract_violation"), "{msg}");
-    assert_directory_empty(output_dir.path());
+    let report = assert_failure_report_only(output_dir.path());
+    assert_eq!(report.classes["mark_prices"].status, "fail_contract_violation");
 }
 
 #[test]
@@ -563,7 +608,8 @@ fn contract_fails_when_unknown_class_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_unknown"), "{msg}");
-    assert_directory_empty(output_dir.path());
+    let report = assert_failure_report_only(output_dir.path());
+    assert_eq!(report.classes["funding_rates"].status, "fail_unknown");
 }
 
 #[test]
@@ -674,7 +720,110 @@ fn contract_fails_when_unknown_flat_file_has_data() {
     let msg = err.to_string();
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_unknown"), "{msg}");
-    assert_directory_empty(output_dir.path());
+    let report = assert_failure_report_only(output_dir.path());
+    assert_eq!(report.classes["bars"].status, "fail_unknown");
+}
+
+#[test]
+fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let contract =
+        VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
+            .unwrap();
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let catalog_root = source_dir.path().join("catalog");
+    let inst = test_instrument_id();
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let ts = 1_000_000_000u64;
+
+            let quote = QuoteTick::new(
+                inst,
+                Price::from("0.55"),
+                Price::from("0.56"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                ts.into(),
+                ts.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(inst), &quote);
+
+            let trade = TradeTick {
+                instrument_id: inst,
+                price: Price::from("0.55"),
+                size: Quantity::from("10"),
+                aggressor_side: AggressorSide::Buyer,
+                trade_id: TradeId::new("T1"),
+                ts_event: ts.into(),
+                ts_init: ts.into(),
+            };
+            publish_trade(switchboard::get_trades_topic(inst), &trade);
+
+            let delta = OrderBookDelta::new(
+                inst,
+                BookAction::Add,
+                BookOrder::new(OrderSide::Buy, Price::from("0.54"), Quantity::from("50"), 1),
+                0,
+                0,
+                ts.into(),
+                ts.into(),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(inst),
+                &OrderBookDeltas::new(inst, vec![delta]),
+            );
+
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let instance_root = catalog_root.join("live").join(&instance_id);
+    flatten_spool_to_legacy_layout(&instance_root);
+
+    let report = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        output_dir.path(),
+        Some(&contract),
+    )
+    .unwrap();
+
+    let cr = report.completeness.unwrap();
+    assert_eq!(cr.outcome, "pass");
+    assert_eq!(cr.classes["order_book_deltas"].status, "pass");
 }
 
 #[test]

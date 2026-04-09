@@ -45,7 +45,6 @@ pub fn convert_live_spool_to_parquet(
     ensure_local_path(output_root, "output_root")?;
     ensure_instance_id_segment(instance_id)?;
     ensure_disjoint_paths(catalog_path, output_root)?;
-    ensure_empty_output_root(output_root)?;
 
     let source_instance_dir = catalog_path.join("live").join(instance_id);
     ensure!(
@@ -75,10 +74,15 @@ pub fn convert_live_spool_to_parquet(
             &converted_classes,
         )?;
         let json = serde_json::to_string_pretty(&report)?;
-        fs::write(staged_output.path().join("completeness_report.json"), &json)?;
         if report.outcome == "fail" {
+            if let Err(error) = staged_output.write_failure_report(&json) {
+                bail!(
+                    "contract validation failed:\n{json}\n(additionally failed to write completeness_report.json: {error})"
+                );
+            }
             bail!("contract validation failed:\n{json}");
         }
+        staged_output.write_success_report(&json)?;
         Some(report)
     } else {
         ensure!(
@@ -154,7 +158,8 @@ fn build_completeness_report(
             }
 
             if meta.is_file()
-                && let Some(class_name) = flat_file_class_name(&entry.path())
+                && let Some(class_name) =
+                    classify_unknown_flat_file(&entry.path(), known_classes.iter().copied())
                 && !known_classes.contains(class_name.as_str())
             {
                 has_failure = true;
@@ -280,67 +285,79 @@ fn ensure_disjoint_paths(catalog_path: &Path, output_root: &Path) -> Result<()> 
     Ok(())
 }
 
-fn ensure_empty_output_root(output_root: &Path) -> Result<()> {
-    if !output_root.exists() {
-        return Ok(());
-    }
-
-    ensure!(
-        fs::read_dir(output_root)?.next().is_none(),
-        "output_root must be empty before conversion"
-    );
-
-    Ok(())
-}
-
 struct StagedOutputRoot {
-    path: PathBuf,
+    output_root: PathBuf,
+    stage_path: PathBuf,
+    stage_name: OsString,
+    created_output_root: bool,
     persist: bool,
+    preserve_output_root: bool,
 }
 
 impl StagedOutputRoot {
     fn create(output_root: &Path) -> Result<Self> {
-        let parent = output_root
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-
         let file_name = output_root.file_name().ok_or_else(|| {
             anyhow::anyhow!(
                 "output_root must include a final path component: {}",
                 output_root.display()
             )
         })?;
+        let created_output_root = if output_root.exists() {
+            false
+        } else {
+            fs::create_dir_all(output_root)?;
+            true
+        };
+        ensure_empty_output_root(output_root)?;
+
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| anyhow::anyhow!("system clock before UNIX_EPOCH: {e}"))?
             .as_nanos();
-        let stage_name = format!(
+        let stage_name = OsString::from(format!(
             ".{}.staging-{}-{}",
             file_name.to_string_lossy(),
             std::process::id(),
             suffix
-        );
-        let path = parent.join(stage_name);
-        fs::create_dir(&path)?;
+        ));
+        let stage_path = output_root.join(&stage_name);
+        fs::create_dir(&stage_path)?;
 
         Ok(Self {
-            path,
+            output_root: output_root.to_path_buf(),
+            stage_path,
+            stage_name,
+            created_output_root,
             persist: false,
+            preserve_output_root: false,
         })
     }
 
     fn path(&self) -> &Path {
-        &self.path
+        &self.stage_path
+    }
+
+    fn write_success_report(&self, json: &str) -> Result<()> {
+        fs::write(self.stage_path.join("completeness_report.json"), json)?;
+        Ok(())
+    }
+
+    fn write_failure_report(&mut self, json: &str) -> Result<()> {
+        fs::write(self.output_root.join("completeness_report.json"), json)?;
+        self.preserve_output_root = true;
+        Ok(())
     }
 
     fn persist(&mut self, output_root: &Path) -> Result<()> {
-        if output_root.exists() {
-            fs::remove_dir(output_root)?;
+        ensure_publish_target_empty(output_root, &self.stage_name)?;
+
+        for entry in fs::read_dir(&self.stage_path)? {
+            let entry = entry?;
+            fs::rename(entry.path(), output_root.join(entry.file_name()))?;
         }
-        fs::rename(&self.path, output_root)?;
+        fs::remove_dir(&self.stage_path)?;
         self.persist = true;
+        self.preserve_output_root = true;
         Ok(())
     }
 }
@@ -348,7 +365,15 @@ impl StagedOutputRoot {
 impl Drop for StagedOutputRoot {
     fn drop(&mut self) {
         if !self.persist {
-            let _ = fs::remove_dir_all(&self.path);
+            let _ = fs::remove_dir_all(&self.stage_path);
+        }
+        if self.created_output_root && !self.preserve_output_root {
+            let is_empty = fs::read_dir(&self.output_root)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false);
+            if is_empty {
+                let _ = fs::remove_dir(&self.output_root);
+            }
         }
     }
 }
@@ -385,11 +410,8 @@ fn discover_source_files(
             if entry.path().extension().and_then(|e| e.to_str()) != Some("feather") {
                 continue;
             }
-            for data_cls in SUPPORTED_STREAM_CLASSES {
-                if file_name_str.starts_with(&format!("{data_cls}_")) {
-                    class_files.entry(data_cls).or_default().push(entry.path());
-                    break;
-                }
+            if let Some(data_cls) = classify_flat_file(&entry.path(), SUPPORTED_STREAM_CLASSES.iter().copied()) {
+                class_files.entry(data_cls).or_default().push(entry.path());
             }
         }
     }
@@ -401,14 +423,90 @@ fn discover_source_files(
     Ok(class_files)
 }
 
-fn flat_file_class_name(path: &Path) -> Option<String> {
+fn classify_flat_file<'a>(
+    path: &Path,
+    candidate_classes: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
     if path.extension().and_then(|e| e.to_str()) != Some("feather") {
         return None;
     }
 
     let stem = path.file_stem()?.to_string_lossy();
-    let prefix = stem.split_once('_').map(|(name, _)| name).unwrap_or(&stem);
-    Some(prefix.to_string())
+    candidate_classes
+        .into_iter()
+        .filter(|class_name| {
+            stem == *class_name
+                || stem
+                    .strip_prefix(class_name)
+                    .is_some_and(|suffix| suffix.starts_with('_'))
+        })
+        .max_by_key(|class_name| class_name.len())
+}
+
+fn classify_unknown_flat_file<'a>(
+    path: &Path,
+    known_classes: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    if classify_flat_file(path, known_classes).is_some() {
+        return None;
+    }
+
+    let stem = path.file_stem()?.to_string_lossy();
+    Some(
+        stem.rsplit_once('_')
+            .map(|(name, _)| name)
+            .unwrap_or(&stem)
+            .to_string(),
+    )
+}
+
+fn ensure_empty_output_root(output_root: &Path) -> Result<()> {
+    if !output_root.exists() {
+        return Ok(());
+    }
+    ensure!(
+        output_root.is_dir(),
+        "output_root must be a directory: {}",
+        output_root.display()
+    );
+
+    for entry in fs::read_dir(output_root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path();
+        if is_staging_dir_name(&name) && path.is_dir() {
+            fs::remove_dir_all(path)?;
+            continue;
+        }
+        if name == "completeness_report.json" && path.is_file() {
+            fs::remove_file(path)?;
+        }
+    }
+
+    ensure!(
+        fs::read_dir(output_root)?.next().is_none(),
+        "output_root must be empty before conversion"
+    );
+
+    Ok(())
+}
+
+fn ensure_publish_target_empty(output_root: &Path, stage_name: &OsString) -> Result<()> {
+    for entry in fs::read_dir(output_root)? {
+        let entry = entry?;
+        if entry.file_name() != *stage_name {
+            bail!(
+                "output_root received unexpected contents before publish: {}",
+                entry.path().display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn is_staging_dir_name(name: &str) -> bool {
+    name.starts_with('.') && name.contains(".staging-")
 }
 
 fn convert_class_to_parquet(

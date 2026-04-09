@@ -333,6 +333,7 @@ struct StagedOutputRoot {
     stage_path: PathBuf,
     discarded: bool,
     published: bool,
+    preserve_stage: bool,
 }
 
 impl StagedOutputRoot {
@@ -350,6 +351,7 @@ impl StagedOutputRoot {
             stage_path,
             discarded: false,
             published: false,
+            preserve_stage: false,
         })
     }
 
@@ -368,9 +370,20 @@ impl StagedOutputRoot {
     }
 
     fn persist(&mut self, output_root: &Path) -> Result<()> {
-        fs::rename(&self.stage_path, output_root)?;
-        self.published = true;
-        Ok(())
+        match fs::rename(&self.stage_path, output_root) {
+            Ok(()) => {
+                self.published = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.preserve_stage = true;
+                Err(anyhow::anyhow!(
+                    "failed to publish staged output {} -> {}: {error}",
+                    self.stage_path.display(),
+                    output_root.display()
+                ))
+            }
+        }
     }
 
     fn discard(&mut self) -> Result<()> {
@@ -384,7 +397,7 @@ impl StagedOutputRoot {
 
 impl Drop for StagedOutputRoot {
     fn drop(&mut self) {
-        if !self.discarded && !self.published {
+        if !self.discarded && !self.published && !self.preserve_stage {
             let _ = fs::remove_dir_all(&self.stage_path);
         }
     }

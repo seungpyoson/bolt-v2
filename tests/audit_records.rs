@@ -31,6 +31,7 @@ struct MockUploader {
 enum UploadOutcome {
     Succeed,
     Fail,
+    DelayFail(Duration),
     Block(Arc<Notify>),
 }
 
@@ -91,6 +92,10 @@ impl AuditUploader for MockUploader {
             match outcome {
                 UploadOutcome::Succeed => Ok(()),
                 UploadOutcome::Fail => Err(anyhow!("mock upload failure")),
+                UploadOutcome::DelayFail(delay) => {
+                    tokio::time::sleep(delay).await;
+                    Err(anyhow!("mock upload failure"))
+                }
                 UploadOutcome::Block(release) => {
                     release.notified().await;
                     Ok(())
@@ -359,28 +364,39 @@ async fn failed_upload_keeps_local_file_for_retry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn failed_retained_upload_waits_until_next_ship_interval_before_retry() {
+async fn failed_retained_upload_retries_on_next_ship_tick_not_failure_deadline() {
     let dir = tempdir().unwrap();
     let retained_dir = dir.path().join("date=1970-01-01");
     fs::create_dir_all(&retained_dir).unwrap();
     let retained_path = retained_dir.join("part-00000000000000000007.jsonl");
     write_retained_jsonl(&retained_path, &[sample_record(1_000)]);
 
-    let uploader = MockUploader::with_outcomes([false, true]);
+    let uploader = MockUploader::with_outcomes([
+        UploadOutcome::DelayFail(Duration::from_millis(50)),
+        UploadOutcome::Succeed,
+    ]);
     let (audit_tx, audit_rx) = audit_channel();
     let mut cfg = config(dir.path());
     cfg.ship_interval = Duration::from_millis(250);
     let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
 
-    wait_for_attempts(&uploader, 1).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         uploader.attempt_count(),
         1,
-        "failed retained upload should wait until the next ship interval before retrying"
+        "failed retained upload should remain deferred until the next ship tick"
     );
 
-    wait_for_attempts(&uploader, 2).await;
+    tokio::time::timeout(Duration::from_millis(250), wait_for_attempts(&uploader, 2))
+        .await
+        .expect(
+            "failed retained upload should retry on the first later ship tick, not failure time + ship_interval",
+        );
+    assert_eq!(
+        uploader.attempt_count(),
+        2,
+        "failed retained upload should retry on the first later ship tick, not failure time + ship_interval"
+    );
 
     drop(audit_tx);
     worker.shutdown().await.unwrap();

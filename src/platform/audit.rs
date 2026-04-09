@@ -292,7 +292,7 @@ struct PendingAuditFile {
     date: String,
     path: PathBuf,
     bytes: u64,
-    retry_not_before: Option<Instant>,
+    retry_on_ship_tick: bool,
 }
 
 struct ActiveUpload {
@@ -379,15 +379,16 @@ where
         self.roll_current_file()
     }
 
-    fn start_next_upload(&mut self, ignore_retry_not_before: bool) -> Result<()> {
+    fn start_next_upload(&mut self, ignore_retry_on_ship_tick: bool) -> Result<()> {
         if self.active_upload.is_some() {
             return Ok(());
         }
 
-        let now = Instant::now();
-        let Some(ready_index) = self.pending_uploads.iter().position(|file| {
-            ignore_retry_not_before || file.retry_not_before.is_none_or(|deadline| deadline <= now)
-        }) else {
+        let Some(ready_index) = self
+            .pending_uploads
+            .iter()
+            .position(|file| ignore_retry_on_ship_tick || !file.retry_on_ship_tick)
+        else {
             return Ok(());
         };
 
@@ -577,18 +578,22 @@ where
             date: file.date,
             path: file.path,
             bytes,
-            retry_not_before: None,
+            retry_on_ship_tick: false,
         });
 
         self.ensure_backlog_within_limit()
     }
 
+    fn release_ship_tick_retries(&mut self) {
+        for file in &mut self.pending_uploads {
+            if file.retry_on_ship_tick {
+                file.retry_on_ship_tick = false;
+            }
+        }
+    }
+
     fn requeue_failed_upload(&mut self, mut file: PendingAuditFile) {
-        file.retry_not_before = Some(
-            Instant::now()
-                .checked_add(self.config.ship_interval)
-                .unwrap_or_else(Instant::now),
-        );
+        file.retry_on_ship_tick = true;
         self.pending_uploads.push_front(file);
     }
 
@@ -666,6 +671,7 @@ where
                 }
                 _ = ticker.tick() => {
                     state.flush_expired_open_file()?;
+                    state.release_ship_tick_retries();
                     state.start_next_upload(false)?;
                     reset_roll_timer(roll_timer.as_mut(), &state);
                 }
@@ -931,7 +937,7 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
         date: date.to_string(),
         path: path.to_path_buf(),
         bytes,
-        retry_not_before: None,
+        retry_on_ship_tick: false,
     }))
 }
 

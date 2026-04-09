@@ -10,10 +10,12 @@ use std::{
 use bolt_v2::{
     config::{RulesetConfig, RulesetVenueKind},
     platform::{
-        polymarket_catalog::load_candidate_markets_for_ruleset,
+        polymarket_catalog::load_candidate_markets_for_ruleset_with_gamma_client,
         resolution_basis::parse_declared_resolution_basis,
     },
 };
+use chrono::{Duration as ChronoDuration, Utc};
+use nautilus_polymarket::http::gamma::PolymarketGammaRawHttpClient;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -85,7 +87,7 @@ async fn spawn_test_server(response_body: Value) -> (SocketAddr, Arc<AtomicUsize
                 } else {
                     (
                         "HTTP/1.1 400 Bad Request",
-                        "expected slug query".to_string(),
+                        "expected /events?slug=bitcoin".to_string(),
                     )
                 };
                 let response = format!(
@@ -100,8 +102,12 @@ async fn spawn_test_server(response_body: Value) -> (SocketAddr, Arc<AtomicUsize
     (addr, request_count)
 }
 
+fn test_gamma_client(addr: SocketAddr) -> PolymarketGammaRawHttpClient {
+    PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap()
+}
+
 #[test]
-fn parses_declared_basis_from_structured_resolution_source() {
+fn parses_chainlink_basis_from_structured_resolution_source() {
     assert_eq!(
         parse_declared_resolution_basis(
             Some("https://www.chain.link/streams/btc-usd"),
@@ -112,7 +118,18 @@ fn parses_declared_basis_from_structured_resolution_source() {
 }
 
 #[test]
-fn parses_declared_basis_from_known_description_patterns() {
+fn parses_binance_basis_from_structured_resolution_source() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            Some("https://www.binance.com/en/trade/BTC_USDT"),
+            Some("ignored"),
+        ),
+        Some("binance_btcusdt_1m".to_string())
+    );
+}
+
+#[test]
+fn parses_binance_basis_from_known_description_patterns() {
     assert_eq!(
         parse_declared_resolution_basis(
             None,
@@ -122,8 +139,22 @@ fn parses_declared_basis_from_known_description_patterns() {
     );
 }
 
+#[test]
+fn parses_chainlink_basis_from_known_description_patterns() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            None,
+            Some(
+                "The resolution source for this market is information from Chainlink BTC/USD feeds."
+            ),
+        ),
+        Some("chainlink_btcusd".to_string())
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn loads_candidate_markets_for_ruleset_and_skips_invalid_rows() {
+async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
     let response_body = json!([
         {
             "id": "event-1",
@@ -138,10 +169,9 @@ async fn loads_candidate_markets_for_ruleset_and_skips_invalid_rows() {
                     "outcomes": "[\"Yes\",\"No\"]",
                     "question": "Will BTC finish green?",
                     "description": "The resolution source for this market is Binance spot BTC/USDT data.",
-                    "resolutionSource": "https://www.binance.com/en/trade/BTC_USDT",
                     "acceptingOrders": true,
                     "liquidityNum": 4567.0,
-                    "endDate": "2099-01-01T00:20:00Z",
+                    "endDate": end_date,
                     "slug": "market-good"
                 },
                 {
@@ -154,32 +184,26 @@ async fn loads_candidate_markets_for_ruleset_and_skips_invalid_rows() {
                     "description": "No known basis here.",
                     "acceptingOrders": true,
                     "liquidityNum": 9999.0,
-                    "endDate": "2099-01-01T00:25:00Z",
+                    "endDate": end_date,
                     "slug": "market-missing-basis"
                 }
             ]
         }
     ]);
     let (addr, request_count) = spawn_test_server(response_body).await;
-    unsafe {
-        std::env::set_var("POLYMARKET_GAMMA_URL", format!("http://{addr}"));
-    }
+    let client = test_gamma_client(addr);
 
-    let markets = load_candidate_markets_for_ruleset(&ruleset(), 5).unwrap();
-
-    unsafe {
-        std::env::remove_var("POLYMARKET_GAMMA_URL");
-    }
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset(), &client)
+        .await
+        .unwrap();
 
     assert_eq!(request_count.load(Ordering::Relaxed), 1);
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-good");
     assert_eq!(markets[0].instrument_id, "111");
     assert_eq!(markets[0].tag_slug, "bitcoin");
-    assert_eq!(
-        markets[0].declared_resolution_basis,
-        "binance_btcusdt_1m".to_string()
-    );
+    assert_eq!(markets[0].declared_resolution_basis, "binance_btcusdt_1m");
     assert!(markets[0].accepting_orders);
     assert_eq!(markets[0].liquidity_num, 4567.0);
+    assert!((1190..=1200).contains(&markets[0].seconds_to_end));
 }

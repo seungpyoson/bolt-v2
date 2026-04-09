@@ -54,12 +54,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let validation_errors = validate::validate_runtime(&cfg);
             if !validation_errors.is_empty() {
-                let details: Vec<String> =
-                    validation_errors.iter().map(|e| format!("  - {e}")).collect();
+                let details: Vec<String> = validation_errors
+                    .iter()
+                    .map(|e| format!("  - {e}"))
+                    .collect();
                 return Err(format!(
                     "Runtime config validation failed ({} error{}):\n{}",
                     validation_errors.len(),
-                    if validation_errors.len() == 1 { "" } else { "s" },
+                    if validation_errors.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
                     details.join("\n"),
                 )
                 .into());
@@ -131,6 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         node_handle,
                         &streaming.catalog_path,
                         streaming.flush_interval_ms,
+                        streaming.contract_path.as_deref(),
                     )?)
                 };
                 let mut normalized_sink_guards = normalized_sink_guards;

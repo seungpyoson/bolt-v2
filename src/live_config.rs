@@ -241,6 +241,8 @@ pub struct LiveStreamingInput {
     pub catalog_path: String,
     #[serde(default = "default_streaming_flush_interval_ms")]
     pub flush_interval_ms: u64,
+    #[serde(default)]
+    pub contract_path: Option<String>,
 }
 
 impl Default for LiveStreamingInput {
@@ -248,6 +250,7 @@ impl Default for LiveStreamingInput {
         Self {
             catalog_path: String::new(),
             flush_interval_ms: default_streaming_flush_interval_ms(),
+            contract_path: None,
         }
     }
 }
@@ -356,6 +359,8 @@ struct RenderedStrategyConfig {
 struct RenderedStreamingConfig {
     catalog_path: String,
     flush_interval_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contract_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,11 +389,18 @@ pub fn materialize_live_config(
 
     let validation_errors = crate::validate::validate_live_local(&input);
     if !validation_errors.is_empty() {
-        let details: Vec<String> = validation_errors.iter().map(|e| format!("  - {e}")).collect();
+        let details: Vec<String> = validation_errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect();
         return Err(format!(
             "Config validation failed ({} error{}):\n{}",
             validation_errors.len(),
-            if validation_errors.len() == 1 { "" } else { "s" },
+            if validation_errors.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
             details.join("\n"),
         )
         .into());
@@ -470,6 +482,19 @@ fn render_runtime_config(
             Some(RenderedStreamingConfig {
                 catalog_path: input.streaming.catalog_path.clone(),
                 flush_interval_ms: input.streaming.flush_interval_ms,
+                contract_path: input.streaming.contract_path.as_ref().map(|p| {
+                    let path = Path::new(p);
+                    if path.is_absolute() {
+                        p.clone()
+                    } else {
+                        source_path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(path)
+                            .to_string_lossy()
+                            .to_string()
+                    }
+                }),
             })
         },
     };
@@ -712,6 +737,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     fn repo_path(relative: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -863,5 +889,52 @@ passphrase = "/bolt/poly/passphrase"
             2
         );
         assert_eq!(cfg.exec_clients[0].secrets.region, "eu-west-1");
+    }
+
+    #[test]
+    fn relative_streaming_contract_path_resolves_from_source_toml_directory() {
+        let raw = r#"
+[node]
+name = "BOLT-V2-TEST"
+trader_id = "BOLT-TEST"
+
+[polymarket]
+event_slug = "btc-updown-5m"
+instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+
+[secrets]
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[streaming]
+catalog_path = "var/catalog"
+contract_path = "../contracts/polymarket.toml"
+"#;
+
+        let input: LiveLocalConfig =
+            toml::from_str(raw).expect("minimal operator config should parse");
+        let tempdir = tempdir().expect("tempdir should be created");
+        let source_dir = tempdir.path().join("configs");
+        std::fs::create_dir_all(&source_dir).expect("source dir should be created");
+        let source_path = source_dir.join("live.local.toml");
+        let rendered =
+            render_runtime_config(&input, &source_path).expect("operator config should render");
+        let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+
+        assert_eq!(
+            cfg.streaming.contract_path.as_deref(),
+            Some(
+                source_path
+                    .parent()
+                    .expect("source path should have a parent")
+                    .join("../contracts/polymarket.toml")
+                    .to_str()
+                    .expect("resolved contract path should be valid UTF-8")
+            )
+        );
     }
 }

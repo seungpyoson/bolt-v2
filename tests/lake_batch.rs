@@ -67,14 +67,13 @@ fn fails_when_live_spool_instance_is_missing() {
     let source_root = tempdir().unwrap();
     let output_root = tempdir().unwrap();
 
-    let error =
-        convert_live_spool_to_parquet(
-            source_root.path(),
-            "missing-instance",
-            output_root.path(),
-            None,
-        )
-        .unwrap_err();
+    let error = convert_live_spool_to_parquet(
+        source_root.path(),
+        "missing-instance",
+        output_root.path(),
+        None,
+    )
+    .unwrap_err();
 
     assert!(
         error
@@ -108,6 +107,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -148,14 +148,13 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
         instance_id
     }));
 
-    let report =
-        convert_live_spool_to_parquet(
-            catalog_root.as_path(),
-            &instance_id,
-            output_dir.path(),
-            None,
-        )
-        .unwrap();
+    let report = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        output_dir.path(),
+        None,
+    )
+    .unwrap();
 
     assert_eq!(report.instance_id, instance_id);
     assert_eq!(
@@ -232,6 +231,7 @@ fn converts_legacy_flat_spool_layout() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -294,14 +294,13 @@ fn converts_legacy_flat_spool_layout() {
         "expected flat layout, found dirs: {remaining:?}"
     );
 
-    let report =
-        convert_live_spool_to_parquet(
-            catalog_root.as_path(),
-            &instance_id,
-            output_dir.path(),
-            None,
-        )
-        .unwrap();
+    let report = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        output_dir.path(),
+        None,
+    )
+    .unwrap();
 
     assert_eq!(report.converted_classes, vec!["quotes"]);
 
@@ -338,6 +337,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             1,
+            None,
         )
         .unwrap();
 
@@ -450,14 +450,13 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
         instance_id
     }));
 
-    let report =
-        convert_live_spool_to_parquet(
-            catalog_root.as_path(),
-            &instance_id,
-            output_dir.path(),
-            None,
-        )
-        .unwrap();
+    let report = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        output_dir.path(),
+        None,
+    )
+    .unwrap();
 
     assert_eq!(
         report.converted_classes,
@@ -563,9 +562,13 @@ fn fails_when_no_supported_stream_data_is_present() {
     std::fs::create_dir_all(source_root.path().join("live").join("instance-empty")).unwrap();
     let output_root = tempdir().unwrap();
 
-    let error =
-        convert_live_spool_to_parquet(source_root.path(), "instance-empty", output_root.path(), None)
-            .unwrap_err();
+    let error = convert_live_spool_to_parquet(
+        source_root.path(),
+        "instance-empty",
+        output_root.path(),
+        None,
+    )
+    .unwrap_err();
 
     assert!(
         error
@@ -583,9 +586,13 @@ fn fails_when_only_unsupported_stream_data_is_present() {
     std::fs::write(instance_root.join("bars_123.feather"), b"not-used").unwrap();
     let output_root = tempdir().unwrap();
 
-    let error =
-        convert_live_spool_to_parquet(source_root.path(), "instance-bars", output_root.path(), None)
-            .unwrap_err();
+    let error = convert_live_spool_to_parquet(
+        source_root.path(),
+        "instance-bars",
+        output_root.path(),
+        None,
+    )
+    .unwrap_err();
 
     assert!(
         error

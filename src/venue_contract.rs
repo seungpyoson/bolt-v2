@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::lake_batch::supported_stream_classes;
@@ -23,17 +23,12 @@ pub enum Policy {
     Disabled,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
+    #[default]
     Native,
     Derived,
-}
-
-impl Default for Provenance {
-    fn default() -> Self {
-        Self::Native
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -84,12 +79,10 @@ pub struct CompletenessReport {
 
 impl VenueContract {
     pub fn load_and_validate(path: &Path) -> Result<Self> {
-        let contents = fs::read_to_string(path).map_err(|e| {
-            anyhow::anyhow!("failed to read contract {}: {e}", path.display())
-        })?;
-        let contract: VenueContract = toml::from_str(&contents).map_err(|e| {
-            anyhow::anyhow!("failed to parse contract {}: {e}", path.display())
-        })?;
+        let contents = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read contract {}: {e}", path.display()))?;
+        let contract: VenueContract = toml::from_str(&contents)
+            .map_err(|e| anyhow::anyhow!("failed to parse contract {}: {e}", path.display()))?;
         contract.validate()?;
         Ok(contract)
     }
@@ -142,8 +135,7 @@ impl VenueContract {
                 for source in derived_from.unwrap() {
                     let source_stream = self.streams.get(source);
                     ensure!(
-                        source_stream
-                            .is_some_and(|s| s.capability == Capability::Supported),
+                        source_stream.is_some_and(|s| s.capability == Capability::Supported),
                         "stream {name}: derived_from references {source} \
                          which is not supported"
                     );

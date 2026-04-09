@@ -88,6 +88,8 @@ impl Default for RawCaptureConfig {
 pub struct StreamingCaptureConfig {
     pub catalog_path: String,
     pub flush_interval_ms: u64,
+    #[serde(default)]
+    pub contract_path: Option<String>,
 }
 
 pub(crate) fn default_raw_capture_output_dir() -> String {

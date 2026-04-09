@@ -73,11 +73,10 @@ fn valid_config_passes_all_validation() {
 
 #[test]
 fn tracked_template_passes_validation() {
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("config/live.local.example.toml");
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/live.local.example.toml");
     let contents = std::fs::read_to_string(&source).expect("tracked template should exist");
-    let config: LiveLocalConfig =
-        toml::from_str(&contents).expect("tracked template should parse");
+    let config: LiveLocalConfig = toml::from_str(&contents).expect("tracked template should parse");
     let errors = validate_live_local(&config);
     assert_no_errors(&errors);
 }
@@ -449,11 +448,7 @@ fn all_ssm_paths_validated() {
 fn multiple_errors_accumulated_not_just_first() {
     let mut toml = valid_toml();
     toml = replace(&toml, "name = \"BOLT-V2-001\"", "name = \"\"");
-    toml = replace(
-        &toml,
-        "event_slug = \"btc-updown-5m\"",
-        "event_slug = \"\"",
-    );
+    toml = replace(&toml, "event_slug = \"btc-updown-5m\"", "event_slug = \"\"");
     toml = replace(&toml, "funder = \"0xabc\"", "funder = \"\"");
 
     let errors = errors_for(&toml);
@@ -521,8 +516,7 @@ order_qty = "5"
 }
 
 fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
-    let config: Config =
-        toml::from_str(toml_str).expect("runtime test config should parse");
+    let config: Config = toml::from_str(toml_str).expect("runtime test config should parse");
     let mut errors = validate_runtime(&config);
     errors.sort();
     errors
@@ -597,10 +591,8 @@ order_qty = "10"
 
 #[test]
 fn strategy_referencing_nonexistent_client_rejected() {
-    let toml = valid_runtime_toml().replace(
-        "client_id = \"POLYMARKET\"",
-        "client_id = \"NONEXISTENT\"",
-    );
+    let toml =
+        valid_runtime_toml().replace("client_id = \"POLYMARKET\"", "client_id = \"NONEXISTENT\"");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "unknown_client_id");
 }
@@ -623,16 +615,14 @@ fn strategy_referencing_existing_client_accepted() {
 
 #[test]
 fn runtime_missing_strategy_id_rejected() {
-    let toml =
-        valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
+    let toml = valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "missing_strategy_id");
 }
 
 #[test]
 fn runtime_missing_instrument_id_rejected() {
-    let toml = valid_runtime_toml()
-        .replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
+    let toml = valid_runtime_toml().replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "missing_instrument_id");
 }
@@ -642,4 +632,20 @@ fn runtime_missing_order_qty_rejected() {
     let toml = valid_runtime_toml().replace("order_qty = \"5\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies", "missing_order_qty");
+}
+
+#[test]
+fn runtime_relative_contract_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        r#"
+[streaming]
+catalog_path = "/data/catalog"
+flush_interval_ms = 1000
+contract_path = "contracts/polymarket.toml"
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "not_absolute");
 }

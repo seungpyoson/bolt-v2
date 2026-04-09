@@ -1,24 +1,20 @@
 use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 
 use bolt_v2::{
     lake_batch::convert_live_spool_to_parquet,
     normalized_sink,
     venue_contract::{
-        Capability, ClassReport, CompletenessReport, Policy, Provenance, StreamContract,
-        VenueContract,
+        Capability, CompletenessReport, Policy, Provenance, StreamContract, VenueContract,
     },
 };
 use nautilus_common::{
     enums::Environment,
-    msgbus::{
-        publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard,
-    },
+    msgbus::{publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard},
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    data::{
-        BookOrder, MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick,
-    },
+    data::{BookOrder, MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick},
     enums::{AggressorSide, BookAction, OrderSide},
     identifiers::{InstrumentId, TradeId, TraderId},
     types::{Price, Quantity},
@@ -28,6 +24,11 @@ use tokio::task::LocalSet;
 
 fn test_instrument_id() -> InstrumentId {
     InstrumentId::from("0xTEST.POLYMARKET")
+}
+
+fn venue_contract_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn base_polymarket_streams() -> BTreeMap<String, StreamContract> {
@@ -142,6 +143,7 @@ fn rejects_malformed_toml() {
 
 #[test]
 fn contract_happy_path_polymarket() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
             .unwrap();
@@ -169,6 +171,7 @@ fn contract_happy_path_polymarket() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -249,6 +252,7 @@ fn contract_happy_path_polymarket() {
 
 #[test]
 fn contract_fails_when_required_class_absent() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
             .unwrap();
@@ -276,6 +280,7 @@ fn contract_fails_when_required_class_absent() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -320,6 +325,7 @@ fn contract_fails_when_required_class_absent() {
 
 #[test]
 fn contract_fails_when_unsupported_class_has_data() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
             .unwrap();
@@ -347,6 +353,7 @@ fn contract_fails_when_unsupported_class_has_data() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -420,6 +427,7 @@ fn contract_fails_when_unsupported_class_has_data() {
 
 #[test]
 fn contract_fails_when_unknown_class_has_data() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
             .unwrap();
@@ -447,6 +455,7 @@ fn contract_fails_when_unknown_class_has_data() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -526,6 +535,7 @@ fn contract_fails_when_unknown_class_has_data() {
 
 #[test]
 fn no_contract_mode_behaves_as_before() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
     let local = LocalSet::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -549,6 +559,7 @@ fn no_contract_mode_behaves_as_before() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 

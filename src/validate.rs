@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::live_config::LiveLocalConfig;
 use rust_decimal::Decimal;
 use std::collections::HashSet;
+use std::path::Path;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -73,18 +74,14 @@ fn check_nt_hyphenated(
             errors.push(ValidationError {
                 field,
                 code: "empty_name_part",
-                message: format!(
-                    "{field} has empty name part before hyphen, got \"{value}\""
-                ),
+                message: format!("{field} has empty name part before hyphen, got \"{value}\""),
             });
         }
         Some((_, "")) => {
             errors.push(ValidationError {
                 field,
                 code: "empty_tag_part",
-                message: format!(
-                    "{field} has empty tag part after hyphen, got \"{value}\""
-                ),
+                message: format!("{field} has empty tag part after hyphen, got \"{value}\""),
             });
         }
         Some(_) => {} // valid
@@ -337,7 +334,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
     // -- secrets (SSM paths) -----------------------------------------
     check_ssm_path(&mut errors, "secrets.pk", &config.secrets.pk);
     check_ssm_path(&mut errors, "secrets.api_key", &config.secrets.api_key);
-    check_ssm_path(&mut errors, "secrets.api_secret", &config.secrets.api_secret);
+    check_ssm_path(
+        &mut errors,
+        "secrets.api_secret",
+        &config.secrets.api_secret,
+    );
     check_ssm_path(
         &mut errors,
         "secrets.passphrase",
@@ -436,9 +437,7 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             errors.push(ValidationError {
                 field: "strategies",
                 code: "missing_instrument_id",
-                message: format!(
-                    "strategies[{i}] is missing required instrument_id field"
-                ),
+                message: format!("strategies[{i}] is missing required instrument_id field"),
             });
         }
 
@@ -452,6 +451,32 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                 field: "strategies",
                 code: "missing_order_qty",
                 message: format!("strategies[{i}] is missing required order_qty field"),
+            });
+        }
+    }
+
+    if let Some(contract_path) = config.streaming.contract_path.as_deref() {
+        if contract_path.trim().is_empty() {
+            errors.push(ValidationError {
+                field: "streaming.contract_path",
+                code: "empty",
+                message: "streaming.contract_path must not be empty when provided".to_string(),
+            });
+        } else if contract_path.contains("://") {
+            errors.push(ValidationError {
+                field: "streaming.contract_path",
+                code: "non_local",
+                message: format!(
+                    "streaming.contract_path must be a local absolute path, got \"{contract_path}\""
+                ),
+            });
+        } else if !Path::new(contract_path).is_absolute() {
+            errors.push(ValidationError {
+                field: "streaming.contract_path",
+                code: "not_absolute",
+                message: format!(
+                    "streaming.contract_path must be absolute at runtime, got \"{contract_path}\""
+                ),
             });
         }
     }

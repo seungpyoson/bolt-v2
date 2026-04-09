@@ -430,8 +430,33 @@ pub fn wire_normalized_sinks(
     stop_handle: LiveNodeHandle,
     catalog_path: &str,
     flush_interval_ms: u64,
+    contract_path: Option<&str>,
 ) -> Result<NormalizedSinkGuards> {
     ensure_local_catalog_path(catalog_path)?;
+
+    if let Some(path) = contract_path {
+        let contract =
+            crate::venue_contract::VenueContract::load_and_validate(std::path::Path::new(path))?;
+
+        let expected: Vec<_> = contract
+            .streams
+            .iter()
+            .filter(|(_, s)| s.capability == crate::venue_contract::Capability::Supported)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let not_expected: Vec<_> = contract
+            .streams
+            .iter()
+            .filter(|(_, s)| s.capability == crate::venue_contract::Capability::Unsupported)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        log::info!(
+            "Contract loaded: {} -- expecting {:?}; not expecting {:?}",
+            contract.venue,
+            expected,
+            not_expected
+        );
+    }
 
     let instance_id = node.instance_id().to_string();
     let spool_root = spool_root_for_instance(catalog_path, &instance_id);

@@ -10,9 +10,7 @@ use anyhow::{Result, bail, ensure};
 use arrow::ipc::reader::StreamReader;
 use nautilus_persistence::backend::{catalog::ParquetDataCatalog, custom::decode_batch_to_data};
 
-use crate::venue_contract::{
-    Capability, ClassReport, CompletenessReport, Policy, VenueContract,
-};
+use crate::venue_contract::{Capability, ClassReport, CompletenessReport, Policy, VenueContract};
 
 const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "quotes",
@@ -149,7 +147,9 @@ fn build_completeness_report(
 
     // ── Per-stream classification ──
     for (name, stream) in &contract.streams {
-        let spool_present = class_files.get(name.as_str()).is_some_and(|f| !f.is_empty());
+        let spool_present = class_files
+            .get(name.as_str())
+            .is_some_and(|f| !f.is_empty());
         let was_converted = converted_classes.contains(&name.as_str());
         let effective_policy = contract.effective_policy(name).unwrap_or(Policy::Disabled);
 
@@ -172,16 +172,14 @@ fn build_completeness_report(
                     _ => ("spool_present_conversion_empty", None),
                 }
             }
-            (Capability::Supported | Capability::Conditional, false, _) => {
-                match effective_policy {
-                    Policy::Required => {
-                        has_failure = true;
-                        ("fail_required_absent", Some("no_spool_data".to_string()))
-                    }
-                    Policy::Optional => ("warn_optional_absent", None),
-                    Policy::Disabled => ("pass_disabled", None),
+            (Capability::Supported | Capability::Conditional, false, _) => match effective_policy {
+                Policy::Required => {
+                    has_failure = true;
+                    ("fail_required_absent", Some("no_spool_data".to_string()))
                 }
-            }
+                Policy::Optional => ("warn_optional_absent", None),
+                Policy::Disabled => ("pass_disabled", None),
+            },
         };
 
         let cap_str = match stream.capability {
@@ -204,7 +202,7 @@ fn build_completeness_report(
                 rows_converted: None,
                 files_converted: None,
                 status: status.to_string(),
-                reason: reason,
+                reason,
             },
         );
     }

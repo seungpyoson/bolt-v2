@@ -64,6 +64,7 @@ fn parses_runtime_config_with_optional_streaming_section() {
         [streaming]
         catalog_path = "var/catalog"
         flush_interval_ms = 1000
+        contract_path = "/opt/bolt-v2/contracts/polymarket.toml"
     "#;
 
     let cfg: Config = toml::from_str(toml).unwrap();
@@ -72,6 +73,10 @@ fn parses_runtime_config_with_optional_streaming_section() {
     assert_eq!(cfg.raw_capture.output_dir, "var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 1000);
+    assert_eq!(
+        cfg.streaming.contract_path.as_deref(),
+        Some("/opt/bolt-v2/contracts/polymarket.toml")
+    );
 }
 
 #[test]
@@ -102,6 +107,7 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
         [streaming]
         catalog_path = "var/catalog"
         flush_interval_ms = 250
+        contract_path = "../contracts/polymarket.toml"
     "#;
 
     fs::write(&input_path, toml).unwrap();
@@ -115,4 +121,14 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
     assert_eq!(cfg.raw_capture.output_dir, "var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 250);
+    assert_eq!(
+        cfg.streaming.contract_path.as_deref(),
+        Some(
+            tempdir
+                .path()
+                .join("../contracts/polymarket.toml")
+                .to_str()
+                .unwrap()
+        )
+    );
 }

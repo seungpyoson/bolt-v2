@@ -56,6 +56,7 @@ async fn rejects_non_local_catalog_paths() {
                 node.handle(),
                 "s3://bucket/catalog",
                 1000,
+                None,
             );
 
             assert!(result.is_err());
@@ -83,6 +84,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -169,6 +171,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -251,6 +254,7 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -335,6 +339,7 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
                 node.handle(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 

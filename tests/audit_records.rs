@@ -345,6 +345,34 @@ async fn failed_upload_keeps_local_file_for_retry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn failed_retained_upload_waits_until_next_ship_interval_before_retry() {
+    let dir = tempdir().unwrap();
+    let retained_dir = dir.path().join("date=1970-01-01");
+    fs::create_dir_all(&retained_dir).unwrap();
+    let retained_path = retained_dir.join("part-00000000000000000007.jsonl");
+    write_retained_jsonl(&retained_path, &[sample_record(1_000)]);
+
+    let uploader = MockUploader::with_outcomes([false, true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.ship_interval = Duration::from_millis(250);
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    wait_for_attempts(&uploader, 1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        uploader.attempt_count(),
+        1,
+        "failed retained upload should wait until the next ship interval before retrying"
+    );
+
+    wait_for_attempts(&uploader, 2).await;
+
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn backlog_limit_breach_returns_error() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([false, false, false, false]);

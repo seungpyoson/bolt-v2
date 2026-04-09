@@ -19,7 +19,7 @@ use tokio::{
         oneshot,
     },
     task::{JoinError, JoinHandle},
-    time::{Instant, MissedTickBehavior, Sleep, interval, sleep_until, timeout},
+    time::{Instant, MissedTickBehavior, Sleep, interval_at, sleep_until, timeout},
 };
 
 use crate::raw_types::JsonlAppender;
@@ -598,7 +598,7 @@ async fn run_audit_worker<U>(
 where
     U: AuditUploader,
 {
-    let mut ticker = interval(config.ship_interval);
+    let mut ticker = interval_at(Instant::now() + config.ship_interval, config.ship_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut state = AuditSpoolState::new(config, uploader)?;

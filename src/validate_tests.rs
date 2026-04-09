@@ -462,6 +462,22 @@ fn multiple_errors_accumulated_not_just_first() {
     assert_has_error(&errors, "polymarket.funder", "empty");
 }
 
+#[test]
+fn contract_path_requires_streaming_catalog_path() {
+    let toml = format!(
+        "{}\n{}",
+        valid_toml(),
+        r#"
+[streaming]
+catalog_path = ""
+flush_interval_ms = 1000
+contract_path = "../contracts/polymarket.toml"
+"#
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "requires_catalog_path");
+}
+
 // ════════════════════════════════════════════════════════════════
 // Runtime config validation
 // ════════════════════════════════════════════════════════════════

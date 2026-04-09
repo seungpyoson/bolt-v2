@@ -345,6 +345,17 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         &config.secrets.passphrase,
     );
 
+    if let Some(contract_path) = config.streaming.contract_path.as_deref()
+        && !contract_path.trim().is_empty()
+        && config.streaming.catalog_path.trim().is_empty()
+    {
+        errors.push(ValidationError {
+            field: "streaming.contract_path",
+            code: "requires_catalog_path",
+            message: "streaming.contract_path requires non-empty streaming.catalog_path".to_string(),
+        });
+    }
+
     errors.sort();
     errors
 }

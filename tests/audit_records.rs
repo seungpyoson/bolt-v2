@@ -180,6 +180,15 @@ fn jsonl_files(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+fn write_retained_jsonl(path: &Path, records: &[AuditRecord]) {
+    let contents = records
+        .iter()
+        .map(|record| serde_json::to_string(record).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(path, format!("{contents}\n")).unwrap();
+}
+
 async fn wait_for_attempts(uploader: &MockUploader, expected: usize) {
     for _ in 0..100 {
         if uploader.attempt_count() >= expected {
@@ -471,11 +480,7 @@ async fn restart_uploads_retained_files_before_reusing_sequence_numbers() {
     let retained_dir = dir.path().join("date=1970-01-01");
     fs::create_dir_all(&retained_dir).unwrap();
     let retained_path = retained_dir.join("part-00000000000000000007.jsonl");
-    fs::write(
-        &retained_path,
-        "{\"kind\":\"reference_snapshot\",\"ts_ms\":1000}\n",
-    )
-    .unwrap();
+    write_retained_jsonl(&retained_path, &[sample_record(1_000)]);
 
     let uploader = MockUploader::with_outcomes([true, true]);
     let (audit_tx, audit_rx) = audit_channel();
@@ -514,6 +519,38 @@ async fn restart_uploads_retained_files_before_reusing_sequence_numbers() {
         "new file should continue at the next sequence: {}",
         calls[1].local_path.display()
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn corrupt_retained_jsonl_fails_closed_on_restart() {
+    let dir = tempdir().unwrap();
+    let retained_dir = dir.path().join("date=1970-01-01");
+    fs::create_dir_all(&retained_dir).unwrap();
+    let retained_path = retained_dir.join("part-00000000000000000007.jsonl");
+    fs::write(
+        &retained_path,
+        concat!(
+            "{\"kind\":\"reference_snapshot\",\"ts_ms\":1000,\"topic\":\"midpoint\",",
+            "\"fair_value\":0.51,\"confidence\":0.93}\n",
+            "{\"kind\":\"reference_snapshot\",\"ts_ms\":1001"
+        ),
+    )
+    .unwrap();
+
+    let uploader = MockUploader::with_outcomes([true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), config(dir.path()));
+
+    drop(audit_tx);
+
+    let error = worker.shutdown().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("invalid retained audit spool file"),
+        "{error:#}"
+    );
+    assert_eq!(uploader.attempt_count(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

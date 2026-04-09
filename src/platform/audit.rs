@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     fs,
     future::Future,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
@@ -781,6 +782,7 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
     else {
         return Ok(None);
     };
+    validate_retained_spool_file(path)?;
 
     Ok(Some(PendingAuditFile {
         sequence: sequence.parse().with_context(|| {
@@ -793,4 +795,30 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
         path: path.to_path_buf(),
         bytes: file_len(path)?,
     }))
+}
+
+fn validate_retained_spool_file(path: &Path) -> Result<()> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open retained audit spool file {}", path.display()))?;
+    let reader = BufReader::new(file);
+
+    for (index, line) in reader.lines().enumerate() {
+        let line_number = index + 1;
+        let line = line.with_context(|| {
+            format!(
+                "failed to read retained audit spool file {} at line {}",
+                path.display(),
+                line_number
+            )
+        })?;
+        serde_json::from_str::<AuditRecord>(&line).with_context(|| {
+            format!(
+                "invalid retained audit spool file {} at line {}",
+                path.display(),
+                line_number
+            )
+        })?;
+    }
+
+    Ok(())
 }

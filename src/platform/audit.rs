@@ -475,10 +475,15 @@ where
     }
 
     async fn finish_all_uploads(&mut self, final_attempt: bool) -> Result<()> {
+        let mut first_error = None;
+
         loop {
             self.start_next_upload(final_attempt)?;
             let Some(active_upload) = self.active_upload.as_mut() else {
-                return Ok(());
+                return match first_error {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                };
             };
 
             let upload_result = match timeout(
@@ -490,7 +495,15 @@ where
                 Ok(upload_result) => UploadAttemptResult::Completed(upload_result),
                 Err(_) => UploadAttemptResult::TimedOut,
             };
-            self.complete_active_upload(upload_result, final_attempt)?;
+            match self.complete_active_upload(upload_result, final_attempt) {
+                Ok(_) => {}
+                Err(error) if final_attempt => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -844,6 +857,16 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
     else {
         return Ok(None);
     };
+    let bytes = file_len(path)?;
+    if bytes == 0 {
+        fs::remove_file(path).with_context(|| {
+            format!(
+                "failed to prune empty retained audit spool file {}",
+                path.display()
+            )
+        })?;
+        return Ok(None);
+    }
     validate_retained_spool_file(path)?;
 
     Ok(Some(PendingAuditFile {
@@ -855,7 +878,7 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
         })?,
         date: date.to_string(),
         path: path.to_path_buf(),
-        bytes: file_len(path)?,
+        bytes,
         retry_not_before: None,
     }))
 }

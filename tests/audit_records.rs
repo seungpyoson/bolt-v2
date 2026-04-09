@@ -486,6 +486,57 @@ async fn shutdown_attempts_deferred_failed_upload_before_retry_interval_elapses(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn shutdown_exhausts_final_upload_queue_before_returning_first_error() {
+    let dir = tempdir().unwrap();
+    let uploader = MockUploader::with_outcomes([false, false, true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.ship_interval = Duration::from_millis(250);
+    cfg.roll_max_bytes = 1;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    audit_tx.send(sample_record(100)).unwrap();
+    wait_for_attempts(&uploader, 1).await;
+    let failed_path = uploader.calls()[0].local_path.clone();
+
+    audit_tx.send(history_record(200)).unwrap();
+    drop(audit_tx);
+
+    let error = worker.shutdown().await.unwrap_err();
+    let calls = uploader.calls();
+
+    assert!(
+        error.to_string().contains(&failed_path.display().to_string()),
+        "{error:#}"
+    );
+    assert_eq!(
+        calls.iter()
+            .filter(|call| call.local_path == failed_path)
+            .count(),
+        2,
+        "shutdown should retry the deferred failed upload once"
+    );
+    assert_eq!(
+        calls.len(),
+        3,
+        "shutdown should continue through the remaining final upload queue"
+    );
+
+    let final_call_path = calls
+        .iter()
+        .find(|call| call.local_path != failed_path)
+        .expect("expected the later final file to be attempted")
+        .local_path
+        .clone();
+    assert!(
+        !final_call_path.exists(),
+        "successful final uploads should still be removed after queue exhaustion"
+    );
+    assert!(failed_path.exists(), "failed final uploads must remain local");
+    assert_eq!(jsonl_files(dir.path()), vec![failed_path]);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn backlog_limit_breach_returns_error() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([false, false, false, false]);
@@ -660,6 +711,46 @@ async fn restart_uploads_retained_files_before_reusing_sequence_numbers() {
             .ends_with("part-00000000000000000008.jsonl"),
         "new file should continue at the next sequence: {}",
         calls[1].local_path.display()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn restart_prunes_empty_retained_jsonl_files_before_reusing_sequence_numbers() {
+    let dir = tempdir().unwrap();
+    let retained_dir = dir.path().join("date=1970-01-01");
+    fs::create_dir_all(&retained_dir).unwrap();
+    let empty_path = retained_dir.join("part-00000000000000000008.jsonl");
+    fs::write(&empty_path, b"").unwrap();
+
+    let uploader = MockUploader::with_outcomes([true, true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let mut cfg = config(dir.path());
+    cfg.roll_max_bytes = 1;
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !empty_path.exists(),
+        "empty retained jsonl files should be pruned during startup"
+    );
+    assert_eq!(
+        uploader.attempt_count(),
+        0,
+        "empty retained jsonl files should not be uploaded"
+    );
+
+    audit_tx.send(sample_record(2_000)).unwrap();
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+
+    let calls = uploader.calls();
+    assert_eq!(calls.len(), 1, "expected only the new upload, got {calls:?}");
+    assert!(
+        calls[0]
+            .local_path
+            .ends_with("part-00000000000000000000.jsonl"),
+        "new file should reuse the pruned empty sequence: {}",
+        calls[0].local_path.display()
     );
 }
 

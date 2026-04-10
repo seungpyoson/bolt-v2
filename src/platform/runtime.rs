@@ -38,11 +38,6 @@ use crate::{
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 pub type CandidateMarketLoadFuture = BoxFuture<Result<Vec<CandidateMarket>>>;
-pub type AuditTaskFactory = Arc<
-    dyn Fn(AuditReceiver, AuditSpoolConfig, CancellationToken) -> JoinHandle<Result<()>>
-        + Send
-        + Sync,
->;
 
 pub trait CandidateMarketLoader: Send + Sync + 'static {
     fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture;
@@ -69,23 +64,14 @@ pub trait PlatformAuditTaskFactory: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct PlatformRuntimeServices {
-    pub selector_poll_interval: Duration,
     pub candidate_loader: Arc<dyn CandidateMarketLoader>,
     pub audit_task_factory: Arc<dyn PlatformAuditTaskFactory>,
     pub now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
-#[derive(Clone)]
-pub struct PlatformRuntimeHooks {
-    pub selector_poll_interval: Duration,
-    pub selector_loader: Arc<dyn Fn(RulesetConfig) -> CandidateMarketLoadFuture + Send + Sync>,
-    pub audit_task_factory: AuditTaskFactory,
-}
-
 impl PlatformRuntimeServices {
     pub fn production() -> Self {
         Self {
-            selector_poll_interval: Duration::from_secs(1),
             candidate_loader: Arc::new(ProductionCandidateMarketLoader),
             audit_task_factory: Arc::new(ProductionAuditTaskFactory),
             now_ms: Arc::new(|| {
@@ -154,32 +140,6 @@ pub fn wire_platform_runtime(
     wire_platform_runtime_with_services(node, cfg, PlatformRuntimeServices::production())
 }
 
-pub fn wire_platform_runtime_with_hooks(
-    node: &mut LiveNode,
-    cfg: &Config,
-    hooks: PlatformRuntimeHooks,
-) -> anyhow::Result<PlatformRuntimeGuards> {
-    wire_platform_runtime_with_services(
-        node,
-        cfg,
-        PlatformRuntimeServices {
-            selector_poll_interval: hooks.selector_poll_interval,
-            candidate_loader: Arc::new(HookCandidateMarketLoader {
-                loader: hooks.selector_loader,
-            }),
-            audit_task_factory: Arc::new(HookAuditTaskFactory {
-                factory: hooks.audit_task_factory,
-            }),
-            now_ms: Arc::new(|| {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("system clock should be after UNIX_EPOCH")
-                    .as_millis() as u64
-            }),
-        },
-    )
-}
-
 pub fn wire_platform_runtime_with_services(
     node: &mut LiveNode,
     cfg: &Config,
@@ -192,8 +152,9 @@ pub fn wire_platform_runtime_with_services(
     let ruleset = cfg
         .rulesets
         .first()
-        .map(clone_ruleset_config)
+        .cloned()
         .context("platform runtime requires one active ruleset")?;
+    let selector_poll_interval = Duration::from_millis(ruleset.selector_poll_interval_ms);
     let audit_cfg = cfg
         .audit
         .as_ref()
@@ -209,7 +170,7 @@ pub fn wire_platform_runtime_with_services(
         node_name: cfg.node.name.clone(),
         run_id: node.instance_id().to_string(),
         ship_interval: Duration::from_secs(audit_cfg.ship_interval_secs),
-        upload_attempt_timeout: Duration::from_secs(30),
+        upload_attempt_timeout: Duration::from_secs(audit_cfg.upload_attempt_timeout_secs),
         roll_max_bytes: audit_cfg.roll_max_bytes,
         roll_max_secs: audit_cfg.roll_max_secs,
         max_local_backlog_bytes: audit_cfg.max_local_backlog_bytes,
@@ -229,7 +190,7 @@ pub fn wire_platform_runtime_with_services(
     );
     let selector_task = tokio::spawn(run_selector_task(
         ruleset,
-        services.selector_poll_interval,
+        selector_poll_interval,
         services.candidate_loader,
         services.now_ms,
         audit_tx,
@@ -257,12 +218,7 @@ fn add_reference_actor(node: &mut LiveNode, cfg: &Config) -> Result<()> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let venue_cfgs = cfg
-        .reference
-        .venues
-        .iter()
-        .map(clone_reference_venue_entry)
-        .collect();
+    let venue_cfgs = cfg.reference.venues.clone();
 
     let actor = ReferenceActor::new(
         ReferenceActorConfig {
@@ -353,7 +309,7 @@ async fn run_selector_task(
             return Ok(());
         }
 
-        let load_future = selector_loader.load(clone_ruleset_config(&ruleset));
+        let load_future = selector_loader.load(ruleset.clone());
         tokio::pin!(load_future);
         let candidates = match tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),
@@ -582,37 +538,12 @@ async fn wait_for_node_running(
     }
 }
 
-fn clone_reference_venue_entry(venue: &ReferenceVenueEntry) -> ReferenceVenueEntry {
-    ReferenceVenueEntry {
-        name: venue.name.clone(),
-        kind: venue.kind.clone(),
-        instrument_id: venue.instrument_id.clone(),
-        base_weight: venue.base_weight,
-        stale_after_ms: venue.stale_after_ms,
-        disable_after_ms: venue.disable_after_ms,
-    }
-}
-
-fn clone_ruleset_config(ruleset: &RulesetConfig) -> RulesetConfig {
-    RulesetConfig {
-        id: ruleset.id.clone(),
-        venue: ruleset.venue.clone(),
-        tag_slug: ruleset.tag_slug.clone(),
-        resolution_basis: ruleset.resolution_basis.clone(),
-        min_time_to_expiry_secs: ruleset.min_time_to_expiry_secs,
-        max_time_to_expiry_secs: ruleset.max_time_to_expiry_secs,
-        min_liquidity_num: ruleset.min_liquidity_num,
-        require_accepting_orders: ruleset.require_accepting_orders,
-        freeze_before_end_secs: ruleset.freeze_before_end_secs,
-    }
-}
-
 struct ProductionCandidateMarketLoader;
 
 impl CandidateMarketLoader for ProductionCandidateMarketLoader {
     fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
         Box::pin(async move {
-            load_candidate_markets_for_ruleset(&ruleset, 30)
+            load_candidate_markets_for_ruleset(&ruleset, ruleset.candidate_load_timeout_secs)
                 .await
                 .context("failed to load candidate markets for ruleset")
         })
@@ -630,30 +561,5 @@ impl PlatformAuditTaskFactory for ProductionAuditTaskFactory {
     ) -> JoinHandle<Result<()>> {
         let worker = spawn_audit_worker(audit_rx, AwsCliUploader, audit_config);
         tokio::spawn(async move { worker.run_until_cancelled(cancellation).await })
-    }
-}
-
-struct HookCandidateMarketLoader {
-    loader: Arc<dyn Fn(RulesetConfig) -> CandidateMarketLoadFuture + Send + Sync>,
-}
-
-impl CandidateMarketLoader for HookCandidateMarketLoader {
-    fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
-        (self.loader)(ruleset)
-    }
-}
-
-struct HookAuditTaskFactory {
-    factory: AuditTaskFactory,
-}
-
-impl PlatformAuditTaskFactory for HookAuditTaskFactory {
-    fn spawn(
-        &self,
-        audit_rx: AuditReceiver,
-        audit_config: AuditSpoolConfig,
-        cancellation: CancellationToken,
-    ) -> JoinHandle<Result<()>> {
-        (self.factory)(audit_rx, audit_config, cancellation)
     }
 }

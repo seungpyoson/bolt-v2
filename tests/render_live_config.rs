@@ -239,12 +239,15 @@ min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
-freeze_before_end_secs = 30
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
 
 [audit]
 local_dir = "var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
 roll_max_bytes = 1048576
 roll_max_secs = 300
 max_local_backlog_bytes = 10485760

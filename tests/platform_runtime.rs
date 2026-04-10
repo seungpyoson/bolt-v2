@@ -69,6 +69,20 @@ impl AuditUploader for MockUploader {
 
 struct RecordingAuditTaskFactory {
     uploader: MockUploader,
+    configs: Arc<Mutex<Vec<AuditSpoolConfig>>>,
+}
+
+impl RecordingAuditTaskFactory {
+    fn new(uploader: MockUploader) -> Self {
+        Self {
+            uploader,
+            configs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn configs(&self) -> Vec<AuditSpoolConfig> {
+        self.configs.lock().unwrap().clone()
+    }
 }
 
 impl PlatformAuditTaskFactory for RecordingAuditTaskFactory {
@@ -78,6 +92,7 @@ impl PlatformAuditTaskFactory for RecordingAuditTaskFactory {
         audit_config: AuditSpoolConfig,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        self.configs.lock().unwrap().push(audit_config.clone());
         let worker = spawn_audit_worker(audit_rx, self.uploader.clone(), audit_config);
         tokio::spawn(async move {
             cancellation.cancelled().await;
@@ -177,12 +192,15 @@ fn test_config(audit_dir: &Path) -> Config {
             max_time_to_expiry_secs: 900,
             min_liquidity_num: 1_000.0,
             require_accepting_orders: true,
-            freeze_before_end_secs: 30,
+            freeze_before_end_secs: 90,
+            selector_poll_interval_ms: 25,
+            candidate_load_timeout_secs: 7,
         }],
         audit: Some(AuditConfig {
             local_dir: audit_dir.to_str().unwrap().to_string(),
             s3_uri: "s3://bucket/audit".to_string(),
             ship_interval_secs: 1,
+            upload_attempt_timeout_secs: 13,
             roll_max_bytes: 1_048_576,
             roll_max_secs: 300,
             max_local_backlog_bytes: 4 * 1_048_576,
@@ -297,7 +315,6 @@ fn services_with_loader(
     audit_task_factory: Arc<dyn PlatformAuditTaskFactory>,
 ) -> PlatformRuntimeServices {
     PlatformRuntimeServices {
-        selector_poll_interval: Duration::from_millis(25),
         candidate_loader,
         audit_task_factory,
         now_ms: Arc::new(|| 1_000),
@@ -327,12 +344,8 @@ async fn platform_runtime_starts_and_stops_with_node() {
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let uploader = MockUploader::default();
-    let services = services_with(
-        Vec::new(),
-        Arc::new(RecordingAuditTaskFactory {
-            uploader: uploader.clone(),
-        }),
-    );
+    let audit_task_factory = Arc::new(RecordingAuditTaskFactory::new(uploader.clone()));
+    let services = services_with(Vec::new(), audit_task_factory.clone());
 
     let mut node = build_node();
     let handle = node.handle();
@@ -349,6 +362,10 @@ async fn platform_runtime_starts_and_stops_with_node() {
 
     assert_eq!(node.state(), NodeState::Stopped);
     assert!(!uploader.calls().is_empty());
+    assert_eq!(
+        audit_task_factory.configs()[0].upload_attempt_timeout,
+        Duration::from_secs(cfg.audit.as_ref().unwrap().upload_attempt_timeout_secs)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -358,9 +375,7 @@ async fn no_eligible_market_emits_idle_decision_and_keeps_running() {
     let uploader = MockUploader::default();
     let services = services_with(
         Vec::new(),
-        Arc::new(RecordingAuditTaskFactory {
-            uploader: uploader.clone(),
-        }),
+        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
     );
 
     let mut node = build_node();
@@ -386,6 +401,103 @@ async fn no_eligible_market_emits_idle_decision_and_keeps_running() {
     }));
 }
 
+fn candidate_market(
+    market_id: &str,
+    instrument_id: &str,
+    liquidity_num: f64,
+    seconds_to_end: u64,
+) -> CandidateMarket {
+    CandidateMarket {
+        market_id: market_id.to_string(),
+        instrument_id: instrument_id.to_string(),
+        tag_slug: "bitcoin".to_string(),
+        declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+        accepting_orders: true,
+        liquidity_num,
+        seconds_to_end,
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn eligible_market_emits_active_decision() {
+    let dir = tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let uploader = MockUploader::default();
+    let services = services_with(
+        vec![candidate_market(
+            "mkt-active",
+            "ACTIVE.POLYMARKET",
+            2_000.0,
+            120,
+        )],
+        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+    );
+
+    let mut node = build_node();
+    let handle = node.handle();
+    let stop_handle = handle.clone();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    tokio::spawn(async move {
+        wait_for_running(&handle).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop_handle.stop();
+    });
+
+    node.run().await.unwrap();
+    guards.shutdown().await.unwrap();
+
+    let records = uploaded_records(&uploader);
+    assert!(records.iter().any(|record| {
+        record["kind"] == "selector_decision"
+            && record["state"] == "active"
+            && record["ruleset_id"] == "PRIMARY"
+            && record["market_id"] == "mkt-active"
+            && record["instrument_id"] == "ACTIVE.POLYMARKET"
+            && record["reason"].is_null()
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn freeze_window_market_emits_freeze_decision() {
+    let dir = tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let uploader = MockUploader::default();
+    let services = services_with(
+        vec![candidate_market(
+            "mkt-freeze",
+            "FREEZE.POLYMARKET",
+            2_000.0,
+            60,
+        )],
+        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+    );
+
+    let mut node = build_node();
+    let handle = node.handle();
+    let stop_handle = handle.clone();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    tokio::spawn(async move {
+        wait_for_running(&handle).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop_handle.stop();
+    });
+
+    node.run().await.unwrap();
+    guards.shutdown().await.unwrap();
+
+    let records = uploaded_records(&uploader);
+    assert!(records.iter().any(|record| {
+        record["kind"] == "selector_decision"
+            && record["state"] == "freeze"
+            && record["ruleset_id"] == "PRIMARY"
+            && record["market_id"] == "mkt-freeze"
+            && record["instrument_id"] == "FREEZE.POLYMARKET"
+            && record["reason"] == "freeze window"
+    }));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn cancellation_token_stops_background_tasks_cleanly() {
     let dir = tempdir().unwrap();
@@ -393,9 +505,7 @@ async fn cancellation_token_stops_background_tasks_cleanly() {
     let uploader = MockUploader::default();
     let services = services_with(
         Vec::new(),
-        Arc::new(RecordingAuditTaskFactory {
-            uploader: uploader.clone(),
-        }),
+        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
     );
 
     let mut node = build_node();
@@ -456,7 +566,7 @@ async fn selector_loader_failure_triggers_fail_closed_shutdown() {
     let uploader = MockUploader::default();
     let services = services_with_loader(
         Arc::new(FailingLoader),
-        Arc::new(RecordingAuditTaskFactory { uploader }),
+        Arc::new(RecordingAuditTaskFactory::new(uploader)),
     );
 
     let mut node = build_node();
@@ -476,6 +586,59 @@ async fn selector_loader_failure_triggers_fail_closed_shutdown() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn runtime_passes_ruleset_loader_timeout_through_config() {
+    #[derive(Default)]
+    struct CapturingLoader {
+        seen_rulesets: Arc<Mutex<Vec<RulesetConfig>>>,
+    }
+
+    impl CapturingLoader {
+        fn seen_rulesets(&self) -> Vec<RulesetConfig> {
+            self.seen_rulesets.lock().unwrap().clone()
+        }
+    }
+
+    impl CandidateMarketLoader for CapturingLoader {
+        fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
+            self.seen_rulesets.lock().unwrap().push(ruleset);
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    cfg.rulesets[0].candidate_load_timeout_secs = 42;
+    let loader = Arc::new(CapturingLoader::default());
+    let uploader = MockUploader::default();
+    let services = services_with_loader(
+        loader.clone(),
+        Arc::new(RecordingAuditTaskFactory::new(uploader)),
+    );
+
+    let mut node = build_node();
+    let handle = node.handle();
+    let stop_handle = handle.clone();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    tokio::spawn(async move {
+        wait_for_running(&handle).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        stop_handle.stop();
+    });
+
+    node.run().await.unwrap();
+    guards.shutdown().await.unwrap();
+
+    assert!(
+        loader
+            .seen_rulesets()
+            .iter()
+            .any(|ruleset| ruleset.candidate_load_timeout_secs == 42),
+        "selector loader should receive the configured candidate load timeout"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn reference_snapshot_is_forwarded_into_audit_spool() {
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
@@ -483,9 +646,7 @@ async fn reference_snapshot_is_forwarded_into_audit_spool() {
     let uploader = MockUploader::default();
     let services = services_with(
         Vec::new(),
-        Arc::new(RecordingAuditTaskFactory {
-            uploader: uploader.clone(),
-        }),
+        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
     );
 
     let mut node = build_node();
@@ -569,9 +730,7 @@ async fn background_producers_stop_emitting_before_runtime_shutdown() {
     let publish_topic = cfg.reference.publish_topic.clone();
     let services = services_with(
         Vec::new(),
-        Arc::new(RecordingAuditTaskFactory {
-            uploader: MockUploader::default(),
-        }),
+        Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
     );
 
     let mut node = build_node();

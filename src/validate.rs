@@ -1,7 +1,7 @@
 use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
 use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
 use nautilus_model::types::Quantity;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;
 use toml::Value;
 
@@ -664,9 +664,31 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
                 ),
             );
         }
+        let freeze_field = format!("rulesets[{i}].freeze_before_end_secs");
+        if ruleset.freeze_before_end_secs < ruleset.min_time_to_expiry_secs {
+            push_error(
+                &mut errors,
+                &freeze_field,
+                "invalid_freeze_before_end_secs",
+                format!(
+                    "{freeze_field} must be >= {min_expiry_field}, got {} < {}",
+                    ruleset.freeze_before_end_secs, ruleset.min_time_to_expiry_secs
+                ),
+            );
+        }
 
         let min_liquidity_field = format!("rulesets[{i}].min_liquidity_num");
         check_non_negative_finite_f64(&mut errors, &min_liquidity_field, ruleset.min_liquidity_num);
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].selector_poll_interval_ms"),
+            ruleset.selector_poll_interval_ms,
+        );
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].candidate_load_timeout_secs"),
+            ruleset.candidate_load_timeout_secs,
+        );
 
         if let Some(first_index) = first_seen_index(&mut ruleset_id_indices, &ruleset.id, i) {
             push_error(
@@ -715,6 +737,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
             &mut errors,
             "audit.ship_interval_secs",
             audit.ship_interval_secs,
+        );
+        check_positive_u64(
+            &mut errors,
+            "audit.upload_attempt_timeout_secs",
+            audit.upload_attempt_timeout_secs,
         );
         check_positive_u64(&mut errors, "audit.roll_max_bytes", audit.roll_max_bytes);
         check_positive_u64(&mut errors, "audit.roll_max_secs", audit.roll_max_secs);
@@ -1154,6 +1181,11 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             "audit.ship_interval_secs",
             audit.ship_interval_secs,
         );
+        check_positive_u64(
+            &mut errors,
+            "audit.upload_attempt_timeout_secs",
+            audit.upload_attempt_timeout_secs,
+        );
         check_positive_u64(&mut errors, "audit.roll_max_bytes", audit.roll_max_bytes);
         check_positive_u64(&mut errors, "audit.roll_max_secs", audit.roll_max_secs);
         check_positive_u64(
@@ -1231,9 +1263,31 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                 ),
             );
         }
+        let freeze_field = format!("rulesets[{i}].freeze_before_end_secs");
+        if ruleset.freeze_before_end_secs < ruleset.min_time_to_expiry_secs {
+            push_error(
+                &mut errors,
+                &freeze_field,
+                "invalid_freeze_before_end_secs",
+                format!(
+                    "{freeze_field} must be >= {min_expiry_field}, got {} < {}",
+                    ruleset.freeze_before_end_secs, ruleset.min_time_to_expiry_secs
+                ),
+            );
+        }
 
         let min_liquidity_field = format!("rulesets[{i}].min_liquidity_num");
         check_non_negative_finite_f64(&mut errors, &min_liquidity_field, ruleset.min_liquidity_num);
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].selector_poll_interval_ms"),
+            ruleset.selector_poll_interval_ms,
+        );
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].candidate_load_timeout_secs"),
+            ruleset.candidate_load_timeout_secs,
+        );
 
         if let Some(first_index) = first_seen_index(&mut ruleset_id_indices, &ruleset.id, i) {
             push_error(

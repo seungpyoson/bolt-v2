@@ -99,6 +99,15 @@ impl ReferenceActor {
     }
 
     fn next_transition_ms(&self, now_ms: u64) -> Option<u64> {
+        if self.last_publish_ms.is_none()
+            && self
+                .venue_cfgs
+                .iter()
+                .any(|venue| !self.latest.contains_key(&venue.name))
+        {
+            return Some(now_ms.saturating_add(self.config.min_publish_interval_ms.max(1)));
+        }
+
         self.venue_cfgs
             .iter()
             .filter_map(|venue| {

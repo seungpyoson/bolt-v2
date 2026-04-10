@@ -14,6 +14,8 @@ fn ruleset() -> RulesetConfig {
         min_liquidity_num: 1_000.0,
         require_accepting_orders: true,
         freeze_before_end_secs: 300,
+        selector_poll_interval_ms: 1_000,
+        candidate_load_timeout_secs: 30,
     }
 }
 

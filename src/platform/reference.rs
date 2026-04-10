@@ -62,20 +62,22 @@ pub fn fuse_reference_snapshot(
         let observation = latest
             .get(&venue.name)
             .filter(|observation| observation.matches_identity(venue));
+        let missing_observation_reason = observation.is_none().then(missing_observation_reason);
         let observed_price = observation.map(ReferenceObservation::observed_price);
         let age_ms = observation.map(|observation| now_ms.saturating_sub(observation.ts_ms()));
         let auto_disabled_reason = age_ms
             .filter(|age_ms| *age_ms > venue.disable_after_ms)
             .map(auto_disable_reason);
-        let stale = age_ms
-            .map(|age_ms| age_ms > venue.stale_after_ms || auto_disabled_reason.is_some())
-            .unwrap_or(false);
+        let stale = missing_observation_reason.is_some()
+            || age_ms
+                .map(|age_ms| age_ms > venue.stale_after_ms || auto_disabled_reason.is_some())
+                .unwrap_or(false);
 
         let health = match disabled.get(&venue.name) {
             Some(reason) => VenueHealth::Disabled {
                 reason: reason.clone(),
             },
-            None => match auto_disabled_reason {
+            None => match missing_observation_reason.or(auto_disabled_reason) {
                 Some(reason) => VenueHealth::Disabled { reason },
                 None => VenueHealth::Healthy,
             },
@@ -125,6 +127,10 @@ pub fn fuse_reference_snapshot(
 
 fn auto_disable_reason(age_ms: u64) -> String {
     format!("auto-disabled after {age_ms}ms without a fresh reference update")
+}
+
+fn missing_observation_reason() -> String {
+    "no reference update received yet".to_string()
 }
 
 impl ReferenceObservation {

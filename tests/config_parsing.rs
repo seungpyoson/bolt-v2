@@ -167,15 +167,18 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         max_time_to_expiry_secs = 900
         min_liquidity_num = 1000
         require_accepting_orders = true
-        freeze_before_end_secs = 30
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 250
+candidate_load_timeout_secs = 12
 
-        [audit]
-        local_dir = "var/audit"
-        s3_uri = "s3://bolt-runtime-history/phase1"
-        ship_interval_secs = 30
-        roll_max_bytes = 1048576
-        roll_max_secs = 300
-        max_local_backlog_bytes = 10485760
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+upload_attempt_timeout_secs = 45
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
     "#;
 
     fs::write(&input_path, toml).unwrap();
@@ -193,7 +196,19 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         Some(true)
     );
     assert_eq!(
+        value["rulesets"][0]["selector_poll_interval_ms"].as_integer(),
+        Some(250)
+    );
+    assert_eq!(
+        value["rulesets"][0]["candidate_load_timeout_secs"].as_integer(),
+        Some(12)
+    );
+    assert_eq!(
         value["audit"]["s3_uri"].as_str(),
         Some("s3://bolt-runtime-history/phase1")
+    );
+    assert_eq!(
+        value["audit"]["upload_attempt_timeout_secs"].as_integer(),
+        Some(45)
     );
 }

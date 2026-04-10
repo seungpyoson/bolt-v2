@@ -133,7 +133,7 @@ impl Default for ReferenceConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReferenceVenueEntry {
     pub name: String,
     #[serde(rename = "type")]
@@ -144,7 +144,7 @@ pub struct ReferenceVenueEntry {
     pub disable_after_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RulesetConfig {
     pub id: String,
     pub venue: RulesetVenueKind,
@@ -155,6 +155,8 @@ pub struct RulesetConfig {
     pub min_liquidity_num: f64,
     pub require_accepting_orders: bool,
     pub freeze_before_end_secs: u64,
+    pub selector_poll_interval_ms: u64,
+    pub candidate_load_timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +164,7 @@ pub struct AuditConfig {
     pub local_dir: String,
     pub s3_uri: String,
     pub ship_interval_secs: u64,
+    pub upload_attempt_timeout_secs: u64,
     pub roll_max_bytes: u64,
     pub roll_max_secs: u64,
     pub max_local_backlog_bytes: u64,

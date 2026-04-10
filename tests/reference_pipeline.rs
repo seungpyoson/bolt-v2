@@ -323,6 +323,37 @@ fn mismatched_observation_identity_is_ignored() {
 }
 
 #[test]
+fn venue_without_any_observation_is_immediately_flagged_as_disabled() {
+    let venues = vec![ReferenceVenueEntry {
+        name: "BINANCE".into(),
+        kind: ReferenceVenueKind::Binance,
+        instrument_id: "BINANCE.TEST".into(),
+        base_weight: 1.0,
+        stale_after_ms: 1_000,
+        disable_after_ms: 2_000,
+    }];
+
+    let snapshot = fuse_reference_snapshot(
+        "platform.reference.default",
+        1_000,
+        &venues,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
+
+    assert_eq!(snapshot.fair_value, None);
+    assert_eq!(snapshot.confidence, 0.0);
+    assert!(snapshot.venues[0].stale);
+    assert_eq!(snapshot.venues[0].effective_weight, 0.0);
+    assert_eq!(
+        snapshot.venues[0].health,
+        VenueHealth::Disabled {
+            reason: "no reference update received yet".into(),
+        }
+    );
+}
+
+#[test]
 fn venue_becomes_stale_before_it_is_auto_disabled() {
     let venues = vec![ReferenceVenueEntry {
         name: "BINANCE".into(),

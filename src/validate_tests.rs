@@ -628,6 +628,7 @@ fn phase1_audit_required_when_rulesets_are_configured() {
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "");
@@ -650,7 +651,7 @@ min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
-freeze_before_end_secs = 30
+freeze_before_end_secs = 90
 "#
     );
     let errors = errors_for(&toml);
@@ -669,11 +670,14 @@ fn phase1_reference_rejected_when_rulesets_are_missing() {
         .replace("max_time_to_expiry_secs = 900\n", "")
         .replace("min_liquidity_num = 1000\n", "")
         .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 30\n", "")
+        .replace("freeze_before_end_secs = 90\n", "")
+        .replace("selector_poll_interval_ms = 1000\n", "")
+        .replace("candidate_load_timeout_secs = 30\n", "")
         .replace("[audit]\n", "")
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "");
@@ -693,7 +697,9 @@ fn phase1_reference_min_publish_interval_only_rejected_when_rulesets_are_missing
         .replace("max_time_to_expiry_secs = 900\n", "")
         .replace("min_liquidity_num = 1000\n", "")
         .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 30\n", "")
+        .replace("freeze_before_end_secs = 90\n", "")
+        .replace("selector_poll_interval_ms = 1000\n", "")
+        .replace("candidate_load_timeout_secs = 30\n", "")
         .replace("publish_topic = \"platform.reference.default\"\n", "")
         .replace("[[reference.venues]]\n", "")
         .replace("name = \"BINANCE-BTC\"\n", "")
@@ -706,10 +712,14 @@ fn phase1_reference_min_publish_interval_only_rejected_when_rulesets_are_missing
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace("min_publish_interval_ms = 100", "min_publish_interval_ms = 250");
+        .replace(
+            "min_publish_interval_ms = 100",
+            "min_publish_interval_ms = 250",
+        );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
 }
@@ -726,7 +736,9 @@ fn phase1_reference_zero_min_publish_interval_only_rejected_when_rulesets_are_mi
         .replace("max_time_to_expiry_secs = 900\n", "")
         .replace("min_liquidity_num = 1000\n", "")
         .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 30\n", "")
+        .replace("freeze_before_end_secs = 90\n", "")
+        .replace("selector_poll_interval_ms = 1000\n", "")
+        .replace("candidate_load_timeout_secs = 30\n", "")
         .replace("publish_topic = \"platform.reference.default\"\n", "")
         .replace("[[reference.venues]]\n", "")
         .replace("name = \"BINANCE-BTC\"\n", "")
@@ -739,10 +751,14 @@ fn phase1_reference_zero_min_publish_interval_only_rejected_when_rulesets_are_mi
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace("min_publish_interval_ms = 100", "min_publish_interval_ms = 0");
+        .replace(
+            "min_publish_interval_ms = 100",
+            "min_publish_interval_ms = 0",
+        );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
 }
@@ -759,7 +775,9 @@ fn phase1_audit_rejected_when_rulesets_are_missing() {
         .replace("max_time_to_expiry_secs = 900\n", "")
         .replace("min_liquidity_num = 1000\n", "")
         .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 30\n", "")
+        .replace("freeze_before_end_secs = 90\n", "")
+        .replace("selector_poll_interval_ms = 1000\n", "")
+        .replace("candidate_load_timeout_secs = 30\n", "")
         .replace("[reference]\n", "")
         .replace("publish_topic = \"platform.reference.default\"\n", "")
         .replace("min_publish_interval_ms = 100\n", "")
@@ -931,6 +949,21 @@ fn phase1_ruleset_max_time_to_expiry_secs_must_not_be_less_than_min_time_to_expi
 }
 
 #[test]
+fn phase1_ruleset_freeze_before_end_secs_must_not_precede_min_time_to_expiry_secs() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "freeze_before_end_secs = 90",
+        "freeze_before_end_secs = 30",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].freeze_before_end_secs",
+        "invalid_freeze_before_end_secs",
+    );
+}
+
+#[test]
 fn phase1_ruleset_min_liquidity_num_must_be_non_negative_and_finite() {
     let negative = replace(
         &valid_phase1_toml(),
@@ -954,6 +987,36 @@ fn phase1_ruleset_min_liquidity_num_must_be_non_negative_and_finite() {
         &nan_errors,
         "rulesets[0].min_liquidity_num",
         "not_non_negative_finite",
+    );
+}
+
+#[test]
+fn phase1_ruleset_selector_poll_interval_ms_must_be_positive() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "selector_poll_interval_ms = 1000",
+        "selector_poll_interval_ms = 0",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].selector_poll_interval_ms",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_ruleset_candidate_load_timeout_secs_must_be_positive() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "candidate_load_timeout_secs = 30",
+        "candidate_load_timeout_secs = 0",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].candidate_load_timeout_secs",
+        "not_positive",
     );
 }
 
@@ -987,6 +1050,18 @@ fn phase1_audit_intervals_and_limits_must_be_positive() {
     assert_has_error(
         &ship_interval_errors,
         "audit.ship_interval_secs",
+        "not_positive",
+    );
+
+    let upload_attempt_timeout = replace(
+        &valid_phase1_toml(),
+        "upload_attempt_timeout_secs = 30",
+        "upload_attempt_timeout_secs = 0",
+    );
+    let upload_attempt_timeout_errors = errors_for(&upload_attempt_timeout);
+    assert_has_error(
+        &upload_attempt_timeout_errors,
+        "audit.upload_attempt_timeout_secs",
         "not_positive",
     );
 
@@ -1101,12 +1176,15 @@ min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
-freeze_before_end_secs = 30
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
 
 [audit]
 local_dir = "var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
 roll_max_bytes = 1048576
 roll_max_secs = 300
 max_local_backlog_bytes = 10485760
@@ -1140,12 +1218,15 @@ min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
-freeze_before_end_secs = 30
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
 
 [audit]
 local_dir = "var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
 roll_max_bytes = 1048576
 roll_max_secs = 300
 max_local_backlog_bytes = 10485760
@@ -1429,7 +1510,7 @@ min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
-freeze_before_end_secs = 30
+freeze_before_end_secs = 90
 "#
     );
     let errors = runtime_errors_for(&toml);
@@ -1460,6 +1541,7 @@ fn phase1_runtime_requires_audit_when_ruleset_is_configured() {
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "");
@@ -1474,6 +1556,7 @@ fn phase1_runtime_load_rejects_missing_audit_when_ruleset_is_configured() {
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "");
@@ -1486,7 +1569,11 @@ fn phase1_runtime_load_rejects_missing_audit_when_ruleset_is_configured() {
 
 #[test]
 fn phase1_runtime_rejects_empty_ruleset_id() {
-    let toml = replace(&valid_phase1_runtime_toml(), "id = \"PRIMARY\"", "id = \"\"");
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "id = \"PRIMARY\"",
+        "id = \"\"",
+    );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "rulesets[0].id", "empty");
 }
@@ -1506,7 +1593,7 @@ min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
-freeze_before_end_secs = 30
+freeze_before_end_secs = 90
 "#
     );
     let errors = runtime_errors_for(&toml);
@@ -1528,7 +1615,7 @@ min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
-freeze_before_end_secs = 30
+freeze_before_end_secs = 90
 "#
     );
     let error = runtime_load_error_for(&toml);
@@ -1550,7 +1637,9 @@ fn phase1_runtime_rejects_orphaned_reference_min_publish_interval_without_rulese
         .replace("max_time_to_expiry_secs = 900\n", "")
         .replace("min_liquidity_num = 1000\n", "")
         .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 30\n", "")
+        .replace("freeze_before_end_secs = 90\n", "")
+        .replace("selector_poll_interval_ms = 1000\n", "")
+        .replace("candidate_load_timeout_secs = 30\n", "")
         .replace(
             "publish_topic = \"platform.reference.default\"",
             "publish_topic = \"\"",
@@ -1566,10 +1655,14 @@ fn phase1_runtime_rejects_orphaned_reference_min_publish_interval_without_rulese
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace("min_publish_interval_ms = 100", "min_publish_interval_ms = 250");
+        .replace(
+            "min_publish_interval_ms = 100",
+            "min_publish_interval_ms = 250",
+        );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
 }
@@ -1586,7 +1679,9 @@ fn phase1_runtime_rejects_orphaned_reference_zero_min_publish_interval_without_r
         .replace("max_time_to_expiry_secs = 900\n", "")
         .replace("min_liquidity_num = 1000\n", "")
         .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 30\n", "")
+        .replace("freeze_before_end_secs = 90\n", "")
+        .replace("selector_poll_interval_ms = 1000\n", "")
+        .replace("candidate_load_timeout_secs = 30\n", "")
         .replace(
             "publish_topic = \"platform.reference.default\"",
             "publish_topic = \"\"",
@@ -1602,24 +1697,36 @@ fn phase1_runtime_rejects_orphaned_reference_zero_min_publish_interval_without_r
         .replace("local_dir = \"var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
+        .replace("upload_attempt_timeout_secs = 30\n", "")
         .replace("roll_max_bytes = 1048576\n", "")
         .replace("roll_max_secs = 300\n", "")
         .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace("min_publish_interval_ms = 100", "min_publish_interval_ms = 0");
+        .replace(
+            "min_publish_interval_ms = 100",
+            "min_publish_interval_ms = 0",
+        );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
 }
 
 #[test]
 fn phase1_runtime_rejects_empty_reference_venue_name() {
-    let toml = replace(&valid_phase1_runtime_toml(), "name = \"BINANCE-BTC\"", "name = \"\"");
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "name = \"BINANCE-BTC\"",
+        "name = \"\"",
+    );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference.venues[0].name", "empty");
 }
 
 #[test]
 fn phase1_runtime_rejects_reference_venue_non_positive_weight() {
-    let toml = replace(&valid_phase1_runtime_toml(), "base_weight = 0.35", "base_weight = 0.0");
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "base_weight = 0.35",
+        "base_weight = 0.0",
+    );
     let errors = runtime_errors_for(&toml);
     assert_has_error(
         &errors,
@@ -1630,7 +1737,11 @@ fn phase1_runtime_rejects_reference_venue_non_positive_weight() {
 
 #[test]
 fn phase1_runtime_rejects_reference_venue_non_positive_stale_after_ms() {
-    let toml = replace(&valid_phase1_runtime_toml(), "stale_after_ms = 1500", "stale_after_ms = 0");
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "stale_after_ms = 1500",
+        "stale_after_ms = 0",
+    );
     let errors = runtime_errors_for(&toml);
     assert_has_error(
         &errors,
@@ -1671,6 +1782,62 @@ disable_after_ms = 5000
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference.venues", "duplicate_name");
+}
+
+#[test]
+fn phase1_runtime_rejects_freeze_before_end_secs_before_min_time_to_expiry_secs() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "freeze_before_end_secs = 90",
+        "freeze_before_end_secs = 30",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].freeze_before_end_secs",
+        "invalid_freeze_before_end_secs",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_non_positive_selector_poll_interval_ms() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "selector_poll_interval_ms = 1000",
+        "selector_poll_interval_ms = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].selector_poll_interval_ms",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_non_positive_candidate_load_timeout_secs() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "candidate_load_timeout_secs = 30",
+        "candidate_load_timeout_secs = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].candidate_load_timeout_secs",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_non_positive_audit_upload_attempt_timeout_secs() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "upload_attempt_timeout_secs = 30",
+        "upload_attempt_timeout_secs = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "audit.upload_attempt_timeout_secs", "not_positive");
 }
 
 #[test]

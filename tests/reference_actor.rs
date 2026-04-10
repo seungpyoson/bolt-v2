@@ -514,6 +514,49 @@ fn disabled_venue_still_appears_in_snapshot_with_zero_weight() {
 }
 
 #[test]
+fn start_without_quotes_publishes_one_no_data_snapshot_after_quiet_timer() {
+    let publish_topic = "platform.reference.test.no-data";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            10,
+            vec![subscription("BINANCE", "BTCUSDT.BINANCE", "BINANCE")],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "BINANCE".into(),
+            kind: ReferenceVenueKind::Binance,
+            instrument_id: "BTCUSDT.BINANCE".into(),
+            base_weight: 1.0,
+            stale_after_ms: 1_000,
+            disable_after_ms: 2_000,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    {
+        let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+        set_actor_clock_ms(&mut actor, 1_000);
+        actor.start().unwrap();
+    }
+
+    advance_actor_clock_to(actor_id, 1_010);
+    advance_actor_clock_to(actor_id, 2_000);
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].fair_value, None);
+    assert_eq!(snapshots[0].confidence, 0.0);
+    assert!(snapshots[0].venues[0].stale);
+    assert_eq!(snapshots[0].venues[0].effective_weight, 0.0);
+    assert_eq!(
+        snapshots[0].venues[0].health,
+        VenueHealth::Disabled {
+            reason: "no reference update received yet".into(),
+        }
+    );
+}
+
+#[test]
 fn quiet_period_timer_publishes_stale_snapshot_without_new_quote() {
     let publish_topic = "platform.reference.test.timer-stale";
     let actor_id = register_reference_actor(

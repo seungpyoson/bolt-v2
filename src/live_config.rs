@@ -312,6 +312,8 @@ pub struct LiveRulesetInput {
     pub min_liquidity_num: f64,
     pub require_accepting_orders: bool,
     pub freeze_before_end_secs: u64,
+    pub selector_poll_interval_ms: u64,
+    pub candidate_load_timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -319,6 +321,7 @@ pub struct LiveAuditInput {
     pub local_dir: String,
     pub s3_uri: String,
     pub ship_interval_secs: u64,
+    pub upload_attempt_timeout_secs: u64,
     pub roll_max_bytes: u64,
     pub roll_max_secs: u64,
     pub max_local_backlog_bytes: u64,
@@ -465,6 +468,8 @@ struct RenderedRulesetConfig {
     min_liquidity_num: f64,
     require_accepting_orders: bool,
     freeze_before_end_secs: u64,
+    selector_poll_interval_ms: u64,
+    candidate_load_timeout_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -472,6 +477,7 @@ struct RenderedAuditConfig {
     local_dir: String,
     s3_uri: String,
     ship_interval_secs: u64,
+    upload_attempt_timeout_secs: u64,
     roll_max_bytes: u64,
     roll_max_secs: u64,
     max_local_backlog_bytes: u64,
@@ -657,6 +663,8 @@ fn render_runtime_config(
                     min_liquidity_num: ruleset.min_liquidity_num,
                     require_accepting_orders: ruleset.require_accepting_orders,
                     freeze_before_end_secs: ruleset.freeze_before_end_secs,
+                    selector_poll_interval_ms: ruleset.selector_poll_interval_ms,
+                    candidate_load_timeout_secs: ruleset.candidate_load_timeout_secs,
                 })
                 .collect()
         } else {
@@ -667,6 +675,7 @@ fn render_runtime_config(
                 local_dir: audit.local_dir.clone(),
                 s3_uri: audit.s3_uri.clone(),
                 ship_interval_secs: audit.ship_interval_secs,
+                upload_attempt_timeout_secs: audit.upload_attempt_timeout_secs,
                 roll_max_bytes: audit.roll_max_bytes,
                 roll_max_secs: audit.roll_max_secs,
                 max_local_backlog_bytes: audit.max_local_backlog_bytes,

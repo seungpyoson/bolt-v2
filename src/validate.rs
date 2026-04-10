@@ -454,14 +454,18 @@ fn check_live_local_contract_path_shape(
                 errors,
                 "streaming.contract_path",
                 "non_local",
-                format_non_local_contract_path_message(contract_path),
+                format_live_local_non_local_contract_path_message(contract_path),
             );
         }
     }
 }
 
-fn format_non_local_contract_path_message(contract_path: &str) -> String {
+fn format_live_local_non_local_contract_path_message(contract_path: &str) -> String {
     format!("streaming.contract_path must be a local path, got \"{contract_path}\"")
+}
+
+fn format_runtime_non_local_contract_path_message(contract_path: &str) -> String {
+    format!("streaming.contract_path must be a local absolute path, got \"{contract_path}\"")
 }
 
 fn check_runtime_contract_path_shape(
@@ -478,7 +482,7 @@ fn check_runtime_contract_path_shape(
                 errors,
                 "streaming.contract_path",
                 "non_local",
-                format_non_local_contract_path_message(contract_path),
+                format_runtime_non_local_contract_path_message(contract_path),
             );
         } else if !std::path::Path::new(contract_path).is_absolute() {
             push_error(

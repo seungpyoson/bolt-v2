@@ -1149,9 +1149,8 @@ fn runtime_non_local_contract_path_rejected() {
         &errors,
         "streaming.contract_path",
         "non_local",
-        "local path",
+        "local absolute path",
     );
-    assert_error_message_not_contains(&errors, "streaming.contract_path", "non_local", "absolute");
 }
 
 #[test]

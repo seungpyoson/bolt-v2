@@ -1,6 +1,4 @@
-use nautilus_binance::{
-    config::BinanceDataClientConfig, factories::BinanceDataClientFactory,
-};
+use nautilus_binance::{config::BinanceDataClientConfig, factories::BinanceDataClientFactory};
 
 use crate::clients::ReferenceDataClientParts;
 

@@ -1,6 +1,4 @@
-use nautilus_deribit::{
-    config::DeribitDataClientConfig, factories::DeribitDataClientFactory,
-};
+use nautilus_deribit::{config::DeribitDataClientConfig, factories::DeribitDataClientFactory};
 
 use crate::clients::ReferenceDataClientParts;
 

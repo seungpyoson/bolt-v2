@@ -9,6 +9,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      nautilus-dependencies:
+        patterns:
+          - "nautilus-*"
 
   - package-ecosystem: "github-actions"
     directory: "/"

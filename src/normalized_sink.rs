@@ -268,6 +268,49 @@ fn ensure_local_catalog_path(catalog_path: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ContractStartupSummary {
+    supported: Vec<String>,
+    conditional: Vec<String>,
+    disabled: Vec<String>,
+    unsupported: Vec<String>,
+}
+
+fn contract_startup_summary(
+    contract: &crate::venue_contract::VenueContract,
+) -> ContractStartupSummary {
+    let mut summary = ContractStartupSummary {
+        supported: Vec::new(),
+        conditional: Vec::new(),
+        disabled: Vec::new(),
+        unsupported: Vec::new(),
+    };
+
+    for (name, stream) in &contract.streams {
+        let effective_policy = contract.effective_policy(name);
+        match (&stream.capability, effective_policy) {
+            (crate::venue_contract::Capability::Unsupported, _) => {
+                summary.unsupported.push(name.clone());
+            }
+            (
+                crate::venue_contract::Capability::Supported
+                | crate::venue_contract::Capability::Conditional,
+                Some(crate::venue_contract::Policy::Disabled),
+            ) => {
+                summary.disabled.push(name.clone());
+            }
+            (crate::venue_contract::Capability::Supported, _) => {
+                summary.supported.push(name.clone());
+            }
+            (crate::venue_contract::Capability::Conditional, _) => {
+                summary.conditional.push(name.clone());
+            }
+        }
+    }
+
+    summary
+}
+
 fn send_sink_message(
     sender: &UnboundedSender<SinkMessage>,
     message: SinkMessage,
@@ -439,24 +482,14 @@ pub fn wire_normalized_sinks(
             std::path::Path::new(path),
         )?;
         let contract = crate::venue_contract::VenueContract::load_and_validate(&normalized)?;
-
-        let expected: Vec<_> = contract
-            .streams
-            .iter()
-            .filter(|(_, s)| s.capability == crate::venue_contract::Capability::Supported)
-            .map(|(name, _)| name.as_str())
-            .collect();
-        let not_expected: Vec<_> = contract
-            .streams
-            .iter()
-            .filter(|(_, s)| s.capability == crate::venue_contract::Capability::Unsupported)
-            .map(|(name, _)| name.as_str())
-            .collect();
+        let summary = contract_startup_summary(&contract);
         log::info!(
-            "Contract loaded: {} -- expecting {:?}; not expecting {:?}",
+            "Contract loaded: {} -- supported {:?}; conditional {:?}; disabled {:?}; unsupported {:?}. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion.",
             contract.venue,
-            expected,
-            not_expected
+            summary.supported,
+            summary.conditional,
+            summary.disabled,
+            summary.unsupported,
         );
     }
 
@@ -667,6 +700,7 @@ pub fn wire_normalized_sinks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract};
     use nautilus_model::{
         data::QuoteTick,
         identifiers::InstrumentId,
@@ -723,5 +757,68 @@ mod tests {
         state.record_failure("failure");
 
         receiver.await.unwrap();
+    }
+
+    #[test]
+    fn contract_startup_summary_separates_disabled_from_capability_buckets() {
+        let contract = VenueContract {
+            schema_version: 1,
+            venue: "test".to_string(),
+            adapter_version: "bolt-v2".to_string(),
+            streams: [
+                (
+                    "quotes".to_string(),
+                    StreamContract {
+                        capability: Capability::Supported,
+                        policy: Some(Policy::Required),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "trades".to_string(),
+                    StreamContract {
+                        capability: Capability::Conditional,
+                        policy: Some(Policy::Optional),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "order_book_deltas".to_string(),
+                    StreamContract {
+                        capability: Capability::Supported,
+                        policy: Some(Policy::Disabled),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "mark_prices".to_string(),
+                    StreamContract {
+                        capability: Capability::Unsupported,
+                        policy: None,
+                        provenance: Provenance::Native,
+                        reason: Some("n/a".to_string()),
+                        derived_from: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        assert_eq!(
+            contract_startup_summary(&contract),
+            ContractStartupSummary {
+                supported: vec!["quotes".to_string()],
+                conditional: vec!["trades".to_string()],
+                disabled: vec!["order_book_deltas".to_string()],
+                unsupported: vec!["mark_prices".to_string()],
+            }
+        );
     }
 }

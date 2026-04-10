@@ -1,6 +1,12 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
+use arrow::{
+    datatypes::{Field, Schema},
+    ipc::writer::StreamWriter,
+};
 use bolt_v2::{
     lake_batch::convert_live_spool_to_parquet,
     normalized_sink,
@@ -46,6 +52,13 @@ fn assert_failure_report_only(path: &std::path::Path) -> CompletenessReport {
     let report: CompletenessReport = serde_json::from_str(&json).unwrap();
     assert_eq!(report.outcome, "fail");
     report
+}
+
+fn write_empty_feather_stream(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(Vec::<Field>::new()));
+    let file = File::create(path).unwrap();
+    let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+    writer.finish().unwrap();
 }
 
 fn flatten_spool_to_legacy_layout(instance_root: &std::path::Path) {
@@ -431,6 +444,85 @@ fn contract_fails_when_required_class_absent() {
 }
 
 #[test]
+fn contract_failure_uses_preexisting_empty_output_root() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let contract =
+        VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
+            .unwrap();
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
+    std::fs::create_dir_all(&output_root).unwrap();
+    let catalog_root = source_dir.path().join("catalog");
+    let inst = test_instrument_id();
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let ts = 1_000_000_000u64;
+
+            let quote = QuoteTick::new(
+                inst,
+                Price::from("0.55"),
+                Price::from("0.56"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                ts.into(),
+                ts.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(inst), &quote);
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let err = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        &output_root,
+        Some(&contract),
+    )
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(msg.contains("contract validation failed"), "{msg}");
+    let report = assert_failure_report_only(&output_root);
+    assert_eq!(
+        report.classes["order_book_deltas"].status,
+        "fail_required_absent"
+    );
+}
+
+#[test]
 fn contract_fails_when_disabled_supported_stream_has_data() {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let mut streams = base_polymarket_streams();
@@ -585,6 +677,40 @@ fn contract_fails_when_disabled_conditional_stream_has_data() {
     assert!(msg.contains("fail_contract_violation"), "{msg}");
     let report = assert_failure_report_only(&output_root);
     assert_eq!(report.classes["quotes"].status, "fail_contract_violation");
+}
+
+#[test]
+fn contract_allows_optional_class_with_spool_present_but_no_converted_rows() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let mut streams = base_polymarket_streams();
+    streams.get_mut("quotes").unwrap().policy = Some(Policy::Optional);
+    streams.get_mut("trades").unwrap().policy = Some(Policy::Disabled);
+    streams.get_mut("order_book_deltas").unwrap().policy = Some(Policy::Disabled);
+    let contract = make_contract(streams);
+
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
+    let catalog_root = source_dir.path().join("catalog");
+    let instance_root = catalog_root.join("live").join("instance-optional-empty");
+    std::fs::create_dir_all(&instance_root).unwrap();
+    write_empty_feather_stream(&instance_root.join("quotes_0.feather"));
+
+    let report = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        "instance-optional-empty",
+        &output_root,
+        Some(&contract),
+    )
+    .unwrap();
+
+    let cr = report.completeness.unwrap();
+    assert_eq!(cr.outcome, "pass");
+    assert_eq!(
+        cr.classes["quotes"].status,
+        "spool_present_conversion_empty"
+    );
+    assert!(cr.classes["quotes"].spool_present);
 }
 
 #[test]
@@ -919,8 +1045,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
     assert_eq!(report.classes["bars"].status, "fail_unknown");
 }
 
-#[test]
-fn contract_ignores_legacy_flat_instruments_file() {
+fn assert_contract_ignores_legacy_flat_instruments_file(file_name: &str) {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
@@ -936,6 +1061,7 @@ fn contract_ignores_legacy_flat_instruments_file() {
     let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let inst = test_instrument_id();
+    let file_name = file_name.to_string();
 
     let instance_id = runtime.block_on(local.run_until(async {
         let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
@@ -1004,7 +1130,7 @@ fn contract_ignores_legacy_flat_instruments_file() {
                 catalog_root_clone
                     .join("live")
                     .join(&instance_id_clone)
-                    .join("instruments_123.feather"),
+                    .join(file_name),
                 b"fake feather content",
             )
             .unwrap();
@@ -1029,6 +1155,16 @@ fn contract_ignores_legacy_flat_instruments_file() {
     assert_eq!(cr.outcome, "pass");
     assert_eq!(cr.classes["instruments"].status, "ignored_infrastructure");
     assert_eq!(cr.classes["instruments"].capability, "infrastructure");
+}
+
+#[test]
+fn contract_ignores_legacy_flat_instruments_file() {
+    assert_contract_ignores_legacy_flat_instruments_file("instruments_123.feather");
+}
+
+#[test]
+fn contract_ignores_bare_legacy_flat_instruments_file() {
+    assert_contract_ignores_legacy_flat_instruments_file("instruments.feather");
 }
 
 #[test]

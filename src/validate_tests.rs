@@ -560,6 +560,35 @@ fn empty_contract_path_rejected() {
     assert_has_error(&errors, "streaming.contract_path", "empty");
 }
 
+#[test]
+fn live_local_non_local_contract_path_rejected_before_render() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"s3://bucket/contracts/polymarket.toml\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "non_local");
+    assert_error_message_contains(
+        &errors,
+        "streaming.contract_path",
+        "non_local",
+        "local path",
+    );
+    assert_error_message_not_contains(&errors, "streaming.contract_path", "non_local", "absolute");
+}
+
+#[test]
+fn live_local_relative_contract_path_remains_valid() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_no_errors(&errors);
+}
+
 // ════════════════════════════════════════════════════════════════
 // Domain-specific: event_slug, funder, SSM paths
 // ════════════════════════════════════════════════════════════════

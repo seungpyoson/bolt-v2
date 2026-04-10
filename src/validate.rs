@@ -440,6 +440,26 @@ fn check_contract_path_catalog_dependency(
     }
 }
 
+fn check_live_local_contract_path_shape(
+    errors: &mut Vec<ValidationError>,
+    contract_path: Option<&str>,
+) {
+    if let Some(contract_path) = contract_path {
+        if contract_path.trim().is_empty() {
+            return;
+        }
+
+        if contract_path.contains("://") {
+            push_error(
+                errors,
+                "streaming.contract_path",
+                "non_local",
+                format!("streaming.contract_path must be a local path, got \"{contract_path}\""),
+            );
+        }
+    }
+}
+
 fn check_runtime_contract_path_shape(
     errors: &mut Vec<ValidationError>,
     contract_path: Option<&str>,
@@ -617,6 +637,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         &config.streaming.catalog_path,
         config.streaming.contract_path.as_deref(),
     );
+    check_live_local_contract_path_shape(&mut errors, config.streaming.contract_path.as_deref());
 
     errors.sort();
     errors

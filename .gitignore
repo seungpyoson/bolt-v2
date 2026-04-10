@@ -1,6 +1,8 @@
 /target
 config/live.toml
 config/live.local.toml
-*.log
+BOLT-001_*.log
+tmp_tests/*.log
 .omx/
 .claude/findings/
+.DS_Store

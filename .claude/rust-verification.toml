@@ -13,3 +13,5 @@ recipe = "clippy"
 [commands.build]
 recipe = "build"
 artifact_layout = "cargo"
+profile = "release"
+target = "aarch64-unknown-linux-gnu"

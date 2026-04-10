@@ -4,7 +4,6 @@ These repo-level rules are in addition to any higher-level agent instructions.
 
 ## Scope Discipline
 
-- Follow the shared review discipline in `/Users/spson/Projects/Claude/docs/agent-review-discipline.md`.
 - One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice of one broader item.
 - If a branch covers only a slice of a broader issue, the PR and review request must say so explicitly and name what accepted scope remains plus where it is tracked.
 - Reviewers must flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope as findings.

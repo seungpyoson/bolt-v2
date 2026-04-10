@@ -147,11 +147,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut sink_failure_receiver = normalized_sink_guards
                     .as_mut()
                     .and_then(|guards| guards.take_failure_receiver());
-                let platform_runtime_guards = if cfg.rulesets.is_empty() {
-                    None
-                } else {
-                    Some(wire_platform_runtime(&mut node, &cfg)?)
-                };
 
                 for strategy in &cfg.strategies {
                     match strategy.kind.as_str() {
@@ -167,6 +162,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+                let platform_runtime_guards = if cfg.rulesets.is_empty() {
+                    None
+                } else {
+                    Some(wire_platform_runtime(&mut node, &cfg)?)
+                };
 
                 let run_result = {
                     let run_future = node.run();

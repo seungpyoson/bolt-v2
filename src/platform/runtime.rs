@@ -314,7 +314,12 @@ async fn run_selector_task(
             _ = ticker.tick() => {}
         }
 
-        let candidates = match selector_loader.load(clone_ruleset_config(&ruleset)).await {
+        let load_future = selector_loader.load(clone_ruleset_config(&ruleset));
+        tokio::pin!(load_future);
+        let candidates = match tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            result = &mut load_future => result,
+        } {
             Ok(candidates) => candidates,
             Err(error) => {
                 return Err(fail_closed(

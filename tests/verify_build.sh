@@ -1,17 +1,29 @@
 #!/bin/bash
 set -euo pipefail
 
+repo_root="$(git rev-parse --show-toplevel)"
+rust_verification_owner="${HOME}/.claude/lib/rust_verification.py"
+
+managed_cargo() {
+    if [ -f "$rust_verification_owner" ]; then
+        python3 "$rust_verification_owner" cargo --repo "$repo_root" -- "$@"
+        return
+    fi
+
+    cargo "$@"
+}
+
 echo "=== Checking compilation ==="
-~/.cargo/bin/cargo check >/dev/null
+managed_cargo check >/dev/null
 
 echo "=== Verifying CLI subcommands ==="
-~/.cargo/bin/cargo run --release --bin bolt-v2 -- --help | grep -E "^  (run|secrets|help)"
+managed_cargo run --release --bin bolt-v2 -- --help | grep -E "^  (run|secrets|help)"
 
 tmpdir="$(mktemp -d)"
 trap 'chmod -R u+w "$tmpdir" 2>/dev/null || true; rm -rf "$tmpdir"' EXIT
 
 echo "=== Rendering generated live config from tracked example input ==="
-~/.cargo/bin/cargo run --release --bin render_live_config -- \
+managed_cargo run --release --bin render_live_config -- \
   --input config/live.local.example.toml \
   --output "$tmpdir/live.toml" \
   | grep "Generated"
@@ -23,4 +35,4 @@ if [ -w "$tmpdir/live.toml" ]; then
 fi
 
 echo "=== Verifying secret config completeness ==="
-~/.cargo/bin/cargo run --release --bin bolt-v2 -- secrets check --config "$tmpdir/live.toml" | grep "POLYMARKET: secret config complete"
+managed_cargo run --release --bin bolt-v2 -- secrets check --config "$tmpdir/live.toml" | grep "POLYMARKET: secret config complete"

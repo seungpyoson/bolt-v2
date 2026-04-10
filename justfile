@@ -13,6 +13,8 @@ worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
 live_input := "config/live.local.toml"
 live_input_example := "config/live.local.example.toml"
 live_config := "config/live.toml"
+repo_root := justfile_directory()
+rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
 
 [private]
 check-workspace:
@@ -41,25 +43,37 @@ check-workspace:
     done
 
 fmt-check: check-workspace
-    cargo fmt --check
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
 fmt: check-workspace
-    cargo fmt
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt
 
 deny: check-workspace
-    cargo deny check bans
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check bans
 
 deny-advisories: check-workspace
-    cargo deny check advisories
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check advisories
 
-clippy: check-workspace
+[private]
+managed-clippy: check-workspace
     cargo clippy --locked -- -D warnings
 
-test: check-workspace
+[private]
+managed-test: check-workspace
     cargo nextest run --locked
 
-build: check-workspace
+[private]
+managed-build: check-workspace
     cargo zigbuild --release --target {{target}} --locked
+
+clippy:
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" clippy
+
+test:
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test
+
+build:
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
 
 live-generate: check-workspace
     #!/usr/bin/env bash
@@ -70,35 +84,36 @@ live-generate: check-workspace
         exit 1
     fi
 
-    cargo run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
 live: live-generate
     # Run with the generated runtime config artifact.
-    cargo run --release --bin bolt-v2 -- run --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_config}}
 
 # Optional diagnostics for the live operator config.
 live-check: live-generate
     # Validate secret-config completeness only; do not resolve secrets.
-    cargo run --release --bin bolt-v2 -- secrets check --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_config}}
 
 live-resolve: live-generate
     # Perform actual secret resolution against the generated runtime config.
-    cargo run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
 
 ci-lint-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
     files=(.github/workflows/*.yml .github/workflows/*.yaml)
+    rust_invocation_files=(justfile tests/*.sh .github/workflows/*.yml .github/workflows/*.yaml)
 
     if [ "${#files[@]}" -eq 0 ]; then
         echo "No workflow files found — skipping"
-        exit 0
     fi
 
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
+    bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
 
     for f in "${files[@]}"; do
         if grep -En "$pattern" "$f"; then
@@ -107,12 +122,19 @@ ci-lint-workflow:
         fi
     done
 
+    for f in "${rust_invocation_files[@]}"; do
+        if grep -En "$bypass_pattern" "$f"; then
+            echo "ERROR: Rust wrapper bypass found in $f"
+            failed=1
+        fi
+    done
+
     if [ "$failed" -ne 0 ]; then
-        echo "All build/check commands must go through justfile recipes."
+        echo "All tracked automation must avoid raw cargo workflow commands and explicit Rust-wrapper bypasses."
         exit 1
     fi
 
-    echo "OK: No raw cargo build/check commands in workflow files"
+    echo "OK: No raw cargo workflow commands or explicit Rust-wrapper bypasses found"
 
 worktree branch:
     #!/usr/bin/env bash

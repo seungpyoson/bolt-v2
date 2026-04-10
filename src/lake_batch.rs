@@ -345,7 +345,7 @@ impl OutputRootLock {
             .open(&lock_path)
             .map_err(|error| match error.kind() {
                 std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(
-                    "output_root is locked by another or stale run: {}",
+                    "output_root `{output_root_name}` is locked by another run or a stale lock file may remain: {}. If no conversion is active for this output_root, remove the lock file and retry.",
                     lock_path.display()
                 ),
                 _ => error.into(),
@@ -607,11 +607,14 @@ fn output_root_name(output_root: &Path) -> Result<&str> {
 }
 
 fn write_failure_output_root(output_root: &Path, json: &str) -> Result<()> {
-    if !output_root.exists() {
+    let created_output_root = !output_root.exists();
+    if created_output_root {
         fs::create_dir(output_root)?;
     }
     if let Err(error) = write_atomic_file(&output_root.join(COMPLETENESS_REPORT_FILE), json) {
-        let _ = fs::remove_dir_all(output_root);
+        if created_output_root {
+            let _ = fs::remove_dir_all(output_root);
+        }
         return Err(error);
     }
     Ok(())
@@ -766,7 +769,11 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
+    use tempfile::tempdir;
 
     #[test]
     fn stage_dir_name_rejects_pre_unix_epoch() {
@@ -778,5 +785,99 @@ mod tests {
             stage_dir_name_at("output-root", now).expect_err("pre-unix-epoch time should error");
 
         assert!(error.to_string().contains("system clock before UNIX_EPOCH"));
+    }
+
+    #[test]
+    fn output_root_lock_collision_reports_clear_remediation() {
+        let parent = tempdir().expect("tempdir should exist");
+        let output_root = parent.path().join("run");
+        let lock_path = parent.path().join(".run.lock");
+        fs::write(&lock_path, "stale").expect("lock file should be created");
+
+        let error = match OutputRootLock::acquire(&output_root) {
+            Ok(_) => panic!("preexisting lock file should fail"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+
+        assert!(message.contains("output_root `run`"), "{message}");
+        assert!(message.contains(lock_path.to_str().unwrap()), "{message}");
+        assert!(
+            message.contains("remove the lock file and retry"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn completeness_report_keeps_optional_unconverted_spool_nonfatal() {
+        let source_root = tempdir().expect("tempdir should exist");
+        let contract = VenueContract {
+            schema_version: 1,
+            venue: "test".to_string(),
+            adapter_version: "bolt-v2".to_string(),
+            streams: [(
+                "quotes".to_string(),
+                StreamContract {
+                    capability: Capability::Supported,
+                    policy: Some(Policy::Optional),
+                    provenance: Provenance::Native,
+                    reason: None,
+                    derived_from: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let class_files =
+            BTreeMap::from([("quotes", vec![source_root.path().join("quotes_0.feather")])]);
+
+        let report = build_completeness_report(
+            &contract,
+            "instance-123",
+            source_root.path(),
+            &class_files,
+            &[],
+        )
+        .expect("report should build");
+
+        assert_eq!(report.outcome, "pass");
+        assert_eq!(
+            report.classes["quotes"].status,
+            "spool_present_conversion_empty"
+        );
+        assert!(report.classes["quotes"].spool_present);
+        assert!(report.classes["quotes"].reason.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_failure_output_root_preserves_preexisting_empty_dir_on_write_error() {
+        let parent = tempdir().expect("tempdir should exist");
+        let output_root = parent.path().join("precreated-output");
+        fs::create_dir(&output_root).expect("output_root should be created");
+        fs::set_permissions(&output_root, fs::Permissions::from_mode(0o555))
+            .expect("output_root permissions should be updated");
+
+        let error = write_failure_output_root(&output_root, "{\"outcome\":\"fail\"}")
+            .expect_err("write should fail when directory is not writable");
+
+        assert!(
+            error.to_string().contains("Permission denied"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            output_root.exists(),
+            "precreated output_root should not be deleted on write failure"
+        );
+        assert!(
+            fs::read_dir(&output_root)
+                .expect("precreated output_root should remain readable")
+                .next()
+                .is_none(),
+            "precreated output_root should remain empty"
+        );
+
+        fs::set_permissions(&output_root, fs::Permissions::from_mode(0o755))
+            .expect("permissions should be restored for cleanup");
     }
 }

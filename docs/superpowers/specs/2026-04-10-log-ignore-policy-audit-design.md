@@ -64,6 +64,8 @@ That behavior comes from Nautilus `crates/common/src/logging/writer.rs` and `cra
 
 Official `git worktree`s are part of the supported operator flow for this repository and must be covered by the ignore policy. A rule that works only in the main checkout is not sufficient.
 
+For issue `#72`, the implementation checkout itself is an attached worktree at `.worktrees/issue-72-log-ignore-policy`. Root-anchored ignore semantics can therefore be proven directly from this branch's checkout context without requiring a second branch or worktree to adopt the new `.gitignore` before merge.
+
 ### Tracked Fixture Requirement
 
 There are currently no tracked `.log` fixtures in the repository, but the ignore policy must not prevent future intentional tracked fixtures such as:
@@ -153,8 +155,9 @@ Keep the other ignore rules unchanged.
 
 ### Scratch Cleanup
 
-- remove `tmp_tests/issue-522.log` if it still exists
-- remove `tmp_tests/` if it becomes empty
+- if `tmp_tests/` exists in the current checkout, remove `tmp_tests/issue-522.log` if it is present
+- if that leaves `tmp_tests/` empty, remove the directory
+- if `tmp_tests/` is absent, scratch cleanup is a no-op
 
 This cleanup is part of the branch only because `tmp_tests/*.log` is part of the explicit ignore decision.
 
@@ -173,25 +176,33 @@ The audit only narrows ignore behavior to match the already-observed logger cont
 
 The implementation must prove all of the following:
 
-1. A non-sample runtime log at the checkout root is ignored:
+1. A non-sample runtime log at the root of the current issue-72 attached worktree is ignored:
    - example: `ALPHA-999_2026-04-10_12345678-1234-1234-1234-123456789abc.log`
-2. The same runtime log shape inside an attached worktree root is ignored.
+2. The proof is executed from an attached worktree context, demonstrating that the root-anchored rule works in official worktree usage for this branch.
 3. A fixture path such as `tests/fixtures/example.log` is **not** ignored.
 4. `tmp_tests/example.log` is ignored.
 5. No broader behavior change is introduced outside `.gitignore` and scratch cleanup.
 
 ## Verification Plan
 
-Required verification:
+Required verification from the issue-72 attached worktree root:
 
+- `git diff --name-only`
+- `git diff --name-only origin/main...HEAD`
 - `git check-ignore -v ALPHA-999_2026-04-10_12345678-1234-1234-1234-123456789abc.log`
 - `git check-ignore -v tmp_tests/example.log`
 - `! git check-ignore -v tests/fixtures/example.log`
-- equivalent root-relative `git check-ignore` proof from an attached worktree
-- `git diff --name-only origin/main..HEAD` stays limited to:
+- `CARGO_TARGET_DIR="$PWD/.target" ~/.cargo/bin/cargo test --no-run`
+
+Expected:
+
+- because this checkout is itself an attached worktree, the `git check-ignore` commands prove root-anchored behavior in a real worktree context
+- `git diff --name-only` shows only intentional working-tree edits in this checkout
+- `git diff --name-only origin/main...HEAD` stays limited to:
   - `.gitignore`
-  - `tmp_tests/issue-522.log` or `tmp_tests/`
-  - optional issue/spec/plan docs only if intentionally included
+  - `docs/superpowers/specs/2026-04-10-log-ignore-policy-audit-design.md`
+  - `docs/superpowers/plans/2026-04-10-log-ignore-policy-audit-implementation.md`
+  - optional `tmp_tests/issue-522.log` or `tmp_tests/` cleanup only if present in this checkout
 
 ## Risks
 

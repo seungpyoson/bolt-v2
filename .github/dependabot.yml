@@ -9,16 +9,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    groups:
-      cargo-dependencies:
-        patterns:
-          - "*"
+    open-pull-requests-limit: 10
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-    groups:
-      action-dependencies:
-        patterns:
-          - "*"
+    open-pull-requests-limit: 10

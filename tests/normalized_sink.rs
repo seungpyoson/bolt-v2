@@ -405,8 +405,14 @@ async fn captures_execution_state_sidecars_for_order_and_position_events() {
             assert_eq!(position_rows.len(), 2, "{position_rows:?}");
             assert_eq!(position_rows[0].event_type, "PositionOpened");
             assert_eq!(position_rows[0].position_id, "P-001");
+            let opened_payload: serde_json::Value =
+                serde_json::from_str(&position_rows[0].payload_json).unwrap();
+            assert_eq!(opened_payload["trader_id"], "TESTER-001");
             assert_eq!(position_rows[1].event_type, "PositionAdjusted");
             assert_eq!(position_rows[1].realized_pnl.as_deref(), Some("-0.02 USD"));
+            let adjusted_payload: serde_json::Value =
+                serde_json::from_str(&position_rows[1].payload_json).unwrap();
+            assert_eq!(adjusted_payload["trader_id"], "TESTER-001");
         })
         .await;
 }

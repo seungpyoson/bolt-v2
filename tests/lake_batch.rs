@@ -252,11 +252,12 @@ fn converts_execution_state_sidecars_into_parquet_outputs() {
         instance_root.join("position_events").join("events.jsonl"),
         concat!(
             "{\"event_type\":\"PositionOpened\",\"strategy_id\":\"S-EXEC-001\",",
+            "\"trader_id\":\"TESTER-001\",",
             "\"instrument_id\":\"0xabc-123456789.POLYMARKET\",",
             "\"position_id\":\"P-001\",\"account_id\":\"SIM-001\",",
             "\"opening_order_id\":\"O-001\",\"closing_order_id\":null,",
             "\"side\":\"LONG\",\"quantity\":\"10\",\"ts_event\":21,\"ts_init\":22,",
-            "\"payload_json\":\"{\\\"event_type\\\":\\\"PositionOpened\\\"}\"}\n"
+            "\"payload_json\":\"{\\\"event_type\\\":\\\"PositionOpened\\\",\\\"trader_id\\\":\\\"TESTER-001\\\"}\"}\n"
         ),
     )
     .unwrap();
@@ -289,6 +290,10 @@ fn converts_execution_state_sidecars_into_parquet_outputs() {
     assert_eq!(
         parquet_string_column(position_parquet, "event_type"),
         vec!["PositionOpened".to_string()]
+    );
+    assert_eq!(
+        parquet_string_column(position_parquet, "trader_id"),
+        vec!["TESTER-001".to_string()]
     );
 }
 

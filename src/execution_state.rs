@@ -35,6 +35,7 @@ pub struct OrderEventRow {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PositionEventRow {
     pub event_type: String,
+    pub trader_id: String,
     pub strategy_id: String,
     pub instrument_id: String,
     pub position_id: String,
@@ -82,6 +83,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
     match event {
         PositionEvent::PositionOpened(opened) => Ok(PositionEventRow {
             event_type: "PositionOpened".to_string(),
+            trader_id: opened.trader_id.to_string(),
             strategy_id: opened.strategy_id.to_string(),
             instrument_id: opened.instrument_id.to_string(),
             position_id: opened.position_id.to_string(),
@@ -99,6 +101,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             ts_init: opened.ts_init.as_u64(),
             payload_json: json!({
                 "event_type": "PositionOpened",
+                "trader_id": opened.trader_id.to_string(),
                 "event_id": opened.event_id.to_string(),
                 "entry": format!("{:?}", opened.entry).to_uppercase(),
                 "side": format!("{:?}", opened.side).to_uppercase(),
@@ -115,6 +118,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
         }),
         PositionEvent::PositionChanged(changed) => Ok(PositionEventRow {
             event_type: "PositionChanged".to_string(),
+            trader_id: changed.trader_id.to_string(),
             strategy_id: changed.strategy_id.to_string(),
             instrument_id: changed.instrument_id.to_string(),
             position_id: changed.position_id.to_string(),
@@ -132,6 +136,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             ts_init: changed.ts_init.as_u64(),
             payload_json: json!({
                 "event_type": "PositionChanged",
+                "trader_id": changed.trader_id.to_string(),
                 "event_id": changed.event_id.to_string(),
                 "entry": format!("{:?}", changed.entry).to_uppercase(),
                 "side": format!("{:?}", changed.side).to_uppercase(),
@@ -154,6 +159,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
         }),
         PositionEvent::PositionClosed(closed) => Ok(PositionEventRow {
             event_type: "PositionClosed".to_string(),
+            trader_id: closed.trader_id.to_string(),
             strategy_id: closed.strategy_id.to_string(),
             instrument_id: closed.instrument_id.to_string(),
             position_id: closed.position_id.to_string(),
@@ -171,6 +177,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             ts_init: closed.ts_init.as_u64(),
             payload_json: json!({
                 "event_type": "PositionClosed",
+                "trader_id": closed.trader_id.to_string(),
                 "event_id": closed.event_id.to_string(),
                 "entry": format!("{:?}", closed.entry).to_uppercase(),
                 "side": format!("{:?}", closed.side).to_uppercase(),
@@ -195,6 +202,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
         }),
         PositionEvent::PositionAdjusted(adjusted) => Ok(PositionEventRow {
             event_type: "PositionAdjusted".to_string(),
+            trader_id: adjusted.trader_id.to_string(),
             strategy_id: adjusted.strategy_id.to_string(),
             instrument_id: adjusted.instrument_id.to_string(),
             position_id: adjusted.position_id.to_string(),
@@ -212,6 +220,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             ts_init: adjusted.ts_init.as_u64(),
             payload_json: json!({
                 "event_type": "PositionAdjusted",
+                "trader_id": adjusted.trader_id.to_string(),
                 "event_id": adjusted.event_id.to_string(),
                 "adjustment_type": format!("{:?}", adjusted.adjustment_type),
                 "quantity_change": adjusted.quantity_change.map(|value| value.to_string()),
@@ -336,6 +345,7 @@ fn convert_position_events_to_parquet(
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("event_type", DataType::Utf8, false),
+        Field::new("trader_id", DataType::Utf8, false),
         Field::new("strategy_id", DataType::Utf8, false),
         Field::new("instrument_id", DataType::Utf8, false),
         Field::new("position_id", DataType::Utf8, false),
@@ -359,6 +369,11 @@ fn convert_position_events_to_parquet(
             Arc::new(StringArray::from(
                 rows.iter()
                     .map(|row| row.event_type.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.trader_id.as_str())
                     .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(

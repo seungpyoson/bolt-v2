@@ -4,3 +4,4 @@ config/live.local.toml
 *.log
 .omx/
 .claude/findings/
+.DS_Store

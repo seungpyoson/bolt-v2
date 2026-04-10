@@ -1,5 +1,6 @@
 pub mod clients;
 pub mod config;
+pub mod execution_state;
 pub mod lake_batch;
 mod live_config;
 pub mod normalized_sink;

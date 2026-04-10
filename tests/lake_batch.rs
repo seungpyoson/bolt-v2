@@ -1,8 +1,9 @@
-use std::path::Path;
+use std::{fs::File, path::Path};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
+use arrow::array::{Array, StringArray};
 use bolt_v2::{
     lake_batch::{convert_live_spool_to_parquet, supported_stream_classes},
     normalized_sink,
@@ -26,6 +27,7 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 
@@ -44,6 +46,30 @@ fn collect_paths(root: &Path) -> Vec<std::path::PathBuf> {
     }
 
     paths
+}
+
+fn parquet_string_column(path: &Path, column: &str) -> Vec<String> {
+    let file = File::open(path).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut values = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let array = batch
+            .column_by_name(column)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..array.len() {
+            if array.is_valid(row) {
+                values.push(array.value(row).to_string());
+            }
+        }
+    }
+    values
 }
 
 #[test]
@@ -198,6 +224,72 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
     let closes = catalog.instrument_closes(None, None, None).unwrap();
     assert_eq!(closes.len(), 1);
     assert_eq!(closes[0].instrument_id, instrument_id);
+}
+
+#[test]
+fn converts_execution_state_sidecars_into_parquet_outputs() {
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let catalog_root = source_dir.path().join("catalog");
+    let instance_root = catalog_root.join("live").join("instance-exec");
+    let output_root = output_dir.path().join("lake-output");
+
+    std::fs::create_dir_all(instance_root.join("order_events")).unwrap();
+    std::fs::create_dir_all(instance_root.join("position_events")).unwrap();
+
+    std::fs::write(
+        instance_root.join("order_events").join("events.jsonl"),
+        concat!(
+            "{\"event_type\":\"Submitted\",\"strategy_id\":\"S-EXEC-001\",",
+            "\"instrument_id\":\"0xabc-123456789.POLYMARKET\",",
+            "\"client_order_id\":\"O-001\",\"venue_order_id\":null,",
+            "\"account_id\":\"SIM-001\",\"ts_event\":11,\"ts_init\":12,",
+            "\"payload_json\":\"{\\\"type\\\":\\\"Submitted\\\"}\"}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        instance_root.join("position_events").join("events.jsonl"),
+        concat!(
+            "{\"event_type\":\"PositionOpened\",\"strategy_id\":\"S-EXEC-001\",",
+            "\"instrument_id\":\"0xabc-123456789.POLYMARKET\",",
+            "\"position_id\":\"P-001\",\"account_id\":\"SIM-001\",",
+            "\"opening_order_id\":\"O-001\",\"closing_order_id\":null,",
+            "\"side\":\"LONG\",\"quantity\":\"10\",\"ts_event\":21,\"ts_init\":22,",
+            "\"payload_json\":\"{\\\"event_type\\\":\\\"PositionOpened\\\"}\"}\n"
+        ),
+    )
+    .unwrap();
+
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), "instance-exec", &output_root, None)
+            .unwrap();
+
+    assert_eq!(
+        report.converted_classes,
+        vec!["order_events", "position_events"]
+    );
+
+    let output_paths = collect_paths(&output_root);
+    let order_parquet = output_paths.iter().find(|path| {
+        path.extension().and_then(|ext| ext.to_str()) == Some("parquet")
+            && path.to_string_lossy().contains("order_events")
+    });
+    let order_parquet = order_parquet.expect("order_events parquet missing");
+    assert_eq!(
+        parquet_string_column(order_parquet, "event_type"),
+        vec!["Submitted".to_string()]
+    );
+
+    let position_parquet = output_paths.iter().find(|path| {
+        path.extension().and_then(|ext| ext.to_str()) == Some("parquet")
+            && path.to_string_lossy().contains("position_events")
+    });
+    let position_parquet = position_parquet.expect("position_events parquet missing");
+    assert_eq!(
+        parquet_string_column(position_parquet, "event_type"),
+        vec!["PositionOpened".to_string()]
+    );
 }
 
 #[test]

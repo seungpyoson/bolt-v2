@@ -1373,6 +1373,7 @@ dependencies = [
  "nautilus-system",
  "nautilus-testkit",
  "nautilus-trading",
+ "parquet",
  "serde",
  "serde_json",
  "tempfile",

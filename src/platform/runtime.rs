@@ -95,10 +95,10 @@ impl PlatformRuntimeGuards {
         self.cancellation.cancel();
 
         let mut first_error = None;
-        if let Some(reference_snapshot_audit) = self.reference_snapshot_audit.take() {
-            if let Err(error) = reference_snapshot_audit.unsubscribe() {
-                first_error = Some(error);
-            }
+        if let Some(reference_snapshot_audit) = self.reference_snapshot_audit.take()
+            && let Err(error) = reference_snapshot_audit.unsubscribe()
+        {
+            first_error = Some(error);
         }
         for handle in self.join_handles {
             match handle.await {
@@ -390,10 +390,10 @@ fn subscribe_reference_snapshot_audit(
         if let Err(error) = send_reference_snapshot(&handler_audit_tx, snapshot) {
             let error = error.context("reference snapshot audit send failed");
             let error_message = error.to_string();
-            if let Ok(mut send_failure) = handler_send_failure.lock() {
-                if send_failure.is_none() {
-                    *send_failure = Some(error_message.clone());
-                }
+            if let Ok(mut send_failure) = handler_send_failure.lock()
+                && send_failure.is_none()
+            {
+                *send_failure = Some(error_message.clone());
             }
             let _ = fail_closed(
                 &handler_node_handle,

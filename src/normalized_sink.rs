@@ -803,6 +803,16 @@ mod tests {
                 (
                     "mark_prices".to_string(),
                     StreamContract {
+                        capability: Capability::Conditional,
+                        policy: Some(Policy::Disabled),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "instrument_closes".to_string(),
+                    StreamContract {
                         capability: Capability::Unsupported,
                         policy: None,
                         provenance: Provenance::Native,
@@ -820,8 +830,8 @@ mod tests {
             ContractStartupSummary {
                 supported: vec!["quotes".to_string()],
                 conditional: vec!["trades".to_string()],
-                disabled: vec!["order_book_deltas".to_string()],
-                unsupported: vec!["mark_prices".to_string()],
+                disabled: vec!["mark_prices".to_string(), "order_book_deltas".to_string()],
+                unsupported: vec!["instrument_closes".to_string()],
             }
         );
     }
@@ -866,6 +876,16 @@ mod tests {
                 (
                     "mark_prices".to_string(),
                     StreamContract {
+                        capability: Capability::Conditional,
+                        policy: Some(Policy::Disabled),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "instrument_closes".to_string(),
+                    StreamContract {
                         capability: Capability::Unsupported,
                         policy: None,
                         provenance: Provenance::Native,
@@ -880,7 +900,7 @@ mod tests {
 
         assert_eq!(
             format_contract_startup_log(&contract),
-            "Contract loaded: test -- supported [\"quotes\"]; conditional [\"trades\"]; disabled [\"order_book_deltas\"]; unsupported [\"mark_prices\"]. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion."
+            "Contract loaded: test -- supported [\"quotes\"]; conditional [\"trades\"]; disabled [\"mark_prices\", \"order_book_deltas\"]; unsupported [\"instrument_closes\"]. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion."
         );
     }
 }

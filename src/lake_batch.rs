@@ -339,16 +339,15 @@ impl OutputRootLock {
         ensure_no_stale_stage_dirs(parent, output_root_name)?;
 
         let lock_path = parent.join(lock_file_name(output_root_name));
-        let conflict_message = format!(
-            "output_root `{output_root_name}` is locked by another run or a stale lock file may remain: {}. If no conversion is active for this output_root, remove the lock file and retry.",
-            lock_path.display()
-        );
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&lock_path)
             .map_err(|error| match error.kind() {
-                std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(conflict_message),
+                std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(
+                    "output_root `{output_root_name}` is locked by another run or a stale lock file may remain: {}. If no conversion is active for this output_root, remove the lock file and retry.",
+                    lock_path.display()
+                ),
                 _ => error.into(),
             })?;
 

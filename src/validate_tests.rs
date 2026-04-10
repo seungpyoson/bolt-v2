@@ -770,7 +770,8 @@ fn runtime_event_slugs_wrong_type_rejected() {
 
 #[test]
 fn runtime_empty_event_slugs_rejected() {
-    let toml = valid_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]", "event_slugs = []");
+    let toml =
+        valid_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]", "event_slugs = []");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "data_clients[0].config.event_slugs", "empty");
 }
@@ -924,7 +925,11 @@ fn strategy_referencing_nonexistent_client_rejected() {
 fn strategy_missing_client_id_rejected() {
     let toml = valid_runtime_toml().replace("client_id = \"POLYMARKET\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies[0].config.client_id", "missing_client_id");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.client_id",
+        "missing_client_id",
+    );
 }
 
 #[test]
@@ -940,7 +945,11 @@ fn strategy_referencing_existing_client_accepted() {
 fn runtime_missing_strategy_id_rejected() {
     let toml = valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies[0].config.strategy_id", "missing_strategy_id");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.strategy_id",
+        "missing_strategy_id",
+    );
 }
 
 #[test]
@@ -961,23 +970,37 @@ fn runtime_strategy_id_wrong_type_rejected() {
 fn runtime_missing_instrument_id_rejected() {
     let toml = valid_runtime_toml().replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies[0].config.instrument_id", "missing_instrument_id");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.instrument_id",
+        "missing_instrument_id",
+    );
 }
 
 #[test]
 fn runtime_missing_order_qty_rejected() {
     let toml = valid_runtime_toml().replace("order_qty = \"5\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies[0].config.order_qty", "missing_order_qty");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.order_qty",
+        "missing_order_qty",
+    );
 }
 
 #[test]
 fn runtime_missing_strategy_field_uses_indexed_path() {
     let toml = valid_runtime_toml().replace("client_id = \"POLYMARKET\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies[0].config.client_id", "missing_client_id");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.client_id",
+        "missing_client_id",
+    );
     assert!(
-        !errors.iter().any(|e| e.field == "strategies" && e.code == "missing_client_id"),
+        !errors
+            .iter()
+            .any(|e| e.field == "strategies" && e.code == "missing_client_id"),
         "missing client_id should use indexed field path, got: {errors:?}"
     );
 }

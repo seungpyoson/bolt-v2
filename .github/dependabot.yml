@@ -9,12 +9,18 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10
     groups:
-      nautilus-dependencies:
+      cargo-dependencies:
         patterns:
-          - "nautilus-*"
+          - "*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      action-dependencies:
+        patterns:
+          - "*"

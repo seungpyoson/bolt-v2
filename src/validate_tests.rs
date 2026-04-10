@@ -652,6 +652,8 @@ max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
 freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
 "#
     );
     let errors = errors_for(&toml);
@@ -1511,6 +1513,8 @@ max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
 freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
 "#
     );
     let errors = runtime_errors_for(&toml);
@@ -1594,6 +1598,8 @@ max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
 freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
 "#
     );
     let errors = runtime_errors_for(&toml);
@@ -1616,6 +1622,8 @@ max_time_to_expiry_secs = 900
 min_liquidity_num = 1000
 require_accepting_orders = true
 freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
 "#
     );
     let error = runtime_load_error_for(&toml);

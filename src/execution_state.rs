@@ -77,6 +77,8 @@ pub fn order_event_row(event: &OrderEventAny) -> Result<OrderEventRow> {
 }
 
 pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
+    // PositionEvent does not offer a serde-backed canonical payload in the same way
+    // OrderEventAny does, so this field intentionally stores a lossless-enough summary.
     match event {
         PositionEvent::PositionOpened(opened) => Ok(PositionEventRow {
             event_type: "PositionOpened".to_string(),

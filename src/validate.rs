@@ -1483,5 +1483,4 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
 }
 
 #[cfg(test)]
-#[path = "validate_tests.rs"]
 mod tests;

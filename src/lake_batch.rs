@@ -24,6 +24,8 @@ const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "instrument_closes",
 ];
 const COMPLETENESS_REPORT_FILE: &str = "completeness_report.json";
+const SPOOL_INFRASTRUCTURE_DIRS: &[&str] = &["instruments", "status"];
+const FLAT_SPOOL_IGNORED_INFRASTRUCTURE_CLASSES: &[&str] = &["instruments"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamToLakeReport {
@@ -119,7 +121,6 @@ fn build_completeness_report(
     let mut has_failure = false;
 
     // ── Unknown-class discovery ──
-    const SPOOL_INFRASTRUCTURE_DIRS: &[&str] = &["instruments", "status"];
     let known_dir_names: std::collections::HashSet<&str> = contract
         .streams
         .keys()
@@ -166,19 +167,34 @@ fn build_completeness_report(
                 && let Some(class_name) =
                     classify_unknown_flat_file(&entry.path(), known_flat_classes.iter().copied())
             {
-                has_failure = true;
-                classes.insert(
-                    class_name,
-                    ClassReport {
-                        capability: "unknown".to_string(),
-                        policy: None,
-                        spool_present: true,
-                        rows_converted: None,
-                        files_converted: None,
-                        status: "fail_unknown".to_string(),
-                        reason: Some("flat spool file not in contract or known classes".into()),
-                    },
-                );
+                if FLAT_SPOOL_IGNORED_INFRASTRUCTURE_CLASSES.contains(&class_name.as_str()) {
+                    classes.insert(
+                        class_name,
+                        ClassReport {
+                            capability: "infrastructure".to_string(),
+                            policy: None,
+                            spool_present: true,
+                            rows_converted: None,
+                            files_converted: None,
+                            status: "ignored_infrastructure".to_string(),
+                            reason: Some("legacy flat infrastructure file ignored".into()),
+                        },
+                    );
+                } else {
+                    has_failure = true;
+                    classes.insert(
+                        class_name,
+                        ClassReport {
+                            capability: "unknown".to_string(),
+                            policy: None,
+                            spool_present: true,
+                            rows_converted: None,
+                            files_converted: None,
+                            status: "fail_unknown".to_string(),
+                            reason: Some("flat spool file not in contract or known classes".into()),
+                        },
+                    );
+                }
             }
         }
     }
@@ -360,7 +376,7 @@ impl StagedOutputRoot {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         let output_root_name = output_root_name(output_root)?;
-        let stage_path = parent.join(stage_dir_name(output_root_name));
+        let stage_path = parent.join(stage_dir_name(output_root_name)?);
         fs::create_dir(&stage_path)?;
 
         Ok(Self {
@@ -549,15 +565,19 @@ fn lock_file_name(output_root_name: &str) -> String {
     format!(".{output_root_name}.lock")
 }
 
-fn stage_dir_name(output_root_name: &str) -> String {
-    let suffix = SystemTime::now()
+fn stage_dir_name(output_root_name: &str) -> Result<String> {
+    stage_dir_name_at(output_root_name, SystemTime::now())
+}
+
+fn stage_dir_name_at(output_root_name: &str, now: SystemTime) -> Result<String> {
+    let suffix = now
         .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX_EPOCH")
+        .map_err(|e| anyhow::anyhow!("system clock before UNIX_EPOCH: {e}"))?
         .as_nanos();
-    format!(
+    Ok(format!(
         ".{output_root_name}.staging-{}-{suffix}",
         std::process::id()
-    )
+    ))
 }
 
 fn is_stage_dir_name_for_output_root(name: &str, output_root_name: &str) -> bool {
@@ -741,4 +761,22 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
     left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn stage_dir_name_rejects_pre_unix_epoch() {
+        let now = UNIX_EPOCH
+            .checked_sub(Duration::from_secs(1))
+            .expect("pre-unix-epoch time should be representable");
+
+        let error = stage_dir_name_at("output-root", now)
+            .expect_err("pre-unix-epoch time should error");
+
+        assert!(error.to_string().contains("system clock before UNIX_EPOCH"));
+    }
 }

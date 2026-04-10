@@ -10,7 +10,7 @@ use bolt_v2::{
 };
 use nautilus_common::{
     enums::Environment,
-    msgbus::{publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard},
+    msgbus::{publish_any, publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard},
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
@@ -915,6 +915,365 @@ fn contract_fails_when_unknown_flat_file_has_data() {
     assert!(msg.contains("fail_unknown"), "{msg}");
     let report = assert_failure_report_only(&output_root);
     assert_eq!(report.classes["bars"].status, "fail_unknown");
+}
+
+#[test]
+fn contract_ignores_legacy_flat_instruments_file() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let contract =
+        VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
+            .unwrap();
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
+    let catalog_root = source_dir.path().join("catalog");
+    let inst = test_instrument_id();
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        let catalog_root_clone = catalog_root.clone();
+        let instance_id_clone = instance_id.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let ts = 1_000_000_000u64;
+
+            let quote = QuoteTick::new(
+                inst,
+                Price::from("0.55"),
+                Price::from("0.56"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                ts.into(),
+                ts.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(inst), &quote);
+
+            let trade = TradeTick {
+                instrument_id: inst,
+                price: Price::from("0.55"),
+                size: Quantity::from("10"),
+                aggressor_side: AggressorSide::Buyer,
+                trade_id: TradeId::new("T1"),
+                ts_event: ts.into(),
+                ts_init: ts.into(),
+            };
+            publish_trade(switchboard::get_trades_topic(inst), &trade);
+
+            let delta = OrderBookDelta::new(
+                inst,
+                BookAction::Add,
+                BookOrder::new(OrderSide::Buy, Price::from("0.54"), Quantity::from("50"), 1),
+                0,
+                0,
+                ts.into(),
+                ts.into(),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(inst),
+                &OrderBookDeltas::new(inst, vec![delta]),
+            );
+
+            std::fs::write(
+                catalog_root_clone
+                    .join("live")
+                    .join(&instance_id_clone)
+                    .join("instruments_123.feather"),
+                b"fake feather content",
+            )
+            .unwrap();
+
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let report = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        &output_root,
+        Some(&contract),
+    )
+    .unwrap();
+
+    let cr = report.completeness.unwrap();
+    assert_eq!(cr.outcome, "pass");
+    assert_eq!(cr.classes["instruments"].status, "ignored_infrastructure");
+    assert_eq!(cr.classes["instruments"].capability, "infrastructure");
+}
+
+#[test]
+fn contract_ignores_status_directory_infrastructure() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let contract =
+        VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
+            .unwrap();
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
+    let catalog_root = source_dir.path().join("catalog");
+    let inst = test_instrument_id();
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let ts = 1_000_000_000u64;
+
+            let quote = QuoteTick::new(
+                inst,
+                Price::from("0.55"),
+                Price::from("0.56"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                ts.into(),
+                ts.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(inst), &quote);
+
+            let trade = TradeTick {
+                instrument_id: inst,
+                price: Price::from("0.55"),
+                size: Quantity::from("10"),
+                aggressor_side: AggressorSide::Buyer,
+                trade_id: TradeId::new("T1"),
+                ts_event: ts.into(),
+                ts_init: ts.into(),
+            };
+            publish_trade(switchboard::get_trades_topic(inst), &trade);
+
+            let delta = OrderBookDelta::new(
+                inst,
+                BookAction::Add,
+                BookOrder::new(OrderSide::Buy, Price::from("0.54"), Quantity::from("50"), 1),
+                0,
+                0,
+                ts.into(),
+                ts.into(),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(inst),
+                &OrderBookDeltas::new(inst, vec![delta]),
+            );
+
+            let status = nautilus_model::data::InstrumentStatus::new(
+                inst,
+                nautilus_model::enums::MarketStatusAction::Close,
+                ts.into(),
+                ts.into(),
+                None,
+                None,
+                Some(false),
+                None,
+                None,
+            );
+            publish_any(
+                switchboard::get_instrument_status_topic(inst),
+                &status,
+            );
+
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let status_dir = catalog_root.join("live").join(&instance_id).join("status");
+    assert!(
+        status_dir.is_dir(),
+        "expected status infrastructure directory at {}",
+        status_dir.display()
+    );
+    assert!(
+        std::fs::read_dir(&status_dir)
+            .expect("status directory should be readable")
+            .next()
+            .is_some(),
+        "expected status infrastructure directory to be non-empty at {}",
+        status_dir.display()
+    );
+
+    let report = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        &output_root,
+        Some(&contract),
+    )
+    .unwrap();
+
+    let cr = report.completeness.unwrap();
+    assert_eq!(cr.outcome, "pass");
+    assert!(
+        !cr.classes.contains_key("status"),
+        "status directory should be ignored silently, completeness={cr:?}"
+    );
+}
+
+#[test]
+fn contract_fails_when_legacy_flat_status_file_is_present() {
+    let _guard = venue_contract_test_lock().lock().unwrap();
+    let contract =
+        VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
+            .unwrap();
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("contract-output");
+    let catalog_root = source_dir.path().join("catalog");
+    let inst = test_instrument_id();
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        let catalog_root_clone = catalog_root.clone();
+        let instance_id_clone = instance_id.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let ts = 1_000_000_000u64;
+
+            let quote = QuoteTick::new(
+                inst,
+                Price::from("0.55"),
+                Price::from("0.56"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                ts.into(),
+                ts.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(inst), &quote);
+
+            let trade = TradeTick {
+                instrument_id: inst,
+                price: Price::from("0.55"),
+                size: Quantity::from("10"),
+                aggressor_side: AggressorSide::Buyer,
+                trade_id: TradeId::new("T1"),
+                ts_event: ts.into(),
+                ts_init: ts.into(),
+            };
+            publish_trade(switchboard::get_trades_topic(inst), &trade);
+
+            let delta = OrderBookDelta::new(
+                inst,
+                BookAction::Add,
+                BookOrder::new(OrderSide::Buy, Price::from("0.54"), Quantity::from("50"), 1),
+                0,
+                0,
+                ts.into(),
+                ts.into(),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(inst),
+                &OrderBookDeltas::new(inst, vec![delta]),
+            );
+
+            std::fs::write(
+                catalog_root_clone
+                    .join("live")
+                    .join(&instance_id_clone)
+                    .join("status_123.feather"),
+                b"fake feather content",
+            )
+            .unwrap();
+
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let err = convert_live_spool_to_parquet(
+        catalog_root.as_path(),
+        &instance_id,
+        &output_root,
+        Some(&contract),
+    )
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(msg.contains("contract validation failed"), "{msg}");
+    assert!(msg.contains("fail_unknown"), "{msg}");
+    let report = assert_failure_report_only(&output_root);
+    assert_eq!(report.classes["status"].status, "fail_unknown");
 }
 
 #[test]

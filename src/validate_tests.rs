@@ -1097,6 +1097,28 @@ fn runtime_contract_path_requires_streaming_catalog_path() {
 }
 
 #[test]
+fn runtime_relative_contract_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"contracts/polymarket.toml\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "not_absolute");
+}
+
+#[test]
+fn runtime_non_local_contract_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"s3://bucket/contracts/polymarket.toml\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "non_local");
+}
+
+#[test]
 fn runtime_empty_contract_path_rejected() {
     let toml = format!(
         "{}\n{}",
@@ -1105,6 +1127,24 @@ fn runtime_empty_contract_path_rejected() {
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "streaming.contract_path", "empty");
+}
+
+#[test]
+fn runtime_load_rejects_relative_contract_path() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"contracts/polymarket.toml\"\n"
+    );
+    let error = runtime_load_error_for(&toml);
+    assert!(
+        error.contains("streaming.contract_path"),
+        "runtime load error should mention contract_path: {error}"
+    );
+    assert!(
+        error.contains("local absolute path"),
+        "runtime load error should mention local absolute path: {error}"
+    );
 }
 
 #[test]

@@ -1,9 +1,16 @@
 use clap::Parser;
 use log::LevelFilter;
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use bolt_v2::{
-    clients::polymarket, config::Config, normalized_sink, secrets, strategies::exec_tester,
+    clients::polymarket,
+    config::{Config, ReferenceVenueKind},
+    normalized_sink,
+    platform::runtime::{
+        build_reference_data_client, reference_client_name_for_kind, wire_platform_runtime,
+    },
+    secrets,
+    strategies::exec_tester,
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
@@ -51,34 +58,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Run { config } => {
             let cfg = Config::load(&config)?;
 
-            let node = cfg.node;
-            let logging = cfg.logging;
-            let data_clients = cfg.data_clients;
-            let exec_clients = cfg.exec_clients;
-            let strategies = cfg.strategies;
-            let streaming = cfg.streaming;
-
-            let trader_id = TraderId::from(node.trader_id.as_str());
-            let environment = parse_environment(&node.environment)?;
+            let trader_id = TraderId::from(cfg.node.trader_id.as_str());
+            let environment = parse_environment(&cfg.node.environment)?;
             let log_config = LoggerConfig {
-                stdout_level: parse_log_level(&logging.stdout_level)?,
-                fileout_level: parse_log_level(&logging.file_level)?,
+                stdout_level: parse_log_level(&cfg.logging.stdout_level)?,
+                fileout_level: parse_log_level(&cfg.logging.file_level)?,
                 ..Default::default()
             };
 
             let mut builder = LiveNode::builder(trader_id, environment)?
-                .with_name(node.name)
+                .with_name(cfg.node.name.clone())
                 .with_logging(log_config)
-                .with_load_state(node.load_state)
-                .with_save_state(node.save_state)
-                .with_timeout_connection(node.timeout_connection_secs)
-                .with_timeout_reconciliation(node.timeout_reconciliation_secs)
-                .with_timeout_portfolio(node.timeout_portfolio_secs)
-                .with_timeout_disconnection_secs(node.timeout_disconnection_secs)
-                .with_delay_post_stop_secs(node.delay_post_stop_secs)
-                .with_delay_shutdown_secs(node.delay_shutdown_secs);
+                .with_load_state(cfg.node.load_state)
+                .with_save_state(cfg.node.save_state)
+                .with_timeout_connection(cfg.node.timeout_connection_secs)
+                .with_timeout_reconciliation(cfg.node.timeout_reconciliation_secs)
+                .with_timeout_portfolio(cfg.node.timeout_portfolio_secs)
+                .with_timeout_disconnection_secs(cfg.node.timeout_disconnection_secs)
+                .with_delay_post_stop_secs(cfg.node.delay_post_stop_secs)
+                .with_delay_shutdown_secs(cfg.node.delay_shutdown_secs);
 
-            for client in &data_clients {
+            for client in &cfg.data_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
                         let (factory, config) = polymarket::build_data_client(&client.config)?;
@@ -89,7 +89,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            for client in &exec_clients {
+            if !cfg.rulesets.is_empty() {
+                let mut registered_reference_kinds = HashSet::new();
+                for venue in &cfg.reference.venues {
+                    if !registered_reference_kinds.insert(reference_kind_key(&venue.kind)) {
+                        continue;
+                    }
+
+                    match venue.kind {
+                        ReferenceVenueKind::Polymarket => {}
+                        ReferenceVenueKind::Chainlink => {
+                            return Err("chainlink reference client is not implemented yet".into());
+                        }
+                        _ => {
+                            let (factory, config) = build_reference_data_client(venue)?;
+                            builder = builder.add_data_client(
+                                Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
+                                factory,
+                                config,
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            for client in &cfg.exec_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
                         let resolved = secrets::resolve_polymarket(&client.secrets)?;
@@ -109,15 +133,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app: AppFuture = Box::pin(async move {
                 let mut node = builder.build()?;
                 let node_handle = node.handle();
-                let normalized_sink_guards = if streaming.catalog_path.trim().is_empty() {
+                let normalized_sink_guards = if cfg.streaming.catalog_path.trim().is_empty() {
                     None
                 } else {
                     Some(normalized_sink::wire_normalized_sinks(
                         &node,
                         node_handle,
-                        &streaming.catalog_path,
-                        streaming.flush_interval_ms,
-                        streaming.contract_path.as_deref(),
+                        &cfg.streaming.catalog_path,
+                        cfg.streaming.flush_interval_ms,
+                        cfg.streaming.contract_path.as_deref(),
                     )?)
                 };
                 let mut normalized_sink_guards = normalized_sink_guards;
@@ -125,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_mut()
                     .and_then(|guards| guards.take_failure_receiver());
 
-                for strategy in &strategies {
+                for strategy in &cfg.strategies {
                     match strategy.kind.as_str() {
                         "exec_tester" => {
                             let strategy = exec_tester::build_exec_tester(&strategy.config)?;
@@ -139,6 +163,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+                let platform_runtime_guards = if cfg.rulesets.is_empty() {
+                    None
+                } else {
+                    Some(wire_platform_runtime(&mut node, &cfg)?)
+                };
 
                 let run_result = {
                     let run_future = node.run();
@@ -156,6 +185,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         run_future.await
                     }
                 };
+                let platform_shutdown_result = if let Some(guards) = platform_runtime_guards {
+                    guards.shutdown().await.map_err(|e| {
+                        Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
+                    })
+                } else {
+                    Ok(())
+                };
                 let shutdown_result = if let Some(guards) = normalized_sink_guards {
                     guards.shutdown().await.map_err(|e| {
                         Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
@@ -164,14 +200,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(())
                 };
 
-                match (run_result, shutdown_result) {
-                    (Ok(()), Ok(())) => Ok(()),
-                    (Err(run_error), Ok(())) => Err(run_error.into()),
-                    (Ok(()), Err(shutdown_error)) => Err(shutdown_error),
-                    (Err(run_error), Err(shutdown_error)) => {
+                match (run_result, platform_shutdown_result, shutdown_result) {
+                    (Ok(()), Ok(()), Ok(())) => Ok(()),
+                    (Err(run_error), Ok(()), Ok(())) => Err(run_error.into()),
+                    (Ok(()), Err(platform_error), Ok(())) => Err(platform_error),
+                    (Ok(()), Ok(()), Err(shutdown_error)) => Err(shutdown_error),
+                    (Err(run_error), Err(platform_error), Ok(())) => {
+                        log::error!("Live node run error during platform shutdown: {run_error}");
+                        Err(Box::new(std::io::Error::other(format!(
+                            "platform shutdown error: {platform_error}; node run error: {run_error}"
+                        ))) as Box<dyn std::error::Error>)
+                    }
+                    (Err(run_error), Ok(()), Err(shutdown_error)) => {
                         log::error!("Live node run error during sink shutdown: {run_error}");
                         Err(Box::new(std::io::Error::other(format!(
                             "normalized sink shutdown error: {shutdown_error}; node run error: {run_error}"
+                        ))) as Box<dyn std::error::Error>)
+                    }
+                    (Ok(()), Err(platform_error), Err(shutdown_error)) => {
+                        log::error!(
+                            "Normalized sink secondary error during platform shutdown: {shutdown_error}"
+                        );
+                        Err(platform_error)
+                    }
+                    (Err(run_error), Err(platform_error), Err(shutdown_error)) => {
+                        log::error!(
+                            "Normalized sink secondary error during platform shutdown: {shutdown_error}"
+                        );
+                        log::error!("Live node run error during platform shutdown: {run_error}");
+                        Err(Box::new(std::io::Error::other(format!(
+                            "platform shutdown error: {platform_error}; node run error: {run_error}"
                         ))) as Box<dyn std::error::Error>)
                     }
                 }
@@ -252,5 +310,18 @@ fn parse_log_level(s: &str) -> Result<LevelFilter, Box<dyn std::error::Error>> {
         "Error" => Ok(LevelFilter::Error),
         "Off" => Ok(LevelFilter::Off),
         other => Err(format!("Unknown log level: {other}").into()),
+    }
+}
+
+fn reference_kind_key(kind: &ReferenceVenueKind) -> &'static str {
+    match kind {
+        ReferenceVenueKind::Binance => "binance",
+        ReferenceVenueKind::Bybit => "bybit",
+        ReferenceVenueKind::Deribit => "deribit",
+        ReferenceVenueKind::Hyperliquid => "hyperliquid",
+        ReferenceVenueKind::Kraken => "kraken",
+        ReferenceVenueKind::Okx => "okx",
+        ReferenceVenueKind::Polymarket => "polymarket",
+        ReferenceVenueKind::Chainlink => "chainlink",
     }
 }

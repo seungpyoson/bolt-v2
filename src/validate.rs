@@ -1,5 +1,5 @@
-use crate::config::Config;
-use crate::live_config::LiveLocalConfig;
+use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
+use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
 use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;
@@ -240,6 +240,29 @@ fn check_positive_u64(errors: &mut Vec<ValidationError>, field: &str, value: u64
         );
     }
 }
+
+fn check_positive_finite_f64(errors: &mut Vec<ValidationError>, field: &str, value: f64) {
+    if !value.is_finite() || value <= 0.0 {
+        push_error(
+            errors,
+            field,
+            "not_positive_finite",
+            format!("must be > 0.0 and finite, got {value}"),
+        );
+    }
+}
+
+fn check_non_negative_finite_f64(errors: &mut Vec<ValidationError>, field: &str, value: f64) {
+    if !value.is_finite() || value < 0.0 {
+        push_error(
+            errors,
+            field,
+            "not_non_negative_finite",
+            format!("must be >= 0.0 and finite, got {value}"),
+        );
+    }
+}
+
 fn check_signature_type(errors: &mut Vec<ValidationError>, field: &str, value: i64) {
     if !(0..=2).contains(&value) {
         push_error(
@@ -414,6 +437,23 @@ fn first_seen_index<'a>(
             None
         }
     }
+}
+
+fn implied_reference_venue_kind(resolution_basis: &str) -> Option<ReferenceVenueKind> {
+    const PREFIXES: &[(&str, ReferenceVenueKind)] = &[
+        ("binance_", ReferenceVenueKind::Binance),
+        ("bybit_", ReferenceVenueKind::Bybit),
+        ("deribit_", ReferenceVenueKind::Deribit),
+        ("hyperliquid_", ReferenceVenueKind::Hyperliquid),
+        ("kraken_", ReferenceVenueKind::Kraken),
+        ("okx_", ReferenceVenueKind::Okx),
+        ("polymarket_", ReferenceVenueKind::Polymarket),
+        ("chainlink_", ReferenceVenueKind::Chainlink),
+    ];
+
+    PREFIXES
+        .iter()
+        .find_map(|(prefix, kind)| resolution_basis.starts_with(prefix).then(|| kind.clone()))
 }
 
 fn check_contract_path_catalog_dependency(
@@ -630,6 +670,180 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "secrets.passphrase",
         &config.secrets.passphrase,
     );
+
+    if config.rulesets.is_empty() {
+        let default_reference = LiveReferenceInput::default();
+        if !config.reference.publish_topic.trim().is_empty()
+            || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || !config.reference.venues.is_empty()
+        {
+            push_error(
+                &mut errors,
+                "reference",
+                "orphaned_phase1_reference",
+                "reference must not be configured unless at least one ruleset is enabled"
+                    .to_string(),
+            );
+        }
+
+        if config.audit.is_some() {
+            push_error(
+                &mut errors,
+                "audit",
+                "orphaned_phase1_audit",
+                "audit must not be configured unless at least one ruleset is enabled".to_string(),
+            );
+        }
+    }
+
+    if !config.rulesets.is_empty() && config.audit.is_none() {
+        push_error(
+            &mut errors,
+            "audit",
+            "missing_audit",
+            "audit must be configured when rulesets are enabled".to_string(),
+        );
+    }
+
+    if !config.rulesets.is_empty() {
+        check_non_empty(
+            &mut errors,
+            "reference.publish_topic",
+            &config.reference.publish_topic,
+        );
+        check_positive_u64(
+            &mut errors,
+            "reference.min_publish_interval_ms",
+            config.reference.min_publish_interval_ms,
+        );
+    }
+
+    let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();
+    for (i, ruleset) in config.rulesets.iter().enumerate() {
+        let field = format!("rulesets[{i}].id");
+        check_non_empty(&mut errors, &field, &ruleset.id);
+
+        let tag_slug_field = format!("rulesets[{i}].tag_slug");
+        check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
+
+        let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
+        check_non_empty(
+            &mut errors,
+            &resolution_basis_field,
+            &ruleset.resolution_basis,
+        );
+
+        let min_expiry_field = format!("rulesets[{i}].min_time_to_expiry_secs");
+        check_positive_u64(
+            &mut errors,
+            &min_expiry_field,
+            ruleset.min_time_to_expiry_secs,
+        );
+
+        let max_expiry_field = format!("rulesets[{i}].max_time_to_expiry_secs");
+        check_positive_u64(
+            &mut errors,
+            &max_expiry_field,
+            ruleset.max_time_to_expiry_secs,
+        );
+        if ruleset.max_time_to_expiry_secs < ruleset.min_time_to_expiry_secs {
+            push_error(
+                &mut errors,
+                &max_expiry_field,
+                "invalid_max_time_to_expiry_secs",
+                format!(
+                    "{max_expiry_field} must be >= {min_expiry_field}, got {} < {}",
+                    ruleset.max_time_to_expiry_secs, ruleset.min_time_to_expiry_secs
+                ),
+            );
+        }
+        let freeze_field = format!("rulesets[{i}].freeze_before_end_secs");
+        if ruleset.freeze_before_end_secs < ruleset.min_time_to_expiry_secs {
+            push_error(
+                &mut errors,
+                &freeze_field,
+                "invalid_freeze_before_end_secs",
+                format!(
+                    "{freeze_field} must be >= {min_expiry_field}, got {} < {}",
+                    ruleset.freeze_before_end_secs, ruleset.min_time_to_expiry_secs
+                ),
+            );
+        }
+
+        let min_liquidity_field = format!("rulesets[{i}].min_liquidity_num");
+        check_non_negative_finite_f64(&mut errors, &min_liquidity_field, ruleset.min_liquidity_num);
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].selector_poll_interval_ms"),
+            ruleset.selector_poll_interval_ms,
+        );
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].candidate_load_timeout_secs"),
+            ruleset.candidate_load_timeout_secs,
+        );
+
+        if let Some(first_index) = first_seen_index(&mut ruleset_id_indices, &ruleset.id, i) {
+            push_error(
+                &mut errors,
+                "rulesets",
+                "duplicate_ruleset_id",
+                format!(
+                    "rulesets[{i}] has duplicate id \"{}\" (first defined at rulesets[{first_index}])",
+                    ruleset.id
+                ),
+            );
+        }
+    }
+
+    for (i, venue) in config.reference.venues.iter().enumerate() {
+        let name_field = format!("reference.venues[{i}].name");
+        check_non_empty(&mut errors, &name_field, &venue.name);
+
+        let instrument_id_field = format!("reference.venues[{i}].instrument_id");
+        check_non_empty(&mut errors, &instrument_id_field, &venue.instrument_id);
+
+        let weight_field = format!("reference.venues[{i}].base_weight");
+        check_positive_finite_f64(&mut errors, &weight_field, venue.base_weight);
+
+        let stale_field = format!("reference.venues[{i}].stale_after_ms");
+        check_positive_u64(&mut errors, &stale_field, venue.stale_after_ms);
+
+        let disable_field = format!("reference.venues[{i}].disable_after_ms");
+        if venue.disable_after_ms < venue.stale_after_ms {
+            push_error(
+                &mut errors,
+                &disable_field,
+                "invalid_disable_after_ms",
+                format!(
+                    "{disable_field} must be >= {stale_field}, got {} < {}",
+                    venue.disable_after_ms, venue.stale_after_ms
+                ),
+            );
+        }
+    }
+
+    if let Some(audit) = config.audit.as_ref() {
+        check_non_empty(&mut errors, "audit.local_dir", &audit.local_dir);
+        check_non_empty(&mut errors, "audit.s3_uri", &audit.s3_uri);
+        check_positive_u64(
+            &mut errors,
+            "audit.ship_interval_secs",
+            audit.ship_interval_secs,
+        );
+        check_positive_u64(
+            &mut errors,
+            "audit.upload_attempt_timeout_secs",
+            audit.upload_attempt_timeout_secs,
+        );
+        check_positive_u64(&mut errors, "audit.roll_max_bytes", audit.roll_max_bytes);
+        check_positive_u64(&mut errors, "audit.roll_max_secs", audit.roll_max_secs);
+        check_positive_u64(
+            &mut errors,
+            "audit.max_local_backlog_bytes",
+            audit.max_local_backlog_bytes,
+        );
+    }
 
     if !config.streaming.catalog_path.trim().is_empty() {
         check_positive_u64(
@@ -1003,6 +1217,263 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                         format!("must be a string, got {} value", value.type_str()),
                     );
                 }
+            }
+        }
+    }
+
+    if config.rulesets.len() > 1 {
+        push_error(
+            &mut errors,
+            "rulesets",
+            "phase1_single_active_ruleset",
+            format!(
+                "Phase 1 supports exactly one active ruleset, got {}",
+                config.rulesets.len()
+            ),
+        );
+    }
+
+    if config.rulesets.len() == 1 && config.reference.venues.is_empty() {
+        push_error(
+            &mut errors,
+            "reference.venues",
+            "missing_reference_venues",
+            "reference.venues must not be empty when a ruleset is configured".to_string(),
+        );
+    }
+
+    if config.rulesets.is_empty() {
+        let default_reference = ReferenceConfig::default();
+        if !config.reference.publish_topic.trim().is_empty()
+            || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || !config.reference.venues.is_empty()
+        {
+            push_error(
+                &mut errors,
+                "reference",
+                "orphaned_phase1_reference",
+                "reference must not be configured unless at least one ruleset is enabled"
+                    .to_string(),
+            );
+        }
+
+        if config.audit.is_some() {
+            push_error(
+                &mut errors,
+                "audit",
+                "orphaned_phase1_audit",
+                "audit must not be configured unless at least one ruleset is enabled".to_string(),
+            );
+        }
+    }
+
+    if !config.rulesets.is_empty() && config.audit.is_none() {
+        push_error(
+            &mut errors,
+            "audit",
+            "missing_audit",
+            "audit must be configured when rulesets are enabled".to_string(),
+        );
+    }
+
+    if !config.rulesets.is_empty() {
+        check_non_empty(
+            &mut errors,
+            "reference.publish_topic",
+            &config.reference.publish_topic,
+        );
+        check_positive_u64(
+            &mut errors,
+            "reference.min_publish_interval_ms",
+            config.reference.min_publish_interval_ms,
+        );
+    }
+
+    let mut reference_name_indices: HashMap<&str, usize> = HashMap::new();
+    for (i, venue) in config.reference.venues.iter().enumerate() {
+        let name_field = format!("reference.venues[{i}].name");
+        check_non_empty(&mut errors, &name_field, &venue.name);
+
+        let instrument_id_field = format!("reference.venues[{i}].instrument_id");
+        check_non_empty(&mut errors, &instrument_id_field, &venue.instrument_id);
+
+        let weight_field = format!("reference.venues[{i}].base_weight");
+        check_positive_finite_f64(&mut errors, &weight_field, venue.base_weight);
+
+        let stale_field = format!("reference.venues[{i}].stale_after_ms");
+        check_positive_u64(&mut errors, &stale_field, venue.stale_after_ms);
+
+        let disable_field = format!("reference.venues[{i}].disable_after_ms");
+        if venue.disable_after_ms < venue.stale_after_ms {
+            push_error(
+                &mut errors,
+                &disable_field,
+                "invalid_disable_after_ms",
+                format!(
+                    "{disable_field} must be >= {stale_field}, got {} < {}",
+                    venue.disable_after_ms, venue.stale_after_ms
+                ),
+            );
+        }
+
+        if let Some(first_index) = first_seen_index(&mut reference_name_indices, &venue.name, i) {
+            push_error(
+                &mut errors,
+                "reference.venues",
+                "duplicate_name",
+                format!(
+                    "reference.venues[{i}] has duplicate name \"{}\" (first defined at reference.venues[{first_index}])",
+                    venue.name
+                ),
+            );
+        }
+    }
+
+    if let Some(audit) = config.audit.as_ref() {
+        check_non_empty(&mut errors, "audit.local_dir", &audit.local_dir);
+        check_non_empty(&mut errors, "audit.s3_uri", &audit.s3_uri);
+        check_positive_u64(
+            &mut errors,
+            "audit.ship_interval_secs",
+            audit.ship_interval_secs,
+        );
+        check_positive_u64(
+            &mut errors,
+            "audit.upload_attempt_timeout_secs",
+            audit.upload_attempt_timeout_secs,
+        );
+        check_positive_u64(&mut errors, "audit.roll_max_bytes", audit.roll_max_bytes);
+        check_positive_u64(&mut errors, "audit.roll_max_secs", audit.roll_max_secs);
+        check_positive_u64(
+            &mut errors,
+            "audit.max_local_backlog_bytes",
+            audit.max_local_backlog_bytes,
+        );
+    }
+
+    let has_polymarket_reference = config
+        .reference
+        .venues
+        .iter()
+        .any(|venue| venue.kind == ReferenceVenueKind::Polymarket);
+    if has_polymarket_reference {
+        let polymarket_data_clients = config
+            .data_clients
+            .iter()
+            .filter(|client| client.kind == "polymarket")
+            .count();
+
+        if polymarket_data_clients == 0 {
+            push_error(
+                &mut errors,
+                "reference.venues",
+                "missing_primary_polymarket_client",
+                "reference venue kind polymarket requires the primary polymarket data client to already be configured".to_string(),
+            );
+        } else if polymarket_data_clients > 1 {
+            push_error(
+                &mut errors,
+                "data_clients",
+                "duplicate_polymarket_client_for_reference",
+                "reference venue kind polymarket must reuse the primary polymarket data client instead of registering a second polymarket client".to_string(),
+            );
+        }
+    }
+
+    let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();
+    for (i, ruleset) in config.rulesets.iter().enumerate() {
+        let id_field = format!("rulesets[{i}].id");
+        check_non_empty(&mut errors, &id_field, &ruleset.id);
+
+        let tag_slug_field = format!("rulesets[{i}].tag_slug");
+        check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
+
+        let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
+        check_non_empty(
+            &mut errors,
+            &resolution_basis_field,
+            &ruleset.resolution_basis,
+        );
+
+        let min_expiry_field = format!("rulesets[{i}].min_time_to_expiry_secs");
+        check_positive_u64(
+            &mut errors,
+            &min_expiry_field,
+            ruleset.min_time_to_expiry_secs,
+        );
+
+        let max_expiry_field = format!("rulesets[{i}].max_time_to_expiry_secs");
+        check_positive_u64(
+            &mut errors,
+            &max_expiry_field,
+            ruleset.max_time_to_expiry_secs,
+        );
+        if ruleset.max_time_to_expiry_secs < ruleset.min_time_to_expiry_secs {
+            push_error(
+                &mut errors,
+                &max_expiry_field,
+                "invalid_max_time_to_expiry_secs",
+                format!(
+                    "{max_expiry_field} must be >= {min_expiry_field}, got {} < {}",
+                    ruleset.max_time_to_expiry_secs, ruleset.min_time_to_expiry_secs
+                ),
+            );
+        }
+        let freeze_field = format!("rulesets[{i}].freeze_before_end_secs");
+        if ruleset.freeze_before_end_secs < ruleset.min_time_to_expiry_secs {
+            push_error(
+                &mut errors,
+                &freeze_field,
+                "invalid_freeze_before_end_secs",
+                format!(
+                    "{freeze_field} must be >= {min_expiry_field}, got {} < {}",
+                    ruleset.freeze_before_end_secs, ruleset.min_time_to_expiry_secs
+                ),
+            );
+        }
+
+        let min_liquidity_field = format!("rulesets[{i}].min_liquidity_num");
+        check_non_negative_finite_f64(&mut errors, &min_liquidity_field, ruleset.min_liquidity_num);
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].selector_poll_interval_ms"),
+            ruleset.selector_poll_interval_ms,
+        );
+        check_positive_u64(
+            &mut errors,
+            &format!("rulesets[{i}].candidate_load_timeout_secs"),
+            ruleset.candidate_load_timeout_secs,
+        );
+
+        if let Some(first_index) = first_seen_index(&mut ruleset_id_indices, &ruleset.id, i) {
+            push_error(
+                &mut errors,
+                "rulesets",
+                "duplicate_ruleset_id",
+                format!(
+                    "rulesets[{i}] has duplicate id \"{}\" (first defined at rulesets[{first_index}])",
+                    ruleset.id
+                ),
+            );
+        }
+
+        if let Some(required_kind) = implied_reference_venue_kind(&ruleset.resolution_basis) {
+            let has_matching_kind = config
+                .reference
+                .venues
+                .iter()
+                .any(|venue| venue.kind == required_kind);
+
+            if !has_matching_kind {
+                push_error(
+                    &mut errors,
+                    &format!("rulesets[{i}].resolution_basis"),
+                    "missing_reference_venue_family",
+                    format!(
+                        "rulesets[{i}].resolution_basis requires a configured reference venue of kind {:?}",
+                        required_kind
+                    ),
+                );
             }
         }
     }

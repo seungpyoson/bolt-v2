@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use toml::Value;
 
 #[derive(Debug, Deserialize)]
@@ -14,6 +14,31 @@ pub struct Config {
     pub raw_capture: RawCaptureConfig,
     #[serde(default)]
     pub streaming: StreamingCaptureConfig,
+    #[serde(default)]
+    pub reference: ReferenceConfig,
+    #[serde(default)]
+    pub rulesets: Vec<RulesetConfig>,
+    #[serde(default)]
+    pub audit: Option<AuditConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceVenueKind {
+    Binance,
+    Bybit,
+    Deribit,
+    Hyperliquid,
+    Kraken,
+    Okx,
+    Polymarket,
+    Chainlink,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RulesetVenueKind {
+    Polymarket,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +115,61 @@ pub struct StreamingCaptureConfig {
     pub flush_interval_ms: u64,
     #[serde(default)]
     pub contract_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReferenceConfig {
+    pub publish_topic: String,
+    pub min_publish_interval_ms: u64,
+    #[serde(default)]
+    pub venues: Vec<ReferenceVenueEntry>,
+}
+
+impl Default for ReferenceConfig {
+    fn default() -> Self {
+        Self {
+            publish_topic: String::new(),
+            min_publish_interval_ms: 100,
+            venues: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReferenceVenueEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: ReferenceVenueKind,
+    pub instrument_id: String,
+    pub base_weight: f64,
+    pub stale_after_ms: u64,
+    pub disable_after_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RulesetConfig {
+    pub id: String,
+    pub venue: RulesetVenueKind,
+    pub tag_slug: String,
+    pub resolution_basis: String,
+    pub min_time_to_expiry_secs: u64,
+    pub max_time_to_expiry_secs: u64,
+    pub min_liquidity_num: f64,
+    pub require_accepting_orders: bool,
+    pub freeze_before_end_secs: u64,
+    pub selector_poll_interval_ms: u64,
+    pub candidate_load_timeout_secs: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuditConfig {
+    pub local_dir: String,
+    pub s3_uri: String,
+    pub ship_interval_secs: u64,
+    pub upload_attempt_timeout_secs: u64,
+    pub roll_max_bytes: u64,
+    pub roll_max_secs: u64,
+    pub max_local_backlog_bytes: u64,
 }
 
 pub(crate) fn default_raw_capture_output_dir() -> String {

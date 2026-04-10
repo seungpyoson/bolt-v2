@@ -100,6 +100,26 @@ impl Config {
             .map_err(|e| format!("Failed to read config file {}: {e}", path.display()))?;
         let config: Config = toml::from_str(&contents)
             .map_err(|e| format!("Failed to parse config file {}: {e}", path.display()))?;
+
+        let validation_errors = crate::validate::validate_runtime(&config);
+        if !validation_errors.is_empty() {
+            let details: Vec<String> = validation_errors
+                .iter()
+                .map(|e| format!("  - {e}"))
+                .collect();
+            return Err(format!(
+                "Runtime config validation failed ({} error{}):\n{}",
+                validation_errors.len(),
+                if validation_errors.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                details.join("\n"),
+            )
+            .into());
+        }
+
         Ok(config)
     }
 }

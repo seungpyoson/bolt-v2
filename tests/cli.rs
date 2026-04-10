@@ -12,6 +12,17 @@ use tempfile::tempdir;
 
 static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+fn assert_runtime_validation_failed(stderr: &str, expected: &str) {
+    assert!(
+        stderr.contains("Runtime config validation failed"),
+        "expected runtime validation failure, got: {stderr}"
+    );
+    assert!(
+        stderr.contains(expected),
+        "expected runtime validation failure to mention {expected:?}, got: {stderr}"
+    );
+}
+
 #[test]
 fn temp_config_paths_remain_unique_for_same_timestamp() {
     let first = temp_config_path_for_timestamp(123);
@@ -42,6 +53,73 @@ fn secrets_check_reports_complete_secret_config() {
 }
 
 #[test]
+fn secrets_check_fails_on_invalid_config_via_load_validation() {
+    let path = write_temp_config(
+        r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 60
+timeout_reconciliation_secs = 30
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 10
+delay_shutdown_secs = 5
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "TEST"
+type = "polymarket"
+[data_clients.config]
+event_slugs = ["btc-updown-5m"]
+
+[[exec_clients]]
+name = "TEST"
+type = "polymarket"
+[exec_clients.config]
+account_id = "TEST-001"
+signature_type = 2
+funder = "0xabc"
+[exec_clients.secrets]
+region = "eu-west-1"
+pk = "/x/pk"
+api_key = "/x/key"
+api_secret = "/x/secret"
+passphrase = "/x/pass"
+
+[[strategies]]
+type = "exec_tester"
+[strategies.config]
+strategy_id = "EXEC_TESTER-001"
+instrument_id = "TOKEN.POLYMARKET"
+client_id = "TEST"
+order_qty = "5"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "secrets",
+            "check",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("secrets check should run");
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_runtime_validation_failed(&stderr, "node.trader_id");
+}
+
+#[test]
 fn secrets_check_fails_when_required_fields_are_missing() {
     let path = write_temp_config(
         r#"
@@ -66,6 +144,7 @@ file_level = "Debug"
 name = "TEST"
 type = "polymarket"
 [data_clients.config]
+event_slugs = ["btc-updown-5m"]
 
 [[exec_clients]]
 name = "TEST"
@@ -81,7 +160,7 @@ region = "eu-west-1"
 type = "exec_tester"
 [strategies.config]
 strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.TEST"
+instrument_id = "TOKEN.POLYMARKET"
 client_id = "TEST"
 order_qty = "5"
 "#,
@@ -100,9 +179,10 @@ order_qty = "5"
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("TEST: missing secret config fields (pk, api_key, api_secret, passphrase)")
-    );
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.pk");
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.api_key");
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.api_secret");
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.passphrase");
 }
 
 #[test]
@@ -130,6 +210,7 @@ file_level = "Debug"
 name = "TEST"
 type = "polymarket"
 [data_clients.config]
+event_slugs = ["btc-updown-5m"]
 
 [[exec_clients]]
 name = "TEST"
@@ -145,7 +226,7 @@ region = "eu-west-1"
 type = "exec_tester"
 [strategies.config]
 strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.TEST"
+instrument_id = "TOKEN.POLYMARKET"
 client_id = "TEST"
 order_qty = "5"
 "#,
@@ -164,10 +245,10 @@ order_qty = "5"
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr
-            .contains("Missing required secret config fields: pk, api_key, api_secret, passphrase")
-    );
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.pk");
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.api_key");
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.api_secret");
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.passphrase");
 }
 
 #[test]
@@ -195,6 +276,7 @@ file_level = "Debug"
 name = "TEST"
 type = "polymarket"
 [data_clients.config]
+event_slugs = ["btc-updown-5m"]
 
 [[exec_clients]]
 name = "TEST"
@@ -214,7 +296,7 @@ passphrase = "/x/pass"
 type = "exec_tester"
 [strategies.config]
 strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.TEST"
+instrument_id = "TOKEN.POLYMARKET"
 client_id = "TEST"
 order_qty = "5"
 "#,
@@ -233,7 +315,7 @@ order_qty = "5"
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("TEST: missing secret config fields (region)"));
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.region");
 }
 
 #[test]
@@ -261,6 +343,7 @@ file_level = "Debug"
 name = "TEST"
 type = "polymarket"
 [data_clients.config]
+event_slugs = ["btc-updown-5m"]
 
 [[exec_clients]]
 name = "TEST"
@@ -280,7 +363,7 @@ passphrase = "/x/pass"
 type = "exec_tester"
 [strategies.config]
 strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.TEST"
+instrument_id = "TOKEN.POLYMARKET"
 client_id = "TEST"
 order_qty = "5"
 "#,
@@ -299,7 +382,7 @@ order_qty = "5"
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Missing required secret config fields: region"));
+    assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.region");
 }
 
 #[test]

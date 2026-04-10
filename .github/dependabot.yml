@@ -10,11 +10,15 @@ updates:
     schedule:
       interval: "weekly"
     groups:
-      nautilus-dependencies:
+      cargo-dependencies:
         patterns:
-          - "nautilus-*"
+          - "*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      action-dependencies:
+        patterns:
+          - "*"

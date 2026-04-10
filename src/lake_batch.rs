@@ -607,11 +607,14 @@ fn output_root_name(output_root: &Path) -> Result<&str> {
 }
 
 fn write_failure_output_root(output_root: &Path, json: &str) -> Result<()> {
-    if !output_root.exists() {
+    let created_output_root = !output_root.exists();
+    if created_output_root {
         fs::create_dir(output_root)?;
     }
     if let Err(error) = write_atomic_file(&output_root.join(COMPLETENESS_REPORT_FILE), json) {
-        let _ = fs::remove_dir_all(output_root);
+        if created_output_root {
+            let _ = fs::remove_dir_all(output_root);
+        }
         return Err(error);
     }
     Ok(())
@@ -767,6 +770,8 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -842,5 +847,37 @@ mod tests {
         );
         assert!(report.classes["quotes"].spool_present);
         assert!(report.classes["quotes"].reason.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_failure_output_root_preserves_preexisting_empty_dir_on_write_error() {
+        let parent = tempdir().expect("tempdir should exist");
+        let output_root = parent.path().join("precreated-output");
+        fs::create_dir(&output_root).expect("output_root should be created");
+        fs::set_permissions(&output_root, fs::Permissions::from_mode(0o555))
+            .expect("output_root permissions should be updated");
+
+        let error = write_failure_output_root(&output_root, "{\"outcome\":\"fail\"}")
+            .expect_err("write should fail when directory is not writable");
+
+        assert!(
+            error.to_string().contains("Permission denied"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            output_root.exists(),
+            "precreated output_root should not be deleted on write failure"
+        );
+        assert!(
+            fs::read_dir(&output_root)
+                .expect("precreated output_root should remain readable")
+                .next()
+                .is_none(),
+            "precreated output_root should remain empty"
+        );
+
+        fs::set_permissions(&output_root, fs::Permissions::from_mode(0o755))
+            .expect("permissions should be restored for cleanup");
     }
 }

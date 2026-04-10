@@ -1145,6 +1145,13 @@ fn runtime_non_local_contract_path_rejected() {
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "streaming.contract_path", "non_local");
+    assert_error_message_contains(
+        &errors,
+        "streaming.contract_path",
+        "non_local",
+        "local path",
+    );
+    assert_error_message_not_contains(&errors, "streaming.contract_path", "non_local", "absolute");
 }
 
 #[test]

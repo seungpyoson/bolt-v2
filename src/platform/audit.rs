@@ -924,7 +924,7 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
         })?;
         return Ok(None);
     }
-    validate_retained_spool_file(path)?;
+    validate_retained_spool_file(path, date)?;
 
     Ok(Some(PendingAuditFile {
         sequence: sequence.parse().with_context(|| {
@@ -940,7 +940,7 @@ fn parse_retained_spool_file(root: &Path, path: &Path) -> Result<Option<PendingA
     }))
 }
 
-fn validate_retained_spool_file(path: &Path) -> Result<()> {
+fn validate_retained_spool_file(path: &Path, expected_date: &str) -> Result<()> {
     let file = fs::File::open(path).with_context(|| {
         format!(
             "failed to open retained audit spool file {}",
@@ -958,13 +958,29 @@ fn validate_retained_spool_file(path: &Path) -> Result<()> {
                 line_number
             )
         })?;
-        serde_json::from_str::<AuditRecord>(&line).with_context(|| {
+        let record = serde_json::from_str::<AuditRecord>(&line).with_context(|| {
             format!(
                 "invalid retained audit spool file {} at line {}",
                 path.display(),
                 line_number
             )
         })?;
+        let record_date = date_from_ts_ms(record.ts_ms()).with_context(|| {
+            format!(
+                "invalid retained audit spool file {} at line {}",
+                path.display(),
+                line_number
+            )
+        })?;
+        if record_date != expected_date {
+            bail!(
+                "invalid retained audit spool file {} at line {}: record date {} does not match path date {}",
+                path.display(),
+                line_number,
+                record_date,
+                expected_date
+            );
+        }
     }
 
     Ok(())

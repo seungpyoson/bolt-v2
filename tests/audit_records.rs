@@ -914,6 +914,30 @@ async fn corrupt_retained_jsonl_fails_closed_on_restart() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn wrong_date_retained_jsonl_fails_closed_on_restart() {
+    let dir = tempdir().unwrap();
+    let retained_dir = dir.path().join("date=1970-01-01");
+    fs::create_dir_all(&retained_dir).unwrap();
+    let retained_path = retained_dir.join("part-00000000000000000007.jsonl");
+    write_retained_jsonl(&retained_path, &[sample_record(86_400_000)]);
+
+    let uploader = MockUploader::with_outcomes([true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), config(dir.path()));
+
+    drop(audit_tx);
+
+    let error = worker.shutdown().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("record date 1970-01-02 does not match path date 1970-01-01"),
+        "{error:#}"
+    );
+    assert_eq!(uploader.attempt_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn blocked_upload_does_not_prevent_continued_spooling_or_backlog_enforcement() {
     let dir = tempdir().unwrap();
     let release_upload = Arc::new(Notify::new());

@@ -54,6 +54,7 @@ output_dir = "var/raw"
 [streaming]
 catalog_path = ""
 flush_interval_ms = 1000
+# contract_path = "contracts/polymarket.toml"
 
 [reference]
 publish_topic = "platform.reference.default"

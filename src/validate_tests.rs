@@ -122,6 +122,34 @@ fn tracked_template_passes_validation() {
     assert_no_errors(&errors);
 }
 
+#[test]
+fn unknown_field_in_live_local_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\noder_qty = \"10\"",
+    );
+    let error = parse_error_for(&toml);
+    assert!(
+        error.contains("unknown field `oder_qty`"),
+        "expected serde unknown-field error, got: {error}"
+    );
+}
+
+#[test]
+fn missing_secrets_section_produces_validator_error() {
+    let toml = valid_toml().replace(
+        "\n[secrets]\npk = \"/bolt/poly/pk\"\napi_key = \"/bolt/poly/key\"\napi_secret = \"/bolt/poly/secret\"\npassphrase = \"/bolt/poly/passphrase\"\n",
+        "\n",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "secrets.region", "empty");
+    assert_has_error(&errors, "secrets.pk", "empty");
+    assert_has_error(&errors, "secrets.api_key", "empty");
+    assert_has_error(&errors, "secrets.api_secret", "empty");
+    assert_has_error(&errors, "secrets.passphrase", "empty");
+}
+
 // ════════════════════════════════════════════════════════════════
 // NT ASCII contract (check_nt_ascii)
 // ════════════════════════════════════════════════════════════════
@@ -316,6 +344,21 @@ fn instrument_id_bare_suffix_rejected() {
     assert_has_error(&errors, "polymarket.instrument_id", "empty_symbol");
 }
 
+#[test]
+fn instrument_id_whitespace_symbol_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "instrument_id = \"0xabc-12345.POLYMARKET\"",
+        "instrument_id = \"   .POLYMARKET\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "polymarket.instrument_id",
+        "whitespace_only_symbol",
+    );
+}
+
 // ════════════════════════════════════════════════════════════════
 // Quantity (check_positive_qty)
 // ════════════════════════════════════════════════════════════════
@@ -378,6 +421,27 @@ fn order_qty_scientific_negative_exponent_accepted() {
     let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1e-10\"");
     let errors = errors_for(&toml);
     assert_no_errors(&errors);
+}
+
+#[test]
+fn order_qty_precision_error_includes_nt_diagnostic() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"0.12345678901234567\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
+
+    let error = errors
+        .iter()
+        .find(|e| e.field == "strategy.order_qty" && e.code == "not_parseable")
+        .expect("expected quantity parse error");
+    assert!(
+        error.message.contains("precision") || error.message.contains("FIXED_PRECISION"),
+        "expected NT diagnostic in parse error, got: {:?}",
+        error.message
+    );
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -461,6 +525,68 @@ shutdown_delay_secs = 0
     ] {
         assert_has_error(&errors, field, "not_positive");
     }
+}
+
+#[test]
+fn flush_interval_zero_with_catalog_path_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"/data\"\nflush_interval_ms = 0\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.flush_interval_ms", "not_positive");
+}
+
+#[test]
+fn contract_path_requires_streaming_catalog_path() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "requires_catalog_path");
+}
+
+#[test]
+fn empty_contract_path_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "empty");
+}
+
+#[test]
+fn live_local_non_local_contract_path_rejected_before_render() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"s3://bucket/contracts/polymarket.toml\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "non_local");
+    assert_error_message_contains(
+        &errors,
+        "streaming.contract_path",
+        "non_local",
+        "local path",
+    );
+    assert_error_message_not_contains(&errors, "streaming.contract_path", "non_local", "absolute");
+}
+
+#[test]
+fn live_local_relative_contract_path_remains_valid() {
+    let toml = replace(
+        &valid_toml(),
+        "[strategy]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[strategy]",
+    );
+    let errors = errors_for(&toml);
+    assert_no_errors(&errors);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1273,6 +1399,14 @@ fn runtime_event_slugs_wrong_type_rejected() {
 }
 
 #[test]
+fn runtime_empty_event_slugs_rejected() {
+    let toml =
+        valid_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]", "event_slugs = []");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "data_clients[0].config.event_slugs", "empty");
+}
+
+#[test]
 fn runtime_invalid_trader_id_rejected() {
     let toml = valid_runtime_toml().replace("trader_id = \"BOLT-001\"", "trader_id = \"BOLT001\"");
     let errors = runtime_errors_for(&toml);
@@ -1351,6 +1485,16 @@ passphrase = "/bolt/poly/passphrase2"
 }
 
 #[test]
+fn runtime_empty_client_name_rejected() {
+    let toml = valid_runtime_toml()
+        .replacen("name = \"POLYMARKET\"", "name = \"\"", 1)
+        .replacen("name = \"POLYMARKET\"", "name = \"\"", 1);
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "data_clients[0].name", "empty");
+    assert_has_error(&errors, "exec_clients[0].name", "empty");
+}
+
+#[test]
 fn duplicate_strategy_id_names_first_occurrence() {
     let toml = format!(
         "{}\n{}\n{}",
@@ -1411,7 +1555,11 @@ fn strategy_referencing_nonexistent_client_rejected() {
 fn strategy_missing_client_id_rejected() {
     let toml = valid_runtime_toml().replace("client_id = \"POLYMARKET\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies", "missing_client_id");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.client_id",
+        "missing_client_id",
+    );
 }
 
 #[test]
@@ -1427,7 +1575,11 @@ fn strategy_referencing_existing_client_accepted() {
 fn runtime_missing_strategy_id_rejected() {
     let toml = valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies", "missing_strategy_id");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.strategy_id",
+        "missing_strategy_id",
+    );
 }
 
 #[test]
@@ -1448,14 +1600,39 @@ fn runtime_strategy_id_wrong_type_rejected() {
 fn runtime_missing_instrument_id_rejected() {
     let toml = valid_runtime_toml().replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies", "missing_instrument_id");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.instrument_id",
+        "missing_instrument_id",
+    );
 }
 
 #[test]
 fn runtime_missing_order_qty_rejected() {
     let toml = valid_runtime_toml().replace("order_qty = \"5\"\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies", "missing_order_qty");
+    assert_has_error(
+        &errors,
+        "strategies[0].config.order_qty",
+        "missing_order_qty",
+    );
+}
+
+#[test]
+fn runtime_missing_strategy_field_uses_indexed_path() {
+    let toml = valid_runtime_toml().replace("client_id = \"POLYMARKET\"\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.client_id",
+        "missing_client_id",
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.field == "strategies" && e.code == "missing_client_id"),
+        "missing client_id should use indexed field path, got: {errors:?}"
+    );
 }
 
 #[test]
@@ -1481,6 +1658,119 @@ fn runtime_invalid_order_qty_rejected() {
         "strategies[0].config.order_qty",
         "not_positive_number",
     );
+}
+
+#[test]
+fn runtime_multiple_errors_accumulated() {
+    let mut toml = valid_runtime_toml().to_string();
+    toml = toml.replace("trader_id = \"BOLT-001\"", "trader_id = \"BOLT001\"");
+    toml = toml.replace("region = \"eu-west-1\"", "region = \"\"");
+    toml = toml.replace("signature_type = 2", "signature_type = 9");
+
+    let errors = runtime_errors_for(&toml);
+    assert!(
+        errors.len() >= 3,
+        "expected at least 3 runtime errors, got {}: {errors:?}",
+        errors.len()
+    );
+    assert_has_error(&errors, "node.trader_id", "missing_hyphen");
+    assert_has_error(&errors, "exec_clients[0].secrets.region", "empty");
+    assert_has_error(
+        &errors,
+        "exec_clients[0].config.signature_type",
+        "invalid_signature_type",
+    );
+}
+
+#[test]
+fn runtime_flush_interval_zero_with_catalog_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 0\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.flush_interval_ms", "not_positive");
+}
+
+#[test]
+fn runtime_contract_path_requires_streaming_catalog_path() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"\"\nflush_interval_ms = 1000\ncontract_path = \"/opt/bolt-v2/contracts/polymarket.toml\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "requires_catalog_path");
+}
+
+#[test]
+fn runtime_relative_contract_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"contracts/polymarket.toml\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "not_absolute");
+}
+
+#[test]
+fn runtime_non_local_contract_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"s3://bucket/contracts/polymarket.toml\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "non_local");
+    assert_error_message_contains(
+        &errors,
+        "streaming.contract_path",
+        "non_local",
+        "local absolute path",
+    );
+}
+
+#[test]
+fn runtime_empty_contract_path_rejected() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"\"\n"
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "streaming.contract_path", "empty");
+}
+
+#[test]
+fn runtime_load_rejects_relative_contract_path() {
+    let toml = format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        "[streaming]\ncatalog_path = \"var/catalog\"\nflush_interval_ms = 1000\ncontract_path = \"contracts/polymarket.toml\"\n"
+    );
+    let error = runtime_load_error_for(&toml);
+    assert!(
+        error.contains("streaming.contract_path"),
+        "runtime load error should mention contract_path: {error}"
+    );
+    assert!(
+        error.contains("local absolute path"),
+        "runtime load error should mention local absolute path: {error}"
+    );
+}
+
+#[test]
+fn runtime_unsupported_client_type_rejected() {
+    let toml = valid_runtime_toml()
+        .replacen("type = \"polymarket\"", "type = \"bogus\"", 1)
+        .replacen("type = \"polymarket\"", "type = \"bogus\"", 1)
+        .replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "data_clients[0].type", "unsupported_type");
+    assert_has_error(&errors, "exec_clients[0].type", "unsupported_type");
+    assert_has_error(&errors, "strategies[0].type", "unsupported_type");
 }
 
 #[test]

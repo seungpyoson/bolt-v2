@@ -113,6 +113,8 @@ impl Default for RawCaptureConfig {
 pub struct StreamingCaptureConfig {
     pub catalog_path: String,
     pub flush_interval_ms: u64,
+    #[serde(default)]
+    pub contract_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -141,6 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         node_handle,
                         &cfg.streaming.catalog_path,
                         cfg.streaming.flush_interval_ms,
+                        cfg.streaming.contract_path.as_deref(),
                     )?)
                 };
                 let mut normalized_sink_guards = normalized_sink_guards;

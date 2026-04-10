@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -87,16 +88,24 @@ fn default_min_publish_interval_ms() -> u64 {
     100
 }
 
+fn default_live_raw_capture_output_dir() -> String {
+    default_raw_capture_output_dir()
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveLocalConfig {
+    #[serde(default)]
     pub node: LiveNodeInput,
     #[serde(default)]
     pub logging: LiveLoggingInput,
     #[serde(default)]
     pub timeouts: LiveTimeoutsInput,
+    #[serde(default)]
     pub polymarket: LivePolymarketInput,
     #[serde(default)]
     pub strategy: LiveStrategyInput,
+    #[serde(default)]
     pub secrets: LiveSecretsInput,
     #[serde(default)]
     pub raw_capture: LiveRawCaptureInput,
@@ -111,6 +120,7 @@ pub struct LiveLocalConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveNodeInput {
     pub name: String,
     pub trader_id: String,
@@ -122,7 +132,20 @@ pub struct LiveNodeInput {
     pub save_state: bool,
 }
 
+impl Default for LiveNodeInput {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            trader_id: String::new(),
+            environment: default_environment(),
+            load_state: false,
+            save_state: false,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveLoggingInput {
     #[serde(default = "default_stdout_level")]
     pub stdout_level: String,
@@ -140,6 +163,7 @@ impl Default for LiveLoggingInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveTimeoutsInput {
     #[serde(default = "default_timeout_connection_secs")]
     pub connection_secs: u64,
@@ -169,6 +193,7 @@ impl Default for LiveTimeoutsInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LivePolymarketInput {
     #[serde(default = "default_client_name")]
     pub client_name: String,
@@ -190,7 +215,24 @@ pub struct LivePolymarketInput {
     pub ws_max_subscriptions: usize,
 }
 
+impl Default for LivePolymarketInput {
+    fn default() -> Self {
+        Self {
+            client_name: default_client_name(),
+            event_slug: String::new(),
+            instrument_id: String::new(),
+            account_id: String::new(),
+            funder: String::new(),
+            signature_type: default_signature_type(),
+            subscribe_new_markets: false,
+            update_instruments_interval_mins: default_update_instruments_interval_mins(),
+            ws_max_subscriptions: default_ws_max_subscriptions(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveStrategyInput {
     #[serde(default = "default_strategy_id")]
     pub strategy_id: String,
@@ -225,8 +267,12 @@ impl Default for LiveStrategyInput {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveSecretsInput {
+    // Whole-section defaults intentionally differ from serde field defaults.
+    // `Default::default()` here yields empty strings, while a present
+    // `[secrets]` section can still rely on field-level serde defaults.
     #[serde(default = "default_region")]
     pub region: String,
     #[serde(default)]
@@ -240,25 +286,29 @@ pub struct LiveSecretsInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveRawCaptureInput {
-    #[serde(default = "default_raw_capture_output_dir")]
+    #[serde(default = "default_live_raw_capture_output_dir")]
     pub output_dir: String,
 }
 
 impl Default for LiveRawCaptureInput {
     fn default() -> Self {
         Self {
-            output_dir: default_raw_capture_output_dir(),
+            output_dir: default_live_raw_capture_output_dir(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveStreamingInput {
     #[serde(default)]
     pub catalog_path: String,
     #[serde(default = "default_streaming_flush_interval_ms")]
     pub flush_interval_ms: u64,
+    #[serde(default)]
+    pub contract_path: Option<String>,
 }
 
 impl Default for LiveStreamingInput {
@@ -266,6 +316,7 @@ impl Default for LiveStreamingInput {
         Self {
             catalog_path: String::new(),
             flush_interval_ms: default_streaming_flush_interval_ms(),
+            contract_path: None,
         }
     }
 }
@@ -437,6 +488,8 @@ struct RenderedStrategyConfig {
 struct RenderedStreamingConfig {
     catalog_path: String,
     flush_interval_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contract_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -630,6 +683,13 @@ fn render_runtime_config(
             Some(RenderedStreamingConfig {
                 catalog_path: input.streaming.catalog_path.clone(),
                 flush_interval_ms: input.streaming.flush_interval_ms,
+                contract_path: input
+                    .streaming
+                    .contract_path
+                    .as_ref()
+                    .filter(|path| !path.trim().is_empty())
+                    .map(|p| resolve_rendered_contract_path(source_path, p))
+                    .transpose()?,
             })
         },
         reference: platform_enabled.then(|| RenderedReferenceConfig {
@@ -690,6 +750,50 @@ fn render_runtime_config(
         "# GENERATED FILE - DO NOT EDIT.\n# Source of truth: {}\n\n{body}",
         source_path.display(),
     ))
+}
+
+fn resolve_repo_root(source_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let anchored = if source_path.is_absolute() {
+        source_path.to_path_buf()
+    } else {
+        cwd.join(source_path)
+    };
+
+    let start = anchored.parent().unwrap_or(anchored.as_path());
+    for candidate in start.ancestors() {
+        if candidate.join("Cargo.toml").is_file() {
+            return Ok(fs::canonicalize(candidate)?);
+        }
+    }
+
+    for candidate in cwd.ancestors() {
+        if candidate.join("Cargo.toml").is_file() {
+            return Ok(fs::canonicalize(candidate)?);
+        }
+    }
+
+    Err(std::io::Error::other(format!(
+        "unable to determine repo root for {}",
+        source_path.display()
+    ))
+    .into())
+}
+
+fn resolve_rendered_contract_path(
+    source_path: &Path,
+    raw_path: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let path = Path::new(raw_path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        let repo_root = resolve_repo_root(source_path)?;
+        repo_root.join(path)
+    };
+
+    let normalized = crate::venue_contract::normalize_local_absolute_contract_path(&absolute)?;
+    Ok(normalized.to_string_lossy().to_string())
 }
 
 fn materialize_output(
@@ -923,6 +1027,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     fn repo_path(relative: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -1074,5 +1179,56 @@ passphrase = "/bolt/poly/passphrase"
             2
         );
         assert_eq!(cfg.exec_clients[0].secrets.region, "eu-west-1");
+    }
+
+    #[test]
+    fn relative_streaming_contract_path_resolves_from_repo_root() {
+        let raw = r#"
+[node]
+name = "BOLT-V2-TEST"
+trader_id = "BOLT-TEST"
+
+[polymarket]
+event_slug = "btc-updown-5m"
+instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+
+[secrets]
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[streaming]
+catalog_path = "var/catalog"
+contract_path = "contracts/polymarket.toml"
+"#;
+
+        let input: LiveLocalConfig =
+            toml::from_str(raw).expect("minimal operator config should parse");
+        let tempdir = tempdir().expect("tempdir should be created");
+        std::fs::write(
+            tempdir.path().join("Cargo.toml"),
+            "[package]\nname = \"temp\"\n",
+        )
+        .expect("repo marker should exist");
+        let source_dir = tempdir.path().join("config");
+        std::fs::create_dir_all(&source_dir).expect("source dir should be created");
+        let source_path = source_dir.join("live.local.toml");
+        let rendered =
+            render_runtime_config(&input, &source_path).expect("operator config should render");
+        let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+        let expected_root = std::fs::canonicalize(tempdir.path()).expect("tempdir should resolve");
+
+        assert_eq!(
+            cfg.streaming.contract_path.as_deref(),
+            Some(
+                expected_root
+                    .join("contracts/polymarket.toml")
+                    .to_str()
+                    .expect("resolved contract path should be valid UTF-8")
+            )
+        );
     }
 }

@@ -1,18 +1,36 @@
 use std::io::Cursor;
 
 use arrow::ipc::reader::StreamReader;
-use bolt_v2::normalized_sink::spool_root_for_instance;
+use bolt_v2::{
+    execution_state::{OrderEventRow, PositionEventRow},
+    normalized_sink::spool_root_for_instance,
+};
+mod support;
 use nautilus_common::{
     enums::Environment,
-    msgbus::{publish_any, publish_bar, publish_quote, switchboard},
+    msgbus::{
+        publish_any, publish_bar, publish_order_event, publish_position_event, publish_quote,
+        switchboard,
+    },
 };
+use nautilus_core::UUID4;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::{Bar, InstrumentStatus, QuoteTick, bar::BarType},
-    enums::{BarAggregation, MarketStatusAction, PriceType},
-    identifiers::{InstrumentId, TraderId},
-    types::{Price, Quantity},
+    enums::{
+        BarAggregation, LiquiditySide, MarketStatusAction, OrderSide, OrderType,
+        PositionAdjustmentType, PriceType,
+    },
+    events::{
+        OrderEventAny, OrderFilled, OrderSubmitted, PositionAdjusted, PositionEvent, PositionOpened,
+    },
+    identifiers::{
+        AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
+        VenueOrderId,
+    },
+    types::{Currency, Money, Price, Quantity},
 };
+use support::repo_path;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 
@@ -56,9 +74,99 @@ async fn rejects_non_local_catalog_paths() {
                 node.handle(),
                 "s3://bucket/catalog",
                 1000,
+                None,
             );
 
             assert!(result.is_err());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn accepts_valid_contract_path_on_sink_startup() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+
+            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                node.handle(),
+                catalog_root.to_str().unwrap(),
+                1000,
+                Some(repo_path("contracts/polymarket.toml").to_str().unwrap()),
+            )
+            .unwrap();
+
+            guards.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_missing_contract_path_on_sink_startup() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let missing = dir.path().join("missing-contract.toml");
+
+            let err = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                node.handle(),
+                catalog_root.to_str().unwrap(),
+                1000,
+                Some(missing.to_str().unwrap()),
+            )
+            .err()
+            .expect("missing contract path should fail");
+
+            assert!(err.to_string().contains("failed to read contract"), "{err}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_invalid_contract_path_on_sink_startup() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let invalid = dir.path().join("invalid-contract.toml");
+            std::fs::write(&invalid, "not [valid toml").unwrap();
+
+            let err = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                node.handle(),
+                catalog_root.to_str().unwrap(),
+                1000,
+                Some(invalid.to_str().unwrap()),
+            )
+            .err()
+            .expect("invalid contract path should fail");
+
+            assert!(
+                err.to_string().contains("failed to parse contract"),
+                "{err}"
+            );
         })
         .await;
 }
@@ -83,6 +191,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -150,6 +259,165 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn captures_execution_state_sidecars_for_order_and_position_events() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
+            let strategy_id = StrategyId::from("S-EXEC-001");
+            let account_id = AccountId::from("SIM-001");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let order_event = OrderEventAny::Submitted(OrderSubmitted::new(
+                    TraderId::from("TESTER-001"),
+                    strategy_id,
+                    instrument_id,
+                    ClientOrderId::from("O-001"),
+                    account_id,
+                    UUID4::default(),
+                    11.into(),
+                    12.into(),
+                ));
+                publish_order_event(
+                    switchboard::get_event_orders_topic(strategy_id),
+                    &order_event,
+                );
+
+                let fill_event = OrderEventAny::Filled(OrderFilled::new(
+                    TraderId::from("TESTER-001"),
+                    strategy_id,
+                    instrument_id,
+                    ClientOrderId::from("O-002"),
+                    VenueOrderId::from("V-002"),
+                    account_id,
+                    TradeId::from("T-002"),
+                    OrderSide::Buy,
+                    OrderType::Market,
+                    Quantity::from("5"),
+                    Price::from("0.52"),
+                    Currency::USD(),
+                    LiquiditySide::Taker,
+                    UUID4::default(),
+                    13.into(),
+                    14.into(),
+                    false,
+                    Some(PositionId::from("P-001")),
+                    Some(Money::new(0.01, Currency::USD())),
+                ));
+                publish_order_event(
+                    switchboard::get_event_orders_topic(strategy_id),
+                    &fill_event,
+                );
+
+                let position_event = PositionEvent::PositionOpened(PositionOpened {
+                    trader_id: TraderId::from("TESTER-001"),
+                    strategy_id,
+                    instrument_id,
+                    position_id: PositionId::from("P-001"),
+                    account_id,
+                    opening_order_id: ClientOrderId::from("O-001"),
+                    entry: nautilus_model::enums::OrderSide::Buy,
+                    side: nautilus_model::enums::PositionSide::Long,
+                    signed_qty: 10.0,
+                    quantity: Quantity::from("10"),
+                    last_qty: Quantity::from("10"),
+                    last_px: Price::from("0.51"),
+                    currency: Currency::USD(),
+                    avg_px_open: 0.51,
+                    event_id: UUID4::default(),
+                    ts_event: 21.into(),
+                    ts_init: 22.into(),
+                });
+                publish_position_event(
+                    switchboard::get_event_positions_topic(strategy_id),
+                    &position_event,
+                );
+
+                let adjusted_event = PositionEvent::PositionAdjusted(PositionAdjusted::new(
+                    TraderId::from("TESTER-001"),
+                    strategy_id,
+                    instrument_id,
+                    PositionId::from("P-001"),
+                    account_id,
+                    PositionAdjustmentType::Commission,
+                    Some("1.5".parse().unwrap()),
+                    Some(Money::new(-0.02, Currency::USD())),
+                    None,
+                    UUID4::default(),
+                    23.into(),
+                    24.into(),
+                ));
+                publish_position_event(
+                    switchboard::get_event_positions_topic(strategy_id),
+                    &adjusted_event,
+                );
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let order_events_path = spool_root.join("order_events").join("events.jsonl");
+            let position_events_path = spool_root.join("position_events").join("events.jsonl");
+
+            let order_rows: Vec<OrderEventRow> = std::fs::read_to_string(&order_events_path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(order_rows.len(), 2, "{order_rows:?}");
+            assert_eq!(order_rows[0].event_type, "Submitted");
+            assert_eq!(order_rows[0].client_order_id, "O-001");
+            assert_eq!(order_rows[1].event_type, "Filled");
+            assert_eq!(order_rows[1].venue_order_id.as_deref(), Some("V-002"));
+
+            let position_rows: Vec<PositionEventRow> =
+                std::fs::read_to_string(&position_events_path)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+            assert_eq!(position_rows.len(), 2, "{position_rows:?}");
+            assert_eq!(position_rows[0].event_type, "PositionOpened");
+            assert_eq!(position_rows[0].position_id, "P-001");
+            let opened_payload: serde_json::Value =
+                serde_json::from_str(&position_rows[0].payload_json).unwrap();
+            assert_eq!(opened_payload["trader_id"], "TESTER-001");
+            assert_eq!(position_rows[1].event_type, "PositionAdjusted");
+            assert_eq!(position_rows[1].realized_pnl.as_deref(), Some("-0.02 USD"));
+            let adjusted_payload: serde_json::Value =
+                serde_json::from_str(&position_rows[1].payload_json).unwrap();
+            assert_eq!(adjusted_payload["trader_id"], "TESTER-001");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
     let local = LocalSet::new();
 
@@ -169,6 +437,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -251,6 +520,7 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -335,6 +605,7 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
                 node.handle(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 

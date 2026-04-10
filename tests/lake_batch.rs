@@ -1,8 +1,9 @@
-use std::path::Path;
+use std::{fs::File, path::Path};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
+use arrow::array::{Array, StringArray};
 use bolt_v2::{
     lake_batch::{convert_live_spool_to_parquet, supported_stream_classes},
     normalized_sink,
@@ -26,6 +27,7 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 
@@ -44,6 +46,30 @@ fn collect_paths(root: &Path) -> Vec<std::path::PathBuf> {
     }
 
     paths
+}
+
+fn parquet_string_column(path: &Path, column: &str) -> Vec<String> {
+    let file = File::open(path).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut values = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let array = batch
+            .column_by_name(column)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..array.len() {
+            if array.is_valid(row) {
+                values.push(array.value(row).to_string());
+            }
+        }
+    }
+    values
 }
 
 #[test]
@@ -65,10 +91,10 @@ fn exposes_reduced_task_4_supported_stream_classes() {
 #[test]
 fn fails_when_live_spool_instance_is_missing() {
     let source_root = tempdir().unwrap();
-    let output_root = tempdir().unwrap();
+    let output_root = tempdir().unwrap().path().join("missing-output");
 
     let error =
-        convert_live_spool_to_parquet(source_root.path(), "missing-instance", output_root.path())
+        convert_live_spool_to_parquet(source_root.path(), "missing-instance", &output_root, None)
             .unwrap_err();
 
     assert!(
@@ -88,6 +114,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("lake-output");
     let catalog_root = source_dir.path().join("catalog");
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
@@ -103,6 +130,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -144,7 +172,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
     }));
 
     let report =
-        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, output_dir.path())
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
             .unwrap();
 
     assert_eq!(report.instance_id, instance_id);
@@ -153,9 +181,9 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
         vec!["quotes", "instrument_closes"]
     );
     assert!(
-        !output_dir.path().join("live").exists(),
+        !output_root.join("live").exists(),
         "output tree: {:?}",
-        collect_paths(output_dir.path())
+        collect_paths(&output_root)
     );
 
     let source_paths = collect_paths(&catalog_root.join("live").join(&instance_id));
@@ -172,12 +200,12 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
         "source spool tree: {source_paths:?}"
     );
 
-    let mut catalog = ParquetDataCatalog::new(output_dir.path(), None, None, None, None);
+    let mut catalog = ParquetDataCatalog::new(&output_root, None, None, None, None);
     let quote_files = catalog.get_file_list_from_data_cls("quotes").unwrap();
     assert!(
         !quote_files.is_empty(),
         "quote files: {quote_files:?}; output tree: {:?}",
-        collect_paths(output_dir.path())
+        collect_paths(&output_root)
     );
 
     let close_files = catalog
@@ -186,7 +214,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
     assert!(
         !close_files.is_empty(),
         "close files: {close_files:?}; output tree: {:?}",
-        collect_paths(output_dir.path())
+        collect_paths(&output_root)
     );
 
     let quotes = catalog.quote_ticks(None, None, None).unwrap();
@@ -199,6 +227,77 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
 }
 
 #[test]
+fn converts_execution_state_sidecars_into_parquet_outputs() {
+    let source_dir = tempdir().unwrap();
+    let output_dir = tempdir().unwrap();
+    let catalog_root = source_dir.path().join("catalog");
+    let instance_root = catalog_root.join("live").join("instance-exec");
+    let output_root = output_dir.path().join("lake-output");
+
+    std::fs::create_dir_all(instance_root.join("order_events")).unwrap();
+    std::fs::create_dir_all(instance_root.join("position_events")).unwrap();
+
+    std::fs::write(
+        instance_root.join("order_events").join("events.jsonl"),
+        concat!(
+            "{\"event_type\":\"Submitted\",\"strategy_id\":\"S-EXEC-001\",",
+            "\"instrument_id\":\"0xabc-123456789.POLYMARKET\",",
+            "\"client_order_id\":\"O-001\",\"venue_order_id\":null,",
+            "\"account_id\":\"SIM-001\",\"ts_event\":11,\"ts_init\":12,",
+            "\"payload_json\":\"{\\\"type\\\":\\\"Submitted\\\"}\"}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        instance_root.join("position_events").join("events.jsonl"),
+        concat!(
+            "{\"event_type\":\"PositionOpened\",\"strategy_id\":\"S-EXEC-001\",",
+            "\"trader_id\":\"TESTER-001\",",
+            "\"instrument_id\":\"0xabc-123456789.POLYMARKET\",",
+            "\"position_id\":\"P-001\",\"account_id\":\"SIM-001\",",
+            "\"opening_order_id\":\"O-001\",\"closing_order_id\":null,",
+            "\"side\":\"LONG\",\"quantity\":\"10\",\"ts_event\":21,\"ts_init\":22,",
+            "\"payload_json\":\"{\\\"event_type\\\":\\\"PositionOpened\\\",\\\"trader_id\\\":\\\"TESTER-001\\\"}\"}\n"
+        ),
+    )
+    .unwrap();
+
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), "instance-exec", &output_root, None)
+            .unwrap();
+
+    assert_eq!(
+        report.converted_classes,
+        vec!["order_events", "position_events"]
+    );
+
+    let output_paths = collect_paths(&output_root);
+    let order_parquet = output_paths.iter().find(|path| {
+        path.extension().and_then(|ext| ext.to_str()) == Some("parquet")
+            && path.to_string_lossy().contains("order_events")
+    });
+    let order_parquet = order_parquet.expect("order_events parquet missing");
+    assert_eq!(
+        parquet_string_column(order_parquet, "event_type"),
+        vec!["Submitted".to_string()]
+    );
+
+    let position_parquet = output_paths.iter().find(|path| {
+        path.extension().and_then(|ext| ext.to_str()) == Some("parquet")
+            && path.to_string_lossy().contains("position_events")
+    });
+    let position_parquet = position_parquet.expect("position_events parquet missing");
+    assert_eq!(
+        parquet_string_column(position_parquet, "event_type"),
+        vec!["PositionOpened".to_string()]
+    );
+    assert_eq!(
+        parquet_string_column(position_parquet, "trader_id"),
+        vec!["TESTER-001".to_string()]
+    );
+}
+
+#[test]
 fn converts_legacy_flat_spool_layout() {
     let local = LocalSet::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -207,6 +306,7 @@ fn converts_legacy_flat_spool_layout() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("lake-output");
     let catalog_root = source_dir.path().join("catalog");
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
@@ -222,6 +322,7 @@ fn converts_legacy_flat_spool_layout() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            None,
         )
         .unwrap();
 
@@ -285,12 +386,12 @@ fn converts_legacy_flat_spool_layout() {
     );
 
     let report =
-        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, output_dir.path())
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
             .unwrap();
 
     assert_eq!(report.converted_classes, vec!["quotes"]);
 
-    let mut catalog = ParquetDataCatalog::new(output_dir.path(), None, None, None, None);
+    let mut catalog = ParquetDataCatalog::new(&output_root, None, None, None, None);
     let quotes = catalog.quote_ticks(None, None, None).unwrap();
     assert_eq!(quotes.len(), 1);
     assert_eq!(quotes[0].instrument_id, instrument_id);
@@ -305,6 +406,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
         .unwrap();
     let source_dir = tempdir().unwrap();
     let output_dir = tempdir().unwrap();
+    let output_root = output_dir.path().join("lake-output");
     let catalog_root = source_dir.path().join("catalog");
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
@@ -323,6 +425,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             1,
+            None,
         )
         .unwrap();
 
@@ -436,7 +539,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
     }));
 
     let report =
-        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, output_dir.path())
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
             .unwrap();
 
     assert_eq!(
@@ -453,7 +556,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
     );
 
     // Verify round-trip for types with catalog query methods.
-    let mut catalog = ParquetDataCatalog::new(output_dir.path(), None, None, None, None);
+    let mut catalog = ParquetDataCatalog::new(&output_root, None, None, None, None);
 
     let quotes = catalog.quote_ticks(None, None, None).unwrap();
     assert_eq!(quotes.len(), 3, "expected 3 multi-batch quotes");
@@ -486,7 +589,8 @@ fn fails_when_output_root_overlaps_catalog_path() {
     std::fs::create_dir_all(&instance_dir).unwrap();
     let output_root = source_root.path().join("nested-output");
 
-    let result = convert_live_spool_to_parquet(source_root.path(), "instance-123", &output_root);
+    let result =
+        convert_live_spool_to_parquet(source_root.path(), "instance-123", &output_root, None);
 
     let error = result.unwrap_err();
     assert!(
@@ -498,7 +602,7 @@ fn fails_when_output_root_overlaps_catalog_path() {
 }
 
 #[test]
-fn fails_when_output_root_is_not_empty() {
+fn fails_when_output_root_already_exists() {
     let source_root = tempdir().unwrap();
     let instance_dir = source_root.path().join("live").join("instance-123");
     std::fs::create_dir_all(&instance_dir).unwrap();
@@ -507,7 +611,7 @@ fn fails_when_output_root_is_not_empty() {
     std::fs::write(output_root.path().join("sentinel.txt"), "existing").unwrap();
 
     let error =
-        convert_live_spool_to_parquet(source_root.path(), "instance-123", output_root.path())
+        convert_live_spool_to_parquet(source_root.path(), "instance-123", output_root.path(), None)
             .unwrap_err();
 
     assert!(
@@ -519,13 +623,133 @@ fn fails_when_output_root_is_not_empty() {
 }
 
 #[test]
+fn fails_when_previous_report_only_output_root_exists_without_deleting_it() {
+    let source_root = tempdir().unwrap();
+    let instance_dir = source_root.path().join("live").join("instance-123");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+
+    let output_parent = tempdir().unwrap();
+    let output_root = output_parent.path().join("run");
+    std::fs::create_dir_all(&output_root).unwrap();
+    let report_path = output_root.join("completeness_report.json");
+    std::fs::write(&report_path, "{\"outcome\":\"fail\"}").unwrap();
+
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-123", &output_root, None)
+            .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("output_root must be empty before conversion"),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&report_path).unwrap(),
+        "{\"outcome\":\"fail\"}"
+    );
+}
+
+#[test]
+fn allows_preexisting_empty_output_root() {
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source_dir = tempdir().unwrap();
+    let output_parent = tempdir().unwrap();
+    let output_root = output_parent.path().join("precreated-output");
+    std::fs::create_dir_all(&output_root).unwrap();
+    let catalog_root = source_dir.path().join("catalog");
+    let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
+
+    let instance_id = runtime.block_on(local.run_until(async {
+        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .unwrap()
+            .build()
+            .unwrap();
+        let handle = node.handle();
+        let instance_id = node.instance_id().to_string();
+        let guards = normalized_sink::wire_normalized_sinks(
+            &node,
+            handle.clone(),
+            catalog_root.to_str().unwrap(),
+            60_000,
+            None,
+        )
+        .unwrap();
+
+        let publisher_handle = handle.clone();
+        tokio::task::spawn_local(async move {
+            while !publisher_handle.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            let quote = QuoteTick::new(
+                instrument_id,
+                Price::from("0.45"),
+                Price::from("0.55"),
+                Quantity::from("100"),
+                Quantity::from("100"),
+                1.into(),
+                1.into(),
+            );
+            publish_quote(switchboard::get_quotes_topic(instrument_id), &quote);
+            publisher_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+        instance_id
+    }));
+
+    let report =
+        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
+            .unwrap();
+
+    assert_eq!(report.instance_id, instance_id);
+    let mut catalog = ParquetDataCatalog::new(&output_root, None, None, None, None);
+    let quotes = catalog.quote_ticks(None, None, None).unwrap();
+    assert_eq!(quotes.len(), 1);
+}
+
+#[test]
+fn fails_loud_when_stale_sibling_staging_dir_exists() {
+    let source_root = tempdir().unwrap();
+    let instance_dir = source_root.path().join("live").join("instance-123");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+
+    let output_parent = tempdir().unwrap();
+    let output_root = output_parent.path().join("run");
+    let stale_stage = output_parent.path().join(".run.staging-999-111");
+    std::fs::create_dir_all(&stale_stage).unwrap();
+    std::fs::write(stale_stage.join("artifact.parquet"), b"stale").unwrap();
+
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-123", &output_root, None)
+            .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("stale staging directory present for output_root `run`"),
+        "{error:?}"
+    );
+    assert!(
+        stale_stage.exists(),
+        "stale staging dir should not be deleted"
+    );
+}
+
+#[test]
 fn fails_when_instance_id_is_not_a_single_path_segment() {
     let source_root = tempdir().unwrap();
     std::fs::create_dir_all(source_root.path().join("live").join("instance-123")).unwrap();
-    let output_root = tempdir().unwrap();
+    let output_root = tempdir().unwrap().path().join("output-root");
 
     let error =
-        convert_live_spool_to_parquet(source_root.path(), "../..", output_root.path()).unwrap_err();
+        convert_live_spool_to_parquet(source_root.path(), "../..", &output_root, None).unwrap_err();
 
     assert!(
         error
@@ -539,10 +763,10 @@ fn fails_when_instance_id_is_not_a_single_path_segment() {
 fn fails_when_no_supported_stream_data_is_present() {
     let source_root = tempdir().unwrap();
     std::fs::create_dir_all(source_root.path().join("live").join("instance-empty")).unwrap();
-    let output_root = tempdir().unwrap();
+    let output_root = tempdir().unwrap().path().join("output-root");
 
     let error =
-        convert_live_spool_to_parquet(source_root.path(), "instance-empty", output_root.path())
+        convert_live_spool_to_parquet(source_root.path(), "instance-empty", &output_root, None)
             .unwrap_err();
 
     assert!(
@@ -559,10 +783,10 @@ fn fails_when_only_unsupported_stream_data_is_present() {
     let instance_root = source_root.path().join("live").join("instance-bars");
     std::fs::create_dir_all(&instance_root).unwrap();
     std::fs::write(instance_root.join("bars_123.feather"), b"not-used").unwrap();
-    let output_root = tempdir().unwrap();
+    let output_root = tempdir().unwrap().path().join("output-root");
 
     let error =
-        convert_live_spool_to_parquet(source_root.path(), "instance-bars", output_root.path())
+        convert_live_spool_to_parquet(source_root.path(), "instance-bars", &output_root, None)
             .unwrap_err();
 
     assert!(
@@ -574,7 +798,7 @@ fn fails_when_only_unsupported_stream_data_is_present() {
 }
 
 #[test]
-fn creates_nonexistent_output_root_without_panic() {
+fn cleans_up_nonexistent_output_root_on_failed_conversion() {
     let source_root = tempdir().unwrap();
     let instance_root = source_root.path().join("live").join("instance-fresh");
     std::fs::create_dir_all(instance_root.join("quotes")).unwrap();
@@ -583,8 +807,9 @@ fn creates_nonexistent_output_root_without_panic() {
     let output_root = tempdir().unwrap();
     let nonexistent = output_root.path().join("does-not-exist");
 
-    let error = convert_live_spool_to_parquet(source_root.path(), "instance-fresh", &nonexistent)
-        .unwrap_err();
+    let error =
+        convert_live_spool_to_parquet(source_root.path(), "instance-fresh", &nonexistent, None)
+            .unwrap_err();
 
     assert!(
         error
@@ -592,7 +817,10 @@ fn creates_nonexistent_output_root_without_panic() {
             .contains("no supported reduced task 4 data found"),
         "expected data error, not a panic: {error:?}"
     );
-    assert!(nonexistent.is_dir(), "output_root should have been created");
+    assert!(
+        !nonexistent.exists(),
+        "failed conversion should not leave a staged output_root behind"
+    );
 }
 
 #[cfg(unix)]
@@ -613,9 +841,9 @@ fn skips_symlinks_in_spool_tree() {
     std::fs::write(&feather_path, b"external-file").unwrap();
     symlink(&feather_path, instance_root.join("trades_1.feather")).unwrap();
 
-    let output_root = tempdir().unwrap();
+    let output_root = tempdir().unwrap().path().join("output-root");
     let error =
-        convert_live_spool_to_parquet(source_root.path(), "instance-sym", output_root.path())
+        convert_live_spool_to_parquet(source_root.path(), "instance-sym", &output_root, None)
             .unwrap_err();
 
     // Both symlinked entries should be skipped, leaving no data to convert.

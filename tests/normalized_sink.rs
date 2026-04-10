@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use arrow::ipc::reader::StreamReader;
 use bolt_v2::normalized_sink::spool_root_for_instance;
+mod support;
 use nautilus_common::{
     enums::Environment,
     msgbus::{publish_any, publish_bar, publish_quote, switchboard},
@@ -13,6 +14,7 @@ use nautilus_model::{
     identifiers::{InstrumentId, TraderId},
     types::{Price, Quantity},
 };
+use support::repo_path;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 
@@ -56,9 +58,99 @@ async fn rejects_non_local_catalog_paths() {
                 node.handle(),
                 "s3://bucket/catalog",
                 1000,
+                None,
             );
 
             assert!(result.is_err());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn accepts_valid_contract_path_on_sink_startup() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+
+            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                node.handle(),
+                catalog_root.to_str().unwrap(),
+                1000,
+                Some(repo_path("contracts/polymarket.toml").to_str().unwrap()),
+            )
+            .unwrap();
+
+            guards.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_missing_contract_path_on_sink_startup() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let missing = dir.path().join("missing-contract.toml");
+
+            let err = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                node.handle(),
+                catalog_root.to_str().unwrap(),
+                1000,
+                Some(missing.to_str().unwrap()),
+            )
+            .err()
+            .expect("missing contract path should fail");
+
+            assert!(err.to_string().contains("failed to read contract"), "{err}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_invalid_contract_path_on_sink_startup() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let invalid = dir.path().join("invalid-contract.toml");
+            std::fs::write(&invalid, "not [valid toml").unwrap();
+
+            let err = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                node.handle(),
+                catalog_root.to_str().unwrap(),
+                1000,
+                Some(invalid.to_str().unwrap()),
+            )
+            .err()
+            .expect("invalid contract path should fail");
+
+            assert!(
+                err.to_string().contains("failed to parse contract"),
+                "{err}"
+            );
         })
         .await;
 }
@@ -83,6 +175,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -169,6 +262,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -251,6 +345,7 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 
@@ -335,6 +430,7 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
                 node.handle(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                None,
             )
             .unwrap();
 

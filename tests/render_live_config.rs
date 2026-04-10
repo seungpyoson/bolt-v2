@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use bolt_v2::{MaterializationOutcome, materialize_live_config};
+use bolt_v2::{MaterializationOutcome, config::Config, materialize_live_config};
 use support::{TempCaseDir, repo_path};
 
 #[test]
@@ -157,6 +157,66 @@ fn render_live_config_binary_supports_relative_paths() {
     assert!(output_path.exists());
     assert_generated_output(&output_path);
     assert_read_only(&output_path);
+}
+
+#[test]
+fn render_live_config_binary_resolves_contract_path_from_repo_root() {
+    let tempdir = TempCaseDir::new("relative-contract-root");
+    std::fs::write(
+        tempdir.path().join("Cargo.toml"),
+        "[package]\nname = \"temp\"\n",
+    )
+    .expect("repo marker should be written");
+    std::fs::create_dir_all(tempdir.path().join("config")).expect("config dir should exist");
+    std::fs::create_dir_all(tempdir.path().join("contracts")).expect("contracts dir should exist");
+    std::fs::write(
+        tempdir.path().join("contracts/polymarket.toml"),
+        "schema_version = 1\nvenue = \"test\"\nadapter_version = \"bolt-v2\"\n\n\
+         [streams.quotes]\ncapability = \"supported\"\npolicy = \"required\"\n\n\
+         [streams.trades]\ncapability = \"supported\"\npolicy = \"required\"\n\n\
+         [streams.order_book_deltas]\ncapability = \"supported\"\npolicy = \"required\"\n\n\
+         [streams.order_book_depths]\ncapability = \"unsupported\"\n\n\
+         [streams.index_prices]\ncapability = \"unsupported\"\n\n\
+         [streams.mark_prices]\ncapability = \"unsupported\"\n\n\
+         [streams.instrument_closes]\ncapability = \"unsupported\"\n",
+    )
+    .expect("contract fixture should be written");
+
+    let source = tracked_live_local_example()
+        .replace(
+            "# contract_path = \"contracts/polymarket.toml\"",
+            "contract_path = \"contracts/polymarket.toml\"",
+        )
+        .replace("catalog_path = \"\"", "catalog_path = \"var/catalog\"");
+    fs::write(tempdir.path().join("config/live.local.toml"), source)
+        .expect("input config should be written");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_render_live_config"))
+        .current_dir(tempdir.path())
+        .args(["--input", "config/live.local.toml", "--output", "live.toml"])
+        .output()
+        .expect("renderer binary should run");
+
+    assert!(
+        output.status.success(),
+        "binary failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let rendered = fs::read_to_string(tempdir.path().join("live.toml"))
+        .expect("rendered config should be readable");
+    let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+    let expected_root = fs::canonicalize(tempdir.path()).expect("tempdir should resolve");
+    assert_eq!(
+        cfg.streaming.contract_path.as_deref(),
+        Some(
+            expected_root
+                .join("contracts/polymarket.toml")
+                .to_str()
+                .expect("absolute contract path should be utf-8")
+        )
+    );
 }
 
 #[cfg(unix)]

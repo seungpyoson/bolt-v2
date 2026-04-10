@@ -1,0 +1,34 @@
+schema_version = 1
+venue = "polymarket"
+adapter_version = "bolt-v2"
+
+[streams.quotes]
+capability = "supported"
+policy = "required"
+provenance = "native"
+
+[streams.trades]
+capability = "supported"
+policy = "required"
+provenance = "native"
+
+[streams.order_book_deltas]
+capability = "supported"
+policy = "required"
+provenance = "native"
+
+[streams.order_book_depths]
+capability = "unsupported"
+reason = "Polymarket emits L2 deltas only, no depth10 snapshots"
+
+[streams.index_prices]
+capability = "unsupported"
+reason = "not applicable to prediction markets"
+
+[streams.mark_prices]
+capability = "unsupported"
+reason = "not applicable to prediction markets"
+
+[streams.instrument_closes]
+capability = "unsupported"
+reason = "Polymarket has no close events; resolution is a separate concept"

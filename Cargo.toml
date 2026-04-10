@@ -22,7 +22,7 @@ nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.gi
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-toml = "0.8"
+toml = "1.1"
 
 [dev-dependencies]
 arrow = "58.1.0"

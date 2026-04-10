@@ -774,8 +774,8 @@ mod tests {
             .checked_sub(Duration::from_secs(1))
             .expect("pre-unix-epoch time should be representable");
 
-        let error = stage_dir_name_at("output-root", now)
-            .expect_err("pre-unix-epoch time should error");
+        let error =
+            stage_dir_name_at("output-root", now).expect_err("pre-unix-epoch time should error");
 
         assert!(error.to_string().contains("system clock before UNIX_EPOCH"));
     }

@@ -10,7 +10,9 @@ use bolt_v2::{
 };
 use nautilus_common::{
     enums::Environment,
-    msgbus::{publish_any, publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard},
+    msgbus::{
+        publish_any, publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard,
+    },
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
@@ -1119,10 +1121,7 @@ fn contract_ignores_status_directory_infrastructure() {
                 None,
                 None,
             );
-            publish_any(
-                switchboard::get_instrument_status_topic(inst),
-                &status,
-            );
+            publish_any(switchboard::get_instrument_status_topic(inst), &status);
 
             publisher_handle.stop();
         });

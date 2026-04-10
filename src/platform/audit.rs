@@ -21,6 +21,7 @@ use tokio::{
     task::{JoinError, JoinHandle},
     time::{Instant, MissedTickBehavior, Sleep, interval_at, sleep_until, timeout},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::raw_types::JsonlAppender;
 
@@ -50,6 +51,17 @@ pub enum TradeEventKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReferenceVenueSnapshot {
+    pub venue_name: String,
+    pub base_weight: f64,
+    pub effective_weight: f64,
+    pub stale: bool,
+    pub health: VenueHealthState,
+    pub reason: Option<String>,
+    pub observed_price: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuditRecord {
     ReferenceSnapshot {
@@ -57,6 +69,8 @@ pub enum AuditRecord {
         topic: String,
         fair_value: Option<f64>,
         confidence: f64,
+        #[serde(default)]
+        venues: Vec<ReferenceVenueSnapshot>,
     },
     VenueStatus {
         ts_ms: u64,
@@ -245,18 +259,48 @@ pub struct AuditWorkerHandle {
 
 impl AuditWorkerHandle {
     pub async fn shutdown(mut self) -> Result<()> {
-        if let Some(audit_closer) = self.audit_closer.take() {
-            audit_closer.close();
-        }
+        self.begin_shutdown();
+        normalize_worker_join(self.join_handle.await)
+    }
 
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
+    pub async fn run_until_cancelled(self, cancellation: CancellationToken) -> Result<()> {
+        let AuditWorkerHandle {
+            mut shutdown_tx,
+            mut audit_closer,
+            mut join_handle,
+        } = self;
 
-        match self.join_handle.await {
-            Ok(result) => result,
-            Err(error) => Err(anyhow!("audit worker join failed: {error}")),
+        tokio::select! {
+            result = &mut join_handle => normalize_worker_join(result),
+            _ = cancellation.cancelled() => {
+                begin_shutdown_parts(&mut audit_closer, &mut shutdown_tx);
+                normalize_worker_join(join_handle.await)
+            }
         }
+    }
+
+    fn begin_shutdown(&mut self) {
+        begin_shutdown_parts(&mut self.audit_closer, &mut self.shutdown_tx);
+    }
+}
+
+fn begin_shutdown_parts(
+    audit_closer: &mut Option<AuditChannelCloser>,
+    shutdown_tx: &mut Option<oneshot::Sender<()>>,
+) {
+    if let Some(audit_closer) = audit_closer.take() {
+        audit_closer.close();
+    }
+
+    if let Some(shutdown_tx) = shutdown_tx.take() {
+        let _ = shutdown_tx.send(());
+    }
+}
+
+fn normalize_worker_join(result: std::result::Result<Result<()>, JoinError>) -> Result<()> {
+    match result {
+        Ok(result) => result,
+        Err(error) => Err(anyhow!("audit worker join failed: {error}")),
     }
 }
 

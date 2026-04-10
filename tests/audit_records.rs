@@ -8,8 +8,8 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use bolt_v2::platform::audit::{
-    AuditRecord, AuditSpoolConfig, AuditUploader, SelectorState, TradeEventKind, VenueHealthState,
-    audit_channel, build_s3_key, spawn_audit_worker,
+    AuditRecord, AuditSpoolConfig, AuditUploader, ReferenceVenueSnapshot, SelectorState,
+    TradeEventKind, VenueHealthState, audit_channel, build_s3_key, spawn_audit_worker,
 };
 use serde_json::Value;
 use tempfile::tempdir;
@@ -111,6 +111,26 @@ fn sample_record(ts_ms: u64) -> AuditRecord {
         topic: "midpoint".to_string(),
         fair_value: Some(0.51),
         confidence: 0.93,
+        venues: vec![
+            ReferenceVenueSnapshot {
+                venue_name: "binance-btc".to_string(),
+                base_weight: 0.7,
+                effective_weight: 0.7,
+                stale: false,
+                health: VenueHealthState::Healthy,
+                reason: None,
+                observed_price: Some(0.5),
+            },
+            ReferenceVenueSnapshot {
+                venue_name: "kraken-btc".to_string(),
+                base_weight: 0.3,
+                effective_weight: 0.0,
+                stale: true,
+                health: VenueHealthState::Disabled,
+                reason: Some("feed lagging".to_string()),
+                observed_price: Some(0.55),
+            },
+        ],
     }
 }
 
@@ -283,6 +303,15 @@ async fn audit_records_serialize_as_jsonl() {
     assert_eq!(lines[0]["kind"], "reference_snapshot");
     assert_eq!(lines[0]["topic"], "midpoint");
     assert_eq!(lines[0]["fair_value"], 0.51);
+    assert_eq!(lines[0]["venues"][0]["venue_name"], "binance-btc");
+    assert_eq!(lines[0]["venues"][0]["health"], "healthy");
+    assert!(lines[0]["venues"][0]["reason"].is_null());
+    assert_eq!(lines[0]["venues"][1]["venue_name"], "kraken-btc");
+    assert_eq!(lines[0]["venues"][1]["effective_weight"], 0.0);
+    assert_eq!(lines[0]["venues"][1]["stale"], true);
+    assert_eq!(lines[0]["venues"][1]["health"], "disabled");
+    assert_eq!(lines[0]["venues"][1]["reason"], "feed lagging");
+    assert_eq!(lines[0]["venues"][1]["observed_price"], 0.55);
     assert_eq!(lines[1]["kind"], "selector_decision");
     assert_eq!(lines[1]["state"], "freeze");
     assert_eq!(lines[1]["reason"], "venue unhealthy");
@@ -882,7 +911,7 @@ async fn restart_preserves_next_sequence_after_successful_upload_clears_local_sp
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn corrupt_retained_jsonl_fails_closed_on_restart() {
+async fn retained_legacy_reference_snapshot_without_venues_replays_on_restart() {
     let dir = tempdir().unwrap();
     let retained_dir = dir.path().join("date=1970-01-01");
     fs::create_dir_all(&retained_dir).unwrap();
@@ -891,7 +920,49 @@ async fn corrupt_retained_jsonl_fails_closed_on_restart() {
         &retained_path,
         concat!(
             "{\"kind\":\"reference_snapshot\",\"ts_ms\":1000,\"topic\":\"midpoint\",",
-            "\"fair_value\":0.51,\"confidence\":0.93}\n",
+            "\"fair_value\":0.51,\"confidence\":0.93}\n"
+        ),
+    )
+    .unwrap();
+
+    let uploader = MockUploader::with_outcomes([true]);
+    let (audit_tx, audit_rx) = audit_channel();
+    let worker = spawn_audit_worker(audit_rx, uploader.clone(), config(dir.path()));
+
+    drop(audit_tx);
+    worker.shutdown().await.unwrap();
+
+    wait_for_no_jsonl_files(dir.path()).await;
+    let calls = uploader.calls();
+    assert_eq!(calls.len(), 1);
+
+    let lines: Vec<Value> = calls[0]
+        .contents
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["kind"], "reference_snapshot");
+    assert_eq!(lines[0]["topic"], "midpoint");
+    assert_eq!(lines[0]["fair_value"], 0.51);
+    assert_eq!(lines[0]["confidence"], 0.93);
+    assert!(
+        lines[0].get("venues").is_none(),
+        "legacy retained rows should upload unchanged"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn corrupt_retained_jsonl_fails_closed_on_restart() {
+    let dir = tempdir().unwrap();
+    let retained_dir = dir.path().join("date=1970-01-01");
+    fs::create_dir_all(&retained_dir).unwrap();
+    let retained_path = retained_dir.join("part-00000000000000000007.jsonl");
+    fs::write(
+        &retained_path,
+        format!(
+            "{}\n{}",
+            serde_json::to_string(&sample_record(1_000)).unwrap(),
             "{\"kind\":\"reference_snapshot\",\"ts_ms\":1001"
         ),
     )
@@ -907,7 +978,8 @@ async fn corrupt_retained_jsonl_fails_closed_on_restart() {
     assert!(
         error
             .to_string()
-            .contains("invalid retained audit spool file"),
+            .contains("invalid retained audit spool file")
+            && error.to_string().contains("at line 2"),
         "{error:#}"
     );
     assert_eq!(uploader.attempt_count(), 0);
@@ -950,7 +1022,11 @@ async fn blocked_upload_does_not_prevent_continued_spooling_or_backlog_enforceme
     let (audit_tx, audit_rx) = audit_channel();
     let mut cfg = config(dir.path());
     cfg.roll_max_bytes = 1;
-    cfg.max_local_backlog_bytes = 220;
+    let retained_backlog_bytes = serde_json::to_vec(&sample_record(100)).unwrap().len() as u64
+        + serde_json::to_vec(&history_record(200)).unwrap().len() as u64
+        + serde_json::to_vec(&decision_record(300)).unwrap().len() as u64
+        + 2;
+    cfg.max_local_backlog_bytes = retained_backlog_bytes - 1;
     let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
 
     audit_tx.send(sample_record(100)).unwrap();

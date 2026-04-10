@@ -1,18 +1,22 @@
 use std::{
+    any::Any,
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use nautilus_common::actor::DataActorConfig;
+use nautilus_common::{
+    actor::DataActorConfig,
+    msgbus::{self, ShareableMessageHandler},
+};
 use nautilus_core::UUID4;
-use nautilus_live::node::{LiveNode, LiveNodeHandle};
+use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
 use nautilus_model::identifiers::{ActorId, ClientId, InstrumentId};
 use tokio::{
     task::JoinHandle,
-    time::{MissedTickBehavior, interval},
+    time::{MissedTickBehavior, interval, sleep},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -21,10 +25,11 @@ use crate::{
     config::{Config, ReferenceVenueEntry, ReferenceVenueKind, RulesetConfig},
     platform::{
         audit::{
-            AuditReceiver, AuditRecord, AuditSender, AuditSpoolConfig, AuditWorkerHandle,
-            AwsCliUploader, SelectorState, spawn_audit_worker,
+            AuditReceiver, AuditRecord, AuditSender, AuditSpoolConfig, AwsCliUploader,
+            ReferenceVenueSnapshot, SelectorState, VenueHealthState, spawn_audit_worker,
         },
         polymarket_catalog::load_candidate_markets_for_ruleset,
+        reference::{ReferenceSnapshot, VenueHealth},
         reference_actor::{ReferenceActor, ReferenceActorConfig, ReferenceSubscription},
         ruleset::{CandidateMarket, SelectionDecision, SelectionState, select_market},
     },
@@ -95,16 +100,36 @@ impl PlatformRuntimeServices {
 
 pub struct PlatformRuntimeGuards {
     pub cancellation: CancellationToken,
+    reference_snapshot_audit: Option<ReferenceSnapshotAuditSubscription>,
     pub join_handles: Vec<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
 impl PlatformRuntimeGuards {
-    pub async fn shutdown(self) -> anyhow::Result<()> {
+    pub async fn shutdown(mut self) -> anyhow::Result<()> {
         self.cancellation.cancel();
-        for handle in self.join_handles {
-            handle.await??;
+
+        let mut first_error = None;
+        if let Some(reference_snapshot_audit) = self.reference_snapshot_audit.take() {
+            if let Err(error) = reference_snapshot_audit.unsubscribe() {
+                first_error = Some(error);
+            }
         }
-        Ok(())
+        for handle in self.join_handles {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if first_error.is_none() => first_error = Some(error),
+                Ok(Err(_)) => {}
+                Err(error) if first_error.is_none() => {
+                    first_error = Some(anyhow!("platform runtime task join failed: {error}"));
+                }
+                Err(_) => {}
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -178,27 +203,30 @@ pub fn wire_platform_runtime_with_services(
 
     let cancellation = CancellationToken::new();
     let (audit_tx, audit_rx) = crate::platform::audit::audit_channel();
-    let audit_task = services.audit_task_factory.spawn(
+    let audit_config = AuditSpoolConfig {
+        spool_dir: audit_cfg.local_dir.clone().into(),
+        s3_prefix: audit_cfg.s3_uri.clone(),
+        node_name: cfg.node.name.clone(),
+        run_id: node.instance_id().to_string(),
+        ship_interval: Duration::from_secs(audit_cfg.ship_interval_secs),
+        upload_attempt_timeout: Duration::from_secs(30),
+        roll_max_bytes: audit_cfg.roll_max_bytes,
+        roll_max_secs: audit_cfg.roll_max_secs,
+        max_local_backlog_bytes: audit_cfg.max_local_backlog_bytes,
+    };
+    let audit_task = tokio::spawn(run_audit_task(
+        services.audit_task_factory,
         audit_rx,
-        AuditSpoolConfig {
-            spool_dir: audit_cfg.local_dir.clone().into(),
-            s3_prefix: audit_cfg.s3_uri.clone(),
-            node_name: cfg.node.name.clone(),
-            run_id: node.instance_id().to_string(),
-            ship_interval: Duration::from_secs(audit_cfg.ship_interval_secs),
-            upload_attempt_timeout: Duration::from_secs(30),
-            roll_max_bytes: audit_cfg.roll_max_bytes,
-            roll_max_secs: audit_cfg.roll_max_secs,
-            max_local_backlog_bytes: audit_cfg.max_local_backlog_bytes,
-        },
-        cancellation.clone(),
-    );
-    let audit_task = tokio::spawn(supervise_audit_task(
-        audit_task,
+        audit_config,
         cancellation.clone(),
         node.handle(),
     ));
-
+    let reference_snapshot_audit = subscribe_reference_snapshot_audit(
+        cfg.reference.publish_topic.clone(),
+        audit_tx.clone(),
+        cancellation.clone(),
+        node.handle(),
+    );
     let selector_task = tokio::spawn(run_selector_task(
         ruleset,
         services.selector_poll_interval,
@@ -211,6 +239,7 @@ pub fn wire_platform_runtime_with_services(
 
     Ok(PlatformRuntimeGuards {
         cancellation,
+        reference_snapshot_audit: Some(reference_snapshot_audit),
         join_handles: vec![audit_task, selector_task],
     })
 }
@@ -279,14 +308,19 @@ pub fn reference_client_name_for_kind(cfg: &Config, kind: &ReferenceVenueKind) -
     }
 }
 
-fn spawn_audit_shutdown_task(
-    worker: AuditWorkerHandle,
+async fn run_audit_task(
+    audit_task_factory: Arc<dyn PlatformAuditTaskFactory>,
+    audit_rx: AuditReceiver,
+    audit_config: AuditSpoolConfig,
     cancellation: CancellationToken,
-) -> JoinHandle<Result<()>> {
-    tokio::spawn(async move {
-        cancellation.cancelled().await;
-        worker.shutdown().await
-    })
+    node_handle: LiveNodeHandle,
+) -> Result<()> {
+    if !wait_for_node_running(&node_handle, &cancellation).await {
+        return Ok(());
+    }
+
+    let audit_task = audit_task_factory.spawn(audit_rx, audit_config, cancellation.clone());
+    supervise_audit_task(audit_task, cancellation, node_handle).await
 }
 
 async fn run_selector_task(
@@ -298,20 +332,25 @@ async fn run_selector_task(
     cancellation: CancellationToken,
     node_handle: LiveNodeHandle,
 ) -> Result<()> {
+    if !wait_for_node_running(&node_handle, &cancellation).await {
+        return Ok(());
+    }
+
     let mut ticker = interval(poll_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
-        if !node_handle.is_running() {
-            tokio::select! {
-                _ = cancellation.cancelled() => return Ok(()),
-                _ = tokio::time::sleep(Duration::from_millis(10)) => continue,
-            }
+        if !node_is_running(&node_handle) {
+            return Ok(());
         }
 
         tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),
             _ = ticker.tick() => {}
+        }
+
+        if !node_is_running(&node_handle) {
+            return Ok(());
         }
 
         let load_future = selector_loader.load(clone_ruleset_config(&ruleset));
@@ -330,6 +369,10 @@ async fn run_selector_task(
             }
         };
 
+        if !node_is_running(&node_handle) {
+            return Ok(());
+        }
+
         let decision = select_market(&ruleset, &candidates);
         if let Err(error) = send_selector_decision(&audit_tx, &decision, &now_ms) {
             if cancellation.is_cancelled() {
@@ -342,6 +385,74 @@ async fn run_selector_task(
                 error.context("selector audit send failed"),
             ));
         }
+    }
+}
+
+struct ReferenceSnapshotAuditSubscription {
+    publish_topic: String,
+    handler: ShareableMessageHandler,
+    send_failure: Arc<Mutex<Option<String>>>,
+}
+
+impl ReferenceSnapshotAuditSubscription {
+    fn unsubscribe(self) -> Result<()> {
+        msgbus::unsubscribe_any(self.publish_topic.into(), &self.handler);
+
+        let error_message = self
+            .send_failure
+            .lock()
+            .expect("snapshot send failure mutex poisoned")
+            .take();
+        match error_message {
+            Some(error_message) => Err(anyhow!(error_message)),
+            None => Ok(()),
+        }
+    }
+}
+
+fn subscribe_reference_snapshot_audit(
+    publish_topic: String,
+    audit_tx: AuditSender,
+    cancellation: CancellationToken,
+    node_handle: LiveNodeHandle,
+) -> ReferenceSnapshotAuditSubscription {
+    let send_failure = Arc::new(Mutex::new(None::<String>));
+    let handler_cancellation = cancellation.clone();
+    let handler_node_handle = node_handle.clone();
+    let handler_audit_tx = audit_tx.clone();
+    let handler_send_failure = Arc::clone(&send_failure);
+
+    let handler = ShareableMessageHandler::from_any(move |message: &dyn Any| {
+        if handler_cancellation.is_cancelled() || !node_is_running(&handler_node_handle) {
+            return;
+        }
+
+        let Some(snapshot) = message.downcast_ref::<ReferenceSnapshot>() else {
+            return;
+        };
+
+        if let Err(error) = send_reference_snapshot(&handler_audit_tx, snapshot) {
+            let error = error.context("reference snapshot audit send failed");
+            let error_message = error.to_string();
+            if let Ok(mut send_failure) = handler_send_failure.lock() {
+                if send_failure.is_none() {
+                    *send_failure = Some(error_message.clone());
+                }
+            }
+            let _ = fail_closed(
+                &handler_node_handle,
+                &handler_cancellation,
+                anyhow!(error_message),
+            );
+        }
+    });
+
+    msgbus::subscribe_any(publish_topic.clone().into(), handler.clone(), None);
+
+    ReferenceSnapshotAuditSubscription {
+        publish_topic,
+        handler,
+        send_failure,
     }
 }
 
@@ -404,6 +515,37 @@ fn send_selector_decision(
     Ok(())
 }
 
+fn send_reference_snapshot(audit_tx: &AuditSender, snapshot: &ReferenceSnapshot) -> Result<()> {
+    audit_tx
+        .send(AuditRecord::ReferenceSnapshot {
+            ts_ms: snapshot.ts_ms,
+            topic: snapshot.topic.clone(),
+            fair_value: snapshot.fair_value,
+            confidence: snapshot.confidence,
+            venues: snapshot
+                .venues
+                .iter()
+                .map(|venue| ReferenceVenueSnapshot {
+                    venue_name: venue.venue_name.clone(),
+                    base_weight: venue.base_weight,
+                    effective_weight: venue.effective_weight,
+                    stale: venue.stale,
+                    health: match &venue.health {
+                        VenueHealth::Healthy => VenueHealthState::Healthy,
+                        VenueHealth::Disabled { .. } => VenueHealthState::Disabled,
+                    },
+                    reason: match &venue.health {
+                        VenueHealth::Healthy => None,
+                        VenueHealth::Disabled { reason } => Some(reason.clone()),
+                    },
+                    observed_price: venue.observed_price,
+                })
+                .collect(),
+        })
+        .map_err(|_| anyhow!("audit channel is closed"))?;
+    Ok(())
+}
+
 fn fail_closed(
     node_handle: &LiveNodeHandle,
     cancellation: &CancellationToken,
@@ -413,6 +555,31 @@ fn fail_closed(
     node_handle.stop();
     log::error!("{error}");
     error
+}
+
+fn node_is_running(node_handle: &LiveNodeHandle) -> bool {
+    matches!(node_handle.state(), NodeState::Running)
+}
+
+async fn wait_for_node_running(
+    node_handle: &LiveNodeHandle,
+    cancellation: &CancellationToken,
+) -> bool {
+    loop {
+        if node_is_running(node_handle) {
+            return true;
+        }
+
+        match node_handle.state() {
+            NodeState::ShuttingDown | NodeState::Stopped => return false,
+            NodeState::Idle | NodeState::Starting | NodeState::Running => {}
+        }
+
+        tokio::select! {
+            _ = cancellation.cancelled() => return false,
+            _ = sleep(Duration::from_millis(10)) => {}
+        }
+    }
 }
 
 fn clone_reference_venue_entry(venue: &ReferenceVenueEntry) -> ReferenceVenueEntry {
@@ -462,7 +629,7 @@ impl PlatformAuditTaskFactory for ProductionAuditTaskFactory {
         cancellation: CancellationToken,
     ) -> JoinHandle<Result<()>> {
         let worker = spawn_audit_worker(audit_rx, AwsCliUploader, audit_config);
-        spawn_audit_shutdown_task(worker, cancellation)
+        tokio::spawn(async move { worker.run_until_cancelled(cancellation).await })
     }
 }
 

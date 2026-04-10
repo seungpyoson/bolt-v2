@@ -1,6 +1,7 @@
 mod support;
 
 use std::{
+    fs,
     path::Path,
     sync::{Arc, Mutex},
     time::Duration,
@@ -14,15 +15,20 @@ use bolt_v2::{
         StreamingCaptureConfig,
     },
     platform::{
-        audit::{AuditReceiver, AuditSpoolConfig, AuditUploader, spawn_audit_worker},
+        audit::{
+            AuditReceiver, AuditSpoolConfig, AuditUploader, ReferenceVenueSnapshot,
+            VenueHealthState, spawn_audit_worker,
+        },
+        reference::ReferenceSnapshot,
         ruleset::CandidateMarket,
         runtime::{
-            PlatformAuditTaskFactory, PlatformRuntimeServices, wire_platform_runtime_with_services,
+            CandidateMarketLoadFuture, CandidateMarketLoader, PlatformAuditTaskFactory,
+            PlatformRuntimeServices, wire_platform_runtime_with_services,
         },
     },
 };
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
-use nautilus_live::node::{LiveNode, NodeState};
+use nautilus_common::{enums::Environment, logging::logger::LoggerConfig, msgbus::publish_any};
+use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
 use nautilus_model::identifiers::TraderId;
 use support::MockDataClientConfig;
 use support::MockDataClientFactory;
@@ -87,14 +93,35 @@ struct FailingAuditTaskFactory {
 impl PlatformAuditTaskFactory for FailingAuditTaskFactory {
     fn spawn(
         &self,
-        _audit_rx: AuditReceiver,
+        audit_rx: AuditReceiver,
         _audit_config: AuditSpoolConfig,
-        _cancellation: tokio_util::sync::CancellationToken,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         let release = Arc::clone(&self.release);
         tokio::spawn(async move {
-            release.notified().await;
-            Err(anyhow!("injected audit failure"))
+            let _audit_rx = audit_rx;
+
+            tokio::select! {
+                _ = cancellation.cancelled() => Ok(()),
+                _ = release.notified() => Err(anyhow!("injected audit failure")),
+            }
+        })
+    }
+}
+
+struct DroppedReceiverAuditTaskFactory;
+
+impl PlatformAuditTaskFactory for DroppedReceiverAuditTaskFactory {
+    fn spawn(
+        &self,
+        audit_rx: AuditReceiver,
+        _audit_config: AuditSpoolConfig,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        tokio::spawn(async move {
+            drop(audit_rx);
+            cancellation.cancelled().await;
+            Ok(())
         })
     }
 }
@@ -195,6 +222,88 @@ fn uploaded_records(uploader: &MockUploader) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn collect_jsonl_files(root: &Path, files: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, files);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+}
+
+fn local_records(spool_dir: &Path) -> Vec<serde_json::Value> {
+    let mut files = Vec::new();
+    collect_jsonl_files(spool_dir, &mut files);
+    files.sort();
+
+    files
+        .into_iter()
+        .flat_map(|path| {
+            let Ok(contents) = fs::read_to_string(path) else {
+                return Vec::new();
+            };
+
+            contents
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn count_kind_records(records: &[serde_json::Value], kind: &str) -> usize {
+    records
+        .iter()
+        .filter(|record| record["kind"] == kind)
+        .count()
+}
+
+async fn wait_for_kind_record_count(spool_dir: &Path, kind: &str, min_count: usize) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let records = local_records(spool_dir);
+            if count_kind_records(&records, kind) >= min_count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn wait_for_running(handle: &LiveNodeHandle) {
+    while !handle.is_running() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn runtime_error(run_result: Result<()>, shutdown_result: Result<()>) -> anyhow::Error {
+    match (run_result.err(), shutdown_result.err()) {
+        (Some(error), _) => error,
+        (_, Some(error)) => error,
+        (None, None) => panic!("runtime failure should surface through run or shutdown"),
+    }
+}
+
+fn services_with_loader(
+    candidate_loader: Arc<dyn CandidateMarketLoader>,
+    audit_task_factory: Arc<dyn PlatformAuditTaskFactory>,
+) -> PlatformRuntimeServices {
+    PlatformRuntimeServices {
+        selector_poll_interval: Duration::from_millis(25),
+        candidate_loader,
+        audit_task_factory,
+        now_ms: Arc::new(|| 1_000),
+    }
+}
+
 fn services_with(
     markets: Vec<CandidateMarket>,
     audit_task_factory: Arc<dyn PlatformAuditTaskFactory>,
@@ -203,22 +312,14 @@ fn services_with(
         markets: Vec<CandidateMarket>,
     }
 
-    impl bolt_v2::platform::runtime::CandidateMarketLoader for StaticLoader {
-        fn load(
-            &self,
-            _ruleset: RulesetConfig,
-        ) -> bolt_v2::platform::runtime::CandidateMarketLoadFuture {
+    impl CandidateMarketLoader for StaticLoader {
+        fn load(&self, _ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
             let markets = self.markets.clone();
             Box::pin(async move { Ok(markets) })
         }
     }
 
-    PlatformRuntimeServices {
-        selector_poll_interval: Duration::from_millis(25),
-        candidate_loader: Arc::new(StaticLoader { markets }),
-        audit_task_factory,
-        now_ms: Arc::new(|| 1_000),
-    }
+    services_with_loader(Arc::new(StaticLoader { markets }), audit_task_factory)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -238,10 +339,7 @@ async fn platform_runtime_starts_and_stops_with_node() {
     let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
     tokio::spawn(async move {
-        while !handle.is_running() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
+        wait_for_running(&handle).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         handle.stop();
     });
@@ -271,10 +369,7 @@ async fn no_eligible_market_emits_idle_decision_and_keeps_running() {
 
     let stop_handle = handle.clone();
     tokio::spawn(async move {
-        while !handle.is_running() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
+        wait_for_running(&handle).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(handle.is_running(), "idle selector must not stop the node");
         stop_handle.stop();
@@ -331,23 +426,270 @@ async fn audit_task_failure_triggers_fail_closed_shutdown() {
     let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
     tokio::spawn(async move {
-        while !handle.is_running() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        release.notify_waiters();
+        wait_for_running(&handle).await;
+        release.notify_one();
     });
 
     let run_result = node.run().await;
     assert_eq!(node.state(), NodeState::Stopped);
     let shutdown_result = guards.shutdown().await;
-    let error = match (run_result.err(), shutdown_result.err()) {
-        (Some(error), _) => error,
-        (_, Some(error)) => error,
-        (None, None) => panic!("audit failure should surface through run or shutdown"),
-    };
+    let error = runtime_error(run_result, shutdown_result);
     assert!(
         error.to_string().contains("platform audit task failed")
             || error.to_string().contains("injected audit failure"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn selector_loader_failure_triggers_fail_closed_shutdown() {
+    struct FailingLoader;
+
+    impl CandidateMarketLoader for FailingLoader {
+        fn load(&self, _ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
+            Box::pin(async { Err(anyhow!("injected selector failure")) })
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let uploader = MockUploader::default();
+    let services = services_with_loader(
+        Arc::new(FailingLoader),
+        Arc::new(RecordingAuditTaskFactory { uploader }),
+    );
+
+    let mut node = build_node();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
+        .await
+        .expect("selector failure should stop the node");
+    assert_eq!(node.state(), NodeState::Stopped);
+    let shutdown_result = guards.shutdown().await;
+    let error = runtime_error(run_result, shutdown_result);
+    assert!(
+        error.to_string().contains("selector polling failed")
+            || error.to_string().contains("injected selector failure"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reference_snapshot_is_forwarded_into_audit_spool() {
+    let dir = tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let publish_topic = cfg.reference.publish_topic.clone();
+    let uploader = MockUploader::default();
+    let services = services_with(
+        Vec::new(),
+        Arc::new(RecordingAuditTaskFactory {
+            uploader: uploader.clone(),
+        }),
+    );
+
+    let mut node = build_node();
+    let handle = node.handle();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    tokio::spawn(async move {
+        wait_for_running(&handle).await;
+
+        let snapshot = ReferenceSnapshot {
+            ts_ms: 4_242,
+            topic: publish_topic.clone(),
+            fair_value: Some(42.5),
+            confidence: 0.8,
+            venues: vec![
+                bolt_v2::platform::reference::EffectiveVenueState {
+                    venue_name: "BINANCE-BTC".to_string(),
+                    base_weight: 0.7,
+                    effective_weight: 0.7,
+                    stale: false,
+                    health: bolt_v2::platform::reference::VenueHealth::Healthy,
+                    observed_price: Some(42.0),
+                },
+                bolt_v2::platform::reference::EffectiveVenueState {
+                    venue_name: "KRAKEN-BTC".to_string(),
+                    base_weight: 0.3,
+                    effective_weight: 0.0,
+                    stale: true,
+                    health: bolt_v2::platform::reference::VenueHealth::Disabled {
+                        reason: "feed lagging".to_string(),
+                    },
+                    observed_price: Some(43.0),
+                },
+            ],
+        };
+        publish_any(publish_topic.into(), &snapshot);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.stop();
+    });
+
+    node.run().await.unwrap();
+    guards.shutdown().await.unwrap();
+
+    let records = uploaded_records(&uploader);
+    assert!(records.iter().any(|record| {
+        record["kind"] == "reference_snapshot"
+            && record["ts_ms"] == 4_242
+            && record["topic"] == cfg.reference.publish_topic
+            && record["fair_value"] == 42.5
+            && record["confidence"] == 0.8
+            && record["venues"]
+                == serde_json::to_value(vec![
+                    ReferenceVenueSnapshot {
+                        venue_name: "BINANCE-BTC".to_string(),
+                        base_weight: 0.7,
+                        effective_weight: 0.7,
+                        stale: false,
+                        health: VenueHealthState::Healthy,
+                        reason: None,
+                        observed_price: Some(42.0),
+                    },
+                    ReferenceVenueSnapshot {
+                        venue_name: "KRAKEN-BTC".to_string(),
+                        base_weight: 0.3,
+                        effective_weight: 0.0,
+                        stale: true,
+                        health: VenueHealthState::Disabled,
+                        reason: Some("feed lagging".to_string()),
+                        observed_price: Some(43.0),
+                    },
+                ])
+                .unwrap()
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn background_producers_stop_emitting_before_runtime_shutdown() {
+    let dir = tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let publish_topic = cfg.reference.publish_topic.clone();
+    let services = services_with(
+        Vec::new(),
+        Arc::new(RecordingAuditTaskFactory {
+            uploader: MockUploader::default(),
+        }),
+    );
+
+    let mut node = build_node();
+    let handle = node.handle();
+    let stop_handle = handle.clone();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    tokio::spawn(async move {
+        wait_for_running(&handle).await;
+
+        publish_any(
+            publish_topic.clone().into(),
+            &ReferenceSnapshot {
+                ts_ms: 6_000,
+                topic: publish_topic,
+                fair_value: Some(12.5),
+                confidence: 0.7,
+                venues: Vec::new(),
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        stop_handle.stop();
+    });
+
+    node.run().await.unwrap();
+
+    wait_for_kind_record_count(dir.path(), "selector_decision", 1).await;
+    wait_for_kind_record_count(dir.path(), "reference_snapshot", 1).await;
+
+    let before_gap_records = local_records(dir.path());
+    let selector_before_gap = count_kind_records(&before_gap_records, "selector_decision");
+    let snapshot_before_gap = count_kind_records(&before_gap_records, "reference_snapshot");
+
+    for ts_ms in [7_001_u64, 7_002, 7_003] {
+        publish_any(
+            cfg.reference.publish_topic.clone().into(),
+            &ReferenceSnapshot {
+                ts_ms,
+                topic: cfg.reference.publish_topic.clone(),
+                fair_value: Some(99.0),
+                confidence: 0.5,
+                venues: Vec::new(),
+            },
+        );
+    }
+
+    tokio::time::sleep(Duration::from_millis(90)).await;
+
+    let after_gap_records = local_records(dir.path());
+    assert_eq!(
+        count_kind_records(&after_gap_records, "selector_decision"),
+        selector_before_gap,
+        "selector loop should stop emitting after node stop and before runtime shutdown"
+    );
+    assert_eq!(
+        count_kind_records(&after_gap_records, "reference_snapshot"),
+        snapshot_before_gap,
+        "snapshot forwarding should stop emitting after node stop and before runtime shutdown"
+    );
+
+    guards.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reference_snapshot_audit_send_failure_surfaces_through_shutdown() {
+    struct PendingLoader;
+
+    impl CandidateMarketLoader for PendingLoader {
+        fn load(&self, _ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let publish_topic = cfg.reference.publish_topic.clone();
+    let services = services_with_loader(
+        Arc::new(PendingLoader),
+        Arc::new(DroppedReceiverAuditTaskFactory),
+    );
+
+    let mut node = build_node();
+    let handle = node.handle();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    tokio::spawn(async move {
+        wait_for_running(&handle).await;
+
+        for _ in 0..50 {
+            publish_any(
+                publish_topic.clone().into(),
+                &ReferenceSnapshot {
+                    ts_ms: 5_001,
+                    topic: "reference.test".to_string(),
+                    fair_value: Some(1.5),
+                    confidence: 0.9,
+                    venues: Vec::new(),
+                },
+            );
+
+            if !handle.is_running() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
+        .await
+        .expect("snapshot audit send failure should stop the node");
+    assert_eq!(node.state(), NodeState::Stopped);
+    let shutdown_result = guards.shutdown().await;
+    let error = runtime_error(run_result, shutdown_result);
+    assert!(
+        error
+            .to_string()
+            .contains("reference snapshot audit send failed"),
         "{error:#}"
     );
 }

@@ -37,6 +37,7 @@ pub struct EffectiveVenueState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReferenceSnapshot {
+    pub ts_ms: u64,
     pub topic: String,
     pub fair_value: Option<f64>,
     pub confidence: f64,
@@ -107,6 +108,7 @@ pub fn fuse_reference_snapshot(
     };
 
     ReferenceSnapshot {
+        ts_ms: now_ms,
         topic: topic.to_string(),
         fair_value,
         confidence,

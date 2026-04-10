@@ -321,3 +321,77 @@ fn mismatched_observation_identity_is_ignored() {
     assert_eq!(snapshot.venues[0].observed_price, None);
     assert_eq!(snapshot.venues[0].effective_weight, 0.0);
 }
+
+#[test]
+fn venue_becomes_stale_before_it_is_auto_disabled() {
+    let venues = vec![ReferenceVenueEntry {
+        name: "BINANCE".into(),
+        kind: ReferenceVenueKind::Binance,
+        instrument_id: "BINANCE.TEST".into(),
+        base_weight: 1.0,
+        stale_after_ms: 1_000,
+        disable_after_ms: 2_000,
+    }];
+    let latest = BTreeMap::from([(
+        "BINANCE".to_string(),
+        orderbook("BINANCE", 99.0, 101.0, 1_000),
+    )]);
+
+    let stale_snapshot = fuse_reference_snapshot(
+        "platform.reference.default",
+        2_500,
+        &venues,
+        &latest,
+        &BTreeMap::new(),
+    );
+    assert!(stale_snapshot.venues[0].stale);
+    assert_eq!(stale_snapshot.venues[0].health, VenueHealth::Healthy);
+    assert_eq!(stale_snapshot.venues[0].effective_weight, 0.0);
+
+    let disabled_snapshot = fuse_reference_snapshot(
+        "platform.reference.default",
+        3_001,
+        &venues,
+        &latest,
+        &BTreeMap::new(),
+    );
+    assert!(disabled_snapshot.venues[0].stale);
+    assert_eq!(disabled_snapshot.venues[0].effective_weight, 0.0);
+    assert_eq!(
+        disabled_snapshot.venues[0].health,
+        VenueHealth::Disabled {
+            reason: "auto-disabled after 2001ms without a fresh reference update".into(),
+        }
+    );
+}
+
+#[test]
+fn manual_disable_reason_overrides_age_based_disable() {
+    let venues = vec![ReferenceVenueEntry {
+        name: "BYBIT".into(),
+        kind: ReferenceVenueKind::Bybit,
+        instrument_id: "BYBIT.TEST".into(),
+        base_weight: 1.0,
+        stale_after_ms: 1_000,
+        disable_after_ms: 2_000,
+    }];
+    let latest = BTreeMap::from([("BYBIT".to_string(), orderbook("BYBIT", 109.0, 111.0, 1_000))]);
+    let disabled = BTreeMap::from([("BYBIT".to_string(), "manual disable".to_string())]);
+
+    let snapshot = fuse_reference_snapshot(
+        "platform.reference.default",
+        3_500,
+        &venues,
+        &latest,
+        &disabled,
+    );
+
+    assert!(snapshot.venues[0].stale);
+    assert_eq!(snapshot.venues[0].effective_weight, 0.0);
+    assert_eq!(
+        snapshot.venues[0].health,
+        VenueHealth::Disabled {
+            reason: "manual disable".into(),
+        }
+    );
+}

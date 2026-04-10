@@ -5,7 +5,9 @@ use nautilus_common::{
     actor::{DataActor, DataActorConfig, DataActorCore},
     msgbus::publish_any,
     nautilus_actor,
+    timer::TimeEvent,
 };
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::QuoteTick,
     identifiers::{ClientId, InstrumentId},
@@ -43,16 +45,13 @@ pub struct ReferenceActor {
 }
 
 impl ReferenceActor {
+    const QUIET_TIMER_NAME_SUFFIX: &str = "reference-quiet-transition";
+
     pub fn new(config: ReferenceActorConfig, venue_cfgs: Vec<ReferenceVenueEntry>) -> Self {
         let instrument_to_venue_name = config
             .venue_subscriptions
             .iter()
-            .map(|subscription| {
-                (
-                    subscription.instrument_id,
-                    subscription.venue_name.clone(),
-                )
-            })
+            .map(|subscription| (subscription.instrument_id, subscription.venue_name.clone()))
             .collect();
 
         Self {
@@ -91,6 +90,74 @@ impl ReferenceActor {
         }
     }
 
+    fn quiet_timer_name(&self) -> String {
+        format!(
+            "{}-{}",
+            self.actor_id().inner(),
+            Self::QUIET_TIMER_NAME_SUFFIX
+        )
+    }
+
+    fn next_transition_ms(&self, now_ms: u64) -> Option<u64> {
+        self.venue_cfgs
+            .iter()
+            .filter_map(|venue| {
+                let observation = self.latest.get(&venue.name)?;
+                let observation_ts_ms = match observation {
+                    ReferenceObservation::Orderbook { ts_ms, .. }
+                    | ReferenceObservation::Oracle { ts_ms, .. } => *ts_ms,
+                };
+                let age_ms = now_ms.saturating_sub(observation_ts_ms);
+
+                let stale_transition_ms = (age_ms <= venue.stale_after_ms).then(|| {
+                    observation_ts_ms
+                        .saturating_add(venue.stale_after_ms)
+                        .saturating_add(1)
+                });
+                let disable_transition_ms = (!self.disabled.contains_key(&venue.name)
+                    && age_ms <= venue.disable_after_ms)
+                    .then(|| {
+                        observation_ts_ms
+                            .saturating_add(venue.disable_after_ms)
+                            .saturating_add(1)
+                    });
+
+                stale_transition_ms
+                    .into_iter()
+                    .chain(disable_transition_ms)
+                    .filter(|transition_ms| *transition_ms > now_ms)
+                    .min()
+            })
+            .min()
+    }
+
+    fn reschedule_quiet_timer(&mut self) -> anyhow::Result<()> {
+        let now_ms = self.now_ms();
+        let timer_name = self.quiet_timer_name();
+        let next_fire_ms = self.next_transition_ms(now_ms).map(|transition_ms| {
+            let earliest_publish_ms = self
+                .last_publish_ms
+                .map(|last_publish_ms| {
+                    last_publish_ms.saturating_add(self.config.min_publish_interval_ms)
+                })
+                .unwrap_or(now_ms);
+            transition_ms.max(earliest_publish_ms)
+        });
+
+        let mut clock = self.clock();
+        clock.cancel_timer(&timer_name);
+        if let Some(next_fire_ms) = next_fire_ms {
+            clock.set_time_alert_ns(
+                &timer_name,
+                UnixNanos::from(next_fire_ms.saturating_mul(1_000_000)),
+                None,
+                None,
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn publish_snapshot(&mut self, ts_ms: u64) {
         if !self.should_publish(ts_ms) {
             return;
@@ -121,6 +188,14 @@ impl DataActor for ReferenceActor {
             );
         }
 
+        self.reschedule_quiet_timer()?;
+
+        Ok(())
+    }
+
+    fn on_stop(&mut self) -> anyhow::Result<()> {
+        let timer_name = self.quiet_timer_name();
+        self.clock().cancel_timer(&timer_name);
         Ok(())
     }
 
@@ -156,6 +231,19 @@ impl DataActor for ReferenceActor {
         );
         let now_ms = self.now_ms();
         self.publish_snapshot(now_ms);
+        self.reschedule_quiet_timer()?;
+
+        Ok(())
+    }
+
+    fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
+        if event.name.as_str() != self.quiet_timer_name() {
+            return Ok(());
+        }
+
+        let now_ms = self.now_ms();
+        self.publish_snapshot(now_ms);
+        self.reschedule_quiet_timer()?;
 
         Ok(())
     }

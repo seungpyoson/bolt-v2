@@ -1,9 +1,4 @@
-use std::{
-    any::Any,
-    cell::RefCell,
-    rc::Rc,
-    sync::Arc,
-};
+use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 
 use bolt_v2::{
     config::{ReferenceVenueEntry, ReferenceVenueKind},
@@ -14,16 +9,12 @@ use bolt_v2::{
 };
 use nautilus_common::{
     actor::{
-        Component,
-        DataActor,
+        Component, DataActor,
         registry::{get_actor_unchecked, register_actor},
     },
     cache::Cache,
     clock::TestClock,
-    msgbus::{
-        self, MessageBus, ShareableMessageHandler,
-        switchboard::get_quotes_topic,
-    },
+    msgbus::{self, MessageBus, ShareableMessageHandler, switchboard::get_quotes_topic},
     runner::{SyncDataCommandSender, replace_data_cmd_sender},
 };
 use nautilus_core::{UUID4, UnixNanos};
@@ -108,6 +99,26 @@ fn set_actor_clock_ms(actor: &mut ReferenceActor, ts_ms: u64) {
     test_clock.set_time(UnixNanos::from(ts_ms * 1_000_000));
 }
 
+fn advance_actor_clock_to(actor_id: ActorId, ts_ms: u64) {
+    let clock = {
+        let actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+        actor.clock_rc()
+    };
+
+    let handlers = {
+        let mut clock = clock.borrow_mut();
+        let test_clock = (&mut *clock as &mut dyn Any)
+            .downcast_mut::<TestClock>()
+            .expect("reference actor should be registered with TestClock");
+        let events = test_clock.advance_time(UnixNanos::from(ts_ms * 1_000_000), true);
+        test_clock.match_handlers(events)
+    };
+
+    for handler in handlers {
+        handler.callback.call(handler.event);
+    }
+}
+
 fn actor_config(
     publish_topic: &str,
     min_publish_interval_ms: u64,
@@ -139,7 +150,12 @@ fn reference_actor_subscribes_to_quotes_for_configured_venues() {
             ],
         ),
         vec![
-            reference_venue("BINANCE", "BTCUSDT.BINANCE", ReferenceVenueKind::Binance, 0.5),
+            reference_venue(
+                "BINANCE",
+                "BTCUSDT.BINANCE",
+                ReferenceVenueKind::Binance,
+                0.5,
+            ),
             reference_venue("BYBIT", "BTCUSDT.BYBIT", ReferenceVenueKind::Bybit, 0.5),
         ],
     );
@@ -172,16 +188,18 @@ fn reference_actor_subscribes_to_quotes_for_configured_venues() {
 
     let snapshots = snapshots.borrow();
     assert_eq!(snapshots.len(), 2);
-    assert!(
-        snapshots
+    assert!(snapshots.iter().all(|snapshot| {
+        snapshot
+            .venues
             .iter()
-            .all(|snapshot| snapshot.venues.iter().any(|venue| venue.venue_name == "BINANCE"))
-    );
-    assert!(
-        snapshots
+            .any(|venue| venue.venue_name == "BINANCE")
+    }));
+    assert!(snapshots.iter().all(|snapshot| {
+        snapshot
+            .venues
             .iter()
-            .all(|snapshot| snapshot.venues.iter().any(|venue| venue.venue_name == "BYBIT"))
-    );
+            .any(|venue| venue.venue_name == "BYBIT")
+    }));
 }
 
 #[test]
@@ -428,10 +446,7 @@ fn out_of_order_quotes_do_not_replace_latest_or_publish() {
         .expect("latest observation should be retained");
     match stored {
         bolt_v2::platform::reference::ReferenceObservation::Orderbook {
-            bid,
-            ask,
-            ts_ms,
-            ..
+            bid, ask, ts_ms, ..
         } => {
             assert_eq!(*bid, 99.5);
             assert_eq!(*ask, 100.5);
@@ -454,7 +469,12 @@ fn disabled_venue_still_appears_in_snapshot_with_zero_weight() {
             ],
         ),
         vec![
-            reference_venue("BINANCE", "BTCUSDT.BINANCE", ReferenceVenueKind::Binance, 0.6),
+            reference_venue(
+                "BINANCE",
+                "BTCUSDT.BINANCE",
+                ReferenceVenueKind::Binance,
+                0.6,
+            ),
             reference_venue("BYBIT", "BTCUSDT.BYBIT", ReferenceVenueKind::Bybit, 0.4),
         ],
     );
@@ -489,6 +509,96 @@ fn disabled_venue_still_appears_in_snapshot_with_zero_weight() {
         bybit.health,
         VenueHealth::Disabled {
             reason: "venue disabled".into(),
+        }
+    );
+}
+
+#[test]
+fn quiet_period_timer_publishes_stale_snapshot_without_new_quote() {
+    let publish_topic = "platform.reference.test.timer-stale";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription("BINANCE", "BTCUSDT.BINANCE", "BINANCE")],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "BINANCE".into(),
+            kind: ReferenceVenueKind::Binance,
+            instrument_id: "BTCUSDT.BINANCE".into(),
+            base_weight: 1.0,
+            stale_after_ms: 1_000,
+            disable_after_ms: 2_000,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    {
+        let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+        actor.start().unwrap();
+        set_actor_clock_ms(&mut actor, 1_000);
+        actor
+            .on_quote(&quote("BTCUSDT.BINANCE", "99.5", "100.5", 1_000))
+            .unwrap();
+    }
+
+    advance_actor_clock_to(actor_id, 2_001);
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].fair_value, Some(100.0));
+    assert_eq!(snapshots[0].venues[0].health, VenueHealth::Healthy);
+    assert!(!snapshots[0].venues[0].stale);
+
+    assert_eq!(snapshots[1].fair_value, None);
+    assert_eq!(snapshots[1].confidence, 0.0);
+    assert!(snapshots[1].venues[0].stale);
+    assert_eq!(snapshots[1].venues[0].health, VenueHealth::Healthy);
+    assert_eq!(snapshots[1].venues[0].effective_weight, 0.0);
+}
+
+#[test]
+fn quiet_period_timer_publishes_disabled_snapshot_after_disable_threshold() {
+    let publish_topic = "platform.reference.test.timer-disabled";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription("BYBIT", "BTCUSDT.BYBIT", "BYBIT")],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "BYBIT".into(),
+            kind: ReferenceVenueKind::Bybit,
+            instrument_id: "BTCUSDT.BYBIT".into(),
+            base_weight: 1.0,
+            stale_after_ms: 1_000,
+            disable_after_ms: 2_000,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    {
+        let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+        actor.start().unwrap();
+        set_actor_clock_ms(&mut actor, 1_000);
+        actor
+            .on_quote(&quote("BTCUSDT.BYBIT", "109.5", "110.5", 1_000))
+            .unwrap();
+    }
+
+    advance_actor_clock_to(actor_id, 2_001);
+    advance_actor_clock_to(actor_id, 3_001);
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 3);
+    assert_eq!(snapshots[2].fair_value, None);
+    assert_eq!(snapshots[2].confidence, 0.0);
+    assert!(snapshots[2].venues[0].stale);
+    assert_eq!(snapshots[2].venues[0].effective_weight, 0.0);
+    assert_eq!(
+        snapshots[2].venues[0].health,
+        VenueHealth::Disabled {
+            reason: "auto-disabled after 2001ms without a fresh reference update".into(),
         }
     );
 }

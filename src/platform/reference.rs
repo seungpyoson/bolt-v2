@@ -63,15 +63,22 @@ pub fn fuse_reference_snapshot(
             .get(&venue.name)
             .filter(|observation| observation.matches_identity(venue));
         let observed_price = observation.map(ReferenceObservation::observed_price);
-        let stale = observation
-            .map(|observation| now_ms.saturating_sub(observation.ts_ms()) > venue.stale_after_ms)
+        let age_ms = observation.map(|observation| now_ms.saturating_sub(observation.ts_ms()));
+        let auto_disabled_reason = age_ms
+            .filter(|age_ms| *age_ms > venue.disable_after_ms)
+            .map(auto_disable_reason);
+        let stale = age_ms
+            .map(|age_ms| age_ms > venue.stale_after_ms || auto_disabled_reason.is_some())
             .unwrap_or(false);
 
         let health = match disabled.get(&venue.name) {
             Some(reason) => VenueHealth::Disabled {
                 reason: reason.clone(),
             },
-            None => VenueHealth::Healthy,
+            None => match auto_disabled_reason {
+                Some(reason) => VenueHealth::Disabled { reason },
+                None => VenueHealth::Healthy,
+            },
         };
 
         let enabled = matches!(health, VenueHealth::Healthy) && !stale;
@@ -114,6 +121,10 @@ pub fn fuse_reference_snapshot(
         confidence,
         venues,
     }
+}
+
+fn auto_disable_reason(age_ms: u64) -> String {
+    format!("auto-disabled after {age_ms}ms without a fresh reference update")
 }
 
 impl ReferenceObservation {

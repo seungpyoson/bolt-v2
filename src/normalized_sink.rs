@@ -311,6 +311,18 @@ fn contract_startup_summary(
     summary
 }
 
+fn format_contract_startup_log(contract: &crate::venue_contract::VenueContract) -> String {
+    let summary = contract_startup_summary(contract);
+    format!(
+        "Contract loaded: {} -- supported {:?}; conditional {:?}; disabled {:?}; unsupported {:?}. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion.",
+        contract.venue,
+        summary.supported,
+        summary.conditional,
+        summary.disabled,
+        summary.unsupported,
+    )
+}
+
 fn send_sink_message(
     sender: &UnboundedSender<SinkMessage>,
     message: SinkMessage,
@@ -482,15 +494,7 @@ pub fn wire_normalized_sinks(
             std::path::Path::new(path),
         )?;
         let contract = crate::venue_contract::VenueContract::load_and_validate(&normalized)?;
-        let summary = contract_startup_summary(&contract);
-        log::info!(
-            "Contract loaded: {} -- supported {:?}; conditional {:?}; disabled {:?}; unsupported {:?}. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion.",
-            contract.venue,
-            summary.supported,
-            summary.conditional,
-            summary.disabled,
-            summary.unsupported,
-        );
+        log::info!("{}", format_contract_startup_log(&contract));
     }
 
     let instance_id = node.instance_id().to_string();
@@ -819,6 +823,64 @@ mod tests {
                 disabled: vec!["order_book_deltas".to_string()],
                 unsupported: vec!["mark_prices".to_string()],
             }
+        );
+    }
+
+    #[test]
+    fn contract_startup_log_message_describes_boundary_exactly() {
+        let contract = VenueContract {
+            schema_version: 1,
+            venue: "test".to_string(),
+            adapter_version: "bolt-v2".to_string(),
+            streams: [
+                (
+                    "quotes".to_string(),
+                    StreamContract {
+                        capability: Capability::Supported,
+                        policy: Some(Policy::Required),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "trades".to_string(),
+                    StreamContract {
+                        capability: Capability::Conditional,
+                        policy: Some(Policy::Optional),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "order_book_deltas".to_string(),
+                    StreamContract {
+                        capability: Capability::Supported,
+                        policy: Some(Policy::Disabled),
+                        provenance: Provenance::Native,
+                        reason: None,
+                        derived_from: None,
+                    },
+                ),
+                (
+                    "mark_prices".to_string(),
+                    StreamContract {
+                        capability: Capability::Unsupported,
+                        policy: None,
+                        provenance: Provenance::Native,
+                        reason: Some("n/a".to_string()),
+                        derived_from: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        assert_eq!(
+            format_contract_startup_log(&contract),
+            "Contract loaded: test -- supported [\"quotes\"]; conditional [\"trades\"]; disabled [\"order_book_deltas\"]; unsupported [\"mark_prices\"]. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion."
         );
     }
 }

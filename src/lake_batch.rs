@@ -12,7 +12,10 @@ use anyhow::{Result, bail, ensure};
 use arrow::ipc::reader::StreamReader;
 use nautilus_persistence::backend::{catalog::ParquetDataCatalog, custom::decode_batch_to_data};
 
-use crate::venue_contract::{Capability, ClassReport, CompletenessReport, Policy, VenueContract};
+use crate::{
+    execution_state,
+    venue_contract::{Capability, ClassReport, CompletenessReport, Policy, VenueContract},
+};
 
 const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "quotes",
@@ -24,7 +27,12 @@ const SUPPORTED_STREAM_CLASSES: &[&str] = &[
     "instrument_closes",
 ];
 const COMPLETENESS_REPORT_FILE: &str = "completeness_report.json";
-const SPOOL_INFRASTRUCTURE_DIRS: &[&str] = &["instruments", "status"];
+const SPOOL_NON_CONTRACT_DIRS: &[&str] = &[
+    "instruments",
+    "status",
+    execution_state::ORDER_EVENTS_CLASS,
+    execution_state::POSITION_EVENTS_CLASS,
+];
 const FLAT_SPOOL_IGNORED_INFRASTRUCTURE_CLASSES: &[&str] = &["instruments"];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +77,10 @@ pub fn convert_live_spool_to_parquet(
             converted_classes.push(*data_cls);
         }
     }
+    converted_classes.extend(execution_state::convert_sidecars_to_parquet(
+        &source_instance_dir,
+        staged_output.path(),
+    )?);
 
     let completeness = if let Some(contract) = contract {
         let report = build_completeness_report(
@@ -126,7 +138,7 @@ fn build_completeness_report(
         .keys()
         .map(String::as_str)
         .chain(supported_stream_classes().iter().copied())
-        .chain(SPOOL_INFRASTRUCTURE_DIRS.iter().copied())
+        .chain(SPOOL_NON_CONTRACT_DIRS.iter().copied())
         .collect();
     let known_flat_classes: std::collections::HashSet<&str> =
         contract.streams.keys().map(String::as_str).collect();

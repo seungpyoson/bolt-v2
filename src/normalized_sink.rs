@@ -1,7 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -12,10 +12,12 @@ use anyhow::{Result, anyhow, bail};
 use nautilus_common::msgbus::{
     MStr, ShareableMessageHandler, TypedHandler, subscribe_any, subscribe_bars,
     subscribe_book_deltas, subscribe_book_depth10, subscribe_index_prices,
-    subscribe_instrument_close, subscribe_instruments, subscribe_mark_prices, subscribe_quotes,
-    subscribe_trades, unsubscribe_any, unsubscribe_bars, unsubscribe_book_deltas,
-    unsubscribe_book_depth10, unsubscribe_index_prices, unsubscribe_instrument_close,
-    unsubscribe_instruments, unsubscribe_mark_prices, unsubscribe_quotes, unsubscribe_trades,
+    subscribe_instrument_close, subscribe_instruments, subscribe_mark_prices,
+    subscribe_order_events, subscribe_position_events, subscribe_quotes, subscribe_trades,
+    unsubscribe_any, unsubscribe_bars, unsubscribe_book_deltas, unsubscribe_book_depth10,
+    unsubscribe_index_prices, unsubscribe_instrument_close, unsubscribe_instruments,
+    unsubscribe_mark_prices, unsubscribe_order_events, unsubscribe_position_events,
+    unsubscribe_quotes, unsubscribe_trades,
 };
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
@@ -24,6 +26,7 @@ use nautilus_model::{
         OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
     },
     enums::MarketStatusAction,
+    events::{OrderEventAny, PositionEvent},
     instruments::InstrumentAny,
 };
 use nautilus_persistence::{
@@ -36,7 +39,7 @@ use tokio::{
     task::{JoinHandle, spawn_local},
 };
 
-use crate::raw_types::JsonlAppender;
+use crate::{execution_state, raw_types::JsonlAppender};
 
 struct TypedHandlers {
     quotes: TypedHandler<QuoteTick>,
@@ -46,12 +49,26 @@ struct TypedHandlers {
     book_depth10: TypedHandler<OrderBookDepth10>,
     mark_prices: TypedHandler<MarkPriceUpdate>,
     index_prices: TypedHandler<IndexPriceUpdate>,
+    order_events: TypedHandler<OrderEventAny>,
+    position_events: TypedHandler<PositionEvent>,
 }
 
 struct AnyHandlers {
     instruments: ShareableMessageHandler,
     instrument_closes: ShareableMessageHandler,
     instrument_statuses: ShareableMessageHandler,
+}
+
+struct SidecarPaths {
+    status: PathBuf,
+    order_events: PathBuf,
+    position_events: PathBuf,
+}
+
+struct SidecarWriters {
+    status: JsonlAppender,
+    order_events: JsonlAppender,
+    position_events: JsonlAppender,
 }
 
 #[derive(Clone)]
@@ -127,6 +144,8 @@ enum SinkMessage {
     Instrument(Box<InstrumentAny>),
     InstrumentClose(InstrumentClose),
     InstrumentStatus(InstrumentStatus),
+    OrderEvent(Box<OrderEventAny>),
+    PositionEvent(Box<PositionEvent>),
 }
 
 pub struct NormalizedSinkGuards {
@@ -186,6 +205,8 @@ impl NormalizedSinkGuards {
             unsubscribe_book_depth10(book_depth10_pattern(), &typed.book_depth10);
             unsubscribe_mark_prices(mark_prices_pattern(), &typed.mark_prices);
             unsubscribe_index_prices(index_prices_pattern(), &typed.index_prices);
+            unsubscribe_order_events(order_events_pattern(), &typed.order_events);
+            unsubscribe_position_events(position_events_pattern(), &typed.position_events);
         }
 
         if let Some(any) = self.any_handlers.take() {
@@ -238,6 +259,14 @@ fn instrument_closes_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
 
 fn instrument_statuses_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("data.status.*.*")
+}
+
+fn order_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    MStr::pattern("events.order.*")
+}
+
+fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    MStr::pattern("events.position.*")
 }
 
 fn per_instrument_stream_types() -> HashSet<String> {
@@ -343,8 +372,8 @@ fn send_sink_message(
 async fn run_sink_worker(
     mut receiver: UnboundedReceiver<SinkMessage>,
     mut writer: FeatherWriter,
-    mut status_writer: JsonlAppender,
-    status_path: PathBuf,
+    mut sidecar_writers: SidecarWriters,
+    sidecar_paths: SidecarPaths,
     failure_state: SinkFailureState,
 ) -> Result<()> {
     let mut primary_error: Option<anyhow::Error> = None;
@@ -391,7 +420,7 @@ async fn run_sink_worker(
         }
 
         if let Err(error) =
-            write_sink_message(&mut writer, &mut status_writer, &status_path, message).await
+            write_sink_message(&mut writer, &mut sidecar_writers, &sidecar_paths, message).await
         {
             failure_state.record_failure(error.to_string());
             primary_error = Some(error);
@@ -409,8 +438,28 @@ async fn run_sink_worker(
         }
     }
 
-    if let Err(error) = status_writer.close() {
+    if let Err(error) = sidecar_writers.status.close() {
         let close_error = anyhow!("Failed to close instrument status JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = sidecar_writers.order_events.close() {
+        let close_error = anyhow!("Failed to close order event JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = sidecar_writers.position_events.close() {
+        let close_error = anyhow!("Failed to close position event JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
             primary_error = Some(close_error);
@@ -428,8 +477,8 @@ async fn run_sink_worker(
 
 async fn write_sink_message(
     writer: &mut FeatherWriter,
-    status_writer: &mut JsonlAppender,
-    status_path: &Path,
+    sidecar_writers: &mut SidecarWriters,
+    sidecar_paths: &SidecarPaths,
     message: SinkMessage,
 ) -> Result<()> {
     match message {
@@ -474,9 +523,26 @@ async fn write_sink_message(
             .write(close)
             .await
             .map_err(|e| anyhow!("InstrumentClose write failed: {e}")),
-        SinkMessage::InstrumentStatus(status) => status_writer
-            .append(status_path, &status)
+        SinkMessage::InstrumentStatus(status) => sidecar_writers
+            .status
+            .append(&sidecar_paths.status, &status)
             .map_err(|e| anyhow!("InstrumentStatus JSONL write failed: {e}")),
+        SinkMessage::OrderEvent(event) => {
+            let row = execution_state::order_event_row(&event)
+                .map_err(|e| anyhow!("OrderEvent summary failed: {e}"))?;
+            sidecar_writers
+                .order_events
+                .append(&sidecar_paths.order_events, &row)
+                .map_err(|e| anyhow!("OrderEvent JSONL write failed: {e}"))
+        }
+        SinkMessage::PositionEvent(event) => {
+            let row = execution_state::position_event_row(&event)
+                .map_err(|e| anyhow!("PositionEvent summary failed: {e}"))?;
+            sidecar_writers
+                .position_events
+                .append(&sidecar_paths.position_events, &row)
+                .map_err(|e| anyhow!("PositionEvent JSONL write failed: {e}"))
+        }
     }
 }
 
@@ -501,9 +567,14 @@ pub fn wire_normalized_sinks(
     let spool_root = spool_root_for_instance(catalog_path, &instance_id);
     fs::create_dir_all(&spool_root)?;
     let (object_store, base_path, _uri) = create_object_store_from_path(&spool_root, None)?;
-    let status_path = PathBuf::from(&spool_root)
-        .join("status")
-        .join("instrument_status.jsonl");
+    let spool_root_path = PathBuf::from(&spool_root);
+    let sidecar_paths = SidecarPaths {
+        status: spool_root_path
+            .join("status")
+            .join("instrument_status.jsonl"),
+        order_events: execution_state::order_events_path(&spool_root_path),
+        position_events: execution_state::position_events_path(&spool_root_path),
+    };
 
     let writer = FeatherWriter::new(
         base_path,
@@ -523,8 +594,12 @@ pub fn wire_normalized_sinks(
     let worker_handle = spawn_local(run_sink_worker(
         receiver,
         writer,
-        JsonlAppender::new(),
-        status_path,
+        SidecarWriters {
+            status: JsonlAppender::new(),
+            order_events: JsonlAppender::new(),
+            position_events: JsonlAppender::new(),
+        },
+        sidecar_paths,
         failure_state.clone(),
     ));
     let supervisor_failure_state = failure_state.clone();
@@ -627,6 +702,30 @@ pub fn wire_normalized_sinks(
     });
     subscribe_index_prices(index_prices_pattern(), index_prices.clone(), None);
 
+    let order_events_sender = sender.clone();
+    let order_events_failure_state = failure_state.clone();
+    let order_events = TypedHandler::from(move |event: &OrderEventAny| {
+        send_sink_message(
+            &order_events_sender,
+            SinkMessage::OrderEvent(Box::new(event.clone())),
+            "OrderEventAny",
+            &order_events_failure_state,
+        );
+    });
+    subscribe_order_events(order_events_pattern(), order_events.clone(), None);
+
+    let position_events_sender = sender.clone();
+    let position_events_failure_state = failure_state.clone();
+    let position_events = TypedHandler::from(move |event: &PositionEvent| {
+        send_sink_message(
+            &position_events_sender,
+            SinkMessage::PositionEvent(Box::new(event.clone())),
+            "PositionEvent",
+            &position_events_failure_state,
+        );
+    });
+    subscribe_position_events(position_events_pattern(), position_events.clone(), None);
+
     let instrument_sender = sender.clone();
     let instrument_failure_state = failure_state.clone();
     let instruments = ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
@@ -690,6 +789,8 @@ pub fn wire_normalized_sinks(
             book_depth10,
             mark_prices,
             index_prices,
+            order_events,
+            position_events,
         }),
         any_handlers: Some(AnyHandlers {
             instruments,

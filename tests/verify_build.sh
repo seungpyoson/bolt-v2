@@ -3,14 +3,19 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 rust_verification_owner="${HOME}/.claude/lib/rust_verification.py"
+rust_verification_source_repo="$(just -f "$repo_root/justfile" --evaluate rust_verification_source_repo 2>/dev/null || true)"
+rust_verification_source_sha="$(just -f "$repo_root/justfile" --evaluate rust_verification_source_sha 2>/dev/null || true)"
+
+if [ -n "$rust_verification_source_repo" ] && [ -n "$rust_verification_source_sha" ]; then
+    RUST_VERIFICATION_SOURCE_REPO="$rust_verification_source_repo" \
+    RUST_VERIFICATION_SOURCE_SHA="$rust_verification_source_sha" \
+    bash "$repo_root/scripts/require_rust_verification_owner.sh" "$rust_verification_owner" >/dev/null
+else
+    bash "$repo_root/scripts/require_rust_verification_owner.sh" "$rust_verification_owner" >/dev/null
+fi
 
 managed_cargo() {
-    if [ -f "$rust_verification_owner" ]; then
-        python3 "$rust_verification_owner" cargo --repo "$repo_root" -- "$@"
-        return
-    fi
-
-    cargo "$@"
+    python3 "$rust_verification_owner" cargo --repo "$repo_root" -- "$@"
 }
 
 echo "=== Checking compilation ==="

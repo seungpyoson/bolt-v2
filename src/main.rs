@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Secrets { command } => run_secrets_command(command),
         Command::Run { config } => {
+            bolt_v2::log_sweep::sweep_stale_logs();
             let cfg = Config::load(&config)?;
             startup_validation::validate_polymarket_startup(&cfg)?;
 

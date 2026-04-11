@@ -183,7 +183,7 @@ mod tests {
         ] {
             assert!(
                 !debug.contains(secret),
-                "debug output leaked secret value: {secret}"
+                "debug output leaked a secret value"
             );
         }
     }

@@ -540,6 +540,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_selector_task(
     ruleset: RulesetConfig,
     poll_interval: Duration,

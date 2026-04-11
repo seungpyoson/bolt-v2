@@ -153,6 +153,28 @@ mod tests {
     }
 
     #[test]
+    fn startup_validation_collects_slugs_from_multiple_polymarket_clients() {
+        let mut cfg = test_config(vec!["slug-b"], vec!["alpha.POLYMARKET"]);
+        cfg.data_clients.push(DataClientEntry {
+            name: "POLYMARKET-SECONDARY".to_string(),
+            kind: "polymarket".to_string(),
+            config: toml::toml! {
+                subscribe_new_markets = false
+                update_instruments_interval_mins = 60
+                ws_max_subscriptions = 200
+                event_slugs = ["slug-c", "slug-a"]
+            }
+            .into(),
+        });
+
+        let targets = collect_polymarket_startup_validation_targets(&cfg)
+            .expect("targets should collect")
+            .expect("polymarket targets should exist");
+
+        assert_eq!(targets.event_slugs, vec!["slug-a", "slug-b", "slug-c"]);
+    }
+
+    #[test]
     fn startup_validation_fails_closed_when_polymarket_strategy_has_no_event_slugs() {
         let mut cfg = test_config(
             vec!["btc-updown-5m"],
@@ -183,6 +205,34 @@ mod tests {
     }
 
     #[test]
+    fn startup_validation_skips_when_whitespace_slugs_and_no_polymarket_instruments_exist() {
+        let cfg = test_config(vec!["  ", "\t"], vec!["BTCUSDT.BINANCE"]);
+
+        let targets = collect_polymarket_startup_validation_targets(&cfg)
+            .expect("non-polymarket startup should not error");
+
+        assert_eq!(targets, None);
+    }
+
+    #[test]
+    fn startup_validation_fails_closed_when_whitespace_slugs_and_polymarket_instruments_exist() {
+        let cfg = test_config(
+            vec!["  ", "\t"],
+            vec!["0xpresent-condition-present-token.POLYMARKET"],
+        );
+
+        let err = collect_polymarket_startup_validation_targets(&cfg)
+            .expect_err("whitespace-only slugs should fail closed for polymarket strategies")
+            .to_string();
+
+        assert!(err.contains("event slugs"), "{err}");
+        assert!(
+            err.contains("0xpresent-condition-present-token.POLYMARKET"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn startup_validation_skips_when_only_non_polymarket_instruments_exist_without_slugs() {
         let mut cfg = test_config(vec!["btc-updown-5m"], vec!["BTCUSDT.BINANCE"]);
         cfg.data_clients.clear();
@@ -191,6 +241,26 @@ mod tests {
             .expect("non-polymarket strategies should not require Polymarket slugs");
 
         assert_eq!(targets, None);
+    }
+
+    #[test]
+    fn startup_validation_ignores_strategies_without_instrument_id_key() {
+        let mut cfg = test_config(vec!["btc-updown-5m"], vec!["alpha.POLYMARKET"]);
+        cfg.strategies.push(StrategyEntry {
+            kind: "exec_tester".to_string(),
+            config: toml::toml! {
+                strategy_id = "EXEC_TESTER-002"
+                client_id = "POLYMARKET"
+                order_qty = "5"
+            }
+            .into(),
+        });
+
+        let targets = collect_polymarket_startup_validation_targets(&cfg)
+            .expect("targets should collect")
+            .expect("polymarket targets should exist");
+
+        assert_eq!(targets.configured_instrument_ids, vec!["alpha.POLYMARKET"]);
     }
 
     #[test]
@@ -210,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_validation_accepts_discovered_instrument_ids_when_token_ids_are_empty() {
+    fn startup_validation_accepts_matching_discovered_instrument_ids() {
         let cfg = test_config(
             vec!["btc-updown-5m"],
             vec!["0xpresent-condition-present-token.POLYMARKET"],

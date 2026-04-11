@@ -175,15 +175,15 @@ mod tests {
         for field in ["private_key", "api_key", "api_secret", "passphrase"] {
             assert!(debug.contains(field), "debug output should mention {field}");
         }
-        for secret in [
+        for (i, secret) in [
             "private-key-value",
             "api-key-value",
             "api-secret-value",
             "passphrase-value",
-        ] {
+        ].iter().enumerate() {
             assert!(
                 !debug.contains(secret),
-                "debug output leaked a secret value"
+                "debug output leaked secret at index {i}"
             );
         }
     }

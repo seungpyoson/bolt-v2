@@ -8,6 +8,7 @@ pub mod platform;
 pub mod raw_capture_transport;
 pub mod raw_types;
 pub mod secrets;
+pub mod startup_validation;
 pub mod strategies;
 pub mod validate;
 pub mod venue_contract;

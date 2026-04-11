@@ -111,7 +111,10 @@ fn sweep_moves_matching_logs_to_target() {
     let target = root.join("var/logs");
     assert!(target.join(log1).exists(), "log1 should be in var/logs/");
     assert!(target.join(log2).exists(), "log2 should be in var/logs/");
-    assert_eq!(fs::read_to_string(target.join(log1)).unwrap(), "log content 1");
+    assert_eq!(
+        fs::read_to_string(target.join(log1)).unwrap(),
+        "log content 1"
+    );
 
     assert!(root.join(keep).exists(), "non-matching file should remain");
     assert!(!root.join(log1).exists(), "log1 should not be in root");

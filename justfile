@@ -112,10 +112,12 @@ ci-lint-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
-    files=(.github/workflows/*.yml .github/workflows/*.yaml)
-    rust_invocation_files=(justfile scripts/*.sh tests/*.sh .github/workflows/*.yml .github/workflows/*.yaml)
+    workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
+    action_files=(.github/actions/*/action.yml .github/actions/*/action.yaml)
+    github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
+    rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
 
-    if [ "${#files[@]}" -eq 0 ]; then
+    if [ "${#workflow_files[@]}" -eq 0 ]; then
         echo "No workflow files found — skipping"
     fi
 
@@ -123,10 +125,8 @@ ci-lint-workflow:
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build)([^[:alnum:]_]|$)'
-    owner_bootstrap_literal='steps.shared.outputs.rust_verification_ci_install_script'
-    owner_repo_eval_literal='just --evaluate rust_verification_source_repo'
-    owner_sha_eval_literal='just --evaluate rust_verification_source_sha'
-    owner_install_eval_literal='just --evaluate rust_verification_ci_install_script'
+    setup_action_literal='uses: ./.github/actions/setup-environment'
+    setup_token_literal='claude-config-read-token:'
     managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
     repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
@@ -134,62 +134,46 @@ ci-lint-workflow:
     toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
     toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
 
-    for f in "${files[@]}"; do
+    for f in "${github_automation_files[@]}"; do
         if grep -En "$pattern" "$f"; then
             echo "ERROR: Raw cargo commands found in $f"
             failed=1
         fi
     done
 
-    for f in "${files[@]}"; do
+    for f in "${workflow_files[@]}"; do
         while IFS='|' read -r job_name reason; do
             [ -n "$job_name" ] || continue
             case "$reason" in
-                bootstrap)
-                    echo "ERROR: Managed Rust owner bootstrap missing in $f job '$job_name'"
+                setup-action)
+                    echo "ERROR: Managed CI setup action missing in $f job '$job_name'"
                     ;;
-                pin-repo)
-                    echo "ERROR: Managed Rust owner repo pin must come from justfile in $f job '$job_name'"
-                    ;;
-                pin-sha)
-                    echo "ERROR: Managed Rust owner SHA pin must come from justfile in $f job '$job_name'"
-                    ;;
-                install-eval)
-                    echo "ERROR: Managed Rust owner install script must come from justfile in $f job '$job_name'"
+                setup-token)
+                    echo "ERROR: Managed CI setup token wiring missing in $f job '$job_name'"
                     ;;
             esac
             failed=1
         done < <(
             awk -v lane_pattern="$just_lane_pattern" \
-                -v bootstrap_literal="$owner_bootstrap_literal" \
-                -v repo_eval_literal="$owner_repo_eval_literal" \
-                -v sha_eval_literal="$owner_sha_eval_literal" \
-                -v install_eval_literal="$owner_install_eval_literal" '
+                -v setup_action_literal="$setup_action_literal" \
+                -v setup_token_literal="$setup_token_literal" '
                 BEGIN {
                     in_jobs = 0
                     current = ""
                     has_lane = 0
-                    has_bootstrap = 0
-                    has_repo_eval = 0
-                    has_sha_eval = 0
-                    has_install_eval = 0
+                    has_setup_action = 0
+                    has_setup_token = 0
                 }
 
                 function flush_job() {
                     if (current == "" || !has_lane) {
                         return
                     }
-                    if (!has_bootstrap) {
-                        print current "|bootstrap"
+                    if (!has_setup_action) {
+                        print current "|setup-action"
                     }
-                    if (!has_repo_eval) {
-                        print current "|pin-repo"
-                    }
-                    if (!has_sha_eval) {
-                        print current "|pin-sha"
-                    }
-                    if (!has_install_eval) {
-                        print current "|install-eval"
+                    if (!has_setup_token) {
+                        print current "|setup-token"
                     }
                 }
 
@@ -203,7 +187,8 @@ ci-lint-workflow:
                     in_jobs = 0
                     current = ""
                     has_lane = 0
-                    has_bootstrap = 0
+                    has_setup_action = 0
+                    has_setup_token = 0
                     next
                 }
 
@@ -213,10 +198,8 @@ ci-lint-workflow:
                     sub(/^  /, "", current)
                     sub(/:.*/, "", current)
                     has_lane = 0
-                    has_bootstrap = 0
-                    has_repo_eval = 0
-                    has_sha_eval = 0
-                    has_install_eval = 0
+                    has_setup_action = 0
+                    has_setup_token = 0
                     next
                 }
 
@@ -224,17 +207,11 @@ ci-lint-workflow:
                     if ($0 ~ lane_pattern) {
                         has_lane = 1
                     }
-                    if (index($0, bootstrap_literal) > 0) {
-                        has_bootstrap = 1
+                    if (index($0, setup_action_literal) > 0) {
+                        has_setup_action = 1
                     }
-                    if (index($0, repo_eval_literal) > 0) {
-                        has_repo_eval = 1
-                    }
-                    if (index($0, sha_eval_literal) > 0) {
-                        has_sha_eval = 1
-                    }
-                    if (index($0, install_eval_literal) > 0) {
-                        has_install_eval = 1
+                    if (index($0, setup_token_literal) > 0) {
+                        has_setup_token = 1
                     }
                 }
 
@@ -245,7 +222,7 @@ ci-lint-workflow:
         )
     done
 
-    for f in "${files[@]}"; do
+    for f in "${workflow_files[@]}"; do
         if grep -Eq "$repo_local_artifact_pattern" "$f"; then
             echo "ERROR: Repo-local build artifact path found in $f"
             failed=1
@@ -320,14 +297,14 @@ ci-lint-workflow:
     fi
 
     if [ "$failed" -ne 0 ]; then
-        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, repo-local managed build artifact paths, and justfile/TOML build drift."
+        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, repo-local managed build artifact paths, and justfile/TOML build drift."
         exit 1
     fi
 
-    if [ "${#files[@]}" -eq 0 ]; then
+    if [ "${#workflow_files[@]}" -eq 0 ]; then
         echo "OK: No workflow files found; workflow-specific checks skipped"
     else
-        echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, or repo-local managed build artifact paths found"
+        echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
     fi
 
 worktree branch:

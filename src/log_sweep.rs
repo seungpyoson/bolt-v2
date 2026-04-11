@@ -64,9 +64,14 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
             Ok(()) => moved += 1,
             // EXDEV (18 on Linux/macOS): cross-filesystem rename not supported
             Err(e) if e.raw_os_error() == Some(18) => {
-                match fs::copy(&source, &dest).and_then(|_| fs::remove_file(&source)) {
-                    Ok(()) => moved += 1,
-                    Err(e) => eprintln!("log_sweep: failed to copy+remove {name}: {e}"),
+                if let Err(e) = fs::copy(&source, &dest) {
+                    eprintln!("log_sweep: failed to copy {name}: {e}");
+                } else if let Err(e) = fs::remove_file(&source) {
+                    // Copy succeeded but remove failed — clean up the orphan copy
+                    eprintln!("log_sweep: copied {name} but failed to remove source: {e}");
+                    let _ = fs::remove_file(&dest);
+                } else {
+                    moved += 1;
                 }
             }
             Err(e) => eprintln!("log_sweep: failed to move {name}: {e}"),
@@ -82,6 +87,9 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
 
 /// Returns true if the filename matches the NautilusTrader log naming convention:
 /// `{anything}_{YYYY-MM-DD}_{anything}.log`
+///
+/// Checks structural pattern only (underscores, digit positions, `.log` suffix).
+/// Does not validate date ranges — `_9999-99-99_` would match.
 pub fn is_nt_log_filename(name: &str) -> bool {
     if !name.ends_with(".log") {
         return false;

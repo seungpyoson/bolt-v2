@@ -13,6 +13,10 @@ env:
   JUST_VERSION: "1.49.0"
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: advisory-check
+  cancel-in-progress: false
+
 jobs:
   advisories:
     name: advisories
@@ -40,6 +44,12 @@ jobs:
       - name: Create issue on failure
         if: steps.advisories.outcome == 'failure'
         run: |
+          gh label create "advisory-auto" --description "Auto-created by advisory workflow" --color "D93F0B" 2>/dev/null || true
+          EXISTING=$(gh issue list --label "advisory-auto" --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Open advisory issue already exists: #$EXISTING — skipping creation"
+            exit 0
+          fi
           BODY="$(cat <<'EOF'
           ## Advisory Check Failed
 
@@ -49,6 +59,7 @@ jobs:
           EOF
           )"
           gh issue create \
+            --label "advisory-auto" \
             --title "Dependency advisory found ($(date +%Y-%m-%d))" \
             --body "$BODY"
         env:

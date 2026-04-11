@@ -127,12 +127,29 @@ ci-lint-workflow:
     just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_token_literal='claude-config-read-token:'
+    setup_just_version_literal='just-version:'
     managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
     repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
     toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
     toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    action_file='.github/actions/setup-environment/action.yml'
+    action_required_literals=(
+        "inputs.just-version"
+        "CLAUDE_CONFIG_READ_TOKEN:"
+        "inputs.claude-config-read-token"
+        "awk -F'\\\"' '/^channel = / {print \$2}' rust-toolchain.toml"
+        "just --evaluate deny_version"
+        "just --evaluate nextest_version"
+        "just --evaluate target"
+        "just --evaluate zig_version"
+        "just --evaluate zigbuild_version"
+        "just --evaluate rust_verification_owner"
+        "just --evaluate rust_verification_source_repo"
+        "just --evaluate rust_verification_source_sha"
+        "just --evaluate rust_verification_ci_install_script"
+    )
 
     for f in "${github_automation_files[@]}"; do
         if grep -En "$pattern" "$f"; then
@@ -151,29 +168,56 @@ ci-lint-workflow:
                 setup-token)
                     echo "ERROR: Managed CI setup token wiring missing in $f job '$job_name'"
                     ;;
+                setup-just-version)
+                    echo "ERROR: Managed CI just version wiring missing in $f job '$job_name'"
+                    ;;
             esac
             failed=1
         done < <(
             awk -v lane_pattern="$just_lane_pattern" \
                 -v setup_action_literal="$setup_action_literal" \
-                -v setup_token_literal="$setup_token_literal" '
+                -v setup_token_literal="$setup_token_literal" \
+                -v setup_just_version_literal="$setup_just_version_literal" '
                 BEGIN {
                     in_jobs = 0
                     current = ""
                     has_lane = 0
-                    has_setup_action = 0
+                    has_setup_step = 0
                     has_setup_token = 0
+                    has_setup_just_version = 0
+                    step_has_setup = 0
+                    step_has_token = 0
+                    step_has_just_version = 0
+                }
+
+                function flush_step() {
+                    if (step_has_setup) {
+                        has_setup_step = 1
+                        if (step_has_token) {
+                            has_setup_token = 1
+                        }
+                        if (step_has_just_version) {
+                            has_setup_just_version = 1
+                        }
+                    }
+                    step_has_setup = 0
+                    step_has_token = 0
+                    step_has_just_version = 0
                 }
 
                 function flush_job() {
+                    flush_step()
                     if (current == "" || !has_lane) {
                         return
                     }
-                    if (!has_setup_action) {
+                    if (!has_setup_step) {
                         print current "|setup-action"
                     }
-                    if (!has_setup_token) {
+                    if (has_setup_step && !has_setup_token) {
                         print current "|setup-token"
+                    }
+                    if (has_setup_step && !has_setup_just_version) {
+                        print current "|setup-just-version"
                     }
                 }
 
@@ -187,8 +231,12 @@ ci-lint-workflow:
                     in_jobs = 0
                     current = ""
                     has_lane = 0
-                    has_setup_action = 0
+                    has_setup_step = 0
                     has_setup_token = 0
+                    has_setup_just_version = 0
+                    step_has_setup = 0
+                    step_has_token = 0
+                    step_has_just_version = 0
                     next
                 }
 
@@ -198,20 +246,30 @@ ci-lint-workflow:
                     sub(/^  /, "", current)
                     sub(/:.*/, "", current)
                     has_lane = 0
-                    has_setup_action = 0
+                    has_setup_step = 0
                     has_setup_token = 0
+                    has_setup_just_version = 0
+                    step_has_setup = 0
+                    step_has_token = 0
+                    step_has_just_version = 0
                     next
                 }
 
                 current != "" {
+                    if ($0 ~ /^      - /) {
+                        flush_step()
+                    }
                     if ($0 ~ lane_pattern) {
                         has_lane = 1
                     }
                     if (index($0, setup_action_literal) > 0) {
-                        has_setup_action = 1
+                        step_has_setup = 1
                     }
                     if (index($0, setup_token_literal) > 0) {
-                        has_setup_token = 1
+                        step_has_token = 1
+                    }
+                    if (index($0, setup_just_version_literal) > 0) {
+                        step_has_just_version = 1
                     }
                 }
 
@@ -221,6 +279,18 @@ ci-lint-workflow:
             ' "$f"
         )
     done
+
+    if [ ! -f "$action_file" ]; then
+        echo "ERROR: Managed CI setup action missing at $action_file"
+        failed=1
+    else
+        for literal in "${action_required_literals[@]}"; do
+            if ! grep -Fq "$literal" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing expected literal '$literal'"
+                failed=1
+            fi
+        done
+    fi
 
     for f in "${workflow_files[@]}"; do
         if grep -Eq "$repo_local_artifact_pattern" "$f"; then
@@ -301,7 +371,7 @@ ci-lint-workflow:
         exit 1
     fi
 
-    if [ "${#workflow_files[@]}" -eq 0 ]; then
+    if [ "${#github_automation_files[@]}" -eq 0 ]; then
         echo "OK: No workflow or action files found; automation-specific checks skipped"
     else
         echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"

@@ -129,20 +129,36 @@ ci-lint-workflow:
     setup_lint_literal='lint-workflow-contract:'
     setup_token_literal='claude-config-read-token:'
     setup_just_version_literal='just-version:'
+    setup_deny_version_literal='include-deny-version: "true"'
+    setup_nextest_version_literal='include-nextest-version: "true"'
+    setup_build_values_literal='include-build-values: "true"'
     setup_rustfmt_literal='toolchain-components: rustfmt'
     setup_clippy_literal='toolchain-components: clippy'
     setup_default_target_literal='use-default-target: "true"'
     managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+    deny_output_literal='steps.setup.outputs.deny_version'
+    nextest_output_literal='steps.setup.outputs.nextest_version'
+    zig_version_output_literal='steps.setup.outputs.zig_version'
+    zigbuild_version_output_literal='steps.setup.outputs.zigbuild_version'
     repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
     toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
     toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
     action_file='.github/actions/setup-environment/action.yml'
+    action_lint_line=0
+    action_shared_line=0
+    action_owner_line=0
+    action_toolchain_line=0
     action_required_literals=(
         "inputs.just-version"
+        "inputs.include-deny-version"
+        "inputs.include-nextest-version"
+        "inputs.include-build-values"
+        "inputs.lint-workflow-contract"
         "CLAUDE_CONFIG_READ_TOKEN:"
         "inputs.claude-config-read-token"
+        "just ci-lint-workflow"
         "awk -F'\\\"' '/^channel = / {print \$2}' rust-toolchain.toml"
         "just --evaluate deny_version"
         "just --evaluate nextest_version"
@@ -175,6 +191,15 @@ ci-lint-workflow:
                 setup-lint)
                     echo "ERROR: Managed CI workflow lint wiring missing in $f job '$job_name'"
                     ;;
+                setup-deny-version)
+                    echo "ERROR: Managed CI deny-version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-nextest-version)
+                    echo "ERROR: Managed CI nextest-version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-build-values)
+                    echo "ERROR: Managed CI build-values wiring missing in $f job '$job_name'"
+                    ;;
                 setup-rustfmt)
                     echo "ERROR: Managed CI rustfmt component wiring missing in $f job '$job_name'"
                     ;;
@@ -195,9 +220,16 @@ ci-lint-workflow:
                 -v setup_lint_literal="$setup_lint_literal" \
                 -v setup_token_literal="$setup_token_literal" \
                 -v setup_just_version_literal="$setup_just_version_literal" \
+                -v setup_deny_version_literal="$setup_deny_version_literal" \
+                -v setup_nextest_version_literal="$setup_nextest_version_literal" \
+                -v setup_build_values_literal="$setup_build_values_literal" \
                 -v setup_rustfmt_literal="$setup_rustfmt_literal" \
                 -v setup_clippy_literal="$setup_clippy_literal" \
-                -v setup_default_target_literal="$setup_default_target_literal" '
+                -v setup_default_target_literal="$setup_default_target_literal" \
+                -v deny_output_literal="$deny_output_literal" \
+                -v nextest_output_literal="$nextest_output_literal" \
+                -v zig_version_output_literal="$zig_version_output_literal" \
+                -v zigbuild_version_output_literal="$zigbuild_version_output_literal" '
                 BEGIN {
                     in_jobs = 0
                     current = ""
@@ -206,13 +238,23 @@ ci-lint-workflow:
                     has_setup_lint = 0
                     has_setup_token = 0
                     has_setup_just_version = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
                     has_setup_rustfmt = 0
                     has_setup_clippy = 0
                     has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
                     step_has_setup = 0
                     step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
                     step_has_rustfmt = 0
                     step_has_clippy = 0
                     step_has_default_target = 0
@@ -230,6 +272,15 @@ ci-lint-workflow:
                         if (step_has_just_version) {
                             has_setup_just_version = 1
                         }
+                        if (step_has_deny_version) {
+                            has_setup_deny_version = 1
+                        }
+                        if (step_has_nextest_version) {
+                            has_setup_nextest_version = 1
+                        }
+                        if (step_has_build_values) {
+                            has_setup_build_values = 1
+                        }
                         if (step_has_rustfmt) {
                             has_setup_rustfmt = 1
                         }
@@ -244,6 +295,9 @@ ci-lint-workflow:
                     step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
                     step_has_rustfmt = 0
                     step_has_clippy = 0
                     step_has_default_target = 0
@@ -266,6 +320,15 @@ ci-lint-workflow:
                     if (has_setup_step && !has_setup_just_version) {
                         print current "|setup-just-version"
                     }
+                    if ((current == "gate" || current == "advisories") && has_setup_step && !has_setup_deny_version) {
+                        print current "|setup-deny-version"
+                    }
+                    if (current == "test" && has_setup_step && !has_setup_nextest_version) {
+                        print current "|setup-nextest-version"
+                    }
+                    if (current == "build" && has_setup_step && !has_setup_build_values) {
+                        print current "|setup-build-values"
+                    }
                     if (current == "gate" && has_setup_step && !has_setup_rustfmt) {
                         print current "|setup-rustfmt"
                     }
@@ -274,6 +337,15 @@ ci-lint-workflow:
                     }
                     if (current == "build" && has_setup_step && !has_setup_default_target) {
                         print current "|setup-default-target"
+                    }
+                    if ((current == "gate" || current == "advisories") && !has_deny_output) {
+                        print current "|setup-deny-version"
+                    }
+                    if (current == "test" && !has_nextest_output) {
+                        print current "|setup-nextest-version"
+                    }
+                    if (current == "build" && (!has_zig_version_output || !has_zigbuild_version_output)) {
+                        print current "|setup-build-values"
                     }
                 }
 
@@ -291,13 +363,23 @@ ci-lint-workflow:
                     has_setup_lint = 0
                     has_setup_token = 0
                     has_setup_just_version = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
                     has_setup_rustfmt = 0
                     has_setup_clippy = 0
                     has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
                     step_has_setup = 0
                     step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
                     step_has_rustfmt = 0
                     step_has_clippy = 0
                     step_has_default_target = 0
@@ -314,13 +396,23 @@ ci-lint-workflow:
                     has_setup_lint = 0
                     has_setup_token = 0
                     has_setup_just_version = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
                     has_setup_rustfmt = 0
                     has_setup_clippy = 0
                     has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
                     step_has_setup = 0
                     step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
                     step_has_rustfmt = 0
                     step_has_clippy = 0
                     step_has_default_target = 0
@@ -346,6 +438,15 @@ ci-lint-workflow:
                     if (index($0, setup_just_version_literal) > 0) {
                         step_has_just_version = 1
                     }
+                    if (index($0, setup_deny_version_literal) > 0) {
+                        step_has_deny_version = 1
+                    }
+                    if (index($0, setup_nextest_version_literal) > 0) {
+                        step_has_nextest_version = 1
+                    }
+                    if (index($0, setup_build_values_literal) > 0) {
+                        step_has_build_values = 1
+                    }
                     if (index($0, setup_rustfmt_literal) > 0) {
                         step_has_rustfmt = 1
                     }
@@ -354,6 +455,18 @@ ci-lint-workflow:
                     }
                     if (index($0, setup_default_target_literal) > 0) {
                         step_has_default_target = 1
+                    }
+                    if (index($0, deny_output_literal) > 0) {
+                        has_deny_output = 1
+                    }
+                    if (index($0, nextest_output_literal) > 0) {
+                        has_nextest_output = 1
+                    }
+                    if (index($0, zig_version_output_literal) > 0) {
+                        has_zig_version_output = 1
+                    }
+                    if (index($0, zigbuild_version_output_literal) > 0) {
+                        has_zigbuild_version_output = 1
                     }
                 }
 
@@ -368,6 +481,19 @@ ci-lint-workflow:
         echo "ERROR: Managed CI setup action missing at $action_file"
         failed=1
     else
+        action_lint_line="$(grep -n 'name: Lint workflow contract' "$action_file" | cut -d: -f1 | head -1)"
+        action_shared_line="$(grep -n 'name: Read shared values' "$action_file" | cut -d: -f1 | head -1)"
+        action_owner_line="$(grep -n 'name: Install managed Rust owner' "$action_file" | cut -d: -f1 | head -1)"
+        action_toolchain_line="$(grep -n 'name: Setup Rust toolchain' "$action_file" | cut -d: -f1 | head -1)"
+
+        if [ -z "$action_lint_line" ] || [ -z "$action_shared_line" ] || [ -z "$action_owner_line" ] || [ -z "$action_toolchain_line" ]; then
+            echo "ERROR: Managed CI setup action missing required ordered steps"
+            failed=1
+        elif [ "$action_lint_line" -ge "$action_shared_line" ] || [ "$action_shared_line" -ge "$action_owner_line" ] || [ "$action_owner_line" -ge "$action_toolchain_line" ]; then
+            echo "ERROR: Managed CI setup action step order drifted"
+            failed=1
+        fi
+
         for literal in "${action_required_literals[@]}"; do
             if ! grep -Fq "$literal" "$action_file"; then
                 echo "ERROR: Managed CI setup action missing expected literal '$literal'"

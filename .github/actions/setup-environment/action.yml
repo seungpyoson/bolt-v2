@@ -12,6 +12,18 @@ inputs:
     description: Optional Rust components to install.
     required: false
     default: ""
+  include-deny-version:
+    description: Whether to resolve the pinned cargo-deny version.
+    required: false
+    default: "false"
+  include-nextest-version:
+    description: Whether to resolve the pinned cargo-nextest version.
+    required: false
+    default: "false"
+  include-build-values:
+    description: Whether to resolve build-only values like target and zig pins.
+    required: false
+    default: "false"
   lint-workflow-contract:
     description: Whether to run `just ci-lint-workflow` before the rest of setup.
     required: false
@@ -94,15 +106,21 @@ runs:
       shell: bash
       run: |
         echo "rust_toolchain=$(awk -F'\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-        echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
-        echo "nextest_version=$(just --evaluate nextest_version)" >> "$GITHUB_OUTPUT"
-        echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
-        echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
-        echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
+        if [ "${{ inputs.include-deny-version }}" = "true" ]; then
+          echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "${{ inputs.include-nextest-version }}" = "true" ]; then
+          echo "nextest_version=$(just --evaluate nextest_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "${{ inputs.include-build-values }}" = "true" ]; then
+          echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
+          echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
+          echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Install managed Rust owner
       shell: bash

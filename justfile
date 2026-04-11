@@ -170,6 +170,18 @@ ci-lint-workflow:
         "just --evaluate rust_verification_source_sha"
         "just --evaluate rust_verification_ci_install_script"
     )
+    action_output_names=(
+        "rust_toolchain"
+        "deny_version"
+        "nextest_version"
+        "target"
+        "zig_version"
+        "zigbuild_version"
+        "rust_verification_owner"
+        "rust_verification_source_repo"
+        "rust_verification_source_sha"
+        "rust_verification_ci_install_script"
+    )
 
     for f in "${github_automation_files[@]}"; do
         if grep -En "$pattern" "$f"; then
@@ -497,6 +509,17 @@ ci-lint-workflow:
         for literal in "${action_required_literals[@]}"; do
             if ! grep -Fq "$literal" "$action_file"; then
                 echo "ERROR: Managed CI setup action missing expected literal '$literal'"
+                failed=1
+            fi
+        done
+
+        for output_name in "${action_output_names[@]}"; do
+            if ! grep -Eq "^  ${output_name}:" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing exported output '$output_name'"
+                failed=1
+            fi
+            if ! grep -Fq "steps.shared.outputs.${output_name}" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing output mapping for '$output_name'"
                 failed=1
             fi
         done

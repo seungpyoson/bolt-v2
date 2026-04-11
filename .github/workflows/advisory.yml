@@ -39,6 +39,14 @@ jobs:
         run: |
           echo "rust_toolchain=$(awk -F'\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
           echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
+          echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
+          echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
+          echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
+          echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
+
+      - name: Install managed Rust owner
+        run: |
+          bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:

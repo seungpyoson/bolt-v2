@@ -13,6 +13,12 @@ worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
 live_input := "config/live.local.toml"
 live_input_example := "config/live.local.example.toml"
 live_config := "config/live.toml"
+repo_root := justfile_directory()
+rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
+rust_verification_source_repo := "seungpyoson/claude-config"
+rust_verification_source_sha := "50a8b4fb40d5ec4a83de2fa545083355970a7c78"
+rust_verification_require_script := "scripts/require_rust_verification_owner.sh"
+rust_verification_ci_install_script := "scripts/install_ci_rust_verification_owner.sh"
 
 [private]
 check-workspace:
@@ -40,28 +46,44 @@ check-workspace:
         dir="$parent"
     done
 
-fmt-check: check-workspace
-    cargo fmt --check
+[private]
+require-rust-verification-owner:
+    RUST_VERIFICATION_SOURCE_REPO="{{rust_verification_source_repo}}" RUST_VERIFICATION_SOURCE_SHA="{{rust_verification_source_sha}}" bash "{{rust_verification_require_script}}" "{{rust_verification_owner}}"
 
-fmt: check-workspace
-    cargo fmt
+fmt-check: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
-deny: check-workspace
-    cargo deny check bans
+fmt: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt
 
-deny-advisories: check-workspace
-    cargo deny check advisories
+deny: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check bans
 
-clippy: check-workspace
+deny-advisories: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check advisories
+
+[private]
+managed-clippy: check-workspace
     cargo clippy --locked -- -D warnings
 
-test: check-workspace
+[private]
+managed-test: check-workspace
     cargo nextest run --locked
 
-build: check-workspace
+[private]
+managed-build: check-workspace
     cargo zigbuild --release --target {{target}} --locked
 
-live-generate: check-workspace
+clippy: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" clippy
+
+test: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test
+
+build: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
+
+live-generate: check-workspace require-rust-verification-owner
     #!/usr/bin/env bash
     # Generate the runtime artifact from the human-edited local source of truth.
     if [ ! -f "{{live_input}}" ]; then
@@ -70,35 +92,47 @@ live-generate: check-workspace
         exit 1
     fi
 
-    cargo run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
 live: live-generate
     # Run with the generated runtime config artifact.
-    cargo run --release --bin bolt-v2 -- run --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_config}}
 
 # Optional diagnostics for the live operator config.
 live-check: live-generate
     # Validate secret-config completeness only; do not resolve secrets.
-    cargo run --release --bin bolt-v2 -- secrets check --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_config}}
 
 live-resolve: live-generate
     # Perform actual secret resolution against the generated runtime config.
-    cargo run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
 
 ci-lint-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
     files=(.github/workflows/*.yml .github/workflows/*.yaml)
+    rust_invocation_files=(justfile scripts/*.sh tests/*.sh .github/workflows/*.yml .github/workflows/*.yaml)
 
     if [ "${#files[@]}" -eq 0 ]; then
         echo "No workflow files found — skipping"
-        exit 0
     fi
 
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
+    bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build)([^[:alnum:]_]|$)'
+    owner_bootstrap_literal='steps.shared.outputs.rust_verification_ci_install_script'
+    owner_repo_eval_literal='just --evaluate rust_verification_source_repo'
+    owner_sha_eval_literal='just --evaluate rust_verification_source_sha'
+    owner_install_eval_literal='just --evaluate rust_verification_ci_install_script'
+    managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+    repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
+    just_target='{{target}}'
+    managed_build_profile='release'
+    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
+    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
 
     for f in "${files[@]}"; do
         if grep -En "$pattern" "$f"; then
@@ -107,12 +141,194 @@ ci-lint-workflow:
         fi
     done
 
+    for f in "${files[@]}"; do
+        while IFS='|' read -r job_name reason; do
+            [ -n "$job_name" ] || continue
+            case "$reason" in
+                bootstrap)
+                    echo "ERROR: Managed Rust owner bootstrap missing in $f job '$job_name'"
+                    ;;
+                pin-repo)
+                    echo "ERROR: Managed Rust owner repo pin must come from justfile in $f job '$job_name'"
+                    ;;
+                pin-sha)
+                    echo "ERROR: Managed Rust owner SHA pin must come from justfile in $f job '$job_name'"
+                    ;;
+                install-eval)
+                    echo "ERROR: Managed Rust owner install script must come from justfile in $f job '$job_name'"
+                    ;;
+            esac
+            failed=1
+        done < <(
+            awk -v lane_pattern="$just_lane_pattern" \
+                -v bootstrap_literal="$owner_bootstrap_literal" \
+                -v repo_eval_literal="$owner_repo_eval_literal" \
+                -v sha_eval_literal="$owner_sha_eval_literal" \
+                -v install_eval_literal="$owner_install_eval_literal" '
+                BEGIN {
+                    in_jobs = 0
+                    current = ""
+                    has_lane = 0
+                    has_bootstrap = 0
+                    has_repo_eval = 0
+                    has_sha_eval = 0
+                    has_install_eval = 0
+                }
+
+                function flush_job() {
+                    if (current == "" || !has_lane) {
+                        return
+                    }
+                    if (!has_bootstrap) {
+                        print current "|bootstrap"
+                    }
+                    if (!has_repo_eval) {
+                        print current "|pin-repo"
+                    }
+                    if (!has_sha_eval) {
+                        print current "|pin-sha"
+                    }
+                    if (!has_install_eval) {
+                        print current "|install-eval"
+                    }
+                }
+
+                /^jobs:/ {
+                    in_jobs = 1
+                    next
+                }
+
+                in_jobs && /^[^[:space:]]/ {
+                    flush_job()
+                    in_jobs = 0
+                    current = ""
+                    has_lane = 0
+                    has_bootstrap = 0
+                    next
+                }
+
+                in_jobs && /^  [A-Za-z0-9_-]+:/ {
+                    flush_job()
+                    current = $0
+                    sub(/^  /, "", current)
+                    sub(/:.*/, "", current)
+                    has_lane = 0
+                    has_bootstrap = 0
+                    has_repo_eval = 0
+                    has_sha_eval = 0
+                    has_install_eval = 0
+                    next
+                }
+
+                current != "" {
+                    if ($0 ~ lane_pattern) {
+                        has_lane = 1
+                    }
+                    if (index($0, bootstrap_literal) > 0) {
+                        has_bootstrap = 1
+                    }
+                    if (index($0, repo_eval_literal) > 0) {
+                        has_repo_eval = 1
+                    }
+                    if (index($0, sha_eval_literal) > 0) {
+                        has_sha_eval = 1
+                    }
+                    if (index($0, install_eval_literal) > 0) {
+                        has_install_eval = 1
+                    }
+                }
+
+                END {
+                    flush_job()
+                }
+            ' "$f"
+        )
+    done
+
+    for f in "${files[@]}"; do
+        if grep -Eq "$repo_local_artifact_pattern" "$f"; then
+            echo "ERROR: Repo-local build artifact path found in $f"
+            failed=1
+        fi
+
+        while IFS= read -r job_name; do
+            [ -n "$job_name" ] || continue
+            echo "ERROR: Managed build artifact staging missing in $f job '$job_name'"
+            failed=1
+        done < <(
+            awk -v binary_path_literal="$managed_binary_path_literal" '
+                BEGIN {
+                    in_jobs = 0
+                    current = ""
+                    has_binary_path = 0
+                }
+
+                function flush_job() {
+                    if (current == "build" && !has_binary_path) {
+                        print current
+                    }
+                }
+
+                /^jobs:/ {
+                    in_jobs = 1
+                    next
+                }
+
+                in_jobs && /^[^[:space:]]/ {
+                    flush_job()
+                    in_jobs = 0
+                    current = ""
+                    has_binary_path = 0
+                    next
+                }
+
+                in_jobs && /^  [A-Za-z0-9_-]+:/ {
+                    flush_job()
+                    current = $0
+                    sub(/^  /, "", current)
+                    sub(/:.*/, "", current)
+                    has_binary_path = 0
+                    next
+                }
+
+                current != "" && index($0, binary_path_literal) > 0 {
+                    has_binary_path = 1
+                }
+
+                END {
+                    flush_job()
+                }
+            ' "$f"
+        )
+    done
+
+    for f in "${rust_invocation_files[@]}"; do
+        if grep -En "$bypass_pattern" "$f"; then
+            echo "ERROR: Rust wrapper bypass found in $f"
+            failed=1
+        fi
+    done
+
+    if [ "$toml_target" != "$just_target" ]; then
+        echo "ERROR: justfile target ($just_target) does not match .claude/rust-verification.toml build target ($toml_target)"
+        failed=1
+    fi
+
+    if [ "$toml_profile" != "$managed_build_profile" ]; then
+        echo "ERROR: managed-build profile ($managed_build_profile) does not match .claude/rust-verification.toml build profile ($toml_profile)"
+        failed=1
+    fi
+
     if [ "$failed" -ne 0 ]; then
-        echo "All build/check commands must go through justfile recipes."
+        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, repo-local managed build artifact paths, and justfile/TOML build drift."
         exit 1
     fi
 
-    echo "OK: No raw cargo build/check commands in workflow files"
+    if [ "${#files[@]}" -eq 0 ]; then
+        echo "OK: No workflow files found; workflow-specific checks skipped"
+    else
+        echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, or repo-local managed build artifact paths found"
+    fi
 
 worktree branch:
     #!/usr/bin/env bash

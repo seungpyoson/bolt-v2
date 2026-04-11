@@ -52,7 +52,7 @@ To:
 /target
 config/live.toml
 config/live.local.toml
-/*_????-??-??_*.log
+/*_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.log
 /tmp_tests/*.log
 .omx/
 .claude/findings/

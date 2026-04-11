@@ -100,7 +100,7 @@ Cons:
 
 Candidate rules:
 
-- `/*_????-??-??_*.log`
+- `/*_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.log`
 - `/tmp_tests/*.log`
 
 Pros:
@@ -148,7 +148,7 @@ Replace:
 
 With:
 
-- `/*_????-??-??_*.log`
+- `/*_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.log`
 - `/tmp_tests/*.log`
 
 Keep the other ignore rules unchanged.

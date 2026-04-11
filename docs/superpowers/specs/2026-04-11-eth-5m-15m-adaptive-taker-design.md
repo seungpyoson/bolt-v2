@@ -273,6 +273,34 @@ Execution:
 - reject partial exposure on entry
 - no retry loop that assumes the same edge still exists after a failed `FOK`
 
+## Per-Market Re-entry Policy
+
+V1 does not impose a fixed cap such as “one trade per market” or “N trades per market”.
+
+For the first live slice:
+
+- re-entry into the same `market_id` is allowed
+- there is still only one live position at a time
+- re-entry remains constrained by:
+  - positive `robust_ev`
+  - cooldown after exit
+  - forced-flat timing
+  - max notional and daily loss controls
+  - current book depth and fee conditions
+
+This keeps V1 simple and avoids introducing a hardcoded churn cap.
+
+However, V1 must record enough per-market state to support a stricter dynamic re-entry budget later. At minimum:
+
+- `market_id`
+- entry count
+- realized P&L
+- paid fees
+- estimated impact costs
+- last exit timestamp
+
+That future follow-up can then allow re-entry only while cumulative realized result plus conservative remaining expected value for the market stays positive.
+
 ## Position Sizing
 
 Sizing is fully dynamic in the alpha path.
@@ -391,6 +419,8 @@ At minimum, audit and metrics must capture:
 - uncertainty-band width over time
 - `robust_ev` before entry
 - chosen size and why larger sizes were rejected
+- per-market entry count and last exit timestamp
+- realized fees and impact by `market_id`
 - entry attempt result
 - exit reason
 - forced-flat transitions

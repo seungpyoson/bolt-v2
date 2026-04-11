@@ -150,17 +150,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_mut()
                     .and_then(|guards| guards.take_failure_receiver());
 
-                for strategy in &cfg.strategies {
-                    match strategy.kind.as_str() {
-                        "exec_tester" => {
-                            let strategy = exec_tester::build_exec_tester(&strategy.config)?;
-                            node.add_strategy(strategy)?;
-                        }
-                        other => {
-                            return Err(Box::new(std::io::Error::other(format!(
-                                "Unsupported strategy type: {other}"
-                            )))
-                                as Box<dyn std::error::Error>);
+                if cfg.rulesets.is_empty() {
+                    for strategy in &cfg.strategies {
+                        match strategy.kind.as_str() {
+                            "exec_tester" => {
+                                let strategy = exec_tester::build_exec_tester(&strategy.config)?;
+                                node.add_strategy(strategy)?;
+                            }
+                            other => {
+                                return Err(Box::new(std::io::Error::other(format!(
+                                    "Unsupported strategy type: {other}"
+                                )))
+                                    as Box<dyn std::error::Error>);
+                            }
                         }
                     }
                 }

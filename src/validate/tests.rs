@@ -1844,6 +1844,69 @@ fn phase1_runtime_requires_audit_when_ruleset_is_configured() {
 }
 
 #[test]
+fn phase1_runtime_requires_exactly_one_exec_tester_template() {
+    let toml =
+        valid_phase1_runtime_toml().replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "strategies[0].type", "unsupported_type");
+    assert_has_error(
+        &errors,
+        "strategies",
+        "phase1_runtime_strategy_template_count",
+    );
+    assert_error_message_contains(
+        &errors,
+        "strategies",
+        "phase1_runtime_strategy_template_count",
+        "exactly one exec_tester strategy template",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_duplicate_exec_tester_templates() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[strategies]]
+type = "exec_tester"
+[strategies.config]
+strategy_id = "EXEC_TESTER-002"
+instrument_id = "0xdef-67890.POLYMARKET"
+client_id = "POLYMARKET"
+order_qty = "7"
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies",
+        "phase1_runtime_strategy_template_count",
+    );
+    assert_error_message_contains(
+        &errors,
+        "strategies",
+        "phase1_runtime_strategy_template_count",
+        "exactly one exec_tester strategy template",
+    );
+}
+
+#[test]
+fn phase1_runtime_load_rejects_missing_exec_tester_template() {
+    let toml =
+        valid_phase1_runtime_toml().replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
+    let error = runtime_load_error_for(&toml);
+    assert!(
+        error.contains("strategies"),
+        "runtime load error should mention strategies: {error}"
+    );
+    assert!(
+        error.contains("exactly one exec_tester strategy template"),
+        "runtime load error should mention template invariant: {error}"
+    );
+}
+
+#[test]
 fn phase1_runtime_load_rejects_missing_audit_when_ruleset_is_configured() {
     let toml = valid_phase1_runtime_toml()
         .replace("[audit]\n", "")

@@ -66,7 +66,7 @@ jobs:
       - name: Create issue on failure
         if: steps.advisories.outcome == 'failure'
         run: |
-          EXISTING=$(gh issue list --search "Dependency advisory found in:title" --state open --json number -q '.[0].number')
+          EXISTING=$(gh issue list --search "Dependency advisory found in:title" --state open --json number -q '.[] | .number' | head -1)
           if [ -n "$EXISTING" ]; then
             echo "Open advisory issue already exists: #$EXISTING — skipping creation"
             exit 0

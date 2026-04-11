@@ -1,10 +1,10 @@
+use crate::clients::chainlink::parse_chainlink_ws_origins;
 use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
 use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
-use crate::clients::chainlink::parse_chainlink_ws_origins;
-use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
 use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
+use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
 use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;

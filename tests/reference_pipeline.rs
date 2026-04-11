@@ -212,12 +212,7 @@ fn orderbook(venue_name: &str, bid: f64, ask: f64, ts_ms: u64) -> ReferenceObser
     }
 }
 
-fn oracle(
-    venue_name: &str,
-    price: f64,
-    ts_ms: u64,
-    observed_ts_ms: u64,
-) -> ReferenceObservation {
+fn oracle(venue_name: &str, price: f64, ts_ms: u64, observed_ts_ms: u64) -> ReferenceObservation {
     ReferenceObservation::Oracle {
         venue_name: venue_name.into(),
         instrument_id: format!("{venue_name}.TEST"),

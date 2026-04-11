@@ -31,7 +31,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
-use tokio::{net::TcpStream, time::{sleep, timeout}};
+use tokio::{
+    net::TcpStream,
+    time::{sleep, timeout},
+};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{Message, client::IntoClientRequest},
@@ -589,10 +592,7 @@ async fn run_chainlink_stream_loop<Connect, ConnectFut, Session, Handle>(
         }
 
         consecutive_failures = consecutive_failures.saturating_add(1);
-        log_reconnect_alert_threshold_exceeded(
-            consecutive_failures,
-            reconnect_alert_threshold,
-        );
+        log_reconnect_alert_threshold_exceeded(consecutive_failures, reconnect_alert_threshold);
         if wait_for_reconnect(reconnect_delay, &cancellation).await {
             return;
         }
@@ -655,7 +655,9 @@ async fn connect_chainlink_stream_session(
         match timeout(DEFAULT_WS_CONNECT_TIMEOUT, connect_async(request)).await {
             Ok(Ok((stream, _))) => return Ok(RawChainlinkStreamSession { stream }),
             Ok(Err(error)) => {
-                last_error = Some(anyhow!("failed to connect Chainlink websocket origin {origin}: {error}"));
+                last_error = Some(anyhow!(
+                    "failed to connect Chainlink websocket origin {origin}: {error}"
+                ));
             }
             Err(_) => {
                 last_error = Some(anyhow!(
@@ -686,7 +688,9 @@ pub(crate) fn parse_chainlink_ws_origins(ws_url: &str) -> Result<Vec<String>> {
             .into_client_request()
             .with_context(|| format!("invalid Chainlink websocket origin \"{origin}\""))?;
         if request.uri().scheme_str() != Some("wss") {
-            return Err(anyhow!("each origin must start with wss://, got \"{origin}\""));
+            return Err(anyhow!(
+                "each origin must start with wss://, got \"{origin}\""
+            ));
         }
         if request.uri().authority().is_none() {
             return Err(anyhow!("each origin must include a host, got \"{origin}\""));
@@ -802,8 +806,8 @@ fn publish_v3_report(
     let updated_at_ms = u64::try_from(report.observations_timestamp)
         .context("observationsTimestamp does not fit in u64")?
         .saturating_mul(1_000);
-    let observed_ts_ms =
-        u64::try_from(current_timestamp_ms()?).context("local observed timestamp does not fit in u64")?;
+    let observed_ts_ms = u64::try_from(current_timestamp_ms()?)
+        .context("local observed timestamp does not fit in u64")?;
     let price =
         scale_decimal_string_to_f64(&report_data.benchmark_price.to_string(), feed.price_scale)?;
 
@@ -996,7 +1000,10 @@ mod tests {
             {
                 let delivered = Arc::clone(&delivered);
                 move |report| {
-                    delivered.lock().unwrap().push(report.report.full_report.clone());
+                    delivered
+                        .lock()
+                        .unwrap()
+                        .push(report.report.full_report.clone());
                     cancellation.cancel();
                     Ok(())
                 }
@@ -1027,18 +1034,26 @@ mod tests {
     #[test]
     fn scales_decimal_string_to_f64_when_digits_are_shorter_than_scale() {
         let value = scale_decimal_string_to_f64("123", 5).unwrap();
-        assert!((value - 0.00123).abs() < 1e-12, "unexpected scaled value: {value}");
+        assert!(
+            (value - 0.00123).abs() < 1e-12,
+            "unexpected scaled value: {value}"
+        );
     }
 
     #[test]
     fn scales_decimal_string_to_f64_for_negative_values() {
         let value = scale_decimal_string_to_f64("-12345", 2).unwrap();
-        assert!((value + 123.45).abs() < 1e-12, "unexpected scaled value: {value}");
+        assert!(
+            (value + 123.45).abs() < 1e-12,
+            "unexpected scaled value: {value}"
+        );
     }
 
     #[test]
     fn rejects_invalid_decimal_strings() {
-        let error = scale_decimal_string_to_f64("12.34", 2).unwrap_err().to_string();
+        let error = scale_decimal_string_to_f64("12.34", 2)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("invalid decimal digits"));
     }
 

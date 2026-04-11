@@ -20,8 +20,9 @@ fn accepts_different_trader_id() {
 
 #[test]
 fn accepts_trader_id_with_underscores() {
+    // TraderId can have underscores but must also have a hyphen (NAME-TAG format)
     assert!(log_sweep::is_nt_log_filename(
-        "BOLT_001_A_2026-04-11_e21185e1-8222-454d-ac77-62f3dad8e95c.log"
+        "BOLT_V2-001_2026-04-11_e21185e1-8222-454d-ac77-62f3dad8e95c.log"
     ));
 }
 
@@ -56,6 +57,14 @@ fn rejects_no_date_pattern() {
 fn rejects_non_log_extension() {
     assert!(!log_sweep::is_nt_log_filename(
         "BOLT-001_2026-04-11_e21185e1-8222-454d-ac77-62f3dad8e95c.txt"
+    ));
+}
+
+#[test]
+fn rejects_prefix_without_hyphen() {
+    // Codex finding: "analysis" has no hyphen so it's not a valid TraderId prefix
+    assert!(!log_sweep::is_nt_log_filename(
+        "analysis_2026-04-11_abcdef01-2345-6789-abcd-ef0123456789.log"
     ));
 }
 

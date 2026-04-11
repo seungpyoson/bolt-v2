@@ -64,8 +64,11 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
                     eprintln!("log_sweep: failed to copy {name}: {e}");
                     let _ = fs::remove_file(&dest); // clean up partial dest
                 } else if let Err(e) = fs::remove_file(&source) {
+                    // Copy is complete in dest — keep it. Source stays in root
+                    // until the permission issue is resolved. Next launch skips
+                    // this file because dest.exists() returns true.
                     eprintln!("log_sweep: copied {name} but failed to remove source: {e}");
-                    let _ = fs::remove_file(&dest); // clean up orphan copy
+                    moved += 1;
                 } else {
                     moved += 1;
                 }
@@ -85,8 +88,9 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
 /// `{trader_id}_{YYYY-MM-DD}_{UUID4}.log` (or `.json`).
 ///
 /// The trader_id may contain underscores or hyphens, so we scan for the
-/// `_YYYY-MM-DD_` window rather than splitting on `_`. After the date
-/// window we require exactly a 36-character UUID4-shaped suffix.
+/// `_YYYY-MM-DD_` window rather than splitting on `_`. The prefix before
+/// the date must contain a hyphen (TraderId requires `NAME-TAG` format).
+/// After the date window we require exactly a 36-character UUID4-shaped suffix.
 pub fn is_nt_log_filename(name: &str) -> bool {
     let stem = match name.strip_suffix(".log") {
         Some(s) => s,
@@ -114,8 +118,10 @@ pub fn is_nt_log_filename(name: &str) -> bool {
             && bytes[i + 9..i + 11].iter().all(|b| b.is_ascii_digit())
             && bytes[i + 11] == b'_'
         {
+            let prefix = &stem[..i];
             let uuid_start = i + 12;
-            if stem.len() - uuid_start == 36 {
+            // Prefix must contain a hyphen (TraderId requires NAME-TAG format)
+            if prefix.contains('-') && stem.len() - uuid_start == 36 {
                 return is_uuid4_format(&stem[uuid_start..]);
             }
         }

@@ -83,6 +83,9 @@ test: check-workspace require-rust-verification-owner
 build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
 
+check-aarch64: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
+
 live-generate: check-workspace require-rust-verification-owner
     #!/usr/bin/env bash
     # Generate the runtime artifact from the human-edited local source of truth.
@@ -112,84 +115,299 @@ ci-lint-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
-    files=(.github/workflows/*.yml .github/workflows/*.yaml)
-    rust_invocation_files=(justfile scripts/*.sh tests/*.sh .github/workflows/*.yml .github/workflows/*.yaml)
+    workflow_files=()
+    action_files=()
 
-    if [ "${#files[@]}" -eq 0 ]; then
-        echo "No workflow files found — skipping"
+    [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
+    [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
+    [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
+
+    github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
+    rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
+
+    if [ "${#github_automation_files[@]}" -eq 0 ]; then
+        echo "No workflow or action files found — skipping"
     fi
 
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build)([^[:alnum:]_]|$)'
-    owner_bootstrap_literal='steps.shared.outputs.rust_verification_ci_install_script'
-    owner_repo_eval_literal='just --evaluate rust_verification_source_repo'
-    owner_sha_eval_literal='just --evaluate rust_verification_source_sha'
-    owner_install_eval_literal='just --evaluate rust_verification_ci_install_script'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64)([^[:alnum:]_]|$)'
+    setup_action_literal='uses: ./.github/actions/setup-environment'
+    setup_lint_literal='lint-workflow-contract:'
+    setup_lint_true_literal='lint-workflow-contract: "true"'
+    setup_token_literal='claude-config-read-token:'
+    setup_token_source_literal='secrets.CLAUDE_CONFIG_READ_TOKEN'
+    setup_just_version_literal='just-version:'
+    setup_just_version_source_literal='env.JUST_VERSION'
+    setup_deny_version_literal='include-deny-version: "true"'
+    setup_nextest_version_literal='include-nextest-version: "true"'
+    setup_build_values_literal='include-build-values: "true"'
+    setup_rustfmt_literal='toolchain-components: rustfmt'
+    setup_clippy_literal='toolchain-components: clippy'
+    setup_default_target_literal='use-default-target: "true"'
     managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+    deny_output_literal='steps.setup.outputs.deny_version'
+    nextest_output_literal='steps.setup.outputs.nextest_version'
+    zig_version_output_literal='steps.setup.outputs.zig_version'
+    zigbuild_version_output_literal='steps.setup.outputs.zigbuild_version'
     repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
     toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
     toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    action_file='.github/actions/setup-environment/action.yml'
+    action_lint_line=0
+    action_shared_line=0
+    action_owner_line=0
+    action_toolchain_line=0
+    action_required_literals=(
+        "inputs.just-version"
+        "inputs.include-deny-version"
+        "inputs.include-nextest-version"
+        "inputs.include-build-values"
+        "inputs.lint-workflow-contract"
+        "CLAUDE_CONFIG_READ_TOKEN:"
+        "inputs.claude-config-read-token"
+        "just ci-lint-workflow"
+        "awk -F'\\\"' '/^channel = / {print \$2}' rust-toolchain.toml"
+        "just --evaluate deny_version"
+        "just --evaluate nextest_version"
+        "just --evaluate target"
+        "just --evaluate zig_version"
+        "just --evaluate zigbuild_version"
+        "just --evaluate rust_verification_owner"
+        "just --evaluate rust_verification_source_repo"
+        "just --evaluate rust_verification_source_sha"
+        "just --evaluate rust_verification_ci_install_script"
+    )
+    action_output_names=(
+        "rust_toolchain"
+        "deny_version"
+        "nextest_version"
+        "target"
+        "zig_version"
+        "zigbuild_version"
+        "rust_verification_owner"
+        "rust_verification_source_repo"
+        "rust_verification_source_sha"
+        "rust_verification_ci_install_script"
+    )
 
-    for f in "${files[@]}"; do
+    for f in "${github_automation_files[@]}"; do
         if grep -En "$pattern" "$f"; then
             echo "ERROR: Raw cargo commands found in $f"
             failed=1
         fi
     done
 
-    for f in "${files[@]}"; do
+    for f in "${workflow_files[@]}"; do
         while IFS='|' read -r job_name reason; do
             [ -n "$job_name" ] || continue
             case "$reason" in
-                bootstrap)
-                    echo "ERROR: Managed Rust owner bootstrap missing in $f job '$job_name'"
+                setup-action)
+                    echo "ERROR: Managed CI setup action missing in $f job '$job_name'"
                     ;;
-                pin-repo)
-                    echo "ERROR: Managed Rust owner repo pin must come from justfile in $f job '$job_name'"
+                setup-token)
+                    echo "ERROR: Managed CI setup token wiring missing in $f job '$job_name'"
                     ;;
-                pin-sha)
-                    echo "ERROR: Managed Rust owner SHA pin must come from justfile in $f job '$job_name'"
+                setup-lint)
+                    echo "ERROR: Managed CI workflow lint wiring missing in $f job '$job_name'"
                     ;;
-                install-eval)
-                    echo "ERROR: Managed Rust owner install script must come from justfile in $f job '$job_name'"
+                setup-lint-true)
+                    echo "ERROR: Managed CI workflow lint must be enabled in $f job '$job_name'"
+                    ;;
+                setup-deny-version)
+                    echo "ERROR: Managed CI deny-version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-nextest-version)
+                    echo "ERROR: Managed CI nextest-version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-build-values)
+                    echo "ERROR: Managed CI build-values wiring missing in $f job '$job_name'"
+                    ;;
+                setup-rustfmt)
+                    echo "ERROR: Managed CI rustfmt component wiring missing in $f job '$job_name'"
+                    ;;
+                setup-clippy)
+                    echo "ERROR: Managed CI clippy component wiring missing in $f job '$job_name'"
+                    ;;
+                setup-default-target)
+                    echo "ERROR: Managed CI default target wiring missing in $f job '$job_name'"
+                    ;;
+                setup-just-version)
+                    echo "ERROR: Managed CI just version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-just-version-source)
+                    echo "ERROR: Managed CI just version source must come from env.JUST_VERSION in $f job '$job_name'"
+                    ;;
+                setup-token-source)
+                    echo "ERROR: Managed CI token source must come from secrets.CLAUDE_CONFIG_READ_TOKEN in $f job '$job_name'"
                     ;;
             esac
             failed=1
         done < <(
             awk -v lane_pattern="$just_lane_pattern" \
-                -v bootstrap_literal="$owner_bootstrap_literal" \
-                -v repo_eval_literal="$owner_repo_eval_literal" \
-                -v sha_eval_literal="$owner_sha_eval_literal" \
-                -v install_eval_literal="$owner_install_eval_literal" '
+                -v setup_action_literal="$setup_action_literal" \
+                -v setup_lint_literal="$setup_lint_literal" \
+                -v setup_lint_true_literal="$setup_lint_true_literal" \
+                -v setup_token_literal="$setup_token_literal" \
+                -v setup_token_source_literal="$setup_token_source_literal" \
+                -v setup_just_version_literal="$setup_just_version_literal" \
+                -v setup_just_version_source_literal="$setup_just_version_source_literal" \
+                -v setup_deny_version_literal="$setup_deny_version_literal" \
+                -v setup_nextest_version_literal="$setup_nextest_version_literal" \
+                -v setup_build_values_literal="$setup_build_values_literal" \
+                -v setup_rustfmt_literal="$setup_rustfmt_literal" \
+                -v setup_clippy_literal="$setup_clippy_literal" \
+                -v setup_default_target_literal="$setup_default_target_literal" \
+                -v deny_output_literal="$deny_output_literal" \
+                -v nextest_output_literal="$nextest_output_literal" \
+                -v zig_version_output_literal="$zig_version_output_literal" \
+                -v zigbuild_version_output_literal="$zigbuild_version_output_literal" '
                 BEGIN {
                     in_jobs = 0
                     current = ""
                     has_lane = 0
-                    has_bootstrap = 0
-                    has_repo_eval = 0
-                    has_sha_eval = 0
-                    has_install_eval = 0
+                    has_setup_step = 0
+                    has_setup_lint = 0
+                    has_setup_lint_true = 0
+                    has_setup_token = 0
+                    has_setup_token_source = 0
+                    has_setup_just_version = 0
+                    has_setup_just_version_source = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
+                }
+
+                function flush_step() {
+                    if (step_has_setup) {
+                        has_setup_step = 1
+                        if (step_has_lint) {
+                            has_setup_lint = 1
+                        }
+                        if (step_has_lint_true) {
+                            has_setup_lint_true = 1
+                        }
+                        if (step_has_token) {
+                            has_setup_token = 1
+                        }
+                        if (step_has_token_source) {
+                            has_setup_token_source = 1
+                        }
+                        if (step_has_just_version) {
+                            has_setup_just_version = 1
+                        }
+                        if (step_has_just_version_source) {
+                            has_setup_just_version_source = 1
+                        }
+                        if (step_has_deny_version) {
+                            has_setup_deny_version = 1
+                        }
+                        if (step_has_nextest_version) {
+                            has_setup_nextest_version = 1
+                        }
+                        if (step_has_build_values) {
+                            has_setup_build_values = 1
+                        }
+                        if (step_has_rustfmt) {
+                            has_setup_rustfmt = 1
+                        }
+                        if (step_has_clippy) {
+                            has_setup_clippy = 1
+                        }
+                        if (step_has_default_target) {
+                            has_setup_default_target = 1
+                        }
+                    }
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
                 }
 
                 function flush_job() {
+                    flush_step()
                     if (current == "" || !has_lane) {
                         return
                     }
-                    if (!has_bootstrap) {
-                        print current "|bootstrap"
+                    if (!has_setup_step) {
+                        print current "|setup-action"
                     }
-                    if (!has_repo_eval) {
-                        print current "|pin-repo"
+                    if (current == "gate" && has_setup_step && !has_setup_lint) {
+                        print current "|setup-lint"
                     }
-                    if (!has_sha_eval) {
-                        print current "|pin-sha"
+                    if (current == "gate" && has_setup_step && !has_setup_lint_true) {
+                        print current "|setup-lint-true"
                     }
-                    if (!has_install_eval) {
-                        print current "|install-eval"
+                    if (has_setup_step && !has_setup_token) {
+                        print current "|setup-token"
+                    }
+                    if (has_setup_step && !has_setup_token_source) {
+                        print current "|setup-token-source"
+                    }
+                    if (has_setup_step && !has_setup_just_version) {
+                        print current "|setup-just-version"
+                    }
+                    if (has_setup_step && !has_setup_just_version_source) {
+                        print current "|setup-just-version-source"
+                    }
+                    if ((current == "gate" || current == "advisories") && has_setup_step && !has_setup_deny_version) {
+                        print current "|setup-deny-version"
+                    }
+                    if (current == "test" && has_setup_step && !has_setup_nextest_version) {
+                        print current "|setup-nextest-version"
+                    }
+                    if (current == "build" && has_setup_step && !has_setup_build_values) {
+                        print current "|setup-build-values"
+                    }
+                    if (current == "gate" && has_setup_step && !has_setup_rustfmt) {
+                        print current "|setup-rustfmt"
+                    }
+                    if (current == "clippy" && has_setup_step && !has_setup_clippy) {
+                        print current "|setup-clippy"
+                    }
+                    if (current == "build" && has_setup_step && !has_setup_default_target) {
+                        print current "|setup-default-target"
+                    }
+                    if ((current == "gate" || current == "advisories") && !has_deny_output) {
+                        print current "|setup-deny-version"
+                    }
+                    if (current == "test" && !has_nextest_output) {
+                        print current "|setup-nextest-version"
+                    }
+                    if (current == "build" && (!has_zig_version_output || !has_zigbuild_version_output)) {
+                        print current "|setup-build-values"
                     }
                 }
 
@@ -203,7 +421,36 @@ ci-lint-workflow:
                     in_jobs = 0
                     current = ""
                     has_lane = 0
-                    has_bootstrap = 0
+                    has_setup_step = 0
+                    has_setup_lint = 0
+                    has_setup_lint_true = 0
+                    has_setup_token = 0
+                    has_setup_token_source = 0
+                    has_setup_just_version = 0
+                    has_setup_just_version_source = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
                     next
                 }
 
@@ -213,28 +460,96 @@ ci-lint-workflow:
                     sub(/^  /, "", current)
                     sub(/:.*/, "", current)
                     has_lane = 0
-                    has_bootstrap = 0
-                    has_repo_eval = 0
-                    has_sha_eval = 0
-                    has_install_eval = 0
+                    has_setup_step = 0
+                    has_setup_lint = 0
+                    has_setup_lint_true = 0
+                    has_setup_token = 0
+                    has_setup_token_source = 0
+                    has_setup_just_version = 0
+                    has_setup_just_version_source = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
                     next
                 }
 
                 current != "" {
+                    if ($0 ~ /^      - /) {
+                        flush_step()
+                    }
                     if ($0 ~ lane_pattern) {
                         has_lane = 1
                     }
-                    if (index($0, bootstrap_literal) > 0) {
-                        has_bootstrap = 1
+                    if (index($0, setup_action_literal) > 0) {
+                        step_has_setup = 1
                     }
-                    if (index($0, repo_eval_literal) > 0) {
-                        has_repo_eval = 1
+                    if (index($0, setup_lint_literal) > 0) {
+                        step_has_lint = 1
                     }
-                    if (index($0, sha_eval_literal) > 0) {
-                        has_sha_eval = 1
+                    if (index($0, setup_lint_true_literal) > 0) {
+                        step_has_lint_true = 1
                     }
-                    if (index($0, install_eval_literal) > 0) {
-                        has_install_eval = 1
+                    if (index($0, setup_token_literal) > 0) {
+                        step_has_token = 1
+                    }
+                    if (index($0, setup_token_source_literal) > 0) {
+                        step_has_token_source = 1
+                    }
+                    if (index($0, setup_just_version_literal) > 0) {
+                        step_has_just_version = 1
+                    }
+                    if (index($0, setup_just_version_source_literal) > 0) {
+                        step_has_just_version_source = 1
+                    }
+                    if (index($0, setup_deny_version_literal) > 0) {
+                        step_has_deny_version = 1
+                    }
+                    if (index($0, setup_nextest_version_literal) > 0) {
+                        step_has_nextest_version = 1
+                    }
+                    if (index($0, setup_build_values_literal) > 0) {
+                        step_has_build_values = 1
+                    }
+                    if (index($0, setup_rustfmt_literal) > 0) {
+                        step_has_rustfmt = 1
+                    }
+                    if (index($0, setup_clippy_literal) > 0) {
+                        step_has_clippy = 1
+                    }
+                    if (index($0, setup_default_target_literal) > 0) {
+                        step_has_default_target = 1
+                    }
+                    if (index($0, deny_output_literal) > 0) {
+                        has_deny_output = 1
+                    }
+                    if (index($0, nextest_output_literal) > 0) {
+                        has_nextest_output = 1
+                    }
+                    if (index($0, zig_version_output_literal) > 0) {
+                        has_zig_version_output = 1
+                    }
+                    if (index($0, zigbuild_version_output_literal) > 0) {
+                        has_zigbuild_version_output = 1
                     }
                 }
 
@@ -245,7 +560,43 @@ ci-lint-workflow:
         )
     done
 
-    for f in "${files[@]}"; do
+    if [ ! -f "$action_file" ]; then
+        echo "ERROR: Managed CI setup action missing at $action_file"
+        failed=1
+    else
+        action_lint_line="$(grep -n 'name: Lint workflow contract' "$action_file" | cut -d: -f1 | head -1)"
+        action_shared_line="$(grep -n 'name: Read shared values' "$action_file" | cut -d: -f1 | head -1)"
+        action_owner_line="$(grep -n 'name: Install managed Rust owner' "$action_file" | cut -d: -f1 | head -1)"
+        action_toolchain_line="$(grep -n 'name: Setup Rust toolchain' "$action_file" | cut -d: -f1 | head -1)"
+
+        if [ -z "$action_lint_line" ] || [ -z "$action_shared_line" ] || [ -z "$action_owner_line" ] || [ -z "$action_toolchain_line" ]; then
+            echo "ERROR: Managed CI setup action missing required ordered steps"
+            failed=1
+        elif [ "$action_lint_line" -ge "$action_shared_line" ] || [ "$action_shared_line" -ge "$action_owner_line" ] || [ "$action_owner_line" -ge "$action_toolchain_line" ]; then
+            echo "ERROR: Managed CI setup action step order drifted"
+            failed=1
+        fi
+
+        for literal in "${action_required_literals[@]}"; do
+            if ! grep -Fq "$literal" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing expected literal '$literal'"
+                failed=1
+            fi
+        done
+
+        for output_name in "${action_output_names[@]}"; do
+            if ! grep -Eq "^  ${output_name}:" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing exported output '$output_name'"
+                failed=1
+            fi
+            if ! grep -Fq "steps.shared.outputs.${output_name}" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing output mapping for '$output_name'"
+                failed=1
+            fi
+        done
+    fi
+
+    for f in "${workflow_files[@]}"; do
         if grep -Eq "$repo_local_artifact_pattern" "$f"; then
             echo "ERROR: Repo-local build artifact path found in $f"
             failed=1
@@ -320,14 +671,14 @@ ci-lint-workflow:
     fi
 
     if [ "$failed" -ne 0 ]; then
-        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, repo-local managed build artifact paths, and justfile/TOML build drift."
+        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, repo-local managed build artifact paths, and justfile/TOML build drift."
         exit 1
     fi
 
-    if [ "${#files[@]}" -eq 0 ]; then
-        echo "OK: No workflow files found; workflow-specific checks skipped"
+    if [ "${#github_automation_files[@]}" -eq 0 ]; then
+        echo "OK: No workflow or action files found; automation-specific checks skipped"
     else
-        echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, or repo-local managed build artifact paths found"
+        echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
     fi
 
 worktree branch:

@@ -12,7 +12,11 @@ dest="${HOME}/.claude/lib/rust_verification.py"
 dest_dir="$(dirname "$dest")"
 tmp="$(mktemp "${TMPDIR:-/tmp}/rust-verification-owner.XXXXXX")"
 tmp_repo="$(mktemp -d "${TMPDIR:-/tmp}/rust-verification-owner-repo.XXXXXX")"
+
 repo_url="https://github.com/${source_repo}.git"
+if [ -n "${CLAUDE_CONFIG_READ_TOKEN:-}" ]; then
+    repo_url="https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${source_repo}.git"
+fi
 
 trap 'rm -f "$tmp"; rm -rf "$tmp_repo"' EXIT
 

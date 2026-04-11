@@ -6,7 +6,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,6 +18,7 @@ use nautilus_common::{
     cache::Cache,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
+    messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
 };
 use nautilus_model::{
     accounts::AccountAny,
@@ -25,6 +29,19 @@ use nautilus_model::{
 use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn mock_data_subscriptions() -> &'static Mutex<Vec<String>> {
+    MOCK_DATA_SUBSCRIPTIONS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn clear_mock_data_subscriptions() {
+    mock_data_subscriptions().lock().unwrap().clear();
+}
+
+pub fn recorded_mock_data_subscriptions() -> Vec<String> {
+    mock_data_subscriptions().lock().unwrap().clone()
+}
 
 pub struct TempCaseDir {
     path: PathBuf,
@@ -406,6 +423,30 @@ impl DataClient for MockDataClient {
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
         self.connected = false;
+        Ok(())
+    }
+
+    fn subscribe_instrument(&mut self, cmd: &SubscribeInstrument) -> anyhow::Result<()> {
+        mock_data_subscriptions()
+            .lock()
+            .unwrap()
+            .push(cmd.instrument_id.to_string());
+        Ok(())
+    }
+
+    fn subscribe_quotes(&mut self, cmd: &SubscribeQuotes) -> anyhow::Result<()> {
+        mock_data_subscriptions()
+            .lock()
+            .unwrap()
+            .push(cmd.instrument_id.to_string());
+        Ok(())
+    }
+
+    fn subscribe_trades(&mut self, cmd: &SubscribeTrades) -> anyhow::Result<()> {
+        mock_data_subscriptions()
+            .lock()
+            .unwrap()
+            .push(cmd.instrument_id.to_string());
         Ok(())
     }
 }

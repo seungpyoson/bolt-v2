@@ -11,7 +11,10 @@ use bolt_v2::{
     config::{RulesetConfig, RulesetVenueKind},
     platform::{
         polymarket_catalog::load_candidate_markets_for_ruleset_with_gamma_client,
-        resolution_basis::parse_declared_resolution_basis,
+        resolution_basis::{
+            CandleInterval, ResolutionBasis, ResolutionSourceKind, parse_declared_resolution_basis,
+            parse_ruleset_resolution_basis,
+        },
     },
 };
 use chrono::{Duration as ChronoDuration, Utc};
@@ -21,6 +24,25 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+
+fn exchange_candle(
+    source: ResolutionSourceKind,
+    pair: &str,
+    interval: CandleInterval,
+) -> ResolutionBasis {
+    ResolutionBasis::ExchangeCandle {
+        source,
+        pair: pair.to_string(),
+        interval,
+    }
+}
+
+fn oracle_price_feed(source: ResolutionSourceKind, pair: &str) -> ResolutionBasis {
+    ResolutionBasis::OraclePriceFeed {
+        source,
+        pair: pair.to_string(),
+    }
+}
 
 #[derive(Clone)]
 struct TestServerState {
@@ -175,7 +197,7 @@ fn valid_market_with(id: &str, clob_token_ids: &str, end_date: String) -> Value 
         "clobTokenIds": clob_token_ids,
         "outcomes": "[\"Yes\",\"No\"]",
         "question": "Will BTC finish green?",
-        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
+        "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTCUSDT has a final close above the opening price. The resolution source for this market is Binance, specifically the BTCUSDT \"Close\" prices available with \"1m\" and \"Candles\" selected on the top bar.",
         "acceptingOrders": true,
         "liquidityNum": 4567.0,
         "endDate": end_date,
@@ -184,71 +206,100 @@ fn valid_market_with(id: &str, clob_token_ids: &str, end_date: String) -> Value 
 }
 
 #[test]
-fn parses_chainlink_basis_from_structured_resolution_source() {
+fn parses_canonical_ruleset_resolution_bases() {
     assert_eq!(
-        parse_declared_resolution_basis(
-            Some("https://www.chain.link/streams/btc-usd"),
-            Some("ignored"),
-        ),
-        Some("chainlink_btcusd".to_string())
+        parse_ruleset_resolution_basis("binance_ethusdt_1m").unwrap(),
+        exchange_candle(
+            ResolutionSourceKind::Binance,
+            "ethusdt",
+            CandleInterval::OneMinute,
+        )
+    );
+    assert_eq!(
+        parse_ruleset_resolution_basis("chainlink_ethusd").unwrap(),
+        oracle_price_feed(ResolutionSourceKind::Chainlink, "ethusd")
     );
 }
 
 #[test]
-fn parses_binance_basis_from_structured_resolution_source() {
+fn rejects_non_canonical_ruleset_resolution_bases() {
+    for input in [
+        "Binance_ethusdt_1m",
+        "binance_eth/usdt_1m",
+        "binance_ethusdt",
+        "chainlink_ETHUSD",
+        "chainlink_ethusd_1m",
+    ] {
+        assert!(
+            parse_ruleset_resolution_basis(input).is_err(),
+            "{input} should be rejected as non-canonical"
+        );
+    }
+}
+
+#[test]
+fn resolution_basis_display_round_trips_canonical_strings() {
+    for input in ["binance_ethusdt_1h", "chainlink_ethusd", "kraken_solusd_5m"] {
+        let parsed = parse_ruleset_resolution_basis(input)
+            .unwrap_or_else(|_| panic!("{input} should parse as canonical"));
+        assert_eq!(parsed.to_string(), input);
+    }
+}
+
+#[test]
+fn parses_hourly_binance_basis_from_description() {
+    let description = "This market will resolve to \"Up\" if the close price is greater than or equal to the open price for the ETH/USDT 1 hour candle that begins on the time and date specified in the title. The resolution source for this market is information from Binance, specifically the ETH/USDT pair. The relevant \"1H\" candle will be used once finalized.";
     assert_eq!(
-        parse_declared_resolution_basis(
-            Some("https://www.binance.com/en/trade/BTC_USDT"),
-            Some("ignored"),
-        ),
-        Some("binance_btcusdt_1m".to_string())
+        parse_declared_resolution_basis(Some(description)),
+        Some(exchange_candle(
+            ResolutionSourceKind::Binance,
+            "ethusdt",
+            CandleInterval::OneHour,
+        ))
     );
 }
 
 #[test]
-fn parses_binance_basis_from_known_description_patterns() {
+fn parses_chainlink_basis_from_description() {
+    let description = "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
     assert_eq!(
-        parse_declared_resolution_basis(
-            None,
-            Some("The resolution source for this market is Binance spot BTC/USDT data."),
-        ),
-        Some("binance_btcusdt_1m".to_string())
+        parse_declared_resolution_basis(Some(description)),
+        Some(oracle_price_feed(ResolutionSourceKind::Chainlink, "ethusd"))
     );
 }
 
 #[test]
-fn parses_chainlink_basis_from_known_description_patterns() {
+fn rejects_exchange_candle_description_without_interval() {
     assert_eq!(
-        parse_declared_resolution_basis(
-            None,
-            Some(
-                "The resolution source for this market is information from Chainlink BTC/USD feeds."
-            ),
-        ),
-        Some("chainlink_btcusd".to_string())
+        parse_declared_resolution_basis(Some(
+            "The resolution source for this market is Binance, specifically the ETH/USDT pair."
+        )),
+        None
     );
 }
 
 #[test]
-fn parses_binance_basis_from_variant_description_formatting() {
+fn description_and_ruleset_parsers_land_on_same_canonical_basis() {
+    let description = "This market will resolve to \"Up\" if the close price is greater than or equal to the open price for the ETH/USDT 1 hour candle that begins on the time and date specified in the title. The resolution source for this market is information from Binance, specifically the ETH/USDT pair. The relevant \"1H\" candle will be used once finalized.";
     assert_eq!(
-        parse_declared_resolution_basis(
-            None,
-            Some("RESOLUTION SOURCE: Binance spot btc/usdt data will be used."),
-        ),
-        Some("binance_btcusdt_1m".to_string())
+        parse_declared_resolution_basis(Some(description)),
+        Some(parse_ruleset_resolution_basis("binance_ethusdt_1h").unwrap())
     );
 }
 
 #[test]
-fn parses_chainlink_basis_from_variant_description_formatting() {
+fn chainlink_description_and_ruleset_parsers_land_on_same_canonical_basis() {
+    let description = "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
     assert_eq!(
-        parse_declared_resolution_basis(
-            None,
-            Some("Resolution Source: information from CHAINLINK btc / usd feeds."),
-        ),
-        Some("chainlink_btcusd".to_string())
+        parse_declared_resolution_basis(Some(description)),
+        Some(parse_ruleset_resolution_basis("chainlink_ethusd").unwrap())
     );
+}
+
+#[test]
+fn rejects_description_with_multiple_supported_sources() {
+    let description = "The resolution source for this market references Binance ETH/USDT 1 hour candle data and Chainlink ETH/USD stream data.";
+    assert_eq!(parse_declared_resolution_basis(Some(description)), None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -277,7 +328,14 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert_eq!(markets[0].market_id, "market-good");
     assert_eq!(markets[0].instrument_id, "111");
     assert_eq!(markets[0].tag_slug, "bitcoin");
-    assert_eq!(markets[0].declared_resolution_basis, "binance_btcusdt_1m");
+    assert_eq!(
+        markets[0].declared_resolution_basis,
+        exchange_candle(
+            ResolutionSourceKind::Binance,
+            "btcusdt",
+            CandleInterval::OneMinute,
+        )
+    );
     assert!(markets[0].accepting_orders);
     assert_eq!(markets[0].liquidity_num, 4567.0);
     assert!((1190..=1200).contains(&markets[0].seconds_to_end));
@@ -336,17 +394,17 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_catalog_row_with_invalid_end_date() {
     let (markets, request_count) = load_markets_from_event_markets(vec![json!({
-        "id": "market-invalid-end-date",
-        "questionID": "0xquestion3",
-        "conditionId": "0xcondition3",
-        "clobTokenIds": "[\"111\",\"222\"]",
-        "outcomes": "[\"Yes\",\"No\"]",
-        "question": "Will BTC finish green?",
-        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
-        "acceptingOrders": true,
-        "liquidityNum": 4567.0,
-        "endDate": "not-a-date",
-        "slug": "market-invalid-end-date"
+            "id": "market-invalid-end-date",
+            "questionID": "0xquestion3",
+            "conditionId": "0xcondition3",
+            "clobTokenIds": "[\"111\",\"222\"]",
+            "outcomes": "[\"Yes\",\"No\"]",
+            "question": "Will BTC finish green?",
+            "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "acceptingOrders": true,
+            "liquidityNum": 4567.0,
+            "endDate": "not-a-date",
+            "slug": "market-invalid-end-date"
     })])
     .await;
 
@@ -358,17 +416,17 @@ async fn rejects_catalog_row_with_invalid_end_date() {
 async fn rejects_catalog_row_with_missing_accepting_orders() {
     let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
     let (markets, request_count) = load_markets_from_event_markets(vec![json!({
-        "id": "market-missing-accepting-orders",
-        "questionID": "0xquestion4",
-        "conditionId": "0xcondition4",
-        "clobTokenIds": "[\"111\",\"222\"]",
-        "outcomes": "[\"Yes\",\"No\"]",
-        "question": "Will BTC finish green?",
-        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
-        "liquidityNum": 4567.0,
-        "endDate": end_date,
-        "slug": "market-missing-accepting-orders"
-    })])
+            "id": "market-missing-accepting-orders",
+            "questionID": "0xquestion4",
+            "conditionId": "0xcondition4",
+            "clobTokenIds": "[\"111\",\"222\"]",
+            "outcomes": "[\"Yes\",\"No\"]",
+            "question": "Will BTC finish green?",
+            "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "liquidityNum": 4567.0,
+            "endDate": end_date,
+            "slug": "market-missing-accepting-orders"
+        })])
     .await;
 
     assert_eq!(request_count.load(Ordering::Relaxed), 1);
@@ -379,17 +437,17 @@ async fn rejects_catalog_row_with_missing_accepting_orders() {
 async fn rejects_catalog_row_with_missing_liquidity_num() {
     let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
     let (markets, request_count) = load_markets_from_event_markets(vec![json!({
-        "id": "market-missing-liquidity",
-        "questionID": "0xquestion5",
-        "conditionId": "0xcondition5",
-        "clobTokenIds": "[\"111\",\"222\"]",
-        "outcomes": "[\"Yes\",\"No\"]",
-        "question": "Will BTC finish green?",
-        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
-        "acceptingOrders": true,
-        "endDate": end_date,
-        "slug": "market-missing-liquidity"
-    })])
+            "id": "market-missing-liquidity",
+            "questionID": "0xquestion5",
+            "conditionId": "0xcondition5",
+            "clobTokenIds": "[\"111\",\"222\"]",
+            "outcomes": "[\"Yes\",\"No\"]",
+            "question": "Will BTC finish green?",
+            "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "acceptingOrders": true,
+            "endDate": end_date,
+            "slug": "market-missing-liquidity"
+        })])
     .await;
 
     assert_eq!(request_count.load(Ordering::Relaxed), 1);
@@ -400,17 +458,17 @@ async fn rejects_catalog_row_with_missing_liquidity_num() {
 async fn rejects_catalog_row_with_malformed_clob_token_ids() {
     let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
     let (markets, request_count) = load_markets_from_event_markets(vec![json!({
-        "id": "market-malformed-clob-token-ids",
-        "questionID": "0xquestion6",
-        "conditionId": "0xcondition6",
-        "clobTokenIds": "not-json",
-        "outcomes": "[\"Yes\",\"No\"]",
-        "question": "Will BTC finish green?",
-        "description": "The resolution source for this market is Binance spot BTC/USDT data.",
-        "acceptingOrders": true,
-        "liquidityNum": 4567.0,
-        "endDate": end_date,
-        "slug": "market-malformed-clob-token-ids"
+            "id": "market-malformed-clob-token-ids",
+            "questionID": "0xquestion6",
+            "conditionId": "0xcondition6",
+            "clobTokenIds": "not-json",
+            "outcomes": "[\"Yes\",\"No\"]",
+            "question": "Will BTC finish green?",
+            "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "acceptingOrders": true,
+            "liquidityNum": 4567.0,
+            "endDate": end_date,
+            "slug": "market-malformed-clob-token-ids"
     })])
     .await;
 
@@ -433,6 +491,28 @@ async fn rejects_catalog_row_with_unknown_basis() {
         "liquidityNum": 4567.0,
         "endDate": end_date,
         "slug": "market-unknown-basis"
+    })])
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert!(markets.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_catalog_row_with_exchange_candle_description_missing_interval() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets(vec![json!({
+        "id": "market-missing-interval",
+        "questionID": "0xquestion8",
+        "conditionId": "0xcondition8",
+        "clobTokenIds": "[\"111\",\"222\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "Resolution source: Binance spot BTC/USDT candles.",
+        "acceptingOrders": true,
+        "liquidityNum": 4567.0,
+        "endDate": end_date,
+        "slug": "market-missing-interval"
     })])
     .await;
 

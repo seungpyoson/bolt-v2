@@ -1,0 +1,158 @@
+name: Setup Environment
+description: Install just, resolve shared CI values, install the managed Rust owner, and configure the Rust toolchain.
+
+inputs:
+  claude-config-read-token:
+    description: Token used when installing the managed Rust owner.
+    required: true
+  just-version:
+    description: Pinned just version to install.
+    required: true
+  toolchain-components:
+    description: Optional Rust components to install.
+    required: false
+    default: ""
+  include-deny-version:
+    description: Whether to resolve the pinned cargo-deny version.
+    required: false
+    default: "false"
+  include-nextest-version:
+    description: Whether to resolve the pinned cargo-nextest version.
+    required: false
+    default: "false"
+  include-build-values:
+    description: Whether to resolve build-only values like target and zig pins.
+    required: false
+    default: "false"
+  lint-workflow-contract:
+    description: Whether to run `just ci-lint-workflow` before the rest of setup.
+    required: false
+    default: "false"
+  use-default-target:
+    description: Whether to install the repo's default Rust target from `just target`.
+    required: false
+    default: "false"
+
+outputs:
+  rust_toolchain:
+    description: Rust toolchain channel from rust-toolchain.toml.
+    value: ${{ steps.shared.outputs.rust_toolchain }}
+  deny_version:
+    description: Pinned cargo-deny version from the justfile.
+    value: ${{ steps.shared.outputs.deny_version }}
+  nextest_version:
+    description: Pinned cargo-nextest version from the justfile.
+    value: ${{ steps.shared.outputs.nextest_version }}
+  target:
+    description: Pinned build target from the justfile.
+    value: ${{ steps.shared.outputs.target }}
+  zig_version:
+    description: Pinned zig Python package version from the justfile.
+    value: ${{ steps.shared.outputs.zig_version }}
+  zigbuild_version:
+    description: Pinned cargo-zigbuild version from the justfile.
+    value: ${{ steps.shared.outputs.zigbuild_version }}
+  rust_verification_owner:
+    description: Installed managed Rust owner path.
+    value: ${{ steps.shared.outputs.rust_verification_owner }}
+  rust_verification_source_repo:
+    description: Source repository for the managed Rust owner.
+    value: ${{ steps.shared.outputs.rust_verification_source_repo }}
+  rust_verification_source_sha:
+    description: Source commit for the managed Rust owner.
+    value: ${{ steps.shared.outputs.rust_verification_source_sha }}
+  rust_verification_ci_install_script:
+    description: Managed Rust owner install script path.
+    value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install just
+      shell: bash
+      run: |
+        case "$RUNNER_ARCH" in
+          X64)
+            just_target_arch="x86_64"
+            ;;
+          ARM64)
+            just_target_arch="aarch64"
+            ;;
+          *)
+            echo "Unsupported runner architecture for just install: $RUNNER_ARCH" >&2
+            exit 1
+            ;;
+        esac
+
+        archive="just-${{ inputs.just-version }}-${just_target_arch}-unknown-linux-musl.tar.gz"
+        base_url="https://github.com/casey/just/releases/download/${{ inputs.just-version }}"
+        curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$archive" "$base_url/$archive"
+        curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/SHA256SUMS" "$base_url/SHA256SUMS"
+        (
+          cd "$RUNNER_TEMP"
+          grep "  $archive\$" SHA256SUMS | sha256sum -c -
+        )
+        tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" just
+        sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
+
+    - name: Lint workflow contract
+      if: ${{ inputs.lint-workflow-contract == 'true' }}
+      shell: bash
+      run: |
+        just ci-lint-workflow
+
+    - name: Read shared values
+      id: shared
+      shell: bash
+      run: |
+        echo "rust_toolchain=$(awk -F'\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
+        if [ "${{ inputs.include-deny-version }}" = "true" ]; then
+          echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "${{ inputs.include-nextest-version }}" = "true" ]; then
+          echo "nextest_version=$(just --evaluate nextest_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "${{ inputs.include-build-values }}" = "true" ]; then
+          echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
+          echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
+          echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install managed Rust owner
+      shell: bash
+      env:
+        CLAUDE_CONFIG_READ_TOKEN: ${{ inputs.claude-config-read-token }}
+      run: |
+        bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
+
+    - name: Setup Rust toolchain
+      if: ${{ inputs.toolchain-components == '' && inputs.use-default-target != 'true' }}
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+      with:
+        toolchain: ${{ steps.shared.outputs.rust_toolchain }}
+
+    - name: Setup Rust toolchain with components
+      if: ${{ inputs.toolchain-components != '' && inputs.use-default-target != 'true' }}
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+      with:
+        toolchain: ${{ steps.shared.outputs.rust_toolchain }}
+        components: ${{ inputs.toolchain-components }}
+
+    - name: Setup Rust toolchain with default target
+      if: ${{ inputs.toolchain-components == '' && inputs.use-default-target == 'true' }}
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+      with:
+        toolchain: ${{ steps.shared.outputs.rust_toolchain }}
+        targets: ${{ steps.shared.outputs.target }}
+
+    - name: Setup Rust toolchain with components and default target
+      if: ${{ inputs.toolchain-components != '' && inputs.use-default-target == 'true' }}
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+      with:
+        toolchain: ${{ steps.shared.outputs.rust_toolchain }}
+        components: ${{ inputs.toolchain-components }}
+        targets: ${{ steps.shared.outputs.target }}

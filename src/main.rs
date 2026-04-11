@@ -9,7 +9,7 @@ use bolt_v2::{
     platform::runtime::{
         build_reference_data_client, reference_client_name_for_kind, wire_platform_runtime,
     },
-    secrets,
+    secrets, startup_validation,
     strategies::exec_tester,
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
@@ -56,7 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Secrets { command } => run_secrets_command(command),
         Command::Run { config } => {
+            bolt_v2::log_sweep::sweep_stale_logs();
             let cfg = Config::load(&config)?;
+            startup_validation::validate_polymarket_startup(&cfg)?;
 
             let trader_id = TraderId::from(cfg.node.trader_id.as_str());
             let environment = parse_environment(&cfg.node.environment)?;
@@ -155,17 +157,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_mut()
                     .and_then(|guards| guards.take_failure_receiver());
 
-                for strategy in &cfg.strategies {
-                    match strategy.kind.as_str() {
-                        "exec_tester" => {
-                            let strategy = exec_tester::build_exec_tester(&strategy.config)?;
-                            node.add_strategy(strategy)?;
-                        }
-                        other => {
-                            return Err(Box::new(std::io::Error::other(format!(
-                                "Unsupported strategy type: {other}"
-                            )))
-                                as Box<dyn std::error::Error>);
+                if cfg.rulesets.is_empty() {
+                    for strategy in &cfg.strategies {
+                        match strategy.kind.as_str() {
+                            "exec_tester" => {
+                                let strategy = exec_tester::build_exec_tester(&strategy.config)?;
+                                node.add_strategy(strategy)?;
+                            }
+                            other => {
+                                return Err(Box::new(std::io::Error::other(format!(
+                                    "Unsupported strategy type: {other}"
+                                )))
+                                    as Box<dyn std::error::Error>);
+                            }
                         }
                     }
                 }

@@ -605,7 +605,8 @@ async fn run_selector_task(
         }
 
         if let Some(runtime_strategy_actor_id) = runtime_strategy_actor_id.as_ref()
-            && let Err(error) = apply_runtime_strategy_command(runtime_strategy_actor_id, &decision)
+            && let Err(error) =
+                apply_runtime_strategy_command(runtime_strategy_actor_id, &evaluation.decision)
         {
             if cancellation.is_cancelled() {
                 return Ok(());

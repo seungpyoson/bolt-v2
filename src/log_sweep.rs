@@ -8,16 +8,12 @@ const LOG_TARGET_DIR: &str = "var/logs";
 /// Called before kernel init so only previous runs' logs exist. Errors are
 /// logged to stderr and swallowed — a failed sweep must never prevent startup.
 pub fn sweep_stale_logs() {
-    sweep_stale_logs_from(Path::new("."));
+    sweep_logs_in(Path::new("."));
 }
 
-/// Test-only entry point that accepts an explicit root directory.
+/// Entry point that accepts an explicit root directory.
 /// Production code uses `sweep_stale_logs()` which defaults to CWD.
 pub fn sweep_logs_in(root: &Path) {
-    sweep_stale_logs_from(root);
-}
-
-fn sweep_stale_logs_from(root: &Path) {
     if let Err(e) = sweep_inner(root) {
         eprintln!("log_sweep: {e}");
     }
@@ -66,10 +62,10 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
             Err(e) if e.raw_os_error() == Some(18) => {
                 if let Err(e) = fs::copy(&source, &dest) {
                     eprintln!("log_sweep: failed to copy {name}: {e}");
+                    let _ = fs::remove_file(&dest); // clean up partial dest
                 } else if let Err(e) = fs::remove_file(&source) {
-                    // Copy succeeded but remove failed — clean up the orphan copy
                     eprintln!("log_sweep: copied {name} but failed to remove source: {e}");
-                    let _ = fs::remove_file(&dest);
+                    let _ = fs::remove_file(&dest); // clean up orphan copy
                 } else {
                     moved += 1;
                 }
@@ -85,31 +81,57 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Returns true if the filename matches the NautilusTrader log naming convention:
-/// `{anything}_{YYYY-MM-DD}_{anything}.log`
+/// Returns true if the filename matches NautilusTrader's log naming convention:
+/// `{trader_id}_{YYYY-MM-DD}_{UUID4}.log` (or `.json`).
 ///
-/// Checks structural pattern only (underscores, digit positions, `.log` suffix).
-/// Does not validate date ranges — `_9999-99-99_` would match.
+/// The trader_id may contain underscores or hyphens, so we scan for the
+/// `_YYYY-MM-DD_` window rather than splitting on `_`. After the date
+/// window we require exactly a 36-character UUID4-shaped suffix.
 pub fn is_nt_log_filename(name: &str) -> bool {
-    if !name.ends_with(".log") {
+    let stem = match name.strip_suffix(".log") {
+        Some(s) => s,
+        None => match name.strip_suffix(".json") {
+            Some(s) => s,
+            None => return false,
+        },
+    };
+
+    let bytes = stem.as_bytes();
+    // Minimum: 1 char trader_id + '_' + 10-char date + '_' + 36-char UUID4 = 49
+    if bytes.len() < 49 {
         return false;
     }
-    let bytes = name.as_bytes();
-    if bytes.len() < 15 {
-        return false;
-    }
-    // Scan for _YYYY-MM-DD_ pattern
-    for window in bytes.windows(12) {
-        if window[0] == b'_'
-            && window[1..5].iter().all(|b| b.is_ascii_digit())
-            && window[5] == b'-'
-            && window[6..8].iter().all(|b| b.is_ascii_digit())
-            && window[8] == b'-'
-            && window[9..11].iter().all(|b| b.is_ascii_digit())
-            && window[11] == b'_'
+
+    // Scan for _YYYY-MM-DD_ pattern; require exactly 36-char UUID4 follows.
+    // Need i + 12 (date window) + 36 (UUID4) <= len, i.e. i <= len - 48.
+    // Exclusive upper bound is len - 47.
+    for i in 0..bytes.len().saturating_sub(47) {
+        if bytes[i] == b'_'
+            && bytes[i + 1..i + 5].iter().all(|b| b.is_ascii_digit())
+            && bytes[i + 5] == b'-'
+            && bytes[i + 6..i + 8].iter().all(|b| b.is_ascii_digit())
+            && bytes[i + 8] == b'-'
+            && bytes[i + 9..i + 11].iter().all(|b| b.is_ascii_digit())
+            && bytes[i + 11] == b'_'
         {
-            return true;
+            let uuid_start = i + 12;
+            if stem.len() - uuid_start == 36 {
+                return is_uuid4_format(&stem[uuid_start..]);
+            }
         }
     }
     false
+}
+
+/// Returns true if `s` has the shape of a UUID4:
+/// 36 chars, lowercase hex digits with dashes at exactly positions 8/13/18/23.
+fn is_uuid4_format(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    let b = s.as_bytes();
+    b.iter().enumerate().all(|(i, &c)| match i {
+        8 | 13 | 18 | 23 => c == b'-',
+        _ => matches!(c, b'0'..=b'9' | b'a'..=b'f'),
+    })
 }

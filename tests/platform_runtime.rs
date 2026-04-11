@@ -1126,6 +1126,46 @@ async fn selector_loader_failure_triggers_fail_closed_shutdown() {
     );
 }
 
+#[test]
+fn runtime_strategy_apply_failure_triggers_fail_closed_shutdown() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        cfg.strategies[0]
+            .config
+            .as_table_mut()
+            .expect("exec_tester template config should be a table")
+            .remove("client_id");
+        let services = services_with(
+            vec![candidate_market(
+                "mkt-active-runtime-failure",
+                "ACTIVE-FAIL.POLYMARKET",
+                2_000.0,
+                120,
+            )],
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
+            .await
+            .expect("runtime strategy apply failure should stop the node");
+        assert_eq!(node.state(), NodeState::Stopped);
+        let shutdown_result = guards.shutdown().await;
+        let error = runtime_error(run_result, shutdown_result);
+        assert!(
+            error
+                .to_string()
+                .contains("runtime-managed strategy apply failed")
+                || error.to_string().contains("missing field `client_id`"),
+            "{error:#}"
+        );
+    });
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn runtime_passes_ruleset_loader_timeout_through_config() {
     #[derive(Default)]

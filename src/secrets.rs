@@ -180,7 +180,10 @@ mod tests {
             "api-key-value",
             "api-secret-value",
             "passphrase-value",
-        ].iter().enumerate() {
+        ]
+        .iter()
+        .enumerate()
+        {
             assert!(
                 !debug.contains(secret),
                 "debug output leaked secret at index {i}"

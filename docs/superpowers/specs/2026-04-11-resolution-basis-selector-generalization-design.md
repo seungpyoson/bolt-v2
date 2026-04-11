@@ -283,7 +283,7 @@ This design satisfies issue `#109` when:
 
 This issue deliberately keeps `resolution_basis` as a flat config string and is constrained by the current adapter surface, which does not expose `resolutionSource` on `GammaMarket` at runtime even though the upstream JSON includes it.
 
-Create the follow-on issue immediately and link it from `#109`.
+The follow-on issue is now tracked as `#114` and should be linked from `#109`.
 
 That follow-on must cover two items together:
 
@@ -302,4 +302,4 @@ interval = "1h"
 
 That follow-on should reuse the internal `ResolutionBasis` introduced here as the source of truth. The future schema migration should be a config/materialization change, and the future adapter enhancement should add parsed-value merge and conflict detection between `resolutionSource` and `description`, not another selector rewrite.
 
-At design time, no existing GitHub issue was found in `seungpyoson/bolt-v2` for that follow-on.
+Follow-on tracking issue: `#114` "expose Gamma resolutionSource and migrate resolution_basis to structured config".

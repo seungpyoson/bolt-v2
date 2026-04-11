@@ -55,7 +55,7 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
 
         let dest = target.join(&*file_name);
         if dest.exists() {
-            eprintln!("log_sweep: skipping {name} (already exists in {LOG_TARGET_DIR})");
+            eprintln!("log_sweep: skipping {name} (already exists in {LOG_TARGET_DIR}/)");
             continue;
         }
 

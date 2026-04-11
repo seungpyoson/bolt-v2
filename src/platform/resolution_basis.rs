@@ -1,256 +1,387 @@
-use std::fmt::{self, Display, Formatter};
+use std::{collections::BTreeSet, fmt};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use crate::config::ReferenceVenueKind;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResolutionSourceKind {
     Binance,
     Bybit,
+    Deribit,
+    Hyperliquid,
     Kraken,
+    Okx,
     Chainlink,
 }
 
 impl ResolutionSourceKind {
-    fn parse_canonical(value: &str) -> Option<Self> {
-        match value {
-            "binance" => Some(Self::Binance),
-            "bybit" => Some(Self::Bybit),
-            "kraken" => Some(Self::Kraken),
-            "chainlink" => Some(Self::Chainlink),
-            _ => None,
-        }
-    }
-
-    fn from_description(description: &str) -> Option<Self> {
-        [Self::Binance, Self::Bybit, Self::Kraken, Self::Chainlink]
-            .into_iter()
-            .find(|source| description.contains(source.as_str()))
-    }
-
     fn as_str(self) -> &'static str {
         match self {
             Self::Binance => "binance",
             Self::Bybit => "bybit",
+            Self::Deribit => "deribit",
+            Self::Hyperliquid => "hyperliquid",
             Self::Kraken => "kraken",
+            Self::Okx => "okx",
             Self::Chainlink => "chainlink",
         }
     }
 
-    fn uses_exchange_candles(self) -> bool {
+    fn parse_canonical_prefix(input: &str) -> Option<(Self, &str)> {
+        for (prefix, source) in [
+            ("binance_", Self::Binance),
+            ("bybit_", Self::Bybit),
+            ("deribit_", Self::Deribit),
+            ("hyperliquid_", Self::Hyperliquid),
+            ("kraken_", Self::Kraken),
+            ("okx_", Self::Okx),
+            ("chainlink_", Self::Chainlink),
+        ] {
+            if let Some(rest) = input.strip_prefix(prefix) {
+                return Some((source, rest));
+            }
+        }
+
+        None
+    }
+
+    fn is_exchange_candle(self) -> bool {
         !matches!(self, Self::Chainlink)
     }
 }
 
-impl Display for ResolutionSourceKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CandleInterval {
     OneMinute,
-    FiveMinute,
+    FiveMinutes,
+    FifteenMinutes,
     OneHour,
 }
 
 impl CandleInterval {
-    fn parse_canonical(value: &str) -> Option<Self> {
-        match value {
-            "1m" => Some(Self::OneMinute),
-            "5m" => Some(Self::FiveMinute),
-            "1h" => Some(Self::OneHour),
-            _ => None,
-        }
-    }
-
-    fn from_description(description: &str) -> Option<Self> {
-        if contains_any(description, &["one-minute", "1-minute", "1 minute", "1m"]) {
-            return Some(Self::OneMinute);
-        }
-        if contains_any(description, &["five-minute", "5-minute", "5 minute", "5m"]) {
-            return Some(Self::FiveMinute);
-        }
-        if contains_any(description, &["hourly", "1-hour", "1 hour", "1h"]) {
-            return Some(Self::OneHour);
-        }
-        None
-    }
-
     fn as_str(self) -> &'static str {
         match self {
             Self::OneMinute => "1m",
-            Self::FiveMinute => "5m",
+            Self::FiveMinutes => "5m",
+            Self::FifteenMinutes => "15m",
             Self::OneHour => "1h",
         }
     }
-}
 
-impl Display for CandleInterval {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+    fn parse_canonical_suffix(input: &str) -> Result<Option<(&str, Self)>, String> {
+        for (suffix, interval) in [
+            ("_1m", Self::OneMinute),
+            ("_5m", Self::FiveMinutes),
+            ("_15m", Self::FifteenMinutes),
+            ("_1h", Self::OneHour),
+        ] {
+            if let Some(pair) = input.strip_suffix(suffix) {
+                if !is_canonical_pair(pair) {
+                    return Err(format!(
+                        "resolution_basis pair must be lowercase ASCII alphanumeric with no underscores, got \"{pair}\""
+                    ));
+                }
+                return Ok(Some((pair, interval)));
+            }
+        }
+
+        Ok(None)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResolutionBasis {
     ExchangeCandle {
         source: ResolutionSourceKind,
         pair: String,
         interval: CandleInterval,
     },
-    PriceFeed {
+    OraclePriceFeed {
         source: ResolutionSourceKind,
         pair: String,
     },
 }
 
-impl Display for ResolutionBasis {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl fmt::Display for ResolutionBasis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ExchangeCandle {
                 source,
                 pair,
                 interval,
-            } => write!(f, "{source}_{pair}_{interval}"),
-            Self::PriceFeed { source, pair } => write!(f, "{source}_{pair}"),
+            } => write!(f, "{}_{}_{}", source.as_str(), pair, interval.as_str()),
+            Self::OraclePriceFeed { source, pair } => write!(f, "{}_{}", source.as_str(), pair),
         }
     }
 }
 
-pub fn parse_ruleset_resolution_basis(value: &str) -> Option<ResolutionBasis> {
-    let mut parts = value.split('_');
-    let source = ResolutionSourceKind::parse_canonical(parts.next()?)?;
-    let pair = canonicalize_pair(parts.next()?)?;
-    let interval = parts.next();
+pub fn parse_ruleset_resolution_basis(input: &str) -> Result<ResolutionBasis, String> {
+    let (source, rest) = ResolutionSourceKind::parse_canonical_prefix(input).ok_or_else(|| {
+        format!("resolution_basis must start with a canonical source prefix, got \"{input}\"")
+    })?;
 
-    if parts.next().is_some() {
-        return None;
-    }
-
-    match (source.uses_exchange_candles(), interval) {
-        (true, Some(interval)) => Some(ResolutionBasis::ExchangeCandle {
+    if source.is_exchange_candle() {
+        let (pair, interval) = CandleInterval::parse_canonical_suffix(rest)?.ok_or_else(|| {
+            format!(
+                "exchange-candle resolution_basis must end with a canonical interval suffix, got \"{input}\""
+            )
+        })?;
+        return Ok(ResolutionBasis::ExchangeCandle {
             source,
-            pair,
-            interval: CandleInterval::parse_canonical(interval)?,
-        }),
-        (false, None) => Some(ResolutionBasis::PriceFeed { source, pair }),
-        _ => None,
-    }
-}
-
-pub fn parse_declared_resolution_basis(description: Option<&str>) -> Option<ResolutionBasis> {
-    let description = canonicalize_description(description?);
-    let source = ResolutionSourceKind::from_description(&description)?;
-    let pair = extract_explicit_pair(&description)?;
-
-    if source.uses_exchange_candles() {
-        return Some(ResolutionBasis::ExchangeCandle {
-            source,
-            pair,
-            interval: CandleInterval::from_description(&description)?,
+            pair: pair.to_string(),
+            interval,
         });
     }
 
-    Some(ResolutionBasis::PriceFeed { source, pair })
+    if !is_canonical_pair(rest) {
+        return Err(format!(
+            "resolution_basis pair must be lowercase ASCII alphanumeric with no underscores, got \"{rest}\""
+        ));
+    }
+
+    Ok(ResolutionBasis::OraclePriceFeed {
+        source,
+        pair: rest.to_string(),
+    })
 }
 
-fn canonicalize_description(value: &str) -> String {
-    value.to_ascii_lowercase()
+pub fn parse_declared_resolution_basis(description: Option<&str>) -> Option<ResolutionBasis> {
+    let description = description?;
+    let mut matches = BTreeSet::new();
+
+    if let Some(basis) = parse_binance_exchange_candle(description) {
+        matches.insert(basis);
+    }
+    if let Some(basis) = parse_chainlink_price_feed(description) {
+        matches.insert(basis);
+    }
+
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
 }
 
-fn canonicalize_pair(value: &str) -> Option<String> {
-    if value.is_empty()
-        || !value
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+pub fn required_reference_venue_kind(
+    basis: &ResolutionBasis,
+) -> Option<ReferenceVenueKind> {
+    let source = match basis {
+        ResolutionBasis::ExchangeCandle { source, .. } => source,
+        ResolutionBasis::OraclePriceFeed { source, .. } => source,
+    };
+
+    Some(match source {
+        ResolutionSourceKind::Binance => ReferenceVenueKind::Binance,
+        ResolutionSourceKind::Bybit => ReferenceVenueKind::Bybit,
+        ResolutionSourceKind::Deribit => ReferenceVenueKind::Deribit,
+        ResolutionSourceKind::Hyperliquid => ReferenceVenueKind::Hyperliquid,
+        ResolutionSourceKind::Kraken => ReferenceVenueKind::Kraken,
+        ResolutionSourceKind::Okx => ReferenceVenueKind::Okx,
+        ResolutionSourceKind::Chainlink => ReferenceVenueKind::Chainlink,
+    })
+}
+
+fn parse_binance_exchange_candle(description: &str) -> Option<ResolutionBasis> {
+    let normalized = normalize_description(description);
+    if !normalized.contains("binance") {
+        return None;
+    }
+
+    Some(ResolutionBasis::ExchangeCandle {
+        source: ResolutionSourceKind::Binance,
+        pair: extract_pair(description)?,
+        interval: extract_interval(description)?,
+    })
+}
+
+fn parse_chainlink_price_feed(description: &str) -> Option<ResolutionBasis> {
+    let normalized = normalize_description(description);
+    if !normalized.contains("chainlink") {
+        return None;
+    }
+
+    Some(ResolutionBasis::OraclePriceFeed {
+        source: ResolutionSourceKind::Chainlink,
+        pair: extract_pair(description)?,
+    })
+}
+
+fn extract_interval(description: &str) -> Option<CandleInterval> {
+    let normalized = normalize_description(description);
+    let mut matches = BTreeSet::new();
+
+    for (pattern, interval) in [
+        ("1minutecandle", CandleInterval::OneMinute),
+        ("oneminutecandles", CandleInterval::OneMinute),
+        ("with1mandcandlesselected", CandleInterval::OneMinute),
+        ("1mcandle", CandleInterval::OneMinute),
+        ("5minutecandle", CandleInterval::FiveMinutes),
+        ("fiveminutecandles", CandleInterval::FiveMinutes),
+        ("with5mandcandlesselected", CandleInterval::FiveMinutes),
+        ("5mcandle", CandleInterval::FiveMinutes),
+        ("15minutecandle", CandleInterval::FifteenMinutes),
+        ("with15mandcandlesselected", CandleInterval::FifteenMinutes),
+        ("15mcandle", CandleInterval::FifteenMinutes),
+        ("1hourcandle", CandleInterval::OneHour),
+        ("hourlycandles", CandleInterval::OneHour),
+        ("relevant1hcandle", CandleInterval::OneHour),
+        ("1hcandle", CandleInterval::OneHour),
+    ] {
+        if normalized.contains(pattern) {
+            matches.insert(interval);
+        }
+    }
+
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn extract_pair(description: &str) -> Option<String> {
+    let mut matches = BTreeSet::new();
+
+    for separator in ['/', '_', '-'] {
+        matches.extend(extract_separated_pairs(description, separator));
+    }
+
+    let tokens = tokenize(description);
+    for (index, token) in tokens.iter().enumerate() {
+        let normalized_prev = index
+            .checked_sub(1)
+            .and_then(|prev| tokens.get(prev))
+            .map(|value| normalize_description(value));
+        let normalized_next = tokens
+            .get(index + 1)
+            .map(|value| normalize_description(value));
+
+        let Some(candidate) = canonicalize_compact_pair_token(token) else {
+            continue;
+        };
+
+        let prev_allows = matches!(
+            normalized_prev.as_deref(),
+            Some("for")
+        );
+        let next_allows = matches!(
+            normalized_next.as_deref(),
+            Some("pair")
+                | Some("price")
+                | Some("prices")
+                | Some("candle")
+                | Some("candles")
+                | Some("data")
+                | Some("stream")
+        );
+
+        if prev_allows || next_allows {
+            matches.insert(candidate);
+        }
+    }
+
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn canonicalize_compact_pair_token(token: &str) -> Option<String> {
+    let trimmed = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-'));
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return None;
+    }
+    if trimmed
+        .bytes()
+        .filter(|byte| byte.is_ascii_uppercase())
+        .count()
+        < 2
     {
         return None;
     }
-    Some(value.to_string())
+
+    let compact = trimmed.to_ascii_lowercase();
+
+    if compact.len() < 6 || compact == "binance" || compact == "chainlink" {
+        return None;
+    }
+
+    Some(compact)
 }
 
-fn extract_explicit_pair(description: &str) -> Option<String> {
-    let chars: Vec<char> = description.chars().collect();
-    for (index, ch) in chars.iter().enumerate() {
-        if *ch != '/' {
+fn extract_separated_pairs(description: &str, separator: char) -> BTreeSet<String> {
+    let mut matches = BTreeSet::new();
+
+    for token in tokenize(description) {
+        let trimmed = token.trim_matches(|ch: char| {
+            !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-')
+        });
+        if trimmed.is_empty() || !trimmed.contains(separator) {
+            continue;
+        }
+        if !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == separator)
+        {
             continue;
         }
 
-        let left = collect_adjacent_alnum(&chars, index, Direction::Left);
-        let right = collect_adjacent_alnum(&chars, index, Direction::Right);
+        let mut parts = trimmed.split(separator).filter(|part| !part.is_empty());
+        let Some(left) = parts.next() else {
+            continue;
+        };
+        let Some(right) = parts.next() else {
+            continue;
+        };
+        if parts.next().is_some() {
+            continue;
+        }
         if left.is_empty() || right.is_empty() {
             continue;
         }
-
-        let pair = format!("{left}{right}");
-        if let Some(pair) = canonicalize_pair(&pair) {
-            return Some(pair);
-        }
-    }
-
-    None
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
-}
-
-#[derive(Clone, Copy)]
-enum Direction {
-    Left,
-    Right,
-}
-
-fn collect_adjacent_alnum(chars: &[char], slash_index: usize, direction: Direction) -> String {
-    let mut cursor = slash_index;
-
-    loop {
-        match direction {
-            Direction::Left => {
-                if cursor == 0 {
-                    return String::new();
-                }
-                cursor -= 1;
-            }
-            Direction::Right => {
-                cursor += 1;
-                if cursor >= chars.len() {
-                    return String::new();
-                }
-            }
-        }
-
-        if chars[cursor].is_ascii_whitespace() {
+        if !contains_ascii_letter(&left) || !contains_ascii_letter(&right) {
             continue;
         }
-        break;
-    }
 
-    let mut collected = String::new();
-    loop {
-        let ch = chars[cursor];
-        if !ch.is_ascii_alphanumeric() {
-            break;
-        }
-        collected.push(ch);
-
-        match direction {
-            Direction::Left => {
-                if cursor == 0 {
-                    break;
-                }
-                cursor -= 1;
-            }
-            Direction::Right => {
-                cursor += 1;
-                if cursor >= chars.len() {
-                    break;
-                }
-            }
+        let pair = format!("{left}{right}").to_ascii_lowercase();
+        if let Some(pair) = canonicalize_pair_token(&pair) {
+            matches.insert(pair);
         }
     }
 
-    match direction {
-        Direction::Left => collected.chars().rev().collect(),
-        Direction::Right => collected,
+    matches
+}
+
+fn canonicalize_pair_token(token: &str) -> Option<String> {
+    if !is_canonical_pair(token) {
+        return None;
     }
+    Some(token.to_string())
+}
+
+fn contains_ascii_letter(value: &str) -> bool {
+    value.bytes().any(|byte| byte.is_ascii_alphabetic())
+}
+
+fn normalize_description(input: &str) -> String {
+    input
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+fn tokenize(input: &str) -> Vec<String> {
+    input.split_whitespace().map(ToString::to_string).collect()
+}
+
+fn is_canonical_pair(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
 }

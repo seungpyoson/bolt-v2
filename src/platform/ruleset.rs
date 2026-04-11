@@ -1,4 +1,5 @@
 use crate::config::RulesetConfig;
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateMarket {
@@ -131,8 +132,9 @@ fn reject_reason(
     if ruleset.require_accepting_orders && !market.accepting_orders {
         return Some(EligibilityRejectReason::OrdersClosed);
     }
-    if !(market.liquidity_num >= ruleset.min_liquidity_num) {
-        return Some(EligibilityRejectReason::LowLiquidity);
+    match market.liquidity_num.partial_cmp(&ruleset.min_liquidity_num) {
+        Some(Ordering::Equal | Ordering::Greater) => {}
+        Some(Ordering::Less) | None => return Some(EligibilityRejectReason::LowLiquidity),
     }
     if market.seconds_to_end < ruleset.min_time_to_expiry_secs {
         return Some(EligibilityRejectReason::ExpiryTooSoon);

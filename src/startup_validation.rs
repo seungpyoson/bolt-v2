@@ -101,7 +101,7 @@ fn validate_polymarket_startup_results(
 ) -> AppResult {
     if discovered_instrument_ids.is_empty() {
         return Err(std::io::Error::other(format!(
-            "Polymarket startup validation resolved zero instruments for event slugs [{}]",
+            "Polymarket startup validation resolved zero instruments while querying event slugs [{}]",
             targets.event_slugs.join(", ")
         ))
         .into());
@@ -116,7 +116,7 @@ fn validate_polymarket_startup_results(
 
     if !missing_instrument_ids.is_empty() {
         return Err(std::io::Error::other(format!(
-            "Polymarket startup validation could not find configured instrument_id(s) [{}] in Gamma-discovered instrument IDs for event slugs [{}]",
+            "Polymarket startup validation could not find configured instrument_id(s) [{}] in Gamma-discovered instrument IDs while querying event slugs [{}]",
             missing_instrument_ids.join(", "),
             targets.event_slugs.join(", ")
         ))

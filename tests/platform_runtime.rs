@@ -419,6 +419,75 @@ fn candidate_market(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick() {
+    let dir = tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    cfg.rulesets[0].selector_poll_interval_ms = 1_000;
+    let uploader = MockUploader::default();
+    let services = services_with(
+        vec![
+            CandidateMarket {
+                market_id: "mkt-low-liquidity".to_string(),
+                instrument_id: "LOW_LIQ.POLYMARKET".to_string(),
+                tag_slug: "bitcoin".to_string(),
+                declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+                accepting_orders: true,
+                liquidity_num: 999.0,
+                seconds_to_end: 120,
+            },
+            candidate_market("mkt-active", "ACTIVE.POLYMARKET", 2_000.0, 120),
+        ],
+        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+    );
+
+    let mut node = build_node();
+    let handle = node.handle();
+    let stop_handle = handle.clone();
+    let spool_dir = dir.path().to_path_buf();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    tokio::spawn(async move {
+        wait_for_running(&handle).await;
+        wait_for_kind_record_count(&spool_dir, "eligibility_reject", 1).await;
+        wait_for_kind_record_count(&spool_dir, "selector_decision", 1).await;
+        stop_handle.stop();
+    });
+
+    node.run().await.unwrap();
+    guards.shutdown().await.unwrap();
+
+    let records = uploaded_records(&uploader);
+    assert_eq!(count_kind_records(&records, "eligibility_reject"), 1);
+    assert_eq!(count_kind_records(&records, "selector_decision"), 1);
+
+    let reject_record = records.iter().find(|record| {
+        record["kind"] == "eligibility_reject"
+            && record["ruleset_id"] == "PRIMARY"
+            && record["market_id"] == "mkt-low-liquidity"
+            && record["instrument_id"] == "LOW_LIQ.POLYMARKET"
+            && record["reason"] == "low_liquidity"
+    });
+    let decision_record = records.iter().find(|record| {
+        record["kind"] == "selector_decision"
+            && record["state"] == "active"
+            && record["ruleset_id"] == "PRIMARY"
+            && record["market_id"] == "mkt-active"
+            && record["instrument_id"] == "ACTIVE.POLYMARKET"
+    });
+
+    assert!(
+        reject_record.is_some(),
+        "expected eligibility reject audit record, got {records:?}"
+    );
+    assert!(
+        decision_record.is_some(),
+        "expected selector decision audit record, got {records:?}"
+    );
+    assert_eq!(reject_record.unwrap()["ts_ms"], 1_000);
+    assert_eq!(decision_record.unwrap()["ts_ms"], 1_000);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn eligible_market_emits_active_decision() {
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());

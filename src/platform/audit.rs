@@ -86,6 +86,13 @@ pub enum AuditRecord {
         instrument_id: Option<String>,
         reason: Option<String>,
     },
+    EligibilityReject {
+        ts_ms: u64,
+        ruleset_id: String,
+        market_id: String,
+        instrument_id: String,
+        reason: String,
+    },
     TradeHistory {
         ts_ms: u64,
         strategy_id: String,
@@ -108,6 +115,7 @@ impl AuditRecord {
             Self::ReferenceSnapshot { ts_ms, .. }
             | Self::VenueStatus { ts_ms, .. }
             | Self::SelectorDecision { ts_ms, .. }
+            | Self::EligibilityReject { ts_ms, .. }
             | Self::TradeHistory { ts_ms, .. }
             | Self::PnlSnapshot { ts_ms, .. } => *ts_ms,
         }

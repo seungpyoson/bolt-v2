@@ -145,6 +145,16 @@ fn decision_record(ts_ms: u64) -> AuditRecord {
     }
 }
 
+fn reject_record(ts_ms: u64) -> AuditRecord {
+    AuditRecord::EligibilityReject {
+        ts_ms,
+        ruleset_id: "ruleset-a".to_string(),
+        market_id: "market-2".to_string(),
+        instrument_id: "instrument-2".to_string(),
+        reason: "low_liquidity".to_string(),
+    }
+}
+
 fn history_record(ts_ms: u64) -> AuditRecord {
     AuditRecord::TradeHistory {
         ts_ms,
@@ -268,6 +278,7 @@ async fn audit_records_serialize_as_jsonl() {
 
     audit_tx.send(sample_record(100)).unwrap();
     audit_tx.send(decision_record(200)).unwrap();
+    audit_tx.send(reject_record(250)).unwrap();
     audit_tx
         .send(AuditRecord::VenueStatus {
             ts_ms: 300,
@@ -299,7 +310,7 @@ async fn audit_records_serialize_as_jsonl() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
 
-    assert_eq!(lines.len(), 5);
+    assert_eq!(lines.len(), 6);
     assert_eq!(lines[0]["kind"], "reference_snapshot");
     assert_eq!(lines[0]["topic"], "midpoint");
     assert_eq!(lines[0]["fair_value"], 0.51);
@@ -317,12 +328,17 @@ async fn audit_records_serialize_as_jsonl() {
     assert_eq!(lines[1]["reason"], "venue unhealthy");
     assert_eq!(lines[1]["market_id"], "market-1");
     assert_eq!(lines[1]["instrument_id"], "instrument-1");
-    assert_eq!(lines[2]["kind"], "venue_status");
-    assert!(lines[2]["reason"].is_null());
-    assert_eq!(lines[3]["kind"], "trade_history");
-    assert!(lines[3]["pnl_delta"].is_null());
-    assert_eq!(lines[4]["kind"], "pnl_snapshot");
-    assert_eq!(lines[4]["unrealized_pnl"], -2.25);
+    assert_eq!(lines[2]["kind"], "eligibility_reject");
+    assert_eq!(lines[2]["ruleset_id"], "ruleset-a");
+    assert_eq!(lines[2]["market_id"], "market-2");
+    assert_eq!(lines[2]["instrument_id"], "instrument-2");
+    assert_eq!(lines[2]["reason"], "low_liquidity");
+    assert_eq!(lines[3]["kind"], "venue_status");
+    assert!(lines[3]["reason"].is_null());
+    assert_eq!(lines[4]["kind"], "trade_history");
+    assert!(lines[4]["pnl_delta"].is_null());
+    assert_eq!(lines[5]["kind"], "pnl_snapshot");
+    assert_eq!(lines[5]["unrealized_pnl"], -2.25);
 }
 
 #[tokio::test(flavor = "current_thread")]

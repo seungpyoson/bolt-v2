@@ -1,6 +1,9 @@
 use bolt_v2::{
     config::{RulesetConfig, RulesetVenueKind},
-    platform::ruleset::{CandidateMarket, SelectionDecision, SelectionState, select_market},
+    platform::ruleset::{
+        CandidateMarket, EligibilityRejectReason, RejectedCandidate, SelectionDecision,
+        SelectionState, evaluate_market_selection, select_market,
+    },
 };
 
 fn ruleset() -> RulesetConfig {
@@ -60,6 +63,38 @@ fn rejects_market_when_resolution_basis_mismatches() {
 }
 
 #[test]
+fn exposes_tag_mismatch_rejection() {
+    let ruleset = ruleset();
+    let candidates = vec![CandidateMarket {
+        market_id: "market-wrong-tag".to_string(),
+        instrument_id: "market-wrong-tag-yes".to_string(),
+        tag_slug: "ethereum".to_string(),
+        declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+        accepting_orders: true,
+        liquidity_num: 9_000.0,
+        seconds_to_end: 1_200,
+    }];
+
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(
+        evaluation.rejected_candidates,
+        vec![RejectedCandidate {
+            market: CandidateMarket {
+                market_id: "market-wrong-tag".to_string(),
+                instrument_id: "market-wrong-tag-yes".to_string(),
+                tag_slug: "ethereum".to_string(),
+                declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+                accepting_orders: true,
+                liquidity_num: 9_000.0,
+                seconds_to_end: 1_200,
+            },
+            reason: EligibilityRejectReason::TagMismatch,
+        }]
+    );
+}
+
+#[test]
 fn selects_best_eligible_market_within_ruleset_window() {
     let ruleset = ruleset();
     let candidates = vec![
@@ -107,6 +142,38 @@ fn selects_deterministic_winner_when_liquidity_ties() {
                 market: candidate("market-a", "binance_btcusdt_1m", 7_500.0, 1_200),
             },
         }
+    );
+}
+
+#[test]
+fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
+    let ruleset = ruleset();
+    let candidates = vec![CandidateMarket {
+        market_id: "market-many-failures".to_string(),
+        instrument_id: "market-many-failures-yes".to_string(),
+        tag_slug: "bitcoin".to_string(),
+        declared_resolution_basis: "chainlink_btcusd".to_string(),
+        accepting_orders: false,
+        liquidity_num: 500.0,
+        seconds_to_end: 60,
+    }];
+
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(
+        evaluation.rejected_candidates,
+        vec![RejectedCandidate {
+            market: CandidateMarket {
+                market_id: "market-many-failures".to_string(),
+                instrument_id: "market-many-failures-yes".to_string(),
+                tag_slug: "bitcoin".to_string(),
+                declared_resolution_basis: "chainlink_btcusd".to_string(),
+                accepting_orders: false,
+                liquidity_num: 500.0,
+                seconds_to_end: 60,
+            },
+            reason: EligibilityRejectReason::ResolutionBasisMismatch,
+        }]
     );
 }
 
@@ -184,5 +251,113 @@ fn enters_freeze_state_at_exact_freeze_boundary() {
                 reason: "freeze window".to_string(),
             },
         }
+    );
+}
+
+#[test]
+fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
+    let ruleset = ruleset();
+    let candidates = vec![
+        candidate("market-bad-basis", "chainlink_btcusd", 5_000.0, 900),
+        CandidateMarket {
+            market_id: "market-orders-closed".to_string(),
+            instrument_id: "market-orders-closed-yes".to_string(),
+            tag_slug: "bitcoin".to_string(),
+            declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+            accepting_orders: false,
+            liquidity_num: 5_000.0,
+            seconds_to_end: 600,
+        },
+        candidate("market-low-liquidity", "binance_btcusdt_1m", 500.0, 600),
+        candidate("market-too-soon", "binance_btcusdt_1m", 5_000.0, 60),
+        candidate("market-too-late", "binance_btcusdt_1m", 5_000.0, 4_000),
+        candidate("market-best", "binance_btcusdt_1m", 9_000.0, 1_200),
+    ];
+
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(
+        evaluation.decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Active {
+                market: candidate("market-best", "binance_btcusdt_1m", 9_000.0, 1_200),
+            },
+        }
+    );
+    assert_eq!(
+        evaluation.rejected_candidates,
+        vec![
+            RejectedCandidate {
+                market: candidate("market-bad-basis", "chainlink_btcusd", 5_000.0, 900),
+                reason: EligibilityRejectReason::ResolutionBasisMismatch,
+            },
+            RejectedCandidate {
+                market: CandidateMarket {
+                    market_id: "market-orders-closed".to_string(),
+                    instrument_id: "market-orders-closed-yes".to_string(),
+                    tag_slug: "bitcoin".to_string(),
+                    declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+                    accepting_orders: false,
+                    liquidity_num: 5_000.0,
+                    seconds_to_end: 600,
+                },
+                reason: EligibilityRejectReason::OrdersClosed,
+            },
+            RejectedCandidate {
+                market: candidate("market-low-liquidity", "binance_btcusdt_1m", 500.0, 600),
+                reason: EligibilityRejectReason::LowLiquidity,
+            },
+            RejectedCandidate {
+                market: candidate("market-too-soon", "binance_btcusdt_1m", 5_000.0, 60),
+                reason: EligibilityRejectReason::ExpiryTooSoon,
+            },
+            RejectedCandidate {
+                market: candidate("market-too-late", "binance_btcusdt_1m", 5_000.0, 4_000),
+                reason: EligibilityRejectReason::ExpiryTooLate,
+            },
+        ]
+    );
+}
+
+#[test]
+fn select_market_matches_evaluation_decision() {
+    let ruleset = ruleset();
+    let candidates = vec![
+        candidate("market-bad-basis", "chainlink_btcusd", 5_000.0, 900),
+        candidate("market-best", "binance_btcusdt_1m", 9_000.0, 1_200),
+    ];
+
+    let decision = select_market(&ruleset, &candidates);
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(decision, evaluation.decision);
+}
+
+#[test]
+fn eligibility_reject_reason_exposes_canonical_labels() {
+    assert_eq!(
+        EligibilityRejectReason::TagMismatch.as_str(),
+        "tag_mismatch"
+    );
+    assert_eq!(
+        EligibilityRejectReason::ResolutionBasisMismatch.as_str(),
+        "resolution_basis_mismatch"
+    );
+    assert_eq!(
+        EligibilityRejectReason::OrdersClosed.as_str(),
+        "orders_closed"
+    );
+    assert_eq!(
+        EligibilityRejectReason::LowLiquidity.as_str(),
+        "low_liquidity"
+    );
+    assert_eq!(
+        EligibilityRejectReason::ExpiryTooSoon.as_str(),
+        "expiry_too_soon"
+    );
+    assert_eq!(
+        EligibilityRejectReason::ExpiryTooLate.as_str(),
+        "expiry_too_late"
     );
 }

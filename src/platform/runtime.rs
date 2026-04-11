@@ -31,7 +31,10 @@ use crate::{
         polymarket_catalog::load_candidate_markets_for_ruleset,
         reference::{ReferenceSnapshot, VenueHealth},
         reference_actor::{ReferenceActor, ReferenceActorConfig, ReferenceSubscription},
-        ruleset::{CandidateMarket, SelectionDecision, SelectionState, select_market},
+        ruleset::{
+            CandidateMarket, SelectionDecision, SelectionEvaluation, SelectionState,
+            evaluate_market_selection,
+        },
     },
 };
 
@@ -329,8 +332,8 @@ async fn run_selector_task(
             return Ok(());
         }
 
-        let decision = select_market(&ruleset, &candidates);
-        if let Err(error) = send_selector_decision(&audit_tx, &decision, &now_ms) {
+        let evaluation = evaluate_market_selection(&ruleset, &candidates);
+        if let Err(error) = send_selector_evaluation(&audit_tx, &evaluation, &now_ms) {
             if cancellation.is_cancelled() {
                 return Ok(());
             }
@@ -432,12 +435,33 @@ async fn supervise_audit_task(
     }
 }
 
-fn send_selector_decision(
+fn send_selector_evaluation(
     audit_tx: &AuditSender,
-    decision: &SelectionDecision,
+    evaluation: &SelectionEvaluation,
     now_ms: &Arc<dyn Fn() -> u64 + Send + Sync>,
 ) -> Result<()> {
     let ts_ms = now_ms();
+
+    for rejected_candidate in &evaluation.rejected_candidates {
+        audit_tx
+            .send(AuditRecord::EligibilityReject {
+                ts_ms,
+                ruleset_id: evaluation.decision.ruleset_id.clone(),
+                market_id: rejected_candidate.market.market_id.clone(),
+                instrument_id: rejected_candidate.market.instrument_id.clone(),
+                reason: rejected_candidate.reason.as_str().to_string(),
+            })
+            .map_err(|_| anyhow!("audit channel is closed"))?;
+    }
+
+    send_selector_decision(audit_tx, &evaluation.decision, ts_ms)
+}
+
+fn send_selector_decision(
+    audit_tx: &AuditSender,
+    decision: &SelectionDecision,
+    ts_ms: u64,
+) -> Result<()> {
     let record = match &decision.state {
         SelectionState::Active { market } => AuditRecord::SelectorDecision {
             ts_ms,

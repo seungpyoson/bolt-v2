@@ -146,6 +146,28 @@ fn selects_deterministic_winner_when_liquidity_ties() {
 }
 
 #[test]
+fn evaluate_market_selection_yields_empty_rejected_when_all_candidates_eligible() {
+    let ruleset = ruleset();
+    let candidates = vec![
+        candidate("market-a", "binance_btcusdt_1m", 5_000.0, 600),
+        candidate("market-b", "binance_btcusdt_1m", 9_000.0, 1_200),
+    ];
+
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(
+        evaluation.decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Active {
+                market: candidate("market-b", "binance_btcusdt_1m", 9_000.0, 1_200),
+            },
+        }
+    );
+    assert!(evaluation.rejected_candidates.is_empty());
+}
+
+#[test]
 fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
     let ruleset = ruleset();
     let candidates = vec![CandidateMarket {
@@ -174,6 +196,15 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
             },
             reason: EligibilityRejectReason::ResolutionBasisMismatch,
         }]
+    );
+    assert_eq!(
+        evaluation.decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Idle {
+                reason: "no eligible market".to_string(),
+            },
+        }
     );
 }
 
@@ -281,6 +312,35 @@ fn selects_valid_market_when_nan_liquidity_candidate_is_present() {
     assert!(rejected.market.accepting_orders);
     assert!(rejected.market.liquidity_num.is_nan());
     assert_eq!(rejected.market.seconds_to_end, 1_200);
+}
+
+#[test]
+fn enters_freeze_state_with_rejected_candidates_present() {
+    let ruleset = ruleset();
+    let candidates = vec![
+        candidate("market-rejected", "chainlink_btcusd", 9_500.0, 900),
+        candidate("market-freeze", "binance_btcusdt_1m", 9_000.0, 250),
+    ];
+
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(
+        evaluation.decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Freeze {
+                market: candidate("market-freeze", "binance_btcusdt_1m", 9_000.0, 250),
+                reason: "freeze window".to_string(),
+            },
+        }
+    );
+    assert_eq!(
+        evaluation.rejected_candidates,
+        vec![RejectedCandidate {
+            market: candidate("market-rejected", "chainlink_btcusd", 9_500.0, 900),
+            reason: EligibilityRejectReason::ResolutionBasisMismatch,
+        }]
+    );
 }
 
 #[test]

@@ -25,6 +25,25 @@ use tokio::{
     net::TcpListener,
 };
 
+fn exchange_candle(
+    source: ResolutionSourceKind,
+    pair: &str,
+    interval: CandleInterval,
+) -> ResolutionBasis {
+    ResolutionBasis::ExchangeCandle {
+        source,
+        pair: pair.to_string(),
+        interval,
+    }
+}
+
+fn oracle_price_feed(source: ResolutionSourceKind, pair: &str) -> ResolutionBasis {
+    ResolutionBasis::OraclePriceFeed {
+        source,
+        pair: pair.to_string(),
+    }
+}
+
 #[derive(Clone)]
 struct TestServerState {
     response_bodies: Arc<Vec<Value>>,
@@ -190,18 +209,15 @@ fn valid_market_with(id: &str, clob_token_ids: &str, end_date: String) -> Value 
 fn parses_canonical_ruleset_resolution_bases() {
     assert_eq!(
         parse_ruleset_resolution_basis("binance_ethusdt_1m").unwrap(),
-        ResolutionBasis::ExchangeCandle {
-            source: ResolutionSourceKind::Binance,
-            pair: "ethusdt".to_string(),
-            interval: CandleInterval::OneMinute,
-        }
+        exchange_candle(
+            ResolutionSourceKind::Binance,
+            "ethusdt",
+            CandleInterval::OneMinute,
+        )
     );
     assert_eq!(
         parse_ruleset_resolution_basis("chainlink_ethusd").unwrap(),
-        ResolutionBasis::OraclePriceFeed {
-            source: ResolutionSourceKind::Chainlink,
-            pair: "ethusd".to_string(),
-        }
+        oracle_price_feed(ResolutionSourceKind::Chainlink, "ethusd")
     );
 }
 
@@ -232,28 +248,24 @@ fn resolution_basis_display_round_trips_canonical_strings() {
 
 #[test]
 fn parses_hourly_binance_basis_from_description() {
+    let description = "This market will resolve to \"Up\" if the close price is greater than or equal to the open price for the ETH/USDT 1 hour candle that begins on the time and date specified in the title. The resolution source for this market is information from Binance, specifically the ETH/USDT pair. The relevant \"1H\" candle will be used once finalized.";
     assert_eq!(
-        parse_declared_resolution_basis(Some(
-            "This market will resolve to \"Up\" if the close price is greater than or equal to the open price for the ETH/USDT 1 hour candle that begins on the time and date specified in the title. The resolution source for this market is information from Binance, specifically the ETH/USDT pair. The relevant \"1H\" candle will be used once finalized."
-        )),
-        Some(ResolutionBasis::ExchangeCandle {
-            source: ResolutionSourceKind::Binance,
-            pair: "ethusdt".to_string(),
-            interval: CandleInterval::OneHour,
-        })
+        parse_declared_resolution_basis(Some(description)),
+        Some(exchange_candle(
+            ResolutionSourceKind::Binance,
+            "ethusdt",
+            CandleInterval::OneHour,
+        ))
     );
 }
 
 #[test]
 fn parses_chainlink_basis_from_description() {
+    let description =
+        "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
     assert_eq!(
-        parse_declared_resolution_basis(Some(
-            "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd."
-        )),
-        Some(ResolutionBasis::OraclePriceFeed {
-            source: ResolutionSourceKind::Chainlink,
-            pair: "ethusd".to_string(),
-        })
+        parse_declared_resolution_basis(Some(description)),
+        Some(oracle_price_feed(ResolutionSourceKind::Chainlink, "ethusd"))
     );
 }
 
@@ -264,6 +276,15 @@ fn rejects_exchange_candle_description_without_interval() {
             "The resolution source for this market is Binance, specifically the ETH/USDT pair."
         )),
         None
+    );
+}
+
+#[test]
+fn description_and_ruleset_parsers_land_on_same_canonical_basis() {
+    let description = "This market will resolve to \"Up\" if the close price is greater than or equal to the open price for the ETH/USDT 1 hour candle that begins on the time and date specified in the title. The resolution source for this market is information from Binance, specifically the ETH/USDT pair. The relevant \"1H\" candle will be used once finalized.";
+    assert_eq!(
+        parse_declared_resolution_basis(Some(description)),
+        Some(parse_ruleset_resolution_basis("binance_ethusdt_1h").unwrap())
     );
 }
 
@@ -293,7 +314,14 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert_eq!(markets[0].market_id, "market-good");
     assert_eq!(markets[0].instrument_id, "111");
     assert_eq!(markets[0].tag_slug, "bitcoin");
-    assert_eq!(markets[0].declared_resolution_basis, "binance_btcusdt_1m");
+    assert_eq!(
+        markets[0].declared_resolution_basis,
+        exchange_candle(
+            ResolutionSourceKind::Binance,
+            "btcusdt",
+            CandleInterval::OneMinute,
+        )
+    );
     assert!(markets[0].accepting_orders);
     assert_eq!(markets[0].liquidity_num, 4567.0);
     assert!((1190..=1200).contains(&markets[0].seconds_to_end));

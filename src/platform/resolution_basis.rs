@@ -45,7 +45,15 @@ impl ResolutionSourceKind {
     }
 
     fn is_exchange_candle(self) -> bool {
-        !matches!(self, Self::Chainlink)
+        matches!(
+            self,
+            Self::Binance
+                | Self::Bybit
+                | Self::Deribit
+                | Self::Hyperliquid
+                | Self::Kraken
+                | Self::Okx
+        )
     }
 }
 
@@ -146,20 +154,18 @@ pub fn parse_ruleset_resolution_basis(input: &str) -> Result<ResolutionBasis, St
 
 pub fn parse_declared_resolution_basis(description: Option<&str>) -> Option<ResolutionBasis> {
     let description = description?;
-    let mut matches = BTreeSet::new();
+    let source = extract_unique_source(description)?;
+    let pair = extract_pair(description)?;
 
-    if let Some(basis) = parse_binance_exchange_candle(description) {
-        matches.insert(basis);
-    }
-    if let Some(basis) = parse_chainlink_price_feed(description) {
-        matches.insert(basis);
+    if source.is_exchange_candle() {
+        return Some(ResolutionBasis::ExchangeCandle {
+            source,
+            pair,
+            interval: extract_interval(description)?,
+        });
     }
 
-    if matches.len() == 1 {
-        matches.into_iter().next()
-    } else {
-        None
-    }
+    Some(ResolutionBasis::OraclePriceFeed { source, pair })
 }
 
 pub fn required_reference_venue_kind(
@@ -181,29 +187,29 @@ pub fn required_reference_venue_kind(
     })
 }
 
-fn parse_binance_exchange_candle(description: &str) -> Option<ResolutionBasis> {
+fn extract_unique_source(description: &str) -> Option<ResolutionSourceKind> {
     let normalized = normalize_description(description);
-    if !normalized.contains("binance") {
-        return None;
+    let mut matches = BTreeSet::new();
+
+    for source in [
+        ResolutionSourceKind::Binance,
+        ResolutionSourceKind::Bybit,
+        ResolutionSourceKind::Deribit,
+        ResolutionSourceKind::Hyperliquid,
+        ResolutionSourceKind::Kraken,
+        ResolutionSourceKind::Okx,
+        ResolutionSourceKind::Chainlink,
+    ] {
+        if normalized.contains(source.as_str()) {
+            matches.insert(source);
+        }
     }
 
-    Some(ResolutionBasis::ExchangeCandle {
-        source: ResolutionSourceKind::Binance,
-        pair: extract_pair(description)?,
-        interval: extract_interval(description)?,
-    })
-}
-
-fn parse_chainlink_price_feed(description: &str) -> Option<ResolutionBasis> {
-    let normalized = normalize_description(description);
-    if !normalized.contains("chainlink") {
-        return None;
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
     }
-
-    Some(ResolutionBasis::OraclePriceFeed {
-        source: ResolutionSourceKind::Chainlink,
-        pair: extract_pair(description)?,
-    })
 }
 
 fn extract_interval(description: &str) -> Option<CandleInterval> {

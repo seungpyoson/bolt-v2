@@ -84,8 +84,7 @@ fn translate_market(
     tag_slug: &str,
     now: DateTime<Utc>,
 ) -> Option<CandidateMarket> {
-    let declared_resolution_basis =
-        parse_declared_resolution_basis(market.description.as_deref())?.to_string();
+    let declared_resolution_basis = parse_declared_resolution_basis(market.description.as_deref())?;
     let instrument_id = first_token_id(&market.clob_token_ids)?;
     let accepting_orders = market.accepting_orders?;
     let liquidity_num = market.liquidity_num?;

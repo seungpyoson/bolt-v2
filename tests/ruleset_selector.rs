@@ -1,8 +1,13 @@
 use bolt_v2::{
     config::{RulesetConfig, RulesetVenueKind},
-    platform::ruleset::{
-        CandidateMarket, EligibilityRejectReason, RejectedCandidate, SelectionDecision,
-        SelectionState, evaluate_market_selection, select_market,
+    platform::{
+        resolution_basis::{
+            CandleInterval, ResolutionBasis, ResolutionSourceKind, parse_ruleset_resolution_basis,
+        },
+        ruleset::{
+            CandidateMarket, EligibilityRejectReason, RejectedCandidate, SelectionDecision,
+            SelectionState, evaluate_market_selection, select_market,
+        },
     },
 };
 
@@ -32,10 +37,26 @@ fn candidate(
         market_id: market_id.to_string(),
         instrument_id: format!("{market_id}-yes"),
         tag_slug: "bitcoin".to_string(),
-        declared_resolution_basis: declared_resolution_basis.to_string(),
+        declared_resolution_basis: parse_ruleset_resolution_basis(declared_resolution_basis)
+            .expect("test fixture basis should be canonical"),
         accepting_orders: true,
         liquidity_num,
         seconds_to_end,
+    }
+}
+
+fn binance_btcusdt_1m() -> ResolutionBasis {
+    ResolutionBasis::ExchangeCandle {
+        source: ResolutionSourceKind::Binance,
+        pair: "btcusdt".to_string(),
+        interval: CandleInterval::OneMinute,
+    }
+}
+
+fn chainlink_btcusd() -> ResolutionBasis {
+    ResolutionBasis::OraclePriceFeed {
+        source: ResolutionSourceKind::Chainlink,
+        pair: "btcusd".to_string(),
     }
 }
 
@@ -69,7 +90,7 @@ fn exposes_tag_mismatch_rejection() {
         market_id: "market-wrong-tag".to_string(),
         instrument_id: "market-wrong-tag-yes".to_string(),
         tag_slug: "ethereum".to_string(),
-        declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+        declared_resolution_basis: binance_btcusdt_1m(),
         accepting_orders: true,
         liquidity_num: 9_000.0,
         seconds_to_end: 1_200,
@@ -84,7 +105,7 @@ fn exposes_tag_mismatch_rejection() {
                 market_id: "market-wrong-tag".to_string(),
                 instrument_id: "market-wrong-tag-yes".to_string(),
                 tag_slug: "ethereum".to_string(),
-                declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+                declared_resolution_basis: binance_btcusdt_1m(),
                 accepting_orders: true,
                 liquidity_num: 9_000.0,
                 seconds_to_end: 1_200,
@@ -104,7 +125,7 @@ fn selects_best_eligible_market_within_ruleset_window() {
             market_id: "market-wrong-tag".to_string(),
             instrument_id: "market-wrong-tag-yes".to_string(),
             tag_slug: "ethereum".to_string(),
-            declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+            declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: true,
             liquidity_num: 9_000.0,
             seconds_to_end: 1_200,
@@ -174,7 +195,7 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
         market_id: "market-many-failures".to_string(),
         instrument_id: "market-many-failures-yes".to_string(),
         tag_slug: "bitcoin".to_string(),
-        declared_resolution_basis: "chainlink_btcusd".to_string(),
+        declared_resolution_basis: chainlink_btcusd(),
         accepting_orders: false,
         liquidity_num: 500.0,
         seconds_to_end: 60,
@@ -189,7 +210,7 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
                 market_id: "market-many-failures".to_string(),
                 instrument_id: "market-many-failures-yes".to_string(),
                 tag_slug: "bitcoin".to_string(),
-                declared_resolution_basis: "chainlink_btcusd".to_string(),
+                declared_resolution_basis: chainlink_btcusd(),
                 accepting_orders: false,
                 liquidity_num: 500.0,
                 seconds_to_end: 60,
@@ -216,7 +237,7 @@ fn returns_idle_when_no_market_is_eligible() {
             market_id: "market-orders-closed".to_string(),
             instrument_id: "market-orders-closed-yes".to_string(),
             tag_slug: "bitcoin".to_string(),
-            declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+            declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
             liquidity_num: 5_000.0,
             seconds_to_end: 600,
@@ -268,7 +289,7 @@ fn rejects_nan_liquidity_candidate_from_selection() {
     assert_eq!(rejected.market.tag_slug, "bitcoin");
     assert_eq!(
         rejected.market.declared_resolution_basis,
-        "binance_btcusdt_1m"
+        binance_btcusdt_1m()
     );
     assert!(rejected.market.accepting_orders);
     assert!(rejected.market.liquidity_num.is_nan());
@@ -307,7 +328,7 @@ fn selects_valid_market_when_nan_liquidity_candidate_is_present() {
     assert_eq!(rejected.market.tag_slug, "bitcoin");
     assert_eq!(
         rejected.market.declared_resolution_basis,
-        "binance_btcusdt_1m"
+        binance_btcusdt_1m()
     );
     assert!(rejected.market.accepting_orders);
     assert!(rejected.market.liquidity_num.is_nan());
@@ -398,7 +419,7 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
             market_id: "market-orders-closed".to_string(),
             instrument_id: "market-orders-closed-yes".to_string(),
             tag_slug: "bitcoin".to_string(),
-            declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+            declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
             liquidity_num: 5_000.0,
             seconds_to_end: 600,
@@ -432,7 +453,7 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
                     market_id: "market-orders-closed".to_string(),
                     instrument_id: "market-orders-closed-yes".to_string(),
                     tag_slug: "bitcoin".to_string(),
-                    declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+                    declared_resolution_basis: binance_btcusdt_1m(),
                     accepting_orders: false,
                     liquidity_num: 5_000.0,
                     seconds_to_end: 600,

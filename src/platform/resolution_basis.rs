@@ -312,7 +312,19 @@ fn canonicalize_compact_pair_token(token: &str) -> Option<String> {
 
     let compact = trimmed.to_ascii_lowercase();
 
-    if compact.len() < 6 || compact == "binance" || compact == "chainlink" {
+    if compact.len() < 6
+        || matches!(
+            compact.as_str(),
+            "binance"
+                | "bybit"
+                | "deribit"
+                | "hyperliquid"
+                | "kraken"
+                | "okx"
+                | "chainlink"
+                | "polymarket"
+        )
+    {
         return None;
     }
 

@@ -288,6 +288,22 @@ fn description_and_ruleset_parsers_land_on_same_canonical_basis() {
     );
 }
 
+#[test]
+fn chainlink_description_and_ruleset_parsers_land_on_same_canonical_basis() {
+    let description =
+        "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
+    assert_eq!(
+        parse_declared_resolution_basis(Some(description)),
+        Some(parse_ruleset_resolution_basis("chainlink_ethusd").unwrap())
+    );
+}
+
+#[test]
+fn rejects_description_with_multiple_supported_sources() {
+    let description = "The resolution source for this market references Binance ETH/USDT 1 hour candle data and Chainlink ETH/USD stream data.";
+    assert_eq!(parse_declared_resolution_basis(Some(description)), None);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();

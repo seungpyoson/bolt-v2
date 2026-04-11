@@ -296,8 +296,6 @@ Expand [src/validate/tests.rs](/Users/spson/Projects/Claude/bolt-v2/src/validate
   Add typed validation coverage.
 - [tests/platform_runtime.rs](/Users/spson/Projects/Claude/bolt-v2/tests/platform_runtime.rs:1)
   Update runtime fixtures to use typed `declared_resolution_basis`.
-- [tests/test_nan_regression.rs](/Users/spson/Projects/Claude/bolt-v2/tests/test_nan_regression.rs:1)
-  Update regression fixtures to use typed `declared_resolution_basis`.
 - [src/live_config.rs](/Users/spson/Projects/Claude/bolt-v2/src/live_config.rs:720)
   Leave renderer behavior unchanged for `#109`; it continues to pass the raw canonical `resolution_basis` string through unchanged.
 

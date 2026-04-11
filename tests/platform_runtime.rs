@@ -704,6 +704,7 @@ fn active_selector_state_registers_exactly_one_runtime_strategy() {
         let dir = tempdir().unwrap();
         let cfg = lifecycle_test_config(dir.path());
         let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let activation_budget = Duration::from_secs(1);
         let spool_dir = dir.path().to_path_buf();
         let services = services_with(
             vec![candidate_market(
@@ -725,7 +726,7 @@ fn active_selector_state_registers_exactly_one_runtime_strategy() {
             wait_for_running(&handle).await;
             wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
             wait_for_condition_or_stop(
-                poll_budget,
+                activation_budget,
                 &stop_handle,
                 "exactly one runtime-managed strategy for an active selector state",
                 || trader.borrow().strategy_ids().len() == 1,
@@ -916,6 +917,68 @@ fn idle_transition_removes_previously_active_runtime_strategy() {
         control_result.unwrap();
 
         assert!(trader.borrow().strategy_ids().is_empty());
+    });
+}
+
+#[test]
+fn active_market_switch_replaces_runtime_strategy_with_new_market() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let switch_budget = Duration::from_secs(2);
+        let services = services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-switch-a",
+                    "ACTIVE-A.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "active", 2, poll_budget).await;
+            wait_for_condition_or_stop(
+                switch_budget,
+                &stop_handle,
+                "exactly one runtime-managed strategy after switching active markets",
+                || trader.borrow().strategy_ids().len() == 1,
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        assert_eq!(trader.borrow().strategy_ids().len(), 1);
     });
 }
 

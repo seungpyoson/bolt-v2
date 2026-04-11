@@ -38,7 +38,6 @@ jobs:
         run: |
           base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
           head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-<<<<<<< HEAD
           git fetch --no-tags origin \
             "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
             "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"

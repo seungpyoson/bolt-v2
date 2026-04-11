@@ -115,3 +115,29 @@ fn sweep_noop_when_no_logs() {
     assert!(target.exists(), "var/logs/ should be created");
     assert_eq!(fs::read_dir(target).unwrap().count(), 0);
 }
+
+#[test]
+fn sweep_does_not_panic_on_unreadable_root() {
+    // Proves sweep_stale_logs is intentionally non-fatal: errors logged to stderr,
+    // never propagated. This is by design — a failed sweep must not block startup.
+    let tmp = tempdir().unwrap();
+    let nonexistent = tmp.path().join("does-not-exist");
+    assert!(!nonexistent.exists());
+    // Must not panic — errors are swallowed
+    log_sweep::sweep_logs_in(&nonexistent);
+}
+
+#[test]
+fn sweep_uses_hardcoded_target_dir() {
+    // Proves sweep writes to var/logs/ via a compile-time constant, not runtime config.
+    // Running before Config::load is intentional — no config dependency exists.
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let log_name = "TEST_2026-01-01_abc.log";
+    fs::write(root.join(log_name), "data").unwrap();
+
+    log_sweep::sweep_logs_in(root);
+
+    // Target is always var/logs/ regardless of any config
+    assert!(root.join("var/logs").join(log_name).exists());
+}

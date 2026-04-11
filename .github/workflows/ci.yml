@@ -57,6 +57,8 @@ jobs:
           echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
 
       - name: Install managed Rust owner
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
           bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
 
@@ -106,6 +108,8 @@ jobs:
           echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
 
       - name: Install managed Rust owner
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
           bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
 
@@ -153,6 +157,8 @@ jobs:
           echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
 
       - name: Install managed Rust owner
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
           bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
 
@@ -205,6 +211,8 @@ jobs:
           echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
 
       - name: Install managed Rust owner
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
           bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
 

@@ -9,7 +9,7 @@ use bolt_v2::{
     platform::runtime::{
         build_reference_data_client, reference_client_name_for_kind, wire_platform_runtime,
     },
-    secrets,
+    secrets, startup_validation,
     strategies::exec_tester,
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Secrets { command } => run_secrets_command(command),
         Command::Run { config } => {
             let cfg = Config::load(&config)?;
+            startup_validation::validate_polymarket_startup(&cfg)?;
 
             let trader_id = TraderId::from(cfg.node.trader_id.as_str());
             let environment = parse_environment(&cfg.node.environment)?;

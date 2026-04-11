@@ -76,6 +76,28 @@ base_weight = 0.20
 stale_after_ms = 1500
 disable_after_ms = 5000
 
+# Uncomment the shared Chainlink block and one or more Chainlink venues when
+# using Chainlink Data Streams reference prices.
+#
+#[reference.chainlink]
+#region = "eu-west-1"
+#api_key = "/bolt/testnet/chainlink/api-key"
+#api_secret = "/bolt/testnet/chainlink/api-secret"
+#ws_url = "wss://ws.testnet-dataengine.chain.link"
+# reconnects stay infinite; this threshold only escalates repeated failures to error logs
+#ws_reconnect_alert_threshold = 5
+#
+#[[reference.venues]]
+#name = "CHAINLINK-BTC"
+#type = "chainlink"
+#instrument_id = "BTCUSD.CHAINLINK"
+#base_weight = 1.0
+#stale_after_ms = 1500
+#disable_after_ms = 5000
+#[reference.venues.chainlink]
+#feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+#price_scale = 18
+
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"

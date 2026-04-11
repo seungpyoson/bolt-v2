@@ -1,8 +1,10 @@
+use crate::clients::chainlink::parse_chainlink_ws_origins;
 use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
 use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
 use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
+use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
 use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;
@@ -241,6 +243,121 @@ fn check_positive_u64(errors: &mut Vec<ValidationError>, field: &str, value: u64
             "not_positive",
             format!("must be > 0, got {value}"),
         );
+    }
+}
+
+fn check_chainlink_feed_id(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+    check_non_empty(errors, field, value);
+    if value.trim().is_empty() {
+        return;
+    }
+
+    if let Err(error) = ChainlinkFeedId::from_hex_str(value) {
+        push_error(
+            errors,
+            field,
+            "invalid_feed_id",
+            format!("must be a valid 0x-prefixed 32-byte hex Chainlink feed ID ({error})"),
+        );
+    }
+}
+
+fn check_chainlink_ws_origins(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+    check_non_empty(errors, field, value);
+    if value.trim().is_empty() {
+        return;
+    }
+
+    if let Err(error) = parse_chainlink_ws_origins(value) {
+        push_error(errors, field, "invalid_ws_url", error.to_string());
+    }
+}
+
+fn check_chainlink_shared_config(
+    errors: &mut Vec<ValidationError>,
+    field_prefix: &str,
+    shared: Option<&crate::config::ChainlinkSharedConfig>,
+    has_chainlink_venues: bool,
+) {
+    match (has_chainlink_venues, shared) {
+        (true, Some(shared)) => {
+            check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
+            check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
+            check_ssm_path(
+                errors,
+                &format!("{field_prefix}.api_secret"),
+                &shared.api_secret,
+            );
+            check_chainlink_ws_origins(errors, &format!("{field_prefix}.ws_url"), &shared.ws_url);
+            check_positive_u64(
+                errors,
+                &format!("{field_prefix}.ws_reconnect_alert_threshold"),
+                shared.ws_reconnect_alert_threshold,
+            );
+        }
+        (true, None) => push_error(
+            errors,
+            field_prefix,
+            "missing_chainlink_config",
+            format!("{field_prefix} must be configured when any reference venue kind is chainlink"),
+        ),
+        (false, Some(_)) => push_error(
+            errors,
+            field_prefix,
+            "orphaned_chainlink_config",
+            format!(
+                "{field_prefix} must not be configured unless a chainlink reference venue is enabled"
+            ),
+        ),
+        (false, None) => {}
+    }
+}
+
+fn check_chainlink_reference_config(
+    errors: &mut Vec<ValidationError>,
+    field_prefix: &str,
+    kind: &ReferenceVenueKind,
+    chainlink: Option<&crate::config::ChainlinkReferenceConfig>,
+) {
+    match (kind, chainlink) {
+        (ReferenceVenueKind::Chainlink, Some(chainlink)) => {
+            check_chainlink_feed_id(
+                errors,
+                &format!("{field_prefix}.feed_id"),
+                &chainlink.feed_id,
+            );
+            check_positive_u64(
+                errors,
+                &format!("{field_prefix}.price_scale"),
+                u64::from(chainlink.price_scale),
+            );
+            if chainlink.price_scale > 18 {
+                push_error(
+                    errors,
+                    &format!("{field_prefix}.price_scale"),
+                    "too_large",
+                    format!(
+                        "{field_prefix}.price_scale must be <= 18, got {}",
+                        chainlink.price_scale
+                    ),
+                );
+            }
+        }
+        (ReferenceVenueKind::Chainlink, None) => push_error(
+            errors,
+            field_prefix,
+            "missing_chainlink_config",
+            format!("{field_prefix} must be configured for reference venue kind chainlink"),
+        ),
+        (_, Some(_)) => push_error(
+            errors,
+            field_prefix,
+            "orphaned_chainlink_config",
+            format!(
+                "{field_prefix} must not be configured unless reference venue kind is chainlink"
+            ),
+        ),
+        (_, None) => {}
     }
 }
 
@@ -679,6 +796,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         let default_reference = LiveReferenceInput::default();
         if !config.reference.publish_topic.trim().is_empty()
             || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || config.reference.chainlink.is_some()
             || !config.reference.venues.is_empty()
         {
             push_error(
@@ -721,6 +839,18 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
             config.reference.min_publish_interval_ms,
         );
     }
+
+    let has_chainlink_reference = config
+        .reference
+        .venues
+        .iter()
+        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+    check_chainlink_shared_config(
+        &mut errors,
+        "reference.chainlink",
+        config.reference.chainlink.as_ref(),
+        has_chainlink_reference,
+    );
 
     let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, ruleset) in config.rulesets.iter().enumerate() {
@@ -805,6 +935,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         }
     }
 
+    let mut chainlink_feed_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, venue) in config.reference.venues.iter().enumerate() {
         let name_field = format!("reference.venues[{i}].name");
         check_non_empty(&mut errors, &name_field, &venue.name);
@@ -827,6 +958,28 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
                 format!(
                     "{disable_field} must be >= {stale_field}, got {} < {}",
                     venue.disable_after_ms, venue.stale_after_ms
+                ),
+            );
+        }
+
+        check_chainlink_reference_config(
+            &mut errors,
+            &format!("reference.venues[{i}].chainlink"),
+            &venue.kind,
+            venue.chainlink.as_ref(),
+        );
+        if venue.kind == ReferenceVenueKind::Chainlink
+            && let Some(chainlink) = venue.chainlink.as_ref()
+            && let Some(first_index) =
+                first_seen_index(&mut chainlink_feed_id_indices, &chainlink.feed_id, i)
+        {
+            push_error(
+                &mut errors,
+                "reference.venues",
+                "duplicate_chainlink_feed_id",
+                format!(
+                    "reference.venues[{i}] reuses chainlink feed_id \"{}\" (first defined at reference.venues[{first_index}])",
+                    chainlink.feed_id
                 ),
             );
         }
@@ -1255,6 +1408,7 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         let default_reference = ReferenceConfig::default();
         if !config.reference.publish_topic.trim().is_empty()
             || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || config.reference.chainlink.is_some()
             || !config.reference.venues.is_empty()
         {
             push_error(
@@ -1316,7 +1470,20 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         );
     }
 
+    let has_chainlink_reference = config
+        .reference
+        .venues
+        .iter()
+        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+    check_chainlink_shared_config(
+        &mut errors,
+        "reference.chainlink",
+        config.reference.chainlink.as_ref(),
+        has_chainlink_reference,
+    );
+
     let mut reference_name_indices: HashMap<&str, usize> = HashMap::new();
+    let mut chainlink_feed_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, venue) in config.reference.venues.iter().enumerate() {
         let name_field = format!("reference.venues[{i}].name");
         check_non_empty(&mut errors, &name_field, &venue.name);
@@ -1351,6 +1518,28 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                 format!(
                     "reference.venues[{i}] has duplicate name \"{}\" (first defined at reference.venues[{first_index}])",
                     venue.name
+                ),
+            );
+        }
+
+        check_chainlink_reference_config(
+            &mut errors,
+            &format!("reference.venues[{i}].chainlink"),
+            &venue.kind,
+            venue.chainlink.as_ref(),
+        );
+        if venue.kind == ReferenceVenueKind::Chainlink
+            && let Some(chainlink) = venue.chainlink.as_ref()
+            && let Some(first_index) =
+                first_seen_index(&mut chainlink_feed_id_indices, &chainlink.feed_id, i)
+        {
+            push_error(
+                &mut errors,
+                "reference.venues",
+                "duplicate_chainlink_feed_id",
+                format!(
+                    "reference.venues[{i}] reuses chainlink feed_id \"{}\" (first defined at reference.venues[{first_index}])",
+                    chainlink.feed_id
                 ),
             );
         }

@@ -4,6 +4,7 @@ pub type ReferenceDataClientParts = (Box<dyn DataClientFactory>, Box<dyn ClientC
 
 pub mod binance;
 pub mod bybit;
+pub mod chainlink;
 pub mod deribit;
 pub mod hyperliquid;
 pub mod kraken;

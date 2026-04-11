@@ -9,7 +9,7 @@ use std::{
 };
 
 use bolt_v2::{MaterializationOutcome, config::Config, materialize_live_config};
-use support::{TempCaseDir, repo_path};
+use support::{TempCaseDir, live_local_chainlink_operator_input, repo_path};
 
 #[test]
 fn materialize_live_config_creates_read_only_output() {
@@ -360,6 +360,90 @@ fn render_live_config_binary_respects_restrictive_umask_on_create() {
     assert_generated_output(&output_path);
     assert_read_only(&output_path);
     assert_mode(&output_path, 0o400);
+}
+
+#[test]
+fn materialize_live_config_renders_nested_chainlink_reference_settings() {
+    let tempdir = TempCaseDir::new("render-chainlink-reference");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = live_local_chainlink_operator_input();
+
+    fs::write(&input_path, input).expect("input config should be written");
+    materialize_live_config(&input_path, &output_path)
+        .expect("chainlink operator config should materialize");
+
+    let rendered = fs::read_to_string(&output_path).expect("rendered config should be readable");
+    let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+    let shared = cfg
+        .reference
+        .chainlink
+        .as_ref()
+        .expect("rendered shared chainlink config should be present");
+    let chainlink = cfg.reference.venues[0]
+        .chainlink
+        .as_ref()
+        .expect("rendered chainlink config should be present");
+
+    assert!(rendered.contains("[reference.chainlink]"));
+    assert!(rendered.contains("[reference.venues.chainlink]"));
+    assert_eq!(shared.region, "us-east-1");
+    assert_eq!(shared.api_key, "/bolt/chainlink/api_key");
+    assert_eq!(shared.api_secret, "/bolt/chainlink/api_secret");
+    assert_eq!(shared.ws_url, "wss://streams.chain.link");
+    assert_eq!(shared.ws_reconnect_alert_threshold, 5);
+    assert_eq!(
+        chainlink.feed_id,
+        "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+    );
+    assert_eq!(chainlink.price_scale, 8);
+}
+
+#[test]
+fn materialize_live_config_preserves_valid_chainlink_ws_fallback_origins() {
+    let tempdir = TempCaseDir::new("render-chainlink-ws-fallback-origins");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = live_local_chainlink_operator_input().replace(
+        "ws_url = \"wss://streams.chain.link\"",
+        "ws_url = \"wss://primary.chain.link,wss://fallback.chain.link\"",
+    );
+
+    fs::write(&input_path, input).expect("input config should be written");
+    materialize_live_config(&input_path, &output_path)
+        .expect("chainlink operator config with ws fallback origins should materialize");
+
+    let rendered = fs::read_to_string(&output_path).expect("rendered config should be readable");
+    let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+    let shared = cfg
+        .reference
+        .chainlink
+        .as_ref()
+        .expect("rendered shared chainlink config should be present");
+
+    assert_eq!(
+        shared.ws_url,
+        "wss://primary.chain.link,wss://fallback.chain.link"
+    );
+}
+
+#[test]
+fn materialize_live_config_rejects_invalid_chainlink_ws_fallback_origin() {
+    let tempdir = TempCaseDir::new("invalid-chainlink-ws-fallback-origin");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = live_local_chainlink_operator_input().replace(
+        "ws_url = \"wss://streams.chain.link\"",
+        "ws_url = \"wss://primary.chain.link,ws://fallback.chain.link\"",
+    );
+
+    fs::write(&input_path, input).expect("input config should be written");
+    let error = materialize_live_config(&input_path, &output_path)
+        .expect_err("invalid chainlink ws fallback origin should fail validation")
+        .to_string();
+
+    assert!(error.contains("reference.chainlink.ws_url"));
+    assert!(error.contains("must start with wss://"));
 }
 
 fn write_input(tempdir: &TempCaseDir, file_name: &str) -> PathBuf {

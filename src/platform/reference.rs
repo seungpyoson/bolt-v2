@@ -1,11 +1,20 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::ReferenceVenueEntry;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VenueHealth {
     Healthy,
     Disabled { reason: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VenueKind {
+    Orderbook,
+    Oracle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,12 +25,14 @@ pub enum ReferenceObservation {
         bid: f64,
         ask: f64,
         ts_ms: u64,
+        observed_ts_ms: u64,
     },
     Oracle {
         venue_name: String,
         instrument_id: String,
         price: f64,
         ts_ms: u64,
+        observed_ts_ms: u64,
     },
 }
 
@@ -32,7 +43,11 @@ pub struct EffectiveVenueState {
     pub effective_weight: f64,
     pub stale: bool,
     pub health: VenueHealth,
+    pub observed_ts_ms: Option<u64>,
+    pub venue_kind: VenueKind,
     pub observed_price: Option<f64>,
+    pub observed_bid: Option<f64>,
+    pub observed_ask: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,7 +78,13 @@ pub fn fuse_reference_snapshot(
             .get(&venue.name)
             .filter(|observation| observation.matches_identity(venue));
         let missing_observation_reason = observation.is_none().then(missing_observation_reason);
+        let observed_ts_ms = observation.map(|observation| observation.observed_ts_ms());
+        let venue_kind = observation
+            .map(ReferenceObservation::venue_kind)
+            .unwrap_or_else(|| VenueKind::from_reference_entry(venue));
         let observed_price = observation.map(ReferenceObservation::observed_price);
+        let observed_bid = observation.and_then(ReferenceObservation::observed_bid);
+        let observed_ask = observation.and_then(ReferenceObservation::observed_ask);
         let age_ms = observation.map(|observation| now_ms.saturating_sub(observation.ts_ms()));
         let auto_disabled_reason = age_ms
             .filter(|age_ms| *age_ms > venue.disable_after_ms)
@@ -101,7 +122,11 @@ pub fn fuse_reference_snapshot(
             effective_weight,
             stale,
             health,
+            observed_ts_ms,
+            venue_kind,
             observed_price,
+            observed_bid,
+            observed_ask,
         });
     }
 
@@ -156,9 +181,47 @@ impl ReferenceObservation {
         }
     }
 
+    fn observed_bid(&self) -> Option<f64> {
+        match self {
+            Self::Orderbook { bid, .. } => Some(*bid),
+            Self::Oracle { .. } => None,
+        }
+    }
+
+    fn observed_ask(&self) -> Option<f64> {
+        match self {
+            Self::Orderbook { ask, .. } => Some(*ask),
+            Self::Oracle { .. } => None,
+        }
+    }
+
     fn ts_ms(&self) -> u64 {
         match self {
             Self::Orderbook { ts_ms, .. } | Self::Oracle { ts_ms, .. } => *ts_ms,
+        }
+    }
+
+    fn observed_ts_ms(&self) -> u64 {
+        match self {
+            Self::Orderbook { observed_ts_ms, .. } | Self::Oracle { observed_ts_ms, .. } => {
+                *observed_ts_ms
+            }
+        }
+    }
+
+    fn venue_kind(&self) -> VenueKind {
+        match self {
+            Self::Orderbook { .. } => VenueKind::Orderbook,
+            Self::Oracle { .. } => VenueKind::Oracle,
+        }
+    }
+}
+
+impl VenueKind {
+    fn from_reference_entry(venue: &ReferenceVenueEntry) -> Self {
+        match venue.kind {
+            crate::config::ReferenceVenueKind::Chainlink => Self::Oracle,
+            _ => Self::Orderbook,
         }
     }
 }

@@ -3,7 +3,7 @@ use log::LevelFilter;
 use std::{collections::HashSet, path::PathBuf};
 
 use bolt_v2::{
-    clients::polymarket,
+    clients::{chainlink, polymarket},
     config::{Config, ReferenceVenueKind},
     normalized_sink,
     platform::runtime::{
@@ -101,7 +101,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match venue.kind {
                         ReferenceVenueKind::Polymarket => {}
                         ReferenceVenueKind::Chainlink => {
-                            return Err("chainlink reference client is not implemented yet".into());
+                            let (factory, config) =
+                                chainlink::build_chainlink_reference_data_client(&cfg.reference)?;
+                            builder = builder.add_data_client(
+                                Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
+                                factory,
+                                config,
+                            )?;
                         }
                         _ => {
                             let (factory, config) = build_reference_data_client(venue)?;
@@ -250,6 +256,22 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             let cfg = Config::load(&config)?;
             let mut has_errors = false;
 
+            if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
+                let check = secrets::check_chainlink_secret_config(chainlink);
+                if check.is_complete() {
+                    println!(
+                        "reference.chainlink: secret config complete ({})",
+                        check.present.join(", ")
+                    );
+                } else {
+                    has_errors = true;
+                    eprintln!(
+                        "reference.chainlink: missing secret config fields ({})",
+                        check.missing.join(", ")
+                    );
+                }
+            }
+
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
@@ -274,13 +296,22 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             }
 
             if has_errors {
-                Err("One or more exec clients have incomplete secret configuration".into())
+                Err("One or more runtime secret configurations are incomplete".into())
             } else {
                 Ok(())
             }
         }
         SecretsCommand::Resolve { config } => {
             let cfg = Config::load(&config)?;
+
+            if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
+                secrets::resolve_chainlink(
+                    &chainlink.region,
+                    &chainlink.api_key,
+                    &chainlink.api_secret,
+                )?;
+                println!("reference.chainlink: secrets resolved successfully");
+            }
 
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {

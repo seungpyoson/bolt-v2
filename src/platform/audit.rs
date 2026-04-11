@@ -51,6 +51,13 @@ pub enum TradeEventKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum VenueKindState {
+    Orderbook,
+    Oracle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReferenceVenueSnapshot {
     pub venue_name: String,
     pub base_weight: f64,
@@ -58,7 +65,11 @@ pub struct ReferenceVenueSnapshot {
     pub stale: bool,
     pub health: VenueHealthState,
     pub reason: Option<String>,
+    pub observed_ts_ms: Option<u64>,
+    pub venue_kind: VenueKindState,
     pub observed_price: Option<f64>,
+    pub observed_bid: Option<f64>,
+    pub observed_ask: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

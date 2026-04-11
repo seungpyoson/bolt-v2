@@ -986,9 +986,11 @@ fn active_market_switch_replaces_runtime_strategy_with_new_market() {
         control_result.unwrap();
 
         assert_eq!(trader.borrow().strategy_ids().len(), 1);
-        assert!(recorded_mock_data_subscriptions()
-            .iter()
-            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET"));
+        assert!(
+            recorded_mock_data_subscriptions()
+                .iter()
+                .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
+        );
     });
 }
 

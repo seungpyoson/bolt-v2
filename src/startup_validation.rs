@@ -2,9 +2,7 @@ use std::collections::BTreeSet;
 
 use nautilus_model::instruments::Instrument;
 
-use crate::raw_capture_transport::{
-    build_gamma_instrument_client, market_token_ids_from_instruments,
-};
+use crate::raw_capture_transport::build_gamma_instrument_client;
 use crate::{clients::polymarket, config::Config};
 
 type AppResult = Result<(), Box<dyn std::error::Error>>;
@@ -36,17 +34,10 @@ pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
                 targets.event_slugs.join(", ")
             ))
         })?;
-    let discovered_token_ids: BTreeSet<String> = market_token_ids_from_instruments(&instruments)
-        .into_iter()
-        .collect();
     let discovered_instrument_ids: BTreeSet<String> =
         instruments.iter().map(|instrument| instrument.id().to_string()).collect();
 
-    validate_polymarket_startup_results(
-        &targets,
-        &discovered_token_ids,
-        &discovered_instrument_ids,
-    )
+    validate_polymarket_startup_results(&targets, &discovered_instrument_ids)
 }
 
 fn collect_polymarket_startup_validation_targets(
@@ -67,10 +58,6 @@ fn collect_polymarket_startup_validation_targets(
         }
     }
 
-    if event_slugs.is_empty() {
-        return Ok(None);
-    }
-
     let mut configured_instrument_ids = BTreeSet::new();
     for strategy in &cfg.strategies {
         let Some(instrument_id) = strategy
@@ -86,6 +73,22 @@ fn collect_polymarket_startup_validation_targets(
         }
     }
 
+    if event_slugs.is_empty() {
+        if configured_instrument_ids.is_empty() {
+            return Ok(None);
+        }
+
+        return Err(std::io::Error::other(format!(
+            "Polymarket startup validation cannot validate configured instrument_id(s) [{}] because no Polymarket event slugs are available for discovery",
+            configured_instrument_ids
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+        .into());
+    }
+
     Ok(Some(PolymarketStartupValidationTargets {
         event_slugs: event_slugs.into_iter().collect(),
         configured_instrument_ids: configured_instrument_ids.into_iter().collect(),
@@ -94,10 +97,9 @@ fn collect_polymarket_startup_validation_targets(
 
 fn validate_polymarket_startup_results(
     targets: &PolymarketStartupValidationTargets,
-    discovered_token_ids: &BTreeSet<String>,
     discovered_instrument_ids: &BTreeSet<String>,
 ) -> AppResult {
-    if discovered_token_ids.is_empty() {
+    if discovered_instrument_ids.is_empty() {
         return Err(std::io::Error::other(format!(
             "Polymarket startup validation resolved zero instruments for event slugs [{}]",
             targets.event_slugs.join(", ")
@@ -114,7 +116,7 @@ fn validate_polymarket_startup_results(
 
     if !missing_instrument_ids.is_empty() {
         return Err(std::io::Error::other(format!(
-            "Polymarket startup validation could not find configured instrument_id(s) [{}] in Gamma-discovered token IDs for event slugs [{}]",
+            "Polymarket startup validation could not find configured instrument_id(s) [{}] in Gamma-discovered instrument IDs for event slugs [{}]",
             missing_instrument_ids.join(", "),
             targets.event_slugs.join(", ")
         ))
@@ -151,6 +153,47 @@ mod tests {
     }
 
     #[test]
+    fn startup_validation_fails_closed_when_polymarket_strategy_has_no_event_slugs() {
+        let mut cfg = test_config(
+            vec!["btc-updown-5m"],
+            vec!["0xpresent-condition-present-token.POLYMARKET"],
+        );
+        cfg.data_clients.clear();
+
+        let err = collect_polymarket_startup_validation_targets(&cfg)
+            .expect_err("missing event slugs should fail closed")
+            .to_string();
+
+        assert!(err.contains("event slug"), "{err}");
+        assert!(
+            err.contains("0xpresent-condition-present-token.POLYMARKET"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn startup_validation_skips_when_no_polymarket_inputs_exist() {
+        let mut cfg = test_config(vec!["btc-updown-5m"], vec![]);
+        cfg.data_clients.clear();
+
+        let targets = collect_polymarket_startup_validation_targets(&cfg)
+            .expect("non-polymarket startup should not error");
+
+        assert_eq!(targets, None);
+    }
+
+    #[test]
+    fn startup_validation_skips_when_only_non_polymarket_instruments_exist_without_slugs() {
+        let mut cfg = test_config(vec!["btc-updown-5m"], vec!["BTCUSDT.BINANCE"]);
+        cfg.data_clients.clear();
+
+        let targets = collect_polymarket_startup_validation_targets(&cfg)
+            .expect("non-polymarket strategies should not require Polymarket slugs");
+
+        assert_eq!(targets, None);
+    }
+
+    #[test]
     fn startup_validation_fails_when_zero_instruments_resolve() {
         let cfg = test_config(vec!["stale-market"], vec![]);
         let targets = collect_polymarket_startup_validation_targets(&cfg)
@@ -158,12 +201,31 @@ mod tests {
             .expect("polymarket targets should exist");
 
         let err =
-            validate_polymarket_startup_results(&targets, &BTreeSet::new(), &BTreeSet::new())
+            validate_polymarket_startup_results(&targets, &BTreeSet::new())
                 .expect_err("validation should fail")
                 .to_string();
 
         assert!(err.contains("stale-market"), "{err}");
         assert!(err.contains("zero instruments"), "{err}");
+    }
+
+    #[test]
+    fn startup_validation_accepts_discovered_instrument_ids_when_token_ids_are_empty() {
+        let cfg = test_config(
+            vec!["btc-updown-5m"],
+            vec!["0xpresent-condition-present-token.POLYMARKET"],
+        );
+        let targets = collect_polymarket_startup_validation_targets(&cfg)
+            .expect("targets should collect")
+            .expect("polymarket targets should exist");
+
+        validate_polymarket_startup_results(
+            &targets,
+            &BTreeSet::from([String::from(
+                "0xpresent-condition-present-token.POLYMARKET",
+            )]),
+        )
+        .expect("discovered instrument ids should satisfy startup validation");
     }
 
     #[test]
@@ -181,7 +243,6 @@ mod tests {
 
         let err = validate_polymarket_startup_results(
             &targets,
-            &BTreeSet::from([String::from("present-token")]),
             &BTreeSet::from([String::from(
                 "0xpresent-condition-present-token.POLYMARKET",
             )]),
@@ -194,6 +255,8 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("btc-updown-5m"), "{err}");
+        assert!(err.contains("Gamma-discovered instrument IDs"), "{err}");
+        assert!(!err.contains("token IDs"), "{err}");
     }
 
     #[test]
@@ -211,7 +274,6 @@ mod tests {
 
         validate_polymarket_startup_results(
             &targets,
-            &BTreeSet::from([String::from("also-present"), String::from("present-token")]),
             &BTreeSet::from([
                 String::from("0xalso-condition-also-present.POLYMARKET"),
                 String::from("0xpresent-condition-present-token.POLYMARKET"),

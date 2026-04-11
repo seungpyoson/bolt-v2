@@ -71,7 +71,7 @@ pub fn evaluate_market_selection(
     ruleset: &RulesetConfig,
     candidates: &[CandidateMarket],
 ) -> SelectionEvaluation {
-    let mut eligible = Vec::new();
+    let mut eligible: Vec<&CandidateMarket> = Vec::new();
     let mut rejected_candidates = Vec::new();
 
     for market in candidates {
@@ -80,7 +80,7 @@ pub fn evaluate_market_selection(
                 market: market.clone(),
                 reason,
             }),
-            None => eligible.push(market.clone()),
+            None => eligible.push(market),
         }
     }
 
@@ -96,11 +96,13 @@ pub fn evaluate_market_selection(
         },
         Some(market) if market.seconds_to_end <= ruleset.freeze_before_end_secs => {
             SelectionState::Freeze {
-                market,
+                market: market.clone(),
                 reason: "freeze window".to_string(),
             }
         }
-        Some(market) => SelectionState::Active { market },
+        Some(market) => SelectionState::Active {
+            market: market.clone(),
+        },
     };
 
     SelectionEvaluation {

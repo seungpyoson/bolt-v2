@@ -1,5 +1,8 @@
 use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
 use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
+use crate::platform::resolution_basis::{
+    parse_ruleset_resolution_basis, required_reference_venue_kind,
+};
 use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;
@@ -439,21 +442,27 @@ fn first_seen_index<'a>(
     }
 }
 
-fn implied_reference_venue_kind(resolution_basis: &str) -> Option<ReferenceVenueKind> {
-    const PREFIXES: &[(&str, ReferenceVenueKind)] = &[
-        ("binance_", ReferenceVenueKind::Binance),
-        ("bybit_", ReferenceVenueKind::Bybit),
-        ("deribit_", ReferenceVenueKind::Deribit),
-        ("hyperliquid_", ReferenceVenueKind::Hyperliquid),
-        ("kraken_", ReferenceVenueKind::Kraken),
-        ("okx_", ReferenceVenueKind::Okx),
-        ("polymarket_", ReferenceVenueKind::Polymarket),
-        ("chainlink_", ReferenceVenueKind::Chainlink),
-    ];
+fn parse_validated_resolution_basis(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    resolution_basis: &str,
+) -> Option<crate::platform::resolution_basis::ResolutionBasis> {
+    if resolution_basis.trim().is_empty() {
+        return None;
+    }
 
-    PREFIXES
-        .iter()
-        .find_map(|(prefix, kind)| resolution_basis.starts_with(prefix).then(|| kind.clone()))
+    match parse_ruleset_resolution_basis(resolution_basis) {
+        Ok(basis) => Some(basis),
+        Err(message) => {
+            push_error(
+                errors,
+                field,
+                "invalid_resolution_basis",
+                message,
+            );
+            None
+        }
+    }
 }
 
 fn check_contract_path_catalog_dependency(
@@ -728,6 +737,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
         check_non_empty(
+            &mut errors,
+            &resolution_basis_field,
+            &ruleset.resolution_basis,
+        );
+        let _ = parse_validated_resolution_basis(
             &mut errors,
             &resolution_basis_field,
             &ruleset.resolution_basis,
@@ -1412,6 +1426,11 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             &resolution_basis_field,
             &ruleset.resolution_basis,
         );
+        let parsed_resolution_basis = parse_validated_resolution_basis(
+            &mut errors,
+            &resolution_basis_field,
+            &ruleset.resolution_basis,
+        );
 
         let min_expiry_field = format!("rulesets[{i}].min_time_to_expiry_secs");
         check_positive_u64(
@@ -1475,7 +1494,10 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             );
         }
 
-        if let Some(required_kind) = implied_reference_venue_kind(&ruleset.resolution_basis) {
+        if let Some(required_kind) = parsed_resolution_basis
+            .as_ref()
+            .and_then(required_reference_venue_kind)
+        {
             let has_matching_kind = config
                 .reference
                 .venues

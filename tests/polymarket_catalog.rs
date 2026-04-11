@@ -240,8 +240,8 @@ fn rejects_non_canonical_ruleset_resolution_bases() {
 #[test]
 fn resolution_basis_display_round_trips_canonical_strings() {
     for input in ["binance_ethusdt_1h", "chainlink_ethusd", "kraken_solusd_5m"] {
-        let parsed =
-            parse_ruleset_resolution_basis(input).unwrap_or_else(|_| panic!("{input} should parse as canonical"));
+        let parsed = parse_ruleset_resolution_basis(input)
+            .unwrap_or_else(|_| panic!("{input} should parse as canonical"));
         assert_eq!(parsed.to_string(), input);
     }
 }
@@ -261,8 +261,7 @@ fn parses_hourly_binance_basis_from_description() {
 
 #[test]
 fn parses_chainlink_basis_from_description() {
-    let description =
-        "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
+    let description = "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
     assert_eq!(
         parse_declared_resolution_basis(Some(description)),
         Some(oracle_price_feed(ResolutionSourceKind::Chainlink, "ethusd"))
@@ -290,8 +289,7 @@ fn description_and_ruleset_parsers_land_on_same_canonical_basis() {
 
 #[test]
 fn chainlink_description_and_ruleset_parsers_land_on_same_canonical_basis() {
-    let description =
-        "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
+    let description = "The resolution source for this market is information from Chainlink, specifically the ETH/USD data stream available at https://data.chain.link/streams/eth-usd.";
     assert_eq!(
         parse_declared_resolution_basis(Some(description)),
         Some(parse_ruleset_resolution_basis("chainlink_ethusd").unwrap())

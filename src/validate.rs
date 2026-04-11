@@ -454,12 +454,7 @@ fn parse_validated_resolution_basis(
     match parse_ruleset_resolution_basis(resolution_basis) {
         Ok(basis) => Some(basis),
         Err(message) => {
-            push_error(
-                errors,
-                field,
-                "invalid_resolution_basis",
-                message,
-            );
+            push_error(errors, field, "invalid_resolution_basis", message);
             None
         }
     }

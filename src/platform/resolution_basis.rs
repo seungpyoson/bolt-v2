@@ -168,9 +168,7 @@ pub fn parse_declared_resolution_basis(description: Option<&str>) -> Option<Reso
     Some(ResolutionBasis::OraclePriceFeed { source, pair })
 }
 
-pub fn required_reference_venue_kind(
-    basis: &ResolutionBasis,
-) -> Option<ReferenceVenueKind> {
+pub fn required_reference_venue_kind(basis: &ResolutionBasis) -> Option<ReferenceVenueKind> {
     let source = match basis {
         ResolutionBasis::ExchangeCandle { source, .. } => source,
         ResolutionBasis::OraclePriceFeed { source, .. } => source,
@@ -266,10 +264,7 @@ fn extract_pair(description: &str) -> Option<String> {
             continue;
         };
 
-        let prev_allows = matches!(
-            normalized_prev.as_deref(),
-            Some("for")
-        );
+        let prev_allows = matches!(normalized_prev.as_deref(), Some("for"));
         let next_allows = matches!(
             normalized_next.as_deref(),
             Some("pair")
@@ -294,7 +289,8 @@ fn extract_pair(description: &str) -> Option<String> {
 }
 
 fn canonicalize_compact_pair_token(token: &str) -> Option<String> {
-    let trimmed = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-'));
+    let trimmed = token
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-'));
     if trimmed.is_empty() {
         return None;
     }
@@ -335,9 +331,8 @@ fn extract_separated_pairs(description: &str, separator: char) -> BTreeSet<Strin
     let mut matches = BTreeSet::new();
 
     for token in tokenize(description) {
-        let trimmed = token.trim_matches(|ch: char| {
-            !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-')
-        });
+        let trimmed = token
+            .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '_' | '-'));
         if trimmed.is_empty() || !trimmed.contains(separator) {
             continue;
         }

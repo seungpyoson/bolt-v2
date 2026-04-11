@@ -84,7 +84,9 @@ fn translate_market(
     tag_slug: &str,
     now: DateTime<Utc>,
 ) -> Option<CandidateMarket> {
-    let declared_resolution_basis = match parse_declared_resolution_basis(market.description.as_deref()) {
+    let declared_resolution_basis = match parse_declared_resolution_basis(
+        market.description.as_deref(),
+    ) {
         Some(basis) => basis,
         None => {
             log::warn!(

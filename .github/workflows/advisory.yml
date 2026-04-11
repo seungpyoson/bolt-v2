@@ -20,43 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install just
-        run: |
-          archive="just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          base_url="https://github.com/casey/just/releases/download/${JUST_VERSION}"
-          curl -fsSLo "$RUNNER_TEMP/$archive" "$base_url/$archive"
-          curl -fsSLo "$RUNNER_TEMP/SHA256SUMS" "$base_url/SHA256SUMS"
-          (
-            cd "$RUNNER_TEMP"
-            grep "  $archive\$" SHA256SUMS | sha256sum -c -
-          )
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" just
-          sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
-
-      - name: Read shared values
-        id: shared
-        shell: bash
-        run: |
-          echo "rust_toolchain=$(awk -F'\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-          echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
-          echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
-          echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
-          echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
-          echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
-
-      - name: Install managed Rust owner
-        env:
-          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
-        run: |
-          bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
-
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
         with:
-          toolchain: ${{ steps.shared.outputs.rust_toolchain }}
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          include-deny-version: "true"
 
       - name: Install cargo-deny
         run: |
-          cargo install cargo-deny --version "${{ steps.shared.outputs.deny_version }}" --locked
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
 
       - name: Check advisories
         id: advisories

@@ -12,6 +12,10 @@ inputs:
     description: Optional Rust components to install.
     required: false
     default: ""
+  lint-workflow-contract:
+    description: Whether to run `just ci-lint-workflow` before the rest of setup.
+    required: false
+    default: "false"
   use-default-target:
     description: Whether to install the repo's default Rust target from `just target`.
     required: false
@@ -78,6 +82,12 @@ runs:
         )
         tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" just
         sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
+
+    - name: Lint workflow contract
+      if: ${{ inputs.lint-workflow-contract == 'true' }}
+      shell: bash
+      run: |
+        just ci-lint-workflow
 
     - name: Read shared values
       id: shared

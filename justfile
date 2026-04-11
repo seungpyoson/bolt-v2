@@ -126,8 +126,12 @@ ci-lint-workflow:
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
+    setup_lint_literal='lint-workflow-contract:'
     setup_token_literal='claude-config-read-token:'
     setup_just_version_literal='just-version:'
+    setup_rustfmt_literal='toolchain-components: rustfmt'
+    setup_clippy_literal='toolchain-components: clippy'
+    setup_default_target_literal='use-default-target: "true"'
     managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
     repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
@@ -168,6 +172,18 @@ ci-lint-workflow:
                 setup-token)
                     echo "ERROR: Managed CI setup token wiring missing in $f job '$job_name'"
                     ;;
+                setup-lint)
+                    echo "ERROR: Managed CI workflow lint wiring missing in $f job '$job_name'"
+                    ;;
+                setup-rustfmt)
+                    echo "ERROR: Managed CI rustfmt component wiring missing in $f job '$job_name'"
+                    ;;
+                setup-clippy)
+                    echo "ERROR: Managed CI clippy component wiring missing in $f job '$job_name'"
+                    ;;
+                setup-default-target)
+                    echo "ERROR: Managed CI default target wiring missing in $f job '$job_name'"
+                    ;;
                 setup-just-version)
                     echo "ERROR: Managed CI just version wiring missing in $f job '$job_name'"
                     ;;
@@ -176,33 +192,61 @@ ci-lint-workflow:
         done < <(
             awk -v lane_pattern="$just_lane_pattern" \
                 -v setup_action_literal="$setup_action_literal" \
+                -v setup_lint_literal="$setup_lint_literal" \
                 -v setup_token_literal="$setup_token_literal" \
-                -v setup_just_version_literal="$setup_just_version_literal" '
+                -v setup_just_version_literal="$setup_just_version_literal" \
+                -v setup_rustfmt_literal="$setup_rustfmt_literal" \
+                -v setup_clippy_literal="$setup_clippy_literal" \
+                -v setup_default_target_literal="$setup_default_target_literal" '
                 BEGIN {
                     in_jobs = 0
                     current = ""
                     has_lane = 0
                     has_setup_step = 0
+                    has_setup_lint = 0
                     has_setup_token = 0
                     has_setup_just_version = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
                     step_has_setup = 0
+                    step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
                 }
 
                 function flush_step() {
                     if (step_has_setup) {
                         has_setup_step = 1
+                        if (step_has_lint) {
+                            has_setup_lint = 1
+                        }
                         if (step_has_token) {
                             has_setup_token = 1
                         }
                         if (step_has_just_version) {
                             has_setup_just_version = 1
                         }
+                        if (step_has_rustfmt) {
+                            has_setup_rustfmt = 1
+                        }
+                        if (step_has_clippy) {
+                            has_setup_clippy = 1
+                        }
+                        if (step_has_default_target) {
+                            has_setup_default_target = 1
+                        }
                     }
                     step_has_setup = 0
+                    step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
                 }
 
                 function flush_job() {
@@ -213,11 +257,23 @@ ci-lint-workflow:
                     if (!has_setup_step) {
                         print current "|setup-action"
                     }
+                    if (current == "gate" && has_setup_step && !has_setup_lint) {
+                        print current "|setup-lint"
+                    }
                     if (has_setup_step && !has_setup_token) {
                         print current "|setup-token"
                     }
                     if (has_setup_step && !has_setup_just_version) {
                         print current "|setup-just-version"
+                    }
+                    if (current == "gate" && has_setup_step && !has_setup_rustfmt) {
+                        print current "|setup-rustfmt"
+                    }
+                    if (current == "clippy" && has_setup_step && !has_setup_clippy) {
+                        print current "|setup-clippy"
+                    }
+                    if (current == "build" && has_setup_step && !has_setup_default_target) {
+                        print current "|setup-default-target"
                     }
                 }
 
@@ -232,11 +288,19 @@ ci-lint-workflow:
                     current = ""
                     has_lane = 0
                     has_setup_step = 0
+                    has_setup_lint = 0
                     has_setup_token = 0
                     has_setup_just_version = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
                     step_has_setup = 0
+                    step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
                     next
                 }
 
@@ -247,11 +311,19 @@ ci-lint-workflow:
                     sub(/:.*/, "", current)
                     has_lane = 0
                     has_setup_step = 0
+                    has_setup_lint = 0
                     has_setup_token = 0
                     has_setup_just_version = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
                     step_has_setup = 0
+                    step_has_lint = 0
                     step_has_token = 0
                     step_has_just_version = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
                     next
                 }
 
@@ -265,11 +337,23 @@ ci-lint-workflow:
                     if (index($0, setup_action_literal) > 0) {
                         step_has_setup = 1
                     }
+                    if (index($0, setup_lint_literal) > 0) {
+                        step_has_lint = 1
+                    }
                     if (index($0, setup_token_literal) > 0) {
                         step_has_token = 1
                     }
                     if (index($0, setup_just_version_literal) > 0) {
                         step_has_just_version = 1
+                    }
+                    if (index($0, setup_rustfmt_literal) > 0) {
+                        step_has_rustfmt = 1
+                    }
+                    if (index($0, setup_clippy_literal) > 0) {
+                        step_has_clippy = 1
+                    }
+                    if (index($0, setup_default_target_literal) > 0) {
+                        step_has_default_target = 1
                     }
                 }
 

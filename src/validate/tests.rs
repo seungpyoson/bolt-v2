@@ -1362,6 +1362,14 @@ max_local_backlog_bytes = 10485760
     )
 }
 
+const VALID_CHAINLINK_SHARED_BLOCK: &str = r#"[reference.chainlink]
+region = "us-east-1"
+api_key = "/bolt/chainlink/api_key"
+api_secret = "/bolt/chainlink/api_secret"
+ws_url = "wss://streams.chain.link"
+ws_reconnect_alert_threshold = 5
+"#;
+
 fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
     let config: Config = toml::from_str(toml_str).expect("runtime test config should parse");
     validate_runtime(&config)
@@ -2180,4 +2188,367 @@ event_slugs = ["btc-updown-5m"]
         "data_clients",
         "duplicate_polymarket_client_for_reference",
     );
+}
+
+#[test]
+fn phase1_runtime_chainlink_requires_shared_reference_block() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#,
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.chainlink", "missing_chainlink_config");
+}
+
+#[test]
+fn phase1_runtime_chainlink_price_scale_must_be_positive_and_bounded() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1000
+disable_after_ms = 1500
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 19
+"#,
+    )
+    .replace(
+        "[[reference.venues]]\nname = \"CHAINLINK-BTC\"",
+        &format!("{VALID_CHAINLINK_SHARED_BLOCK}\n[[reference.venues]]\nname = \"CHAINLINK-BTC\""),
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].chainlink.price_scale",
+        "too_large",
+    );
+}
+
+#[test]
+fn phase1_runtime_chainlink_price_scale_must_be_positive() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 0
+"#,
+    )
+    .replace(
+        "[[reference.venues]]\nname = \"CHAINLINK-BTC\"",
+        &format!("{VALID_CHAINLINK_SHARED_BLOCK}\n[[reference.venues]]\nname = \"CHAINLINK-BTC\""),
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].chainlink.price_scale",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_runtime_chainlink_feed_id_must_be_strict_hex() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "not-a-feed-id"
+price_scale = 8
+"#,
+    )
+    .replace(
+        "[[reference.venues]]\nname = \"CHAINLINK-BTC\"",
+        &format!("{VALID_CHAINLINK_SHARED_BLOCK}\n[[reference.venues]]\nname = \"CHAINLINK-BTC\""),
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.venues[0].chainlink.feed_id",
+        "invalid_feed_id",
+    );
+}
+
+#[test]
+fn phase1_runtime_chainlink_feed_ids_must_be_unique() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[reference.venues]]
+name = "CHAINLINK-ETH"
+type = "chainlink"
+instrument_id = "ETHUSD.CHAINLINK"
+base_weight = 0.25
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#
+    )
+    .replace(
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#,
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    )
+    .replace(
+        "[[reference.venues]]\nname = \"CHAINLINK-BTC\"",
+        &format!("{VALID_CHAINLINK_SHARED_BLOCK}\n[[reference.venues]]\nname = \"CHAINLINK-BTC\""),
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.venues", "duplicate_chainlink_feed_id");
+}
+
+#[test]
+fn phase1_runtime_chainlink_shared_ws_reconnect_alert_threshold_must_be_positive() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[reference.chainlink]
+region = "us-east-1"
+api_key = "/bolt/chainlink/api_key"
+api_secret = "/bolt/chainlink/api_secret"
+ws_url = "wss://streams.chain.link"
+ws_reconnect_alert_threshold = 0
+
+[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#,
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.chainlink.ws_reconnect_alert_threshold",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_runtime_chainlink_shared_ws_url_must_be_wss() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[reference.chainlink]
+region = "us-east-1"
+api_key = "/bolt/chainlink/api_key"
+api_secret = "/bolt/chainlink/api_secret"
+ws_url = "ws://streams.chain.link"
+ws_reconnect_alert_threshold = 5
+
+[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#,
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.chainlink.ws_url", "invalid_ws_url");
+}
+
+#[test]
+fn phase1_runtime_chainlink_shared_ws_url_rejects_insecure_fallback_origin() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[reference.chainlink]
+region = "us-east-1"
+api_key = "/bolt/chainlink/api_key"
+api_secret = "/bolt/chainlink/api_secret"
+ws_url = "wss://primary.chain.link,ws://fallback.chain.link"
+ws_reconnect_alert_threshold = 5
+
+[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#,
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.chainlink.ws_url", "invalid_ws_url");
+}
+
+#[test]
+fn phase1_runtime_chainlink_shared_ws_url_must_include_host() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#,
+        r#"[reference.chainlink]
+region = "us-east-1"
+api_key = "/bolt/chainlink/api_key"
+api_secret = "/bolt/chainlink/api_secret"
+ws_url = "wss://"
+ws_reconnect_alert_threshold = 5
+
+[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#,
+    )
+    .replace(
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_btcusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.chainlink.ws_url", "invalid_ws_url");
 }

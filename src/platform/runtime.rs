@@ -26,10 +26,11 @@ use crate::{
     platform::{
         audit::{
             AuditReceiver, AuditRecord, AuditSender, AuditSpoolConfig, AwsCliUploader,
-            ReferenceVenueSnapshot, SelectorState, VenueHealthState, spawn_audit_worker,
+            ReferenceVenueSnapshot, SelectorState, VenueHealthState, VenueKindState,
+            spawn_audit_worker,
         },
         polymarket_catalog::load_candidate_markets_for_ruleset,
-        reference::{ReferenceSnapshot, VenueHealth},
+        reference::{ReferenceSnapshot, VenueHealth, VenueKind},
         reference_actor::{ReferenceActor, ReferenceActorConfig, ReferenceSubscription},
         ruleset::{CandidateMarket, SelectionDecision, SelectionState, select_market},
     },
@@ -254,13 +255,13 @@ pub fn reference_client_name_for_kind(cfg: &Config, kind: &ReferenceVenueKind) -
         ReferenceVenueKind::Hyperliquid => Ok("HYPERLIQUID".to_string()),
         ReferenceVenueKind::Kraken => Ok("KRAKEN".to_string()),
         ReferenceVenueKind::Okx => Ok("OKX".to_string()),
+        ReferenceVenueKind::Chainlink => Ok("CHAINLINK".to_string()),
         ReferenceVenueKind::Polymarket => cfg
             .data_clients
             .iter()
             .find(|client| client.kind == "polymarket")
             .map(|client| client.name.clone())
             .context("reference polymarket venue requires the primary polymarket data client"),
-        ReferenceVenueKind::Chainlink => bail!("chainlink reference client is not implemented yet"),
     }
 }
 
@@ -494,7 +495,14 @@ fn send_reference_snapshot(audit_tx: &AuditSender, snapshot: &ReferenceSnapshot)
                         VenueHealth::Healthy => None,
                         VenueHealth::Disabled { reason } => Some(reason.clone()),
                     },
+                    observed_ts_ms: venue.observed_ts_ms,
+                    venue_kind: match venue.venue_kind {
+                        VenueKind::Orderbook => VenueKindState::Orderbook,
+                        VenueKind::Oracle => VenueKindState::Oracle,
+                    },
                     observed_price: venue.observed_price,
+                    observed_bid: venue.observed_bid,
+                    observed_ask: venue.observed_ask,
                 })
                 .collect(),
         })

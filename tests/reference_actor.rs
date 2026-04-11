@@ -1,6 +1,9 @@
 use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 
 use bolt_v2::{
+    clients::chainlink::{
+        ChainlinkOracleUpdate, chainlink_data_type_for_venue, chainlink_topic_for_venue,
+    },
     config::{ReferenceVenueEntry, ReferenceVenueKind},
     platform::{
         reference::{ReferenceSnapshot, VenueHealth},
@@ -19,6 +22,7 @@ use nautilus_common::{
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
+    data::CustomData,
     identifiers::{ActorId, ClientId, InstrumentId, TraderId},
     stubs::TestDefault,
     types::{Price, Quantity},
@@ -37,6 +41,7 @@ fn reference_venue(
         base_weight,
         stale_after_ms: 1_000,
         disable_after_ms: 5_000,
+        chainlink: None,
     }
 }
 
@@ -237,6 +242,13 @@ fn quote_events_update_latest_observation_and_publish_snapshot() {
     assert_eq!(snapshot.confidence, 1.0);
     assert_eq!(snapshot.venues.len(), 1);
     assert_eq!(snapshot.venues[0].venue_name, "BINANCE");
+    assert_eq!(snapshot.venues[0].observed_ts_ms, Some(1_234));
+    assert_eq!(
+        snapshot.venues[0].venue_kind,
+        bolt_v2::platform::reference::VenueKind::Orderbook
+    );
+    assert_eq!(snapshot.venues[0].observed_bid, Some(99.5));
+    assert_eq!(snapshot.venues[0].observed_ask, Some(100.5));
     assert_eq!(snapshot.venues[0].observed_price, Some(100.0));
     assert_eq!(snapshot.venues[0].effective_weight, 1.0);
 }
@@ -300,6 +312,7 @@ fn publish_throttle_uses_actor_clock_not_quote_timestamp() {
             base_weight: 1.0,
             stale_after_ms: 20_000,
             disable_after_ms: 25_000,
+            chainlink: None,
         }],
     );
     let snapshots = collect_snapshots(publish_topic);
@@ -420,6 +433,7 @@ fn out_of_order_quotes_do_not_replace_latest_or_publish() {
             base_weight: 1.0,
             stale_after_ms: 20_000,
             disable_after_ms: 25_000,
+            chainlink: None,
         }],
     );
     let snapshots = collect_snapshots(publish_topic);
@@ -529,6 +543,7 @@ fn start_without_quotes_publishes_one_no_data_snapshot_after_quiet_timer() {
             base_weight: 1.0,
             stale_after_ms: 1_000,
             disable_after_ms: 2_000,
+            chainlink: None,
         }],
     );
     let snapshots = collect_snapshots(publish_topic);
@@ -572,6 +587,7 @@ fn quiet_period_timer_publishes_stale_snapshot_without_new_quote() {
             base_weight: 1.0,
             stale_after_ms: 1_000,
             disable_after_ms: 2_000,
+            chainlink: None,
         }],
     );
     let snapshots = collect_snapshots(publish_topic);
@@ -616,6 +632,7 @@ fn quiet_period_timer_publishes_disabled_snapshot_after_disable_threshold() {
             base_weight: 1.0,
             stale_after_ms: 1_000,
             disable_after_ms: 2_000,
+            chainlink: None,
         }],
     );
     let snapshots = collect_snapshots(publish_topic);
@@ -644,4 +661,228 @@ fn quiet_period_timer_publishes_disabled_snapshot_after_disable_threshold() {
             reason: "auto-disabled after 2001ms without a fresh reference update".into(),
         }
     );
+}
+
+#[test]
+fn chainlink_custom_data_updates_latest_oracle_observation_and_publishes_snapshot() {
+    let publish_topic = "platform.reference.test.chainlink-data";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription(
+                "CHAINLINK-BTC",
+                "BTCUSD.CHAINLINK",
+                "CHAINLINK",
+            )],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "CHAINLINK-BTC".into(),
+            kind: ReferenceVenueKind::Chainlink,
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            base_weight: 1.0,
+            stale_after_ms: 1_000,
+            disable_after_ms: 5_000,
+            chainlink: None,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+    set_actor_clock_ms(&mut actor, 9_500);
+
+    let data_type = chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK");
+    let custom = CustomData::new(
+        Arc::new(ChainlinkOracleUpdate {
+            venue_name: "CHAINLINK-BTC".into(),
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            price: 104_250.0,
+            round_id: "18446744073709551617".into(),
+            updated_at_ms: 9_000,
+            ts_init: UnixNanos::from(9_500_000_000),
+        }),
+        data_type.clone(),
+    );
+
+    msgbus::publish_any(
+        chainlink_topic_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK"),
+        &custom,
+    );
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].fair_value, Some(104_250.0));
+    assert_eq!(snapshots[0].venues[0].observed_ts_ms, Some(9_500));
+    assert_eq!(
+        snapshots[0].venues[0].venue_kind,
+        bolt_v2::platform::reference::VenueKind::Oracle
+    );
+    assert_eq!(snapshots[0].venues[0].observed_bid, None);
+    assert_eq!(snapshots[0].venues[0].observed_ask, None);
+
+    let stored = actor
+        .latest
+        .get("CHAINLINK-BTC")
+        .expect("latest observation should be stored");
+    match stored {
+        bolt_v2::platform::reference::ReferenceObservation::Oracle { price, ts_ms, .. } => {
+            assert_eq!(*price, 104_250.0);
+            assert_eq!(*ts_ms, 9_000);
+        }
+        other => panic!("expected oracle observation, got {other:?}"),
+    }
+
+    assert_eq!(
+        data_type,
+        chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK")
+    );
+}
+
+#[test]
+fn out_of_order_chainlink_custom_data_does_not_replace_latest_or_publish() {
+    let publish_topic = "platform.reference.test.chainlink-out-of-order";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription(
+                "CHAINLINK-BTC",
+                "BTCUSD.CHAINLINK",
+                "CHAINLINK",
+            )],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "CHAINLINK-BTC".into(),
+            kind: ReferenceVenueKind::Chainlink,
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            base_weight: 1.0,
+            stale_after_ms: 1_000,
+            disable_after_ms: 5_000,
+            chainlink: None,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+    set_actor_clock_ms(&mut actor, 10_000);
+
+    let topic = chainlink_topic_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK");
+    let latest = CustomData::new(
+        Arc::new(ChainlinkOracleUpdate {
+            venue_name: "CHAINLINK-BTC".into(),
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            price: 104_250.0,
+            round_id: "2".into(),
+            updated_at_ms: 9_000,
+            ts_init: UnixNanos::from(9_000_000_000),
+        }),
+        chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK"),
+    );
+    msgbus::publish_any(topic, &latest);
+
+    let stale = CustomData::new(
+        Arc::new(ChainlinkOracleUpdate {
+            venue_name: "CHAINLINK-BTC".into(),
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            price: 101_000.0,
+            round_id: "1".into(),
+            updated_at_ms: 8_000,
+            ts_init: UnixNanos::from(8_000_000_000),
+        }),
+        chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK"),
+    );
+    set_actor_clock_ms(&mut actor, 10_100);
+    msgbus::publish_any(topic, &stale);
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].fair_value, Some(104_250.0));
+
+    let stored = actor
+        .latest
+        .get("CHAINLINK-BTC")
+        .expect("latest observation should be retained");
+    match stored {
+        bolt_v2::platform::reference::ReferenceObservation::Oracle { price, ts_ms, .. } => {
+            assert_eq!(*price, 104_250.0);
+            assert_eq!(*ts_ms, 9_000);
+        }
+        other => panic!("expected oracle observation, got {other:?}"),
+    }
+}
+
+#[test]
+fn same_second_chainlink_update_with_newer_round_replaces_latest_and_publishes() {
+    let publish_topic = "platform.reference.test.chainlink-same-second";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription(
+                "CHAINLINK-BTC",
+                "BTCUSD.CHAINLINK",
+                "CHAINLINK",
+            )],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "CHAINLINK-BTC".into(),
+            kind: ReferenceVenueKind::Chainlink,
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            base_weight: 1.0,
+            stale_after_ms: 1_000,
+            disable_after_ms: 5_000,
+            chainlink: None,
+        }],
+    );
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+    set_actor_clock_ms(&mut actor, 10_000);
+
+    let topic = chainlink_topic_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK");
+    let first = CustomData::new(
+        Arc::new(ChainlinkOracleUpdate {
+            venue_name: "CHAINLINK-BTC".into(),
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            price: 104_250.0,
+            round_id: "2".into(),
+            updated_at_ms: 9_000,
+            ts_init: UnixNanos::from(9_000_000_000),
+        }),
+        chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK"),
+    );
+    msgbus::publish_any(topic, &first);
+
+    let duplicate_second = CustomData::new(
+        Arc::new(ChainlinkOracleUpdate {
+            venue_name: "CHAINLINK-BTC".into(),
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            price: 105_000.0,
+            round_id: "3".into(),
+            updated_at_ms: 9_000,
+            ts_init: UnixNanos::from(9_500_000_000),
+        }),
+        chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK"),
+    );
+    set_actor_clock_ms(&mut actor, 9_550);
+    msgbus::publish_any(topic, &duplicate_second);
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[1].fair_value, Some(105_000.0));
+
+    let stored = actor
+        .latest
+        .get("CHAINLINK-BTC")
+        .expect("latest observation should be retained");
+    match stored {
+        bolt_v2::platform::reference::ReferenceObservation::Oracle { price, ts_ms, .. } => {
+            assert_eq!(*price, 105_000.0);
+            assert_eq!(*ts_ms, 9_000);
+        }
+        other => panic!("expected oracle observation, got {other:?}"),
+    }
 }

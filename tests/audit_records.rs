@@ -119,7 +119,11 @@ fn sample_record(ts_ms: u64) -> AuditRecord {
                 stale: false,
                 health: VenueHealthState::Healthy,
                 reason: None,
+                observed_ts_ms: Some(ts_ms - 10),
+                venue_kind: bolt_v2::platform::audit::VenueKindState::Orderbook,
                 observed_price: Some(0.5),
+                observed_bid: Some(0.49),
+                observed_ask: Some(0.51),
             },
             ReferenceVenueSnapshot {
                 venue_name: "kraken-btc".to_string(),
@@ -128,7 +132,11 @@ fn sample_record(ts_ms: u64) -> AuditRecord {
                 stale: true,
                 health: VenueHealthState::Disabled,
                 reason: Some("feed lagging".to_string()),
+                observed_ts_ms: Some(ts_ms - 25),
+                venue_kind: bolt_v2::platform::audit::VenueKindState::Oracle,
                 observed_price: Some(0.55),
+                observed_bid: None,
+                observed_ask: None,
             },
         ],
     }
@@ -306,12 +314,20 @@ async fn audit_records_serialize_as_jsonl() {
     assert_eq!(lines[0]["venues"][0]["venue_name"], "binance-btc");
     assert_eq!(lines[0]["venues"][0]["health"], "healthy");
     assert!(lines[0]["venues"][0]["reason"].is_null());
+    assert_eq!(lines[0]["venues"][0]["observed_ts_ms"], 90);
+    assert_eq!(lines[0]["venues"][0]["venue_kind"], "orderbook");
+    assert_eq!(lines[0]["venues"][0]["observed_bid"], 0.49);
+    assert_eq!(lines[0]["venues"][0]["observed_ask"], 0.51);
     assert_eq!(lines[0]["venues"][1]["venue_name"], "kraken-btc");
     assert_eq!(lines[0]["venues"][1]["effective_weight"], 0.0);
     assert_eq!(lines[0]["venues"][1]["stale"], true);
     assert_eq!(lines[0]["venues"][1]["health"], "disabled");
     assert_eq!(lines[0]["venues"][1]["reason"], "feed lagging");
+    assert_eq!(lines[0]["venues"][1]["observed_ts_ms"], 75);
+    assert_eq!(lines[0]["venues"][1]["venue_kind"], "oracle");
     assert_eq!(lines[0]["venues"][1]["observed_price"], 0.55);
+    assert!(lines[0]["venues"][1]["observed_bid"].is_null());
+    assert!(lines[0]["venues"][1]["observed_ask"].is_null());
     assert_eq!(lines[1]["kind"], "selector_decision");
     assert_eq!(lines[1]["state"], "freeze");
     assert_eq!(lines[1]["reason"], "venue unhealthy");

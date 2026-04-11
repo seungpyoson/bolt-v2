@@ -1359,8 +1359,12 @@ dependencies = [
  "anyhow",
  "arrow",
  "async-trait",
+ "chainlink-data-streams-report",
  "chrono",
  "clap",
+ "futures-util",
+ "hex",
+ "hmac",
  "log",
  "nautilus-binance",
  "nautilus-bybit",
@@ -1382,8 +1386,10 @@ dependencies = [
  "parquet",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 1.1.2+spec-1.1.0",
 ]
@@ -1610,6 +1616,20 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "rand_core 0.10.0",
+]
+
+[[package]]
+name = "chainlink-data-streams-report"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa8863173d96be52f974296b565f50515b4d8104e9311b2d3eeb9154387c6d8f"
+dependencies = [
+ "hex",
+ "num-bigint",
+ "serde",
+ "serde_json",
+ "snap",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

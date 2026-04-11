@@ -328,6 +328,8 @@ pub struct LiveReferenceInput {
     #[serde(default = "default_min_publish_interval_ms")]
     pub min_publish_interval_ms: u64,
     #[serde(default)]
+    pub chainlink: Option<crate::config::ChainlinkSharedConfig>,
+    #[serde(default)]
     pub venues: Vec<LiveReferenceVenueInput>,
 }
 
@@ -336,6 +338,7 @@ impl Default for LiveReferenceInput {
         Self {
             publish_topic: String::new(),
             min_publish_interval_ms: default_min_publish_interval_ms(),
+            chainlink: None,
             venues: Vec::new(),
         }
     }
@@ -350,6 +353,24 @@ pub struct LiveReferenceVenueInput {
     pub base_weight: f64,
     pub stale_after_ms: u64,
     pub disable_after_ms: u64,
+    #[serde(default)]
+    pub chainlink: Option<LiveChainlinkReferenceConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveChainlinkReferenceConfig {
+    pub feed_id: String,
+    pub price_scale: u8,
+}
+
+impl LiveChainlinkReferenceConfig {
+    fn to_runtime(&self) -> crate::config::ChainlinkReferenceConfig {
+        crate::config::ChainlinkReferenceConfig {
+            feed_id: self.feed_id.clone(),
+            price_scale: self.price_scale,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -496,6 +517,8 @@ struct RenderedStreamingConfig {
 struct RenderedReferenceConfig {
     publish_topic: String,
     min_publish_interval_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chainlink: Option<crate::config::ChainlinkSharedConfig>,
     venues: Vec<RenderedReferenceVenueEntry>,
 }
 
@@ -508,6 +531,8 @@ struct RenderedReferenceVenueEntry {
     base_weight: f64,
     stale_after_ms: u64,
     disable_after_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chainlink: Option<crate::config::ChainlinkReferenceConfig>,
 }
 
 #[derive(Serialize)]
@@ -695,6 +720,7 @@ fn render_runtime_config(
         reference: platform_enabled.then(|| RenderedReferenceConfig {
             publish_topic: input.reference.publish_topic.clone(),
             min_publish_interval_ms: input.reference.min_publish_interval_ms,
+            chainlink: input.reference.chainlink.clone(),
             venues: input
                 .reference
                 .venues
@@ -706,6 +732,10 @@ fn render_runtime_config(
                     base_weight: venue.base_weight,
                     stale_after_ms: venue.stale_after_ms,
                     disable_after_ms: venue.disable_after_ms,
+                    chainlink: venue
+                        .chainlink
+                        .as_ref()
+                        .map(LiveChainlinkReferenceConfig::to_runtime),
                 })
                 .collect(),
         }),

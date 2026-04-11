@@ -174,6 +174,7 @@ fn test_config(audit_dir: &Path) -> Config {
                     .as_nanos()
             ),
             min_publish_interval_ms: 0,
+            chainlink: None,
             venues: vec![ReferenceVenueEntry {
                 name: "BINANCE-BTC".to_string(),
                 kind: ReferenceVenueKind::Binance,
@@ -181,6 +182,7 @@ fn test_config(audit_dir: &Path) -> Config {
                 base_weight: 1.0,
                 stale_after_ms: 5_000,
                 disable_after_ms: 10_000,
+                chainlink: None,
             }],
         },
         rulesets: vec![RulesetConfig {
@@ -668,7 +670,11 @@ async fn reference_snapshot_is_forwarded_into_audit_spool() {
                     effective_weight: 0.7,
                     stale: false,
                     health: bolt_v2::platform::reference::VenueHealth::Healthy,
+                    observed_ts_ms: Some(4_200),
+                    venue_kind: bolt_v2::platform::reference::VenueKind::Orderbook,
                     observed_price: Some(42.0),
+                    observed_bid: Some(41.9),
+                    observed_ask: Some(42.1),
                 },
                 bolt_v2::platform::reference::EffectiveVenueState {
                     venue_name: "KRAKEN-BTC".to_string(),
@@ -678,7 +684,11 @@ async fn reference_snapshot_is_forwarded_into_audit_spool() {
                     health: bolt_v2::platform::reference::VenueHealth::Disabled {
                         reason: "feed lagging".to_string(),
                     },
+                    observed_ts_ms: Some(4_100),
+                    venue_kind: bolt_v2::platform::reference::VenueKind::Oracle,
                     observed_price: Some(43.0),
+                    observed_bid: None,
+                    observed_ask: None,
                 },
             ],
         };
@@ -707,7 +717,11 @@ async fn reference_snapshot_is_forwarded_into_audit_spool() {
                         stale: false,
                         health: VenueHealthState::Healthy,
                         reason: None,
+                        observed_ts_ms: Some(4_200),
+                        venue_kind: bolt_v2::platform::audit::VenueKindState::Orderbook,
                         observed_price: Some(42.0),
+                        observed_bid: Some(41.9),
+                        observed_ask: Some(42.1),
                     },
                     ReferenceVenueSnapshot {
                         venue_name: "KRAKEN-BTC".to_string(),
@@ -716,7 +730,11 @@ async fn reference_snapshot_is_forwarded_into_audit_spool() {
                         stale: true,
                         health: VenueHealthState::Disabled,
                         reason: Some("feed lagging".to_string()),
+                        observed_ts_ms: Some(4_100),
+                        venue_kind: bolt_v2::platform::audit::VenueKindState::Oracle,
                         observed_price: Some(43.0),
+                        observed_bid: None,
+                        observed_ask: None,
                     },
                 ])
                 .unwrap()

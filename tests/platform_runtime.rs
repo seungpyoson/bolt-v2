@@ -35,6 +35,7 @@ use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
 use nautilus_model::identifiers::TraderId;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
+    clear_mock_data_subscriptions, recorded_mock_data_subscriptions,
 };
 use tempfile::tempdir;
 use tokio::{sync::Notify, task::LocalSet};
@@ -929,6 +930,7 @@ fn active_market_switch_replaces_runtime_strategy_with_new_market() {
         cfg.rulesets[0].selector_poll_interval_ms = 10;
         let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
         let switch_budget = Duration::from_secs(2);
+        clear_mock_data_subscriptions();
         let services = services_with_loader(
             Arc::new(SequencedLoader::new(vec![
                 vec![candidate_market(
@@ -965,8 +967,13 @@ fn active_market_switch_replaces_runtime_strategy_with_new_market() {
             wait_for_condition_or_stop(
                 switch_budget,
                 &stop_handle,
-                "exactly one runtime-managed strategy after switching active markets",
-                || trader.borrow().strategy_ids().len() == 1,
+                "runtime strategy replacement for the newly selected active market",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && recorded_mock_data_subscriptions()
+                            .iter()
+                            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
+                },
             )
             .await?;
             stop_handle.stop();
@@ -979,6 +986,9 @@ fn active_market_switch_replaces_runtime_strategy_with_new_market() {
         control_result.unwrap();
 
         assert_eq!(trader.borrow().strategy_ids().len(), 1);
+        assert!(recorded_mock_data_subscriptions()
+            .iter()
+            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET"));
     });
 }
 

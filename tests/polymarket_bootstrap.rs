@@ -2,7 +2,7 @@ mod support;
 
 use bolt_v2::{
     clients::polymarket, config::Config, materialize_live_config,
-    secrets::ResolvedPolymarketSecrets, strategies::exec_tester,
+    secrets::ResolvedPolymarketSecrets,
 };
 use log::LevelFilter;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
@@ -33,12 +33,16 @@ fn seam_test_uses_non_secret_placeholders() {
 }
 
 #[test]
-fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymarket_seam() {
+fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
     let tempdir = TempCaseDir::new("polymarket-bootstrap");
     let config_path = tempdir.path().join("live.toml");
     materialize_live_config(&repo_path("config/live.local.example.toml"), &config_path)
         .expect("tracked template should materialize");
     let cfg = Config::load(&config_path).expect("materialized config should load");
+    assert!(
+        !cfg.rulesets.is_empty(),
+        "tracked seam config should exercise ruleset mode"
+    );
 
     let trader_id = TraderId::from(cfg.node.trader_id.as_str());
     let environment = Environment::Live;
@@ -82,11 +86,12 @@ fn builds_live_node_and_registers_exec_tester_before_polling_run_on_real_polymar
         .expect("exec client should register")
         .build()
         .expect("node should build");
+    let trader = std::rc::Rc::clone(node.kernel().trader());
 
-    let strategy = exec_tester::build_exec_tester(&cfg.strategies[0].config)
-        .expect("strategy should translate");
-    node.add_strategy(strategy)
-        .expect("strategy should register");
+    assert!(
+        trader.borrow().strategy_ids().is_empty(),
+        "ruleset mode should leave static strategies unregistered until platform runtime owns them"
+    );
 
     // This offline seam test stops at compile-checking the final `run()` call.
     // Polling it would turn the test into a live integration test against external services.

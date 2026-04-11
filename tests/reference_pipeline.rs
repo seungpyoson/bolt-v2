@@ -212,13 +212,18 @@ fn orderbook(venue_name: &str, bid: f64, ask: f64, ts_ms: u64) -> ReferenceObser
     }
 }
 
-fn oracle(venue_name: &str, price: f64, ts_ms: u64) -> ReferenceObservation {
+fn oracle(
+    venue_name: &str,
+    price: f64,
+    ts_ms: u64,
+    observed_ts_ms: u64,
+) -> ReferenceObservation {
     ReferenceObservation::Oracle {
         venue_name: venue_name.into(),
         instrument_id: format!("{venue_name}.TEST"),
         price,
         ts_ms,
-        observed_ts_ms: ts_ms,
+        observed_ts_ms,
     }
 }
 
@@ -387,7 +392,10 @@ fn single_oracle_observation_uses_direct_price() {
         1.0,
         1_000,
     )];
-    let latest = BTreeMap::from([("CHAINLINK".to_string(), oracle("CHAINLINK", 104.25, 1_000))]);
+    let latest = BTreeMap::from([(
+        "CHAINLINK".to_string(),
+        oracle("CHAINLINK", 104.25, 1_000, 1_025),
+    )]);
 
     let snapshot = fuse_reference_snapshot(
         "platform.reference.default",
@@ -399,7 +407,7 @@ fn single_oracle_observation_uses_direct_price() {
 
     assert_eq!(snapshot.fair_value, Some(104.25));
     assert_eq!(snapshot.confidence, 1.0);
-    assert_eq!(snapshot.venues[0].observed_ts_ms, Some(1_000));
+    assert_eq!(snapshot.venues[0].observed_ts_ms, Some(1_025));
     assert_eq!(
         snapshot.venues[0].venue_kind,
         bolt_v2::platform::reference::VenueKind::Oracle

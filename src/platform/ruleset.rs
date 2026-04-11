@@ -131,7 +131,7 @@ fn reject_reason(
     if ruleset.require_accepting_orders && !market.accepting_orders {
         return Some(EligibilityRejectReason::OrdersClosed);
     }
-    if market.liquidity_num < ruleset.min_liquidity_num {
+    if !(market.liquidity_num >= ruleset.min_liquidity_num) {
         return Some(EligibilityRejectReason::LowLiquidity);
     }
     if market.seconds_to_end < ruleset.min_time_to_expiry_secs {

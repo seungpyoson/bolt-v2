@@ -209,6 +209,81 @@ fn returns_idle_when_no_market_is_eligible() {
 }
 
 #[test]
+fn rejects_nan_liquidity_candidate_from_selection() {
+    let ruleset = ruleset();
+    let candidates = vec![candidate(
+        "market-nan-liquidity",
+        "binance_btcusdt_1m",
+        f64::NAN,
+        900,
+    )];
+
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(
+        evaluation.decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Idle {
+                reason: "no eligible market".to_string(),
+            },
+        }
+    );
+    assert_eq!(evaluation.rejected_candidates.len(), 1);
+    let rejected = &evaluation.rejected_candidates[0];
+    assert_eq!(rejected.reason, EligibilityRejectReason::LowLiquidity);
+    assert_eq!(rejected.market.market_id, "market-nan-liquidity");
+    assert_eq!(rejected.market.instrument_id, "market-nan-liquidity-yes");
+    assert_eq!(rejected.market.tag_slug, "bitcoin");
+    assert_eq!(
+        rejected.market.declared_resolution_basis,
+        "binance_btcusdt_1m"
+    );
+    assert!(rejected.market.accepting_orders);
+    assert!(rejected.market.liquidity_num.is_nan());
+    assert_eq!(rejected.market.seconds_to_end, 900);
+}
+
+#[test]
+fn selects_valid_market_when_nan_liquidity_candidate_is_present() {
+    let ruleset = ruleset();
+    let candidates = vec![
+        candidate("market-valid", "binance_btcusdt_1m", 7_500.0, 900),
+        candidate(
+            "market-nan-liquidity",
+            "binance_btcusdt_1m",
+            f64::NAN,
+            1_200,
+        ),
+    ];
+
+    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+
+    assert_eq!(
+        evaluation.decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Active {
+                market: candidate("market-valid", "binance_btcusdt_1m", 7_500.0, 900),
+            },
+        }
+    );
+    assert_eq!(evaluation.rejected_candidates.len(), 1);
+    let rejected = &evaluation.rejected_candidates[0];
+    assert_eq!(rejected.reason, EligibilityRejectReason::LowLiquidity);
+    assert_eq!(rejected.market.market_id, "market-nan-liquidity");
+    assert_eq!(rejected.market.instrument_id, "market-nan-liquidity-yes");
+    assert_eq!(rejected.market.tag_slug, "bitcoin");
+    assert_eq!(
+        rejected.market.declared_resolution_basis,
+        "binance_btcusdt_1m"
+    );
+    assert!(rejected.market.accepting_orders);
+    assert!(rejected.market.liquidity_num.is_nan());
+    assert_eq!(rejected.market.seconds_to_end, 1_200);
+}
+
+#[test]
 fn enters_freeze_state_near_market_end() {
     let ruleset = ruleset();
     let candidates = vec![

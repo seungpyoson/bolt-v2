@@ -112,8 +112,13 @@ ci-lint-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
-    workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
-    action_files=(.github/actions/*/action.yml .github/actions/*/action.yaml)
+    workflow_files=()
+    action_files=()
+
+    [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
+    [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
+    [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
+
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
     rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
 

@@ -84,8 +84,19 @@ fn translate_market(
     tag_slug: &str,
     now: DateTime<Utc>,
 ) -> Option<CandidateMarket> {
-    let declared_resolution_basis =
-        parse_declared_resolution_basis(None, market.description.as_deref())?;
+    let declared_resolution_basis = match parse_declared_resolution_basis(
+        market.description.as_deref(),
+    ) {
+        Some(basis) => basis,
+        None => {
+            log::warn!(
+                "skipping candidate market {} for tag {}: could not parse declared resolution basis from description",
+                market.id,
+                tag_slug
+            );
+            return None;
+        }
+    };
     let instrument_id = first_token_id(&market.clob_token_ids)?;
     let accepting_orders = market.accepting_orders?;
     let liquidity_num = market.liquidity_num?;

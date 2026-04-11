@@ -22,6 +22,7 @@ use bolt_v2::{
             VenueHealthState, spawn_audit_worker,
         },
         reference::ReferenceSnapshot,
+        resolution_basis::{CandleInterval, ResolutionBasis, ResolutionSourceKind},
         ruleset::CandidateMarket,
         runtime::{
             CandidateMarketLoadFuture, CandidateMarketLoader, PlatformAuditTaskFactory,
@@ -583,10 +584,18 @@ fn candidate_market(
         market_id: market_id.to_string(),
         instrument_id: instrument_id.to_string(),
         tag_slug: "bitcoin".to_string(),
-        declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+        declared_resolution_basis: binance_btcusdt_1m(),
         accepting_orders: true,
         liquidity_num,
         seconds_to_end,
+    }
+}
+
+fn binance_btcusdt_1m() -> ResolutionBasis {
+    ResolutionBasis::ExchangeCandle {
+        source: ResolutionSourceKind::Binance,
+        pair: "btcusdt".to_string(),
+        interval: CandleInterval::OneMinute,
     }
 }
 
@@ -602,7 +611,7 @@ async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick
                 market_id: "mkt-low-liquidity".to_string(),
                 instrument_id: "LOW_LIQ.POLYMARKET".to_string(),
                 tag_slug: "bitcoin".to_string(),
-                declared_resolution_basis: "binance_btcusdt_1m".to_string(),
+                declared_resolution_basis: binance_btcusdt_1m(),
                 accepting_orders: true,
                 liquidity_num: 999.0,
                 seconds_to_end: 120,

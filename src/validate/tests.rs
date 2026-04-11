@@ -1032,6 +1032,21 @@ fn phase1_ruleset_resolution_basis_must_be_non_empty() {
 }
 
 #[test]
+fn phase1_ruleset_resolution_basis_must_be_canonical() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"Binance_BTCUSDT_1m\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].resolution_basis",
+        "invalid_resolution_basis",
+    );
+}
+
+#[test]
 fn phase1_ruleset_min_time_to_expiry_secs_must_be_positive() {
     let toml = replace(
         &valid_phase1_toml(),
@@ -2213,6 +2228,36 @@ fn phase1_runtime_resolution_basis_requires_matching_reference_venue_family() {
         &errors,
         "rulesets[0].resolution_basis",
         "missing_reference_venue_family",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_non_canonical_resolution_basis() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"Binance_BTCUSDT_1m\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].resolution_basis",
+        "invalid_resolution_basis",
+    );
+}
+
+#[test]
+fn phase1_runtime_rejects_unknown_resolution_basis_source() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"coinbase_btcusd_1m\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].resolution_basis",
+        "invalid_resolution_basis",
     );
 }
 

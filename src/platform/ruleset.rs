@@ -1,4 +1,7 @@
-use crate::config::RulesetConfig;
+use crate::{
+    config::RulesetConfig,
+    platform::resolution_basis::{ResolutionBasis, parse_ruleset_resolution_basis},
+};
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -6,7 +9,7 @@ pub struct CandidateMarket {
     pub market_id: String,
     pub instrument_id: String,
     pub tag_slug: String,
-    pub declared_resolution_basis: String,
+    pub declared_resolution_basis: ResolutionBasis,
     pub accepting_orders: bool,
     pub liquidity_num: f64,
     pub seconds_to_end: u64,
@@ -72,11 +75,13 @@ pub fn evaluate_market_selection(
     ruleset: &RulesetConfig,
     candidates: &[CandidateMarket],
 ) -> SelectionEvaluation {
+    let ruleset_basis = parse_ruleset_resolution_basis(&ruleset.resolution_basis)
+        .expect("ruleset resolution basis validated at config load");
     let mut eligible: Vec<&CandidateMarket> = Vec::new();
     let mut rejected_candidates = Vec::new();
 
     for market in candidates {
-        match reject_reason(ruleset, market) {
+        match reject_reason(&ruleset_basis, ruleset, market) {
             Some(reason) => rejected_candidates.push(RejectedCandidate {
                 market: market.clone(),
                 reason,
@@ -120,13 +125,14 @@ pub fn select_market(ruleset: &RulesetConfig, candidates: &[CandidateMarket]) ->
 }
 
 fn reject_reason(
+    ruleset_basis: &ResolutionBasis,
     ruleset: &RulesetConfig,
     market: &CandidateMarket,
 ) -> Option<EligibilityRejectReason> {
     if market.tag_slug != ruleset.tag_slug {
         return Some(EligibilityRejectReason::TagMismatch);
     }
-    if market.declared_resolution_basis != ruleset.resolution_basis {
+    if market.declared_resolution_basis != *ruleset_basis {
         return Some(EligibilityRejectReason::ResolutionBasisMismatch);
     }
     if ruleset.require_accepting_orders && !market.accepting_orders {

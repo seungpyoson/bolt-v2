@@ -356,7 +356,7 @@ fn extract_separated_pairs(description: &str, separator: char) -> BTreeSet<Strin
         if left.is_empty() || right.is_empty() {
             continue;
         }
-        if !contains_ascii_letter(&left) || !contains_ascii_letter(&right) {
+        if !contains_ascii_letter(left) || !contains_ascii_letter(right) {
             continue;
         }
 
@@ -388,8 +388,8 @@ fn normalize_description(input: &str) -> String {
         .collect()
 }
 
-fn tokenize(input: &str) -> Vec<String> {
-    input.split_whitespace().map(ToString::to_string).collect()
+fn tokenize(input: &str) -> Vec<&str> {
+    input.split_whitespace().collect()
 }
 
 fn is_canonical_pair(value: &str) -> bool {

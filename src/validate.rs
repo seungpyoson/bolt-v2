@@ -358,54 +358,6 @@ fn check_chainlink_reference_config(
     }
 }
 
-fn check_live_chainlink_reference_config(
-    errors: &mut Vec<ValidationError>,
-    field_prefix: &str,
-    kind: &ReferenceVenueKind,
-    chainlink: Option<&crate::live_config::LiveChainlinkReferenceConfig>,
-) {
-    match (kind, chainlink) {
-        (ReferenceVenueKind::Chainlink, Some(chainlink)) => {
-            check_chainlink_feed_id(
-                errors,
-                &format!("{field_prefix}.feed_id"),
-                &chainlink.feed_id,
-            );
-            check_positive_u64(
-                errors,
-                &format!("{field_prefix}.price_scale"),
-                u64::from(chainlink.price_scale),
-            );
-            if chainlink.price_scale > 18 {
-                push_error(
-                    errors,
-                    &format!("{field_prefix}.price_scale"),
-                    "too_large",
-                    format!(
-                        "{field_prefix}.price_scale must be <= 18, got {}",
-                        chainlink.price_scale
-                    ),
-                );
-            }
-        }
-        (ReferenceVenueKind::Chainlink, None) => push_error(
-            errors,
-            field_prefix,
-            "missing_chainlink_config",
-            format!("{field_prefix} must be configured for reference venue kind chainlink"),
-        ),
-        (_, Some(_)) => push_error(
-            errors,
-            field_prefix,
-            "orphaned_chainlink_config",
-            format!(
-                "{field_prefix} must not be configured unless reference venue kind is chainlink"
-            ),
-        ),
-        (_, None) => {}
-    }
-}
-
 fn check_positive_finite_f64(errors: &mut Vec<ValidationError>, field: &str, value: f64) {
     if !value.is_finite() || value <= 0.0 {
         push_error(
@@ -1001,7 +953,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
             );
         }
 
-        check_live_chainlink_reference_config(
+        check_chainlink_reference_config(
             &mut errors,
             &format!("reference.venues[{i}].chainlink"),
             &venue.kind,

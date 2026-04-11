@@ -354,23 +354,7 @@ pub struct LiveReferenceVenueInput {
     pub stale_after_ms: u64,
     pub disable_after_ms: u64,
     #[serde(default)]
-    pub chainlink: Option<LiveChainlinkReferenceConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveChainlinkReferenceConfig {
-    pub feed_id: String,
-    pub price_scale: u8,
-}
-
-impl LiveChainlinkReferenceConfig {
-    fn to_runtime(&self) -> crate::config::ChainlinkReferenceConfig {
-        crate::config::ChainlinkReferenceConfig {
-            feed_id: self.feed_id.clone(),
-            price_scale: self.price_scale,
-        }
-    }
+    pub chainlink: Option<crate::config::ChainlinkReferenceConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -732,10 +716,7 @@ fn render_runtime_config(
                     base_weight: venue.base_weight,
                     stale_after_ms: venue.stale_after_ms,
                     disable_after_ms: venue.disable_after_ms,
-                    chainlink: venue
-                        .chainlink
-                        .as_ref()
-                        .map(LiveChainlinkReferenceConfig::to_runtime),
+                    chainlink: venue.chainlink.clone(),
                 })
                 .collect(),
         }),

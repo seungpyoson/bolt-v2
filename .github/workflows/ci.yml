@@ -94,6 +94,7 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
+          include-build-values: "true"
           use-default-target: "true"
 
       - name: Install aarch64 cross compiler

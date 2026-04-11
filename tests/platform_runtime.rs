@@ -920,6 +920,62 @@ fn idle_transition_removes_previously_active_runtime_strategy() {
 }
 
 #[test]
+fn freeze_transition_removes_previously_active_runtime_strategy() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let services = services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-then-freeze",
+                    "ACTIVE-FREEZE.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-then-freeze",
+                    "ACTIVE-FREEZE.POLYMARKET",
+                    2_000.0,
+                    60,
+                )],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
+            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the previously active runtime-managed strategy to be removed on freeze transition",
+                || trader.borrow().strategy_ids().is_empty(),
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        assert!(trader.borrow().strategy_ids().is_empty());
+    });
+}
+
+#[test]
 fn pre_registered_template_strategy_is_replaced_and_cleared_by_runtime() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();

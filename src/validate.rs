@@ -1277,6 +1277,24 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
     }
 
     if !config.rulesets.is_empty() {
+        let runtime_strategy_templates = config
+            .strategies
+            .iter()
+            .filter(|strategy| strategy.kind == "exec_tester")
+            .count();
+        if runtime_strategy_templates != 1 {
+            push_error(
+                &mut errors,
+                "strategies",
+                "phase1_runtime_strategy_template_count",
+                format!(
+                    "ruleset mode requires exactly one exec_tester strategy template, got {runtime_strategy_templates}"
+                ),
+            );
+        }
+    }
+
+    if !config.rulesets.is_empty() {
         check_non_empty(
             &mut errors,
             "reference.publish_topic",

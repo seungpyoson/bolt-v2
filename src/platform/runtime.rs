@@ -621,23 +621,34 @@ async fn run_selector_task(
 }
 
 fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTemplate>> {
-    cfg.strategies
+    let matching_templates: Vec<_> = cfg
+        .strategies
         .iter()
-        .find(|strategy| strategy.kind == "exec_tester")
-        .map(|strategy| {
-            let strategy_id = strategy
-                .config
-                .as_table()
-                .and_then(|table| table.get("strategy_id"))
-                .and_then(Value::as_str)
-                .context("exec_tester strategy template must include strategy_id")?;
+        .filter(|strategy| strategy.kind == "exec_tester")
+        .collect();
 
-            Ok(RuntimeStrategyTemplate {
-                strategy_id: StrategyId::from(strategy_id),
-                raw_config: strategy.config.clone(),
-            })
-        })
-        .transpose()
+    let strategy = match matching_templates.as_slice() {
+        [] => return Ok(None),
+        [strategy] => *strategy,
+        _ => {
+            bail!(
+                "platform runtime supports at most one exec_tester strategy template, got {}",
+                matching_templates.len()
+            );
+        }
+    };
+
+    let strategy_id = strategy
+        .config
+        .as_table()
+        .and_then(|table| table.get("strategy_id"))
+        .and_then(Value::as_str)
+        .context("exec_tester strategy template must include strategy_id")?;
+
+    Ok(Some(RuntimeStrategyTemplate {
+        strategy_id: StrategyId::from(strategy_id),
+        raw_config: strategy.config.clone(),
+    }))
 }
 
 fn reconcile_runtime_strategy(

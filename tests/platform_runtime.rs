@@ -823,6 +823,46 @@ fn no_eligible_market_registers_no_runtime_strategy() {
 }
 
 #[test]
+fn ruleset_mode_rejects_duplicate_runtime_strategy_templates() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.strategies.push(StrategyEntry {
+            kind: "exec_tester".to_string(),
+            config: toml::toml! {
+                strategy_id = "EXEC_TESTER-TEMPLATE-002"
+                instrument_id = "RUNTIME_DUPLICATE.POLYMARKET"
+                client_id = "TEST"
+                order_qty = "5"
+                log_data = false
+                tob_offset_ticks = 5
+                use_post_only = true
+                enable_limit_sells = false
+                enable_stop_buys = false
+                enable_stop_sells = false
+            }
+            .into(),
+        });
+        let services = services_with(
+            Vec::new(),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let error = match wire_platform_runtime_with_services(&mut node, &cfg, services) {
+            Ok(_) => panic!("ruleset mode should reject duplicate runtime strategy templates"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("at most one exec_tester strategy template"),
+            "{error}"
+        );
+    });
+}
+
+#[test]
 fn idle_transition_removes_previously_active_runtime_strategy() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();

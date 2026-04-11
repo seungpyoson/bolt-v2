@@ -25,6 +25,7 @@ jobs:
         uses: ./.github/actions/setup-environment
         with:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
 
       - name: Install cargo-deny
         run: |

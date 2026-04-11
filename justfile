@@ -117,8 +117,8 @@ ci-lint-workflow:
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
     rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
 
-    if [ "${#workflow_files[@]}" -eq 0 ]; then
-        echo "No workflow files found — skipping"
+    if [ "${#github_automation_files[@]}" -eq 0 ]; then
+        echo "No workflow or action files found — skipping"
     fi
 
     failed=0
@@ -302,7 +302,7 @@ ci-lint-workflow:
     fi
 
     if [ "${#workflow_files[@]}" -eq 0 ]; then
-        echo "OK: No workflow files found; workflow-specific checks skipped"
+        echo "OK: No workflow or action files found; automation-specific checks skipped"
     else
         echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
     fi

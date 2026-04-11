@@ -5,6 +5,9 @@ inputs:
   claude-config-read-token:
     description: Token used when installing the managed Rust owner.
     required: true
+  just-version:
+    description: Pinned just version to install.
+    required: true
   toolchain-components:
     description: Optional Rust components to install.
     required: false
@@ -52,11 +55,23 @@ runs:
     - name: Install just
       shell: bash
       run: |
-        : "${JUST_VERSION:?JUST_VERSION must be set}"
-        archive="just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-        base_url="https://github.com/casey/just/releases/download/${JUST_VERSION}"
-        curl -fsSLo "$RUNNER_TEMP/$archive" "$base_url/$archive"
-        curl -fsSLo "$RUNNER_TEMP/SHA256SUMS" "$base_url/SHA256SUMS"
+        case "$RUNNER_ARCH" in
+          X64)
+            just_target_arch="x86_64"
+            ;;
+          ARM64)
+            just_target_arch="aarch64"
+            ;;
+          *)
+            echo "Unsupported runner architecture for just install: $RUNNER_ARCH" >&2
+            exit 1
+            ;;
+        esac
+
+        archive="just-${{ inputs.just-version }}-${just_target_arch}-unknown-linux-musl.tar.gz"
+        base_url="https://github.com/casey/just/releases/download/${{ inputs.just-version }}"
+        curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$archive" "$base_url/$archive"
+        curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/SHA256SUMS" "$base_url/SHA256SUMS"
         (
           cd "$RUNNER_TEMP"
           grep "  $archive\$" SHA256SUMS | sha256sum -c -

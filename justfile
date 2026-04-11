@@ -127,8 +127,11 @@ ci-lint-workflow:
     just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_lint_literal='lint-workflow-contract:'
+    setup_lint_true_literal='lint-workflow-contract: "true"'
     setup_token_literal='claude-config-read-token:'
+    setup_token_source_literal='secrets.CLAUDE_CONFIG_READ_TOKEN'
     setup_just_version_literal='just-version:'
+    setup_just_version_source_literal='env.JUST_VERSION'
     setup_deny_version_literal='include-deny-version: "true"'
     setup_nextest_version_literal='include-nextest-version: "true"'
     setup_build_values_literal='include-build-values: "true"'
@@ -203,6 +206,9 @@ ci-lint-workflow:
                 setup-lint)
                     echo "ERROR: Managed CI workflow lint wiring missing in $f job '$job_name'"
                     ;;
+                setup-lint-true)
+                    echo "ERROR: Managed CI workflow lint must be enabled in $f job '$job_name'"
+                    ;;
                 setup-deny-version)
                     echo "ERROR: Managed CI deny-version wiring missing in $f job '$job_name'"
                     ;;
@@ -224,14 +230,23 @@ ci-lint-workflow:
                 setup-just-version)
                     echo "ERROR: Managed CI just version wiring missing in $f job '$job_name'"
                     ;;
+                setup-just-version-source)
+                    echo "ERROR: Managed CI just version source must come from env.JUST_VERSION in $f job '$job_name'"
+                    ;;
+                setup-token-source)
+                    echo "ERROR: Managed CI token source must come from secrets.CLAUDE_CONFIG_READ_TOKEN in $f job '$job_name'"
+                    ;;
             esac
             failed=1
         done < <(
             awk -v lane_pattern="$just_lane_pattern" \
                 -v setup_action_literal="$setup_action_literal" \
                 -v setup_lint_literal="$setup_lint_literal" \
+                -v setup_lint_true_literal="$setup_lint_true_literal" \
                 -v setup_token_literal="$setup_token_literal" \
+                -v setup_token_source_literal="$setup_token_source_literal" \
                 -v setup_just_version_literal="$setup_just_version_literal" \
+                -v setup_just_version_source_literal="$setup_just_version_source_literal" \
                 -v setup_deny_version_literal="$setup_deny_version_literal" \
                 -v setup_nextest_version_literal="$setup_nextest_version_literal" \
                 -v setup_build_values_literal="$setup_build_values_literal" \
@@ -248,8 +263,11 @@ ci-lint-workflow:
                     has_lane = 0
                     has_setup_step = 0
                     has_setup_lint = 0
+                    has_setup_lint_true = 0
                     has_setup_token = 0
+                    has_setup_token_source = 0
                     has_setup_just_version = 0
+                    has_setup_just_version_source = 0
                     has_setup_deny_version = 0
                     has_setup_nextest_version = 0
                     has_setup_build_values = 0
@@ -262,8 +280,11 @@ ci-lint-workflow:
                     has_zigbuild_version_output = 0
                     step_has_setup = 0
                     step_has_lint = 0
+                    step_has_lint_true = 0
                     step_has_token = 0
+                    step_has_token_source = 0
                     step_has_just_version = 0
+                    step_has_just_version_source = 0
                     step_has_deny_version = 0
                     step_has_nextest_version = 0
                     step_has_build_values = 0
@@ -278,11 +299,20 @@ ci-lint-workflow:
                         if (step_has_lint) {
                             has_setup_lint = 1
                         }
+                        if (step_has_lint_true) {
+                            has_setup_lint_true = 1
+                        }
                         if (step_has_token) {
                             has_setup_token = 1
                         }
+                        if (step_has_token_source) {
+                            has_setup_token_source = 1
+                        }
                         if (step_has_just_version) {
                             has_setup_just_version = 1
+                        }
+                        if (step_has_just_version_source) {
+                            has_setup_just_version_source = 1
                         }
                         if (step_has_deny_version) {
                             has_setup_deny_version = 1
@@ -305,8 +335,11 @@ ci-lint-workflow:
                     }
                     step_has_setup = 0
                     step_has_lint = 0
+                    step_has_lint_true = 0
                     step_has_token = 0
+                    step_has_token_source = 0
                     step_has_just_version = 0
+                    step_has_just_version_source = 0
                     step_has_deny_version = 0
                     step_has_nextest_version = 0
                     step_has_build_values = 0
@@ -326,11 +359,20 @@ ci-lint-workflow:
                     if (current == "gate" && has_setup_step && !has_setup_lint) {
                         print current "|setup-lint"
                     }
+                    if (current == "gate" && has_setup_step && !has_setup_lint_true) {
+                        print current "|setup-lint-true"
+                    }
                     if (has_setup_step && !has_setup_token) {
                         print current "|setup-token"
                     }
+                    if (has_setup_step && !has_setup_token_source) {
+                        print current "|setup-token-source"
+                    }
                     if (has_setup_step && !has_setup_just_version) {
                         print current "|setup-just-version"
+                    }
+                    if (has_setup_step && !has_setup_just_version_source) {
+                        print current "|setup-just-version-source"
                     }
                     if ((current == "gate" || current == "advisories") && has_setup_step && !has_setup_deny_version) {
                         print current "|setup-deny-version"
@@ -373,8 +415,11 @@ ci-lint-workflow:
                     has_lane = 0
                     has_setup_step = 0
                     has_setup_lint = 0
+                    has_setup_lint_true = 0
                     has_setup_token = 0
+                    has_setup_token_source = 0
                     has_setup_just_version = 0
+                    has_setup_just_version_source = 0
                     has_setup_deny_version = 0
                     has_setup_nextest_version = 0
                     has_setup_build_values = 0
@@ -387,8 +432,11 @@ ci-lint-workflow:
                     has_zigbuild_version_output = 0
                     step_has_setup = 0
                     step_has_lint = 0
+                    step_has_lint_true = 0
                     step_has_token = 0
+                    step_has_token_source = 0
                     step_has_just_version = 0
+                    step_has_just_version_source = 0
                     step_has_deny_version = 0
                     step_has_nextest_version = 0
                     step_has_build_values = 0
@@ -406,8 +454,11 @@ ci-lint-workflow:
                     has_lane = 0
                     has_setup_step = 0
                     has_setup_lint = 0
+                    has_setup_lint_true = 0
                     has_setup_token = 0
+                    has_setup_token_source = 0
                     has_setup_just_version = 0
+                    has_setup_just_version_source = 0
                     has_setup_deny_version = 0
                     has_setup_nextest_version = 0
                     has_setup_build_values = 0
@@ -420,8 +471,11 @@ ci-lint-workflow:
                     has_zigbuild_version_output = 0
                     step_has_setup = 0
                     step_has_lint = 0
+                    step_has_lint_true = 0
                     step_has_token = 0
+                    step_has_token_source = 0
                     step_has_just_version = 0
+                    step_has_just_version_source = 0
                     step_has_deny_version = 0
                     step_has_nextest_version = 0
                     step_has_build_values = 0
@@ -444,11 +498,20 @@ ci-lint-workflow:
                     if (index($0, setup_lint_literal) > 0) {
                         step_has_lint = 1
                     }
+                    if (index($0, setup_lint_true_literal) > 0) {
+                        step_has_lint_true = 1
+                    }
                     if (index($0, setup_token_literal) > 0) {
                         step_has_token = 1
                     }
+                    if (index($0, setup_token_source_literal) > 0) {
+                        step_has_token_source = 1
+                    }
                     if (index($0, setup_just_version_literal) > 0) {
                         step_has_just_version = 1
+                    }
+                    if (index($0, setup_just_version_source_literal) > 0) {
+                        step_has_just_version_source = 1
                     }
                     if (index($0, setup_deny_version_literal) > 0) {
                         step_has_deny_version = 1

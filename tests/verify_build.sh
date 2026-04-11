@@ -9,9 +9,9 @@ rust_verification_source_sha="$(just -f "$repo_root/justfile" --evaluate rust_ve
 if [ -n "$rust_verification_source_repo" ] && [ -n "$rust_verification_source_sha" ]; then
     RUST_VERIFICATION_SOURCE_REPO="$rust_verification_source_repo" \
     RUST_VERIFICATION_SOURCE_SHA="$rust_verification_source_sha" \
-    bash "$repo_root/scripts/require_rust_verification_owner.sh" "$rust_verification_owner" >/dev/null
+    bash "$repo_root/scripts/require_rust_verification_owner.sh" "$rust_verification_owner"
 else
-    bash "$repo_root/scripts/require_rust_verification_owner.sh" "$rust_verification_owner" >/dev/null
+    bash "$repo_root/scripts/require_rust_verification_owner.sh" "$rust_verification_owner"
 fi
 
 managed_cargo() {

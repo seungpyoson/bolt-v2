@@ -95,16 +95,16 @@ live-generate: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
-live: live-generate require-rust-verification-owner
+live: live-generate
     # Run with the generated runtime config artifact.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_config}}
 
 # Optional diagnostics for the live operator config.
-live-check: live-generate require-rust-verification-owner
+live-check: live-generate
     # Validate secret-config completeness only; do not resolve secrets.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_config}}
 
-live-resolve: live-generate require-rust-verification-owner
+live-resolve: live-generate
     # Perform actual secret resolution against the generated runtime config.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
 
@@ -129,6 +129,10 @@ ci-lint-workflow:
     owner_install_eval_literal='just --evaluate rust_verification_ci_install_script'
     managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
     repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
+    just_target='{{target}}'
+    managed_build_profile='release'
+    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
+    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
 
     for f in "${files[@]}"; do
         if grep -En "$pattern" "$f"; then
@@ -305,12 +309,26 @@ ci-lint-workflow:
         fi
     done
 
+    if [ "$toml_target" != "$just_target" ]; then
+        echo "ERROR: justfile target ($just_target) does not match .claude/rust-verification.toml build target ($toml_target)"
+        failed=1
+    fi
+
+    if [ "$toml_profile" != "$managed_build_profile" ]; then
+        echo "ERROR: managed-build profile ($managed_build_profile) does not match .claude/rust-verification.toml build profile ($toml_profile)"
+        failed=1
+    fi
+
     if [ "$failed" -ne 0 ]; then
-        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, and repo-local managed build artifact paths."
+        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, repo-local managed build artifact paths, and justfile/TOML build drift."
         exit 1
     fi
 
-    echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, or repo-local managed build artifact paths found"
+    if [ "${#files[@]}" -eq 0 ]; then
+        echo "OK: No workflow files found; workflow-specific checks skipped"
+    else
+        echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, drifted CI owner pins, or repo-local managed build artifact paths found"
+    fi
 
 worktree branch:
     #!/usr/bin/env bash

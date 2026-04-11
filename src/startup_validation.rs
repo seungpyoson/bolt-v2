@@ -34,8 +34,10 @@ pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
                 targets.event_slugs.join(", ")
             ))
         })?;
-    let discovered_instrument_ids: BTreeSet<String> =
-        instruments.iter().map(|instrument| instrument.id().to_string()).collect();
+    let discovered_instrument_ids: BTreeSet<String> = instruments
+        .iter()
+        .map(|instrument| instrument.id().to_string())
+        .collect();
 
     validate_polymarket_startup_results(&targets, &discovered_instrument_ids)
 }
@@ -270,10 +272,9 @@ mod tests {
             .expect("targets should collect")
             .expect("polymarket targets should exist");
 
-        let err =
-            validate_polymarket_startup_results(&targets, &BTreeSet::new())
-                .expect_err("validation should fail")
-                .to_string();
+        let err = validate_polymarket_startup_results(&targets, &BTreeSet::new())
+            .expect_err("validation should fail")
+            .to_string();
 
         assert!(err.contains("stale-market"), "{err}");
         assert!(err.contains("zero instruments"), "{err}");
@@ -291,9 +292,7 @@ mod tests {
 
         validate_polymarket_startup_results(
             &targets,
-            &BTreeSet::from([String::from(
-                "0xpresent-condition-present-token.POLYMARKET",
-            )]),
+            &BTreeSet::from([String::from("0xpresent-condition-present-token.POLYMARKET")]),
         )
         .expect("discovered instrument ids should satisfy startup validation");
     }
@@ -313,9 +312,7 @@ mod tests {
 
         let err = validate_polymarket_startup_results(
             &targets,
-            &BTreeSet::from([String::from(
-                "0xpresent-condition-present-token.POLYMARKET",
-            )]),
+            &BTreeSet::from([String::from("0xpresent-condition-present-token.POLYMARKET")]),
         )
         .expect_err("validation should fail")
         .to_string();

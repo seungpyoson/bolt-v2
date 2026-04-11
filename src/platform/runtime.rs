@@ -11,7 +11,6 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use nautilus_common::{
-    actor::registry::try_get_actor_unchecked,
     actor::{DataActor, DataActorConfig, DataActorCore},
     component::Component,
     msgbus::{self, Endpoint, MStr, ShareableMessageHandler, TypedHandler, get_message_bus},
@@ -129,6 +128,10 @@ struct RuntimeStrategyApplierConfig {
 struct RuntimeStrategyApplier {
     core: DataActorCore,
     config: RuntimeStrategyApplierConfig,
+    state: Rc<RefCell<RuntimeStrategyApplierState>>,
+}
+
+struct RuntimeStrategyApplierState {
     template: RuntimeStrategyTemplate,
     trader: Rc<RefCell<Trader>>,
     active_runtime_strategy: Option<RuntimeManagedStrategy>,
@@ -139,9 +142,14 @@ struct RuntimeStrategyApplier {
 
 impl fmt::Debug for RuntimeStrategyApplier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let active_runtime_strategy = self
+            .state
+            .try_borrow()
+            .ok()
+            .and_then(|state| state.active_runtime_strategy.clone());
         f.debug_struct("RuntimeStrategyApplier")
             .field("config", &self.config)
-            .field("active_runtime_strategy", &self.active_runtime_strategy)
+            .field("active_runtime_strategy", &active_runtime_strategy)
             .finish()
     }
 }
@@ -158,12 +166,14 @@ impl RuntimeStrategyApplier {
         Self {
             core: DataActorCore::new(config.base.clone()),
             config,
-            template,
-            trader,
-            active_runtime_strategy: None,
-            failure,
-            cancellation,
-            node_handle,
+            state: Rc::new(RefCell::new(RuntimeStrategyApplierState {
+                template,
+                trader,
+                active_runtime_strategy: None,
+                failure,
+                cancellation,
+                node_handle,
+            })),
         }
     }
 
@@ -193,6 +203,45 @@ impl RuntimeStrategyApplier {
         Ok(())
     }
 
+    fn register_execute_endpoint(&self) {
+        let actor_id = self.actor_id();
+        let state = Rc::clone(&self.state);
+        let handler = TypedHandler::from(move |command: &RuntimeStrategyCommand| {
+            let (result, node_handle, cancellation) = {
+                let mut state = state.borrow_mut();
+                let node_handle = state.node_handle.clone();
+                let cancellation = state.cancellation.clone();
+                let result = state.execute(command.clone()).map_err(|error| {
+                    let error_message = error
+                        .context("runtime-managed strategy apply failed")
+                        .to_string();
+                    state.record_failure(error_message.clone());
+                    error_message
+                });
+                (result, node_handle, cancellation)
+            };
+
+            if let Err(error_message) = result {
+                let _ = fail_closed(&node_handle, &cancellation, anyhow!(error_message));
+            }
+        });
+
+        get_message_bus()
+            .borrow_mut()
+            .endpoint_map::<RuntimeStrategyCommand>()
+            .register(Self::execute_endpoint(&actor_id), handler);
+    }
+
+    fn deregister_execute_endpoint(&self) {
+        let actor_id = self.actor_id();
+        get_message_bus()
+            .borrow_mut()
+            .endpoint_map::<RuntimeStrategyCommand>()
+            .deregister(Self::execute_endpoint(&actor_id));
+    }
+}
+
+impl RuntimeStrategyApplierState {
     fn execute(&mut self, command: RuntimeStrategyCommand) -> Result<()> {
         let desired_instrument_id = match command {
             RuntimeStrategyCommand::Activate { instrument_id } => {
@@ -215,41 +264,6 @@ impl RuntimeStrategyApplier {
         {
             *failure = Some(error_message);
         }
-    }
-
-    fn register_execute_endpoint(&self) {
-        let actor_id = self.actor_id();
-        let actor_registry_id = actor_id.inner();
-        let handler = TypedHandler::from(move |command: &RuntimeStrategyCommand| {
-            if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_registry_id) {
-                if let Err(error) = actor.execute(command.clone()) {
-                    let error_message = error
-                        .context("runtime-managed strategy apply failed")
-                        .to_string();
-                    actor.record_failure(error_message.clone());
-                    let _ = fail_closed(
-                        &actor.node_handle,
-                        &actor.cancellation,
-                        anyhow!(error_message),
-                    );
-                }
-            } else {
-                log::error!("Runtime strategy applier {actor_id} not found for command handling");
-            }
-        });
-
-        get_message_bus()
-            .borrow_mut()
-            .endpoint_map::<RuntimeStrategyCommand>()
-            .register(Self::execute_endpoint(&actor_id), handler);
-    }
-
-    fn deregister_execute_endpoint(&self) {
-        let actor_id = self.actor_id();
-        get_message_bus()
-            .borrow_mut()
-            .endpoint_map::<RuntimeStrategyCommand>()
-            .deregister(Self::execute_endpoint(&actor_id));
     }
 }
 

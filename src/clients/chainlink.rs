@@ -1018,6 +1018,30 @@ mod tests {
         assert_eq!(value, 0x010203040506);
     }
 
+    #[test]
+    fn scales_decimal_string_to_f64_with_zero_scale() {
+        let value = scale_decimal_string_to_f64("12345", 0).unwrap();
+        assert_eq!(value, 12_345.0);
+    }
+
+    #[test]
+    fn scales_decimal_string_to_f64_when_digits_are_shorter_than_scale() {
+        let value = scale_decimal_string_to_f64("123", 5).unwrap();
+        assert!((value - 0.00123).abs() < 1e-12, "unexpected scaled value: {value}");
+    }
+
+    #[test]
+    fn scales_decimal_string_to_f64_for_negative_values() {
+        let value = scale_decimal_string_to_f64("-12345", 2).unwrap();
+        assert!((value + 123.45).abs() < 1e-12, "unexpected scaled value: {value}");
+    }
+
+    #[test]
+    fn rejects_invalid_decimal_strings() {
+        let error = scale_decimal_string_to_f64("12.34", 2).unwrap_err().to_string();
+        assert!(error.contains("invalid decimal digits"));
+    }
+
     #[tokio::test]
     #[ignore = "requires config/live.toml with resolvable Chainlink testnet credentials"]
     async fn live_chainlink_stream_smoke_works_with_generated_runtime_config() {

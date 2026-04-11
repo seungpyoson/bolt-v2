@@ -66,6 +66,7 @@ Issue `#109` therefore fixes the typed matching problem on the metadata we actua
 5. Make the internal model the future source of truth so structured TOML can be added later without rewriting selector/runtime logic.
 6. Use an opaque normalized `pair` string in this issue; do not split `base` and `quote` yet.
 7. Be explicit that description parsing remains heuristic extraction for known basis families, while selector and validation become generic downstream.
+8. Accept only canonical flat-string config forms; do not silently normalize non-canonical operator input.
 
 ## Internal Model
 
@@ -141,9 +142,23 @@ The parser should accept the current flat-string grammar using known source iden
 - exchange candle: `<source>_<pair>_<interval>`
 - oracle feed: `<source>_<pair>`
 
-The parser must not hardcode specific assets. It should normalize source, pair, and interval from the string grammar and reject malformed or unsupported shapes explicitly.
+The parser must not hardcode specific assets. It should extract source, pair, and interval from the string grammar and reject malformed or unsupported shapes explicitly.
 
 The parser must match against known source identifiers rather than trying to infer basis family from string shape alone.
+
+Parsing rules for the flat string:
+
+- identify the source from the known canonical prefix
+- identify the interval from the known canonical suffix for exchange-candle forms
+- treat the remaining middle segment as the opaque `pair`
+- do not parse by naive fixed-position underscore splitting
+
+Canonical config rules:
+
+- `source` is lowercase snake-free ASCII text from the known source set
+- `pair` is lowercase ASCII alphanumeric with no underscores
+- `interval` uses the canonical short token form such as `1m`, `5m`, `15m`, `1h`
+- non-canonical inputs are rejected with a parse error rather than normalized silently
 
 For valid current config strings, the parser must be invertible:
 
@@ -169,9 +184,13 @@ Parsing policy:
 
 - parse known supported settlement families out of the current description text
 - normalize the extracted data through the same canonicalization path used by config parsing
+- for exchange-candle families, parsing succeeds only when source, pair, and interval are all explicit in the description text
+- if description parsing yields more than one candidate supported basis, reject
 - reject malformed or incomplete descriptions that do not yield a complete supported `ResolutionBasis`
 
 This is still a fail-closed policy, but it is honest about the current adapter seam: downstream matching becomes typed and generic, while upstream description extraction remains heuristic for supported families.
+
+Live audit note as of 2026-04-11: current Binance market descriptions observed through Gamma include explicit interval text such as `1 hour candle` / `1H` and `1 minute candle` / `1m`, so `#109` does not need to invent a default interval for the currently-supported exchange-candle families.
 
 When the adapter later exposes `resolutionSource`, extend the parser policy to:
 
@@ -181,6 +200,10 @@ When the adapter later exposes `resolutionSource`, extend the parser policy to:
 - reject if both sides parse and differ structurally
 
 That merge behavior is follow-on work, not part of `#109`.
+
+Cross-parser invariant:
+
+- for each supported family member, description parsing must land on the same `ResolutionBasis` value produced by parsing the equivalent canonical config string
 
 ## Selector Matching
 
@@ -202,12 +225,19 @@ Keep `resolution_basis` as a required non-empty string in config for this issue,
 
 - invalid `resolution_basis` grammar must fail validation explicitly
 - reference-venue-family validation must derive from parsed `ResolutionBasis`, not from raw string prefixes
+- runtime selector code may treat ruleset basis parse failure as unreachable because config validation rejects invalid canonical strings at load/materialization time
 
 Replace [implied_reference_venue_kind(...)](/Users/spson/Projects/Claude/bolt-v2/src/validate.rs:442) with a typed helper that answers:
 
 ```rust
 required_reference_venue_kind(&ResolutionBasis) -> Option<ReferenceVenueKind>
 ```
+
+Mapping semantics:
+
+- every current `ResolutionSourceKind` used by supported basis families maps exhaustively to a `ReferenceVenueKind`
+- for the current scope, missing mappings should be treated as implementation errors, not as silent validation skips
+- `Option` is reserved for future basis families that may not require a reference venue family
 
 Validation semantics stay the same:
 
@@ -227,6 +257,7 @@ Expand [tests/polymarket_catalog.rs](/Users/spson/Projects/Claude/bolt-v2/tests/
 - exchange-candle basis fixtures with varying source / pair / interval
 - oracle-price-feed fixtures with varying source / pair
 - description-only fixtures for supported settlement families
+- rewrite existing `resolution_source`-argument tests to the current description-only signature used by `#109`
 - malformed and incomplete metadata that must be rejected
 - a canonicalization check that market parsing lands on the same `ResolutionBasis` shape expected by config parsing for equivalent current conventions
 
@@ -267,6 +298,8 @@ Expand [src/validate/tests.rs](/Users/spson/Projects/Claude/bolt-v2/src/validate
   Update runtime fixtures to use typed `declared_resolution_basis`.
 - [tests/test_nan_regression.rs](/Users/spson/Projects/Claude/bolt-v2/tests/test_nan_regression.rs:1)
   Update regression fixtures to use typed `declared_resolution_basis`.
+- [src/live_config.rs](/Users/spson/Projects/Claude/bolt-v2/src/live_config.rs:720)
+  Leave renderer behavior unchanged for `#109`; it continues to pass the raw canonical `resolution_basis` string through unchanged.
 
 ## Acceptance Criteria
 

@@ -11,10 +11,6 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use toml::Value;
 
-fn default_book_interval_ms() -> u64 {
-    1_000
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ExecTesterInput {
     pub strategy_id: String,
@@ -25,7 +21,7 @@ pub struct ExecTesterInput {
     pub log_data: bool,
     #[serde(default)]
     pub subscribe_book: bool,
-    #[serde(default = "default_book_interval_ms")]
+    #[serde(default = "crate::live_config::default_book_interval_ms")]
     pub book_interval_ms: u64,
     #[serde(default)]
     pub open_position_on_start_qty: Option<String>,

@@ -444,6 +444,65 @@ fn order_qty_precision_error_includes_nt_diagnostic() {
     );
 }
 
+#[test]
+fn book_interval_ms_zero_rejected() {
+    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"5\"\nbook_interval_ms = 0");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy.book_interval_ms", "not_positive");
+}
+
+#[test]
+fn invalid_open_position_time_in_force_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_time_in_force = \"NOPE\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategy.open_position_time_in_force",
+        "invalid_time_in_force",
+    );
+}
+
+#[test]
+fn valid_open_position_time_in_force_accepted_case_insensitively() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_time_in_force = \"fok\"",
+    );
+    let errors = errors_for(&toml);
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn open_position_on_start_qty_zero_rejected() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"0\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategy.open_position_on_start_qty",
+        "not_nonzero_number",
+    );
+}
+
+#[test]
+fn open_position_on_start_qty_signed_decimal_accepted() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"-1.5\"",
+    );
+    let errors = errors_for(&toml);
+    assert_no_errors(&errors);
+}
+
 // ════════════════════════════════════════════════════════════════
 // New fields: client_name, environment, log_level
 // ════════════════════════════════════════════════════════════════

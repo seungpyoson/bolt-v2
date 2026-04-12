@@ -5,7 +5,9 @@ use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
 use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
+use nautilus_model::enums::TimeInForce;
 use nautilus_model::types::Quantity;
+use rust_decimal::Decimal;
 use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;
 use toml::Value;
@@ -777,6 +779,40 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "strategy.order_qty",
         &config.strategy.order_qty,
     );
+    check_positive_u64(
+        &mut errors,
+        "strategy.book_interval_ms",
+        config.strategy.book_interval_ms,
+    );
+    if let Some(open_position_on_start_qty) = &config.strategy.open_position_on_start_qty {
+        match Decimal::from_str(open_position_on_start_qty) {
+            Ok(qty) if qty.is_zero() => push_error(
+                &mut errors,
+                "strategy.open_position_on_start_qty",
+                "not_nonzero_number",
+                "must not be zero".to_string(),
+            ),
+            Ok(_) => {}
+            Err(e) => push_error(
+                &mut errors,
+                "strategy.open_position_on_start_qty",
+                "not_parseable",
+                format!("must parse as decimal quantity: {e}"),
+            ),
+        }
+    }
+    if let Some(time_in_force) = &config.strategy.open_position_time_in_force
+        && TimeInForce::from_str(time_in_force).is_err()
+    {
+        push_error(
+            &mut errors,
+            "strategy.open_position_time_in_force",
+            "invalid_time_in_force",
+            format!(
+                "must be one of GTC, IOC, FOK, GTD, DAY, AT_THE_OPEN, AT_THE_CLOSE, got \"{time_in_force}\""
+            ),
+        );
+    }
 
     check_non_empty(&mut errors, "secrets.region", &config.secrets.region);
     check_ssm_path(&mut errors, "secrets.pk", &config.secrets.pk);

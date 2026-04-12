@@ -68,8 +68,10 @@ fn default_order_qty() -> String {
     "5".to_string()
 }
 
-fn default_book_interval_ms() -> u64 {
-    1_000
+pub(crate) const DEFAULT_BOOK_INTERVAL_MS: u64 = 1_000;
+
+pub(crate) fn default_book_interval_ms() -> u64 {
+    DEFAULT_BOOK_INTERVAL_MS
 }
 
 fn default_tob_offset_ticks() -> u64 {

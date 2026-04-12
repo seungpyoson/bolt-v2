@@ -471,7 +471,7 @@ fn valid_open_position_time_in_force_accepted_case_insensitively() {
     let toml = replace(
         &valid_toml(),
         "order_qty = \"5\"",
-        "order_qty = \"5\"\nopen_position_time_in_force = \"fok\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"1\"\nopen_position_time_in_force = \"fok\"",
     );
     let errors = errors_for(&toml);
     assert_no_errors(&errors);
@@ -542,7 +542,7 @@ fn open_position_on_start_qty_signed_decimal_accepted() {
     let toml = replace(
         &valid_toml(),
         "order_qty = \"5\"",
-        "order_qty = \"5\"\nopen_position_on_start_qty = \"-1.5\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"-1.5\"\nopen_position_time_in_force = \"FOK\"",
     );
     let errors = errors_for(&toml);
     assert_no_errors(&errors);

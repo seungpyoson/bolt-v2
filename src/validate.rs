@@ -5,7 +5,6 @@ use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
 use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
-use nautilus_model::enums::TimeInForce;
 use nautilus_model::types::Quantity;
 use rust_decimal::Decimal;
 use std::collections::{HashMap, hash_map::Entry};
@@ -785,6 +784,8 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         config.strategy.book_interval_ms,
     );
     if let Some(open_position_on_start_qty) = &config.strategy.open_position_on_start_qty {
+        // Signed quantity is intentional here: the open-position seam uses sign to encode
+        // buy versus sell, while zero remains invalid.
         match Decimal::from_str(open_position_on_start_qty) {
             Ok(qty) if qty.is_zero() => push_error(
                 &mut errors,
@@ -802,7 +803,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         }
     }
     if let Some(time_in_force) = &config.strategy.open_position_time_in_force
-        && TimeInForce::from_str(time_in_force).is_err()
+        && crate::live_config::parse_time_in_force_token(time_in_force).is_err()
     {
         push_error(
             &mut errors,

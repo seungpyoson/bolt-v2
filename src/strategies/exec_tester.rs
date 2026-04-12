@@ -1,7 +1,7 @@
 use std::{num::NonZeroUsize, str::FromStr};
 
+use crate::live_config::parse_time_in_force_token;
 use nautilus_model::{
-    enums::TimeInForce,
     identifiers::{ClientId, InstrumentId, StrategyId},
     types::Quantity,
 };
@@ -73,8 +73,11 @@ pub fn build_exec_tester(raw: &Value) -> Result<ExecTester, Box<dyn std::error::
     }
 
     if let Some(open_position_time_in_force) = cfg.open_position_time_in_force {
-        config.open_position_time_in_force =
-            TimeInForce::from_str(open_position_time_in_force.as_str())?;
+        config.open_position_time_in_force = parse_time_in_force_token(
+            open_position_time_in_force.as_str(),
+        )
+        .map_err(|e| format!("invalid open_position_time_in_force: {e}"))?
+        ;
     }
 
     Ok(ExecTester::new(config))

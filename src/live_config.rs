@@ -1,9 +1,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use nautilus_model::enums::TimeInForce;
 use serde::{Deserialize, Serialize};
 
 use crate::config::default_raw_capture_output_dir;
@@ -72,6 +74,15 @@ pub(crate) const DEFAULT_BOOK_INTERVAL_MS: u64 = 1_000;
 
 pub(crate) fn default_book_interval_ms() -> u64 {
     DEFAULT_BOOK_INTERVAL_MS
+}
+
+pub(crate) fn parse_time_in_force_token(raw: &str) -> Result<TimeInForce, String> {
+    let trimmed = raw.trim();
+    let normalized = trimmed.to_ascii_uppercase();
+
+    TimeInForce::from_str(&normalized)
+        .or_else(|_| TimeInForce::from_str(trimmed))
+        .map_err(|e| e.to_string())
 }
 
 fn default_tob_offset_ticks() -> u64 {

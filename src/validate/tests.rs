@@ -478,6 +478,51 @@ fn valid_open_position_time_in_force_accepted_case_insensitively() {
 }
 
 #[test]
+fn unsupported_open_position_time_in_force_rejected_even_if_valid_nt_enum() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"1\"\nopen_position_time_in_force = \"IOC\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategy.open_position_time_in_force",
+        "unsupported_time_in_force",
+    );
+}
+
+#[test]
+fn open_position_qty_requires_time_in_force() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"1\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategy.open_position_time_in_force",
+        "missing_open_position_time_in_force",
+    );
+}
+
+#[test]
+fn open_position_time_in_force_requires_qty() {
+    let toml = replace(
+        &valid_toml(),
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_time_in_force = \"FOK\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategy.open_position_on_start_qty",
+        "missing_open_position_on_start_qty",
+    );
+}
+
+#[test]
 fn open_position_on_start_qty_zero_rejected() {
     let toml = replace(
         &valid_toml(),
@@ -1739,6 +1784,62 @@ fn runtime_invalid_order_qty_rejected() {
         &errors,
         "strategies[0].config.order_qty",
         "not_positive_number",
+    );
+}
+
+#[test]
+fn runtime_open_position_qty_requires_time_in_force() {
+    let toml = valid_runtime_toml().replace(
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"1\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.open_position_time_in_force",
+        "missing_open_position_time_in_force",
+    );
+}
+
+#[test]
+fn runtime_open_position_time_in_force_requires_qty() {
+    let toml = valid_runtime_toml().replace(
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_time_in_force = \"FOK\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.open_position_on_start_qty",
+        "missing_open_position_on_start_qty",
+    );
+}
+
+#[test]
+fn runtime_rejects_unsupported_open_position_time_in_force() {
+    let toml = valid_runtime_toml().replace(
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nopen_position_on_start_qty = \"1\"\nopen_position_time_in_force = \"IOC\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.open_position_time_in_force",
+        "unsupported_time_in_force",
+    );
+}
+
+#[test]
+fn runtime_rejects_zero_book_interval_ms() {
+    let toml = valid_runtime_toml().replace(
+        "order_qty = \"5\"",
+        "order_qty = \"5\"\nsubscribe_book = true\nbook_interval_ms = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.book_interval_ms",
+        "not_positive",
     );
 }
 

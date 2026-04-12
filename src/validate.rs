@@ -247,6 +247,72 @@ fn check_positive_u64(errors: &mut Vec<ValidationError>, field: &str, value: u64
     }
 }
 
+fn validate_open_position_seam(
+    errors: &mut Vec<ValidationError>,
+    qty_field: &str,
+    qty_value: Option<&str>,
+    tif_field: &str,
+    tif_value: Option<&str>,
+) {
+    match (qty_value, tif_value) {
+        (Some(_), None) => push_error(
+            errors,
+            tif_field,
+            "missing_open_position_time_in_force",
+            "must be set when open_position_on_start_qty is configured".to_string(),
+        ),
+        (None, Some(_)) => push_error(
+            errors,
+            qty_field,
+            "missing_open_position_on_start_qty",
+            "must be set when open_position_time_in_force is configured".to_string(),
+        ),
+        _ => {}
+    }
+
+    if let Some(open_position_on_start_qty) = qty_value {
+        // Signed quantity is intentional here: the open-position seam uses sign to encode
+        // buy versus sell, while zero remains invalid.
+        match Decimal::from_str(open_position_on_start_qty) {
+            Ok(qty) if qty.is_zero() => push_error(
+                errors,
+                qty_field,
+                "not_nonzero_number",
+                "must not be zero".to_string(),
+            ),
+            Ok(_) => {}
+            Err(e) => push_error(
+                errors,
+                qty_field,
+                "not_parseable",
+                format!("must parse as decimal quantity: {e}"),
+            ),
+        }
+    }
+
+    if let Some(time_in_force) = tif_value {
+        match crate::live_config::parse_time_in_force_token(time_in_force) {
+            Ok(nautilus_model::enums::TimeInForce::Fok) => {}
+            Ok(other) => push_error(
+                errors,
+                tif_field,
+                "unsupported_time_in_force",
+                format!(
+                    "for the current Polymarket fallback entry seam only FOK is supported, got {other}"
+                ),
+            ),
+            Err(_) => push_error(
+                errors,
+                tif_field,
+                "invalid_time_in_force",
+                format!(
+                    "for the current Polymarket fallback entry seam open_position_time_in_force must be FOK, got \"{time_in_force}\""
+                ),
+            ),
+        }
+    }
+}
+
 fn check_chainlink_feed_id(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     check_non_empty(errors, field, value);
     if value.trim().is_empty() {
@@ -783,37 +849,13 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "strategy.book_interval_ms",
         config.strategy.book_interval_ms,
     );
-    if let Some(open_position_on_start_qty) = &config.strategy.open_position_on_start_qty {
-        // Signed quantity is intentional here: the open-position seam uses sign to encode
-        // buy versus sell, while zero remains invalid.
-        match Decimal::from_str(open_position_on_start_qty) {
-            Ok(qty) if qty.is_zero() => push_error(
-                &mut errors,
-                "strategy.open_position_on_start_qty",
-                "not_nonzero_number",
-                "must not be zero".to_string(),
-            ),
-            Ok(_) => {}
-            Err(e) => push_error(
-                &mut errors,
-                "strategy.open_position_on_start_qty",
-                "not_parseable",
-                format!("must parse as decimal quantity: {e}"),
-            ),
-        }
-    }
-    if let Some(time_in_force) = &config.strategy.open_position_time_in_force
-        && crate::live_config::parse_time_in_force_token(time_in_force).is_err()
-    {
-        push_error(
-            &mut errors,
-            "strategy.open_position_time_in_force",
-            "invalid_time_in_force",
-            format!(
-                "must be one of GTC, IOC, FOK, GTD, DAY, AT_THE_OPEN, AT_THE_CLOSE, got \"{time_in_force}\""
-            ),
-        );
-    }
+    validate_open_position_seam(
+        &mut errors,
+        "strategy.open_position_on_start_qty",
+        config.strategy.open_position_on_start_qty.as_deref(),
+        "strategy.open_position_time_in_force",
+        config.strategy.open_position_time_in_force.as_deref(),
+    );
 
     check_non_empty(&mut errors, "secrets.region", &config.secrets.region);
     check_ssm_path(&mut errors, "secrets.pk", &config.secrets.pk);
@@ -1418,6 +1460,87 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                 }
             }
         }
+
+        let subscribe_book = match strategy.config.get("subscribe_book") {
+            Some(value) if value.as_bool().is_none() => {
+                push_error(
+                    &mut errors,
+                    &format!("strategies[{i}].config.subscribe_book"),
+                    "wrong_type",
+                    format!("must be a boolean, got {} value", value.type_str()),
+                );
+                None
+            }
+            Some(value) => value.as_bool(),
+            None => None,
+        };
+
+        match strategy.config.get("book_interval_ms") {
+            Some(value) => {
+                let field = format!("strategies[{i}].config.book_interval_ms");
+                if let Some(interval) = value.as_integer() {
+                    if interval <= 0 {
+                        push_error(
+                            &mut errors,
+                            &field,
+                            "not_positive",
+                            "must be > 0".to_string(),
+                        );
+                    }
+                } else {
+                    push_error(
+                        &mut errors,
+                        &field,
+                        "wrong_type",
+                        format!("must be an integer, got {} value", value.type_str()),
+                    );
+                }
+            }
+            None if subscribe_book == Some(true) => push_error(
+                &mut errors,
+                &format!("strategies[{i}].config.book_interval_ms"),
+                "missing_book_interval_ms",
+                "must be set when subscribe_book is true".to_string(),
+            ),
+            None => {}
+        }
+
+        let open_position_on_start_qty = match strategy.config.get("open_position_on_start_qty") {
+            Some(value) if value.as_str().is_none() => {
+                push_error(
+                    &mut errors,
+                    &format!("strategies[{i}].config.open_position_on_start_qty"),
+                    "wrong_type",
+                    format!("must be a string, got {} value", value.type_str()),
+                );
+                None
+            }
+            Some(value) => value.as_str(),
+            None => None,
+        };
+
+        let open_position_time_in_force =
+            match strategy.config.get("open_position_time_in_force") {
+                Some(value) if value.as_str().is_none() => {
+                    push_error(
+                        &mut errors,
+                        &format!("strategies[{i}].config.open_position_time_in_force"),
+                        "wrong_type",
+                        format!("must be a string, got {} value", value.type_str()),
+                    );
+                    None
+                }
+                Some(value) => value.as_str(),
+                None => None,
+            };
+
+        validate_open_position_seam(
+            &mut errors,
+            &format!("strategies[{i}].config.open_position_on_start_qty"),
+            open_position_on_start_qty,
+            &format!("strategies[{i}].config.open_position_time_in_force"),
+            open_position_time_in_force,
+        );
     }
 
     if config.rulesets.len() > 1 {

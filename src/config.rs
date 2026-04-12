@@ -172,7 +172,7 @@ pub struct ChainlinkSharedConfig {
 pub struct RulesetConfig {
     pub id: String,
     pub venue: RulesetVenueKind,
-    pub tag_slug: String,
+    pub selector: Value,
     pub resolution_basis: String,
     pub min_time_to_expiry_secs: u64,
     pub max_time_to_expiry_secs: u64,

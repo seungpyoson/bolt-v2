@@ -24,6 +24,13 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+use toml::Value as TomlValue;
+
+fn polymarket_selector(tag_slug: &str) -> TomlValue {
+    let mut selector = toml::map::Map::new();
+    selector.insert("tag_slug".to_string(), TomlValue::String(tag_slug.to_string()));
+    TomlValue::Table(selector)
+}
 
 fn exchange_candle(
     source: ResolutionSourceKind,
@@ -54,7 +61,7 @@ fn ruleset() -> RulesetConfig {
     RulesetConfig {
         id: "btc-5m".to_string(),
         venue: RulesetVenueKind::Polymarket,
-        tag_slug: "bitcoin".to_string(),
+        selector: polymarket_selector("bitcoin"),
         resolution_basis: "binance_btcusdt_1m".to_string(),
         min_time_to_expiry_secs: 120,
         max_time_to_expiry_secs: 1_800,
@@ -327,7 +334,6 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-good");
     assert_eq!(markets[0].instrument_id, "111");
-    assert_eq!(markets[0].tag_slug, "bitcoin");
     assert_eq!(
         markets[0].declared_resolution_basis,
         exchange_candle(
@@ -388,7 +394,6 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
             .collect::<Vec<_>>(),
         vec!["111", "333"]
     );
-    assert!(markets.iter().all(|market| market.tag_slug == "bitcoin"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

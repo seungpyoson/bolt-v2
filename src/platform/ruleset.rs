@@ -8,7 +8,6 @@ use std::cmp::Ordering;
 pub struct CandidateMarket {
     pub market_id: String,
     pub instrument_id: String,
-    pub tag_slug: String,
     pub declared_resolution_basis: ResolutionBasis,
     pub accepting_orders: bool,
     pub liquidity_num: f64,
@@ -37,7 +36,6 @@ pub struct SelectionDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EligibilityRejectReason {
-    TagMismatch,
     ResolutionBasisMismatch,
     OrdersClosed,
     LowLiquidity,
@@ -48,7 +46,6 @@ pub enum EligibilityRejectReason {
 impl EligibilityRejectReason {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::TagMismatch => "tag_mismatch",
             Self::ResolutionBasisMismatch => "resolution_basis_mismatch",
             Self::OrdersClosed => "orders_closed",
             Self::LowLiquidity => "low_liquidity",
@@ -129,9 +126,6 @@ fn reject_reason(
     ruleset: &RulesetConfig,
     market: &CandidateMarket,
 ) -> Option<EligibilityRejectReason> {
-    if market.tag_slug != ruleset.tag_slug {
-        return Some(EligibilityRejectReason::TagMismatch);
-    }
     if market.declared_resolution_basis != *ruleset_basis {
         return Some(EligibilityRejectReason::ResolutionBasisMismatch);
     }

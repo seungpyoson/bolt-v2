@@ -1,5 +1,5 @@
 use crate::clients::chainlink::parse_chainlink_ws_origins;
-use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
+use crate::config::{Config, ReferenceConfig, ReferenceVenueKind, RulesetVenueKind};
 use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
 use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
@@ -528,6 +528,77 @@ fn get_required_array<'a>(
     }
 }
 
+fn get_required_table<'a>(
+    errors: &mut Vec<ValidationError>,
+    value: &'a Value,
+    field: &str,
+    code: &'static str,
+) -> Option<&'a toml::map::Map<String, Value>> {
+    match value.as_table() {
+        Some(value) => Some(value),
+        None => {
+            push_error(
+                errors,
+                field,
+                code,
+                format!("must be a table, got {} value", value.type_str()),
+            );
+            None
+        }
+    }
+}
+
+fn check_ruleset_selector(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    venue: &RulesetVenueKind,
+    selector: &Value,
+) {
+    match venue {
+        RulesetVenueKind::Polymarket => check_polymarket_ruleset_selector(errors, field, selector),
+    }
+}
+
+fn check_polymarket_ruleset_selector(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    selector: &Value,
+) {
+    let Some(table) = get_required_table(errors, selector, field, "missing_selector_table") else {
+        return;
+    };
+    let selector_value = Value::Table(table.clone());
+
+    let tag_slug_field = format!("{field}.tag_slug");
+    if let Some(tag_slug) = get_required_str(
+        errors,
+        &selector_value,
+        "tag_slug",
+        &tag_slug_field,
+        "missing_tag_slug",
+    ) {
+        check_non_empty(errors, &tag_slug_field, tag_slug);
+    }
+
+    let event_slug_prefix_field = format!("{field}.event_slug_prefix");
+    if let Some(event_slug_prefix) = table.get("event_slug_prefix") {
+        match event_slug_prefix.as_str() {
+            Some(event_slug_prefix) => {
+                check_non_empty_no_whitespace(errors, &event_slug_prefix_field, event_slug_prefix)
+            }
+            None => push_error(
+                errors,
+                &event_slug_prefix_field,
+                "wrong_type",
+                format!(
+                    "must be a string, got {} value",
+                    event_slug_prefix.type_str()
+                ),
+            ),
+        }
+    }
+}
+
 fn check_required_ssm_path_opt(
     errors: &mut Vec<ValidationError>,
     field: &str,
@@ -857,8 +928,12 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         let field = format!("rulesets[{i}].id");
         check_non_empty(&mut errors, &field, &ruleset.id);
 
-        let tag_slug_field = format!("rulesets[{i}].tag_slug");
-        check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
+        check_ruleset_selector(
+            &mut errors,
+            &format!("rulesets[{i}].selector"),
+            &ruleset.venue,
+            &ruleset.selector,
+        );
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
         check_non_empty(
@@ -1601,8 +1676,12 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         let id_field = format!("rulesets[{i}].id");
         check_non_empty(&mut errors, &id_field, &ruleset.id);
 
-        let tag_slug_field = format!("rulesets[{i}].tag_slug");
-        check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
+        check_ruleset_selector(
+            &mut errors,
+            &format!("rulesets[{i}].selector"),
+            &ruleset.venue,
+            &ruleset.selector,
+        );
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
         check_non_empty(

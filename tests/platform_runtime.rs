@@ -38,6 +38,13 @@ use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     clear_mock_data_subscriptions, recorded_mock_data_subscriptions,
 };
+use toml::Value;
+
+fn polymarket_selector(tag_slug: &str) -> Value {
+    let mut selector = toml::map::Map::new();
+    selector.insert("tag_slug".to_string(), Value::String(tag_slug.to_string()));
+    Value::Table(selector)
+}
 use tempfile::tempdir;
 use tokio::{sync::Notify, task::LocalSet};
 
@@ -194,7 +201,7 @@ fn test_config(audit_dir: &Path) -> Config {
         rulesets: vec![RulesetConfig {
             id: "PRIMARY".to_string(),
             venue: RulesetVenueKind::Polymarket,
-            tag_slug: "bitcoin".to_string(),
+            selector: polymarket_selector("bitcoin"),
             resolution_basis: "binance_btcusdt_1m".to_string(),
             min_time_to_expiry_secs: 60,
             max_time_to_expiry_secs: 900,
@@ -585,7 +592,6 @@ fn candidate_market(
     CandidateMarket {
         market_id: market_id.to_string(),
         instrument_id: instrument_id.to_string(),
-        tag_slug: "bitcoin".to_string(),
         declared_resolution_basis: binance_btcusdt_1m(),
         accepting_orders: true,
         liquidity_num,
@@ -612,7 +618,6 @@ async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick
             CandidateMarket {
                 market_id: "mkt-low-liquidity".to_string(),
                 instrument_id: "LOW_LIQ.POLYMARKET".to_string(),
-                tag_slug: "bitcoin".to_string(),
                 declared_resolution_basis: binance_btcusdt_1m(),
                 accepting_orders: true,
                 liquidity_num: 999.0,

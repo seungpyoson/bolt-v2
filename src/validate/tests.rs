@@ -771,7 +771,6 @@ fn phase1_duplicate_ruleset_ids_rejected() {
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin-2"
 resolution_basis = "binance_btcusdt_5m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -780,6 +779,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin-2"
 "#
     );
     let errors = errors_for(&toml);
@@ -792,6 +793,7 @@ fn phase1_reference_rejected_when_rulesets_are_missing() {
         .replace("[[rulesets]]\n", "")
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
+        .replace("[rulesets.selector]\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")
@@ -819,6 +821,7 @@ fn phase1_reference_min_publish_interval_only_rejected_when_rulesets_are_missing
         .replace("[[rulesets]]\n", "")
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
+        .replace("[rulesets.selector]\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")
@@ -858,6 +861,7 @@ fn phase1_reference_zero_min_publish_interval_only_rejected_when_rulesets_are_mi
         .replace("[[rulesets]]\n", "")
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
+        .replace("[rulesets.selector]\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")
@@ -897,6 +901,7 @@ fn phase1_audit_rejected_when_rulesets_are_missing() {
         .replace("[[rulesets]]\n", "")
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
+        .replace("[rulesets.selector]\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")
@@ -1010,14 +1015,14 @@ fn phase1_reference_venue_disable_after_ms_must_not_precede_stale_after_ms() {
 }
 
 #[test]
-fn phase1_ruleset_tag_slug_must_be_non_empty() {
+fn phase1_ruleset_selector_tag_slug_must_be_non_empty() {
     let toml = replace(
         &valid_phase1_toml(),
         "tag_slug = \"bitcoin\"",
         "tag_slug = \"\"",
     );
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "rulesets[0].tag_slug", "empty");
+    assert_has_error(&errors, "rulesets[0].selector.tag_slug", "empty");
 }
 
 #[test]
@@ -1313,7 +1318,6 @@ disable_after_ms = 5000
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin"
 resolution_basis = "binance_btcusdt_1m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -1322,6 +1326,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"
@@ -1355,7 +1361,6 @@ disable_after_ms = 5000
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin"
 resolution_basis = "binance_btcusdt_1m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -1364,6 +1369,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"
@@ -1819,7 +1826,6 @@ fn phase1_runtime_requires_exactly_one_active_ruleset() {
 [[rulesets]]
 id = "SECONDARY"
 venue = "polymarket"
-tag_slug = "bitcoin-2"
 resolution_basis = "binance_btcusdt_5m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -1828,6 +1834,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin-2"
 "#
     );
     let errors = runtime_errors_for(&toml);
@@ -1967,7 +1975,6 @@ fn phase1_runtime_rejects_duplicate_ruleset_ids() {
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin-2"
 resolution_basis = "binance_btcusdt_5m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -1976,6 +1983,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin-2"
 "#
     );
     let errors = runtime_errors_for(&toml);
@@ -1991,7 +2000,6 @@ fn phase1_runtime_load_rejects_duplicate_ruleset_ids() {
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin-2"
 resolution_basis = "binance_btcusdt_5m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -2000,6 +2008,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin-2"
 "#
     );
     let error = runtime_load_error_for(&toml);
@@ -2015,6 +2025,7 @@ fn phase1_runtime_rejects_orphaned_reference_min_publish_interval_without_rulese
         .replace("[[rulesets]]\n", "")
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
+        .replace("[rulesets.selector]\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")
@@ -2057,6 +2068,7 @@ fn phase1_runtime_rejects_orphaned_reference_zero_min_publish_interval_without_r
         .replace("[[rulesets]]\n", "")
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
+        .replace("[rulesets.selector]\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")

@@ -3,11 +3,20 @@ use chrono::{DateTime, Utc};
 use nautilus_polymarket::http::{
     gamma::PolymarketGammaRawHttpClient, models::GammaMarket, query::GetGammaEventsParams,
 };
+use serde::Deserialize;
 
 use crate::{
     config::RulesetConfig,
     platform::{resolution_basis::parse_declared_resolution_basis, ruleset::CandidateMarket},
 };
+
+#[derive(Debug, Clone, Deserialize)]
+struct PolymarketSelector {
+    tag_slug: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    event_slug_prefix: Option<String>,
+}
 
 pub async fn load_candidate_markets_for_ruleset(
     ruleset: &RulesetConfig,
@@ -22,10 +31,15 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
     ruleset: &RulesetConfig,
     client: &PolymarketGammaRawHttpClient,
 ) -> anyhow::Result<Vec<CandidateMarket>> {
+    let selector: PolymarketSelector = ruleset
+        .selector
+        .clone()
+        .try_into()
+        .context("failed to parse polymarket selector")?;
     let events = fetch_gamma_events_paginated(
         client,
         GetGammaEventsParams {
-            tag_slug: Some(ruleset.tag_slug.clone()),
+            tag_slug: Some(selector.tag_slug.clone()),
             ..Default::default()
         },
     )
@@ -36,7 +50,7 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
     Ok(events
         .into_iter()
         .flat_map(|event| event.markets.into_iter())
-        .filter_map(|market| translate_market(market, &ruleset.tag_slug, now))
+        .filter_map(|market| translate_market(market, now))
         .collect())
 }
 
@@ -79,20 +93,15 @@ async fn fetch_gamma_events_paginated(
     Ok(all_events)
 }
 
-fn translate_market(
-    market: GammaMarket,
-    tag_slug: &str,
-    now: DateTime<Utc>,
-) -> Option<CandidateMarket> {
+fn translate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<CandidateMarket> {
     let declared_resolution_basis = match parse_declared_resolution_basis(
         market.description.as_deref(),
     ) {
         Some(basis) => basis,
         None => {
             log::warn!(
-                "skipping candidate market {} for tag {}: could not parse declared resolution basis from description",
-                market.id,
-                tag_slug
+                "skipping candidate market {}: could not parse declared resolution basis from description",
+                market.id
             );
             return None;
         }
@@ -106,8 +115,6 @@ fn translate_market(
     Some(CandidateMarket {
         market_id: market.id,
         instrument_id,
-        // Gamma event queries are scoped to a single ruleset slug in phase 1.
-        tag_slug: tag_slug.to_string(),
         declared_resolution_basis,
         accepting_orders,
         liquidity_num,

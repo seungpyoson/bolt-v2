@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use toml::Value;
 
 use crate::config::default_raw_capture_output_dir;
 
@@ -361,7 +362,7 @@ pub struct LiveReferenceVenueInput {
 pub struct LiveRulesetInput {
     pub id: String,
     pub venue: crate::config::RulesetVenueKind,
-    pub tag_slug: String,
+    pub selector: Value,
     pub resolution_basis: String,
     pub min_time_to_expiry_secs: u64,
     pub max_time_to_expiry_secs: u64,
@@ -523,7 +524,7 @@ struct RenderedReferenceVenueEntry {
 struct RenderedRulesetConfig {
     id: String,
     venue: crate::config::RulesetVenueKind,
-    tag_slug: String,
+    selector: Value,
     resolution_basis: String,
     min_time_to_expiry_secs: u64,
     max_time_to_expiry_secs: u64,
@@ -727,7 +728,7 @@ fn render_runtime_config(
                 .map(|ruleset| RenderedRulesetConfig {
                     id: ruleset.id.clone(),
                     venue: ruleset.venue.clone(),
-                    tag_slug: ruleset.tag_slug.clone(),
+                    selector: ruleset.selector.clone(),
                     resolution_basis: ruleset.resolution_basis.clone(),
                     min_time_to_expiry_secs: ruleset.min_time_to_expiry_secs,
                     max_time_to_expiry_secs: ruleset.max_time_to_expiry_secs,

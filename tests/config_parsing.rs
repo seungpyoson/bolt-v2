@@ -81,6 +81,111 @@ fn parses_runtime_config_with_optional_streaming_section() {
 }
 
 #[test]
+fn runtime_config_parses_ruleset_selector_table() {
+    let toml = r#"
+        [node]
+        name = "bolt-v2"
+        trader_id = "TRADER-001"
+        environment = "Live"
+        load_state = true
+        save_state = true
+        timeout_connection_secs = 60
+        timeout_reconciliation_secs = 30
+        timeout_portfolio_secs = 10
+        timeout_disconnection_secs = 10
+        delay_post_stop_secs = 10
+        delay_shutdown_secs = 5
+
+        [logging]
+        stdout_level = "Info"
+        file_level = "Off"
+
+        [[data_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [data_clients.config]
+        subscribe_new_markets = false
+        update_instruments_interval_mins = 60
+        ws_max_subscriptions = 200
+        event_slugs = ["btc-updown-5m"]
+
+        [[exec_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [exec_clients.config]
+        account_id = "POLYMARKET-001"
+        signature_type = 2
+        funder = "0xdeadbeef"
+        [exec_clients.secrets]
+        region = "us-east-1"
+        pk = "/pk"
+        api_key = "/key"
+        api_secret = "/secret"
+        passphrase = "/pass"
+
+        [[strategies]]
+        type = "exec_tester"
+        [strategies.config]
+        strategy_id = "EXEC-001"
+        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+        client_id = "POLYMARKET"
+        order_qty = "1"
+        log_data = true
+        tob_offset_ticks = 1
+        use_post_only = true
+
+        [raw_capture]
+        output_dir = "var/raw"
+
+        [reference]
+        publish_topic = "platform.reference.default"
+        min_publish_interval_ms = 100
+
+        [[reference.venues]]
+        name = "BINANCE-BTC"
+        type = "binance"
+        instrument_id = "BTCUSDT.BINANCE"
+        base_weight = 0.35
+        stale_after_ms = 1500
+        disable_after_ms = 5000
+
+        [[rulesets]]
+        id = "PRIMARY"
+        venue = "polymarket"
+        resolution_basis = "binance_btcusdt_1m"
+        min_time_to_expiry_secs = 60
+        max_time_to_expiry_secs = 900
+        min_liquidity_num = 1000
+        require_accepting_orders = true
+        freeze_before_end_secs = 90
+        selector_poll_interval_ms = 1000
+        candidate_load_timeout_secs = 30
+
+        [rulesets.selector]
+        tag_slug = "bitcoin"
+        event_slug_prefix = "btc-updown"
+
+        [audit]
+        local_dir = "var/audit"
+        s3_uri = "s3://bolt-runtime-history/phase1"
+        ship_interval_secs = 30
+        upload_attempt_timeout_secs = 30
+        roll_max_bytes = 1048576
+        roll_max_secs = 300
+        max_local_backlog_bytes = 10485760
+    "#;
+
+    let cfg: Config = toml::from_str(toml).unwrap();
+
+    assert_eq!(cfg.rulesets[0].id, "PRIMARY");
+    assert_eq!(cfg.rulesets[0].selector["tag_slug"].as_str(), Some("bitcoin"));
+    assert_eq!(
+        cfg.rulesets[0].selector["event_slug_prefix"].as_str(),
+        Some("btc-updown")
+    );
+}
+
+#[test]
 fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema() {
     let tempdir = TempCaseDir::new("config-parsing");
     std::fs::write(
@@ -184,7 +289,6 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         [[rulesets]]
         id = "PRIMARY"
         venue = "polymarket"
-        tag_slug = "bitcoin"
         resolution_basis = "binance_btcusdt_1m"
         min_time_to_expiry_secs = 60
         max_time_to_expiry_secs = 900
@@ -193,6 +297,9 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 250
 candidate_load_timeout_secs = 12
+
+        [rulesets.selector]
+        tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"

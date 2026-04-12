@@ -233,7 +233,6 @@ disable_after_ms = 5000
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin"
 resolution_basis = "kraken_btcusd_1m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -242,6 +241,9 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+
+[rulesets.selector]
+tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"

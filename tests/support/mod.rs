@@ -138,7 +138,6 @@ min_publish_interval_ms = 100
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin"
 resolution_basis = "{resolution_basis}"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -147,6 +146,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 250
 candidate_load_timeout_secs = 12
+[rulesets.selector]
+tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"
@@ -203,7 +204,6 @@ price_scale = 8
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin"
 resolution_basis = "chainlink_btcusd"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -212,6 +212,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"

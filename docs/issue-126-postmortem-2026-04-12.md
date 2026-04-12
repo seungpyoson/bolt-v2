@@ -728,3 +728,106 @@ The intent of this document is:
   - the later interrupted exploratory refactor (never coherent, never pushed)
   - the later research findings (which changed the interpretation of what phase 3’s remaining problem actually is)
 
+## Explicit status ledger
+
+This section is intentionally separate from the narrative above. It records, in direct checklist form, what had been completed, what had not been completed, and what the next implementation move was expected to be before the user stopped further solutioning and requested research.
+
+### What was done
+
+The following work was actually completed on the `#126` branch before the user stopped further solutioning:
+
+1. Truth decision reached:
+   - the branch did **not** claim native Polymarket `order_book_depths` support
+   - the branch kept `contracts/polymarket.toml` truthful with native depth unsupported
+   - the branch chose fallback-path formalization rather than overclaiming native support
+
+2. Fallback path wording and surface were added:
+   - fallback-related strategy/config seam fields were added and plumbed through the live-config materialization path
+   - `exec_tester` was extended so the fallback path could be expressed through the runtime-managed seam
+   - contract wording, example config wording, and focused tests were aligned around the same fallback story
+
+3. Focused verification and external review were run:
+   - two full external review rounds were completed
+   - one internal subagent review round was completed
+   - branch defects identified in those rounds were addressed up through the coherent pushed head `be61a02`
+
+4. A coherent code checkpoint existed:
+   - the branch head `be61a02f122dab4167dcadaf7c82cd7e4a447b67` was the last coherent implementation state before the user objected to the embedded policy direction
+
+5. The later user objection was preserved rather than ignored:
+   - after the user objected to hardcoded/policy-style seam enforcement, the branch did not get force-finished
+   - the interrupted exploratory refactor was preserved in documentation instead of being silently discarded or silently committed
+
+6. A research pass was completed:
+   - authoritative `origin/main` versus `#118` branch state was compared
+   - issue/PR dependency history was pulled
+   - independent subagent evidence lanes were run
+   - the stronger corrected conclusion from that research was recorded
+
+### What is missing
+
+The following items were **not** completed by the end of this session:
+
+1. `#126` was not reconciled to a final architecture direction accepted by the user.
+   - reason: after the second review-driven tightening pass, the user objected to the branch’s code-level policy direction
+   - result: the branch ended in a documented stop/research state rather than a merge-ready final state
+
+2. The later exploratory refactor was not completed.
+   - the two-file refactor in `src/live_config.rs` and `src/strategies/exec_tester.rs` was started in response to the user’s objection
+   - it was not carried through the full validation path
+   - it was not reverified
+   - it was not pushed
+   - it was not coherent with `src/validate.rs` and validation tests
+
+3. The branch was not brought to a new post-objection coherent code head.
+   - the only coherent implementation head remained `be61a02`
+   - no later code head captured a user-accepted “all parameters in one place / order-type agnostic” resolution
+
+4. `#126` was not merged.
+   - PR `#131` remained a draft PR
+   - no merge or undraft decision was taken in this session
+
+5. The deeper phase-3 prerequisite problem was not solved in code.
+   - research showed that authoritative `origin/main` still lacks the `#118` runtime-enablement branch work
+   - research also showed that the major remaining strategy-purity prerequisite appears to be `#129` persistent strategy lifetime across market switches
+   - neither of those broader prerequisites was solved in this `#126` session
+
+### What I was planning to do before the user stopped further solutioning
+
+The next implementation move I was preparing, before the explicit research stop, was:
+
+1. stop encoding additional policy piecemeal
+2. map the complete parameter ownership path end to end:
+   - live-local input
+   - rendered runtime config
+   - runtime validation
+   - `exec_tester` builder seam
+   - upstream NT consumer
+3. determine one single owner/place for the fallback-entry and book-seam parameters
+4. then refactor the seam so:
+   - defaults were not duplicated
+   - parameter interpretation did not drift across layers
+   - policy was not enforced in multiple places
+   - configuration grouping matched the lifecycle the user wanted
+5. re-run the full verification package on that new coherent state
+
+More concretely, the implementation direction I had in mind at the stop point was:
+
+- make `book_interval_ms` optional rather than silently defaulted in multiple layers
+- stop forcing the old FOK-only interpretation through the builder layer without first rethinking parameter ownership
+- move toward a single interpreted seam rather than duplicated parse/validate/build policy
+
+That plan was **not executed** to completion because the user explicitly interrupted and requested research instead of more solutioning.
+
+### What I would tell the next session not to redo
+
+The next session should not spend time rediscovering the following:
+
+1. The coherent pre-objection `#126` code head is `be61a02`, not the later interrupted two-file diff.
+2. The interrupted two-file diff was never coherent and should be treated as exploratory only.
+3. Two external review rounds and one internal subagent review round already happened.
+4. The main research conclusion is not “phase 3 was obviously the wrong seam.”
+5. The stronger evidence-backed conclusion is:
+   - authoritative `main` still lacks the `#118` runtime-enablement work
+   - `#110` expects runtime/platform contracts that `main` does not yet provide
+   - `#129` persistent cross-market strategy lifetime appears to be the largest real remaining prerequisite for keeping `#110` strategy-pure

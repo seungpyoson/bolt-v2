@@ -1384,6 +1384,7 @@ dependencies = [
  "nautilus-testkit",
  "nautilus-trading",
  "parquet",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2",

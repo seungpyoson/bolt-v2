@@ -342,6 +342,34 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loads_candidate_market_timing_and_fee_metadata() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets(vec![json!({
+        "id": "market-metadata",
+        "questionID": "0xquestion-meta",
+        "conditionId": "0xcondition-meta",
+        "clobTokenIds": "[\"555\",\"666\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Will BTC finish green?",
+        "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTCUSDT has a final close above the opening price. The resolution source for this market is Binance, specifically the BTCUSDT \"Close\" prices available with \"1m\" and \"Candles\" selected on the top bar.",
+        "startDate": "2026-04-11T12:34:56Z",
+        "acceptingOrders": true,
+        "liquidityNum": 4567.0,
+        "makerBaseFee": 12,
+        "takerBaseFee": 34,
+        "endDate": end_date,
+        "slug": "market-metadata"
+    })])
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(markets.len(), 1);
+    assert_eq!(markets[0].start_ts_ms, Some(1_775_910_896_000));
+    assert_eq!(markets[0].maker_base_fee_bps, Some(12));
+    assert_eq!(markets[0].taker_base_fee_bps, Some(34));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn paginates_gamma_events_for_multi_page_tag_queries() {
     let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
     let mut first_page = Vec::with_capacity(100);

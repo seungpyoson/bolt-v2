@@ -18,21 +18,56 @@ use nautilus_common::{
     cache::Cache,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
-    messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
+    messages::{
+        data::{
+            SubscribeBookDeltas, SubscribeBookDepth10, SubscribeInstrument, SubscribeQuotes,
+            SubscribeTrades,
+        },
+        execution::SubmitOrder,
+    },
 };
 use nautilus_model::{
     accounts::AccountAny,
-    enums::OmsType,
+    enums::{OmsType, OrderSide, OrderType, TimeInForce},
     identifiers::{AccountId, ClientId, Venue},
     types::{AccountBalance, MarginBalance},
 };
 use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<MockDataSubscriptionRecord>>> = OnceLock::new();
+static MOCK_SUBMITTED_ORDERS: OnceLock<Mutex<Vec<MockSubmittedOrderRecord>>> = OnceLock::new();
 
-fn mock_data_subscriptions() -> &'static Mutex<Vec<String>> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockDataSubscriptionRecord {
+    pub kind: &'static str,
+    pub instrument_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockSubmittedOrderRecord {
+    pub instrument_id: String,
+    pub order_type: OrderType,
+    pub order_side: OrderSide,
+    pub time_in_force: TimeInForce,
+}
+
+fn mock_data_subscriptions() -> &'static Mutex<Vec<MockDataSubscriptionRecord>> {
     MOCK_DATA_SUBSCRIPTIONS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn mock_submitted_orders() -> &'static Mutex<Vec<MockSubmittedOrderRecord>> {
+    MOCK_SUBMITTED_ORDERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn record_mock_data_subscription(kind: &'static str, instrument_id: &str) {
+    mock_data_subscriptions()
+        .lock()
+        .unwrap()
+        .push(MockDataSubscriptionRecord {
+            kind,
+            instrument_id: instrument_id.to_string(),
+        });
 }
 
 pub fn clear_mock_data_subscriptions() {
@@ -40,7 +75,22 @@ pub fn clear_mock_data_subscriptions() {
 }
 
 pub fn recorded_mock_data_subscriptions() -> Vec<String> {
+    mock_data_subscription_records()
+        .into_iter()
+        .map(|record| record.instrument_id)
+        .collect()
+}
+
+pub fn mock_data_subscription_records() -> Vec<MockDataSubscriptionRecord> {
     mock_data_subscriptions().lock().unwrap().clone()
+}
+
+pub fn clear_mock_submitted_orders() {
+    mock_submitted_orders().lock().unwrap().clear();
+}
+
+pub fn recorded_mock_submitted_orders() -> Vec<MockSubmittedOrderRecord> {
+    mock_submitted_orders().lock().unwrap().clone()
 }
 
 pub struct TempCaseDir {
@@ -427,26 +477,27 @@ impl DataClient for MockDataClient {
     }
 
     fn subscribe_instrument(&mut self, cmd: &SubscribeInstrument) -> anyhow::Result<()> {
-        mock_data_subscriptions()
-            .lock()
-            .unwrap()
-            .push(cmd.instrument_id.to_string());
+        record_mock_data_subscription("instrument", &cmd.instrument_id.to_string());
+        Ok(())
+    }
+
+    fn subscribe_book_deltas(&mut self, cmd: &SubscribeBookDeltas) -> anyhow::Result<()> {
+        record_mock_data_subscription("book_deltas", &cmd.instrument_id.to_string());
+        Ok(())
+    }
+
+    fn subscribe_book_depth10(&mut self, cmd: &SubscribeBookDepth10) -> anyhow::Result<()> {
+        record_mock_data_subscription("book_depth10", &cmd.instrument_id.to_string());
         Ok(())
     }
 
     fn subscribe_quotes(&mut self, cmd: &SubscribeQuotes) -> anyhow::Result<()> {
-        mock_data_subscriptions()
-            .lock()
-            .unwrap()
-            .push(cmd.instrument_id.to_string());
+        record_mock_data_subscription("quotes", &cmd.instrument_id.to_string());
         Ok(())
     }
 
     fn subscribe_trades(&mut self, cmd: &SubscribeTrades) -> anyhow::Result<()> {
-        mock_data_subscriptions()
-            .lock()
-            .unwrap()
-            .push(cmd.instrument_id.to_string());
+        record_mock_data_subscription("trades", &cmd.instrument_id.to_string());
         Ok(())
     }
 }
@@ -504,6 +555,19 @@ impl ExecutionClient for MockExecutionClient {
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
         self.connected = false;
+        Ok(())
+    }
+
+    fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
+        mock_submitted_orders()
+            .lock()
+            .unwrap()
+            .push(MockSubmittedOrderRecord {
+                instrument_id: cmd.instrument_id.to_string(),
+                order_type: cmd.order_init.order_type,
+                order_side: cmd.order_init.order_side,
+                time_in_force: cmd.order_init.time_in_force,
+            });
         Ok(())
     }
 }

@@ -40,7 +40,10 @@ fn candidate(
         declared_resolution_basis: parse_ruleset_resolution_basis(declared_resolution_basis)
             .expect("test fixture basis should be canonical"),
         accepting_orders: true,
+        start_ts_ms: None,
         liquidity_num,
+        maker_base_fee_bps: None,
+        taker_base_fee_bps: None,
         seconds_to_end,
     }
 }
@@ -92,7 +95,10 @@ fn exposes_tag_mismatch_rejection() {
         tag_slug: "ethereum".to_string(),
         declared_resolution_basis: binance_btcusdt_1m(),
         accepting_orders: true,
+        start_ts_ms: None,
         liquidity_num: 9_000.0,
+        maker_base_fee_bps: None,
+        taker_base_fee_bps: None,
         seconds_to_end: 1_200,
     }];
 
@@ -107,7 +113,10 @@ fn exposes_tag_mismatch_rejection() {
                 tag_slug: "ethereum".to_string(),
                 declared_resolution_basis: binance_btcusdt_1m(),
                 accepting_orders: true,
+                start_ts_ms: None,
                 liquidity_num: 9_000.0,
+                maker_base_fee_bps: None,
+                taker_base_fee_bps: None,
                 seconds_to_end: 1_200,
             },
             reason: EligibilityRejectReason::TagMismatch,
@@ -127,7 +136,10 @@ fn selects_best_eligible_market_within_ruleset_window() {
             tag_slug: "ethereum".to_string(),
             declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: true,
+            start_ts_ms: None,
             liquidity_num: 9_000.0,
+            maker_base_fee_bps: None,
+            taker_base_fee_bps: None,
             seconds_to_end: 1_200,
         },
     ];
@@ -186,6 +198,13 @@ fn evaluate_market_selection_yields_empty_rejected_when_all_candidates_eligible(
         }
     );
     assert!(evaluation.rejected_candidates.is_empty());
+    assert_eq!(
+        evaluation.eligible_candidates,
+        vec![
+            candidate("market-b", "binance_btcusdt_1m", 9_000.0, 1_200),
+            candidate("market-a", "binance_btcusdt_1m", 5_000.0, 600),
+        ]
+    );
 }
 
 #[test]
@@ -197,7 +216,10 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
         tag_slug: "bitcoin".to_string(),
         declared_resolution_basis: chainlink_btcusd(),
         accepting_orders: false,
+        start_ts_ms: None,
         liquidity_num: 500.0,
+        maker_base_fee_bps: None,
+        taker_base_fee_bps: None,
         seconds_to_end: 60,
     }];
 
@@ -212,7 +234,10 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
                 tag_slug: "bitcoin".to_string(),
                 declared_resolution_basis: chainlink_btcusd(),
                 accepting_orders: false,
+                start_ts_ms: None,
                 liquidity_num: 500.0,
+                maker_base_fee_bps: None,
+                taker_base_fee_bps: None,
                 seconds_to_end: 60,
             },
             reason: EligibilityRejectReason::ResolutionBasisMismatch,
@@ -239,7 +264,10 @@ fn returns_idle_when_no_market_is_eligible() {
             tag_slug: "bitcoin".to_string(),
             declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
+            start_ts_ms: None,
             liquidity_num: 5_000.0,
+            maker_base_fee_bps: None,
+            taker_base_fee_bps: None,
             seconds_to_end: 600,
         },
         candidate("market-low-liquidity", "binance_btcusdt_1m", 500.0, 600),
@@ -421,7 +449,10 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
             tag_slug: "bitcoin".to_string(),
             declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
+            start_ts_ms: None,
             liquidity_num: 5_000.0,
+            maker_base_fee_bps: None,
+            taker_base_fee_bps: None,
             seconds_to_end: 600,
         },
         candidate("market-low-liquidity", "binance_btcusdt_1m", 500.0, 600),
@@ -455,7 +486,10 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
                     tag_slug: "bitcoin".to_string(),
                     declared_resolution_basis: binance_btcusdt_1m(),
                     accepting_orders: false,
+                    start_ts_ms: None,
                     liquidity_num: 5_000.0,
+                    maker_base_fee_bps: None,
+                    taker_base_fee_bps: None,
                     seconds_to_end: 600,
                 },
                 reason: EligibilityRejectReason::OrdersClosed,

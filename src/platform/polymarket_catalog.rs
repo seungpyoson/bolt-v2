@@ -101,6 +101,7 @@ fn translate_market(
     let accepting_orders = market.accepting_orders?;
     let liquidity_num = market.liquidity_num?;
     let end_date = market.end_date?;
+    let start_ts_ms = market.start_date.as_deref().and_then(timestamp_ms);
     let seconds_to_end = seconds_to_end(now, &end_date)?;
 
     Some(CandidateMarket {
@@ -110,7 +111,10 @@ fn translate_market(
         tag_slug: tag_slug.to_string(),
         declared_resolution_basis,
         accepting_orders,
+        start_ts_ms,
         liquidity_num,
+        maker_base_fee_bps: market.maker_base_fee.map(|fee| fee as i32),
+        taker_base_fee_bps: market.taker_base_fee.map(|fee| fee as i32),
         seconds_to_end,
     })
 }
@@ -128,4 +132,10 @@ fn seconds_to_end(now: DateTime<Utc>, end_date: &str) -> Option<u64> {
         .with_timezone(&Utc);
     let delta = end_time.signed_duration_since(now).num_seconds();
     Some(delta.max(0) as u64)
+}
+
+fn timestamp_ms(timestamp: &str) -> Option<u64> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc).timestamp_millis() as u64)
 }

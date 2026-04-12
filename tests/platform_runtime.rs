@@ -26,17 +26,30 @@ use bolt_v2::{
         ruleset::CandidateMarket,
         runtime::{
             CandidateMarketLoadFuture, CandidateMarketLoader, PlatformAuditTaskFactory,
-            PlatformRuntimeServices, wire_platform_runtime_with_services,
+            PlatformRuntimeServices, runtime_selection_topic, wire_platform_runtime_with_services,
         },
     },
     strategies::exec_tester::build_exec_tester,
 };
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig, msgbus::publish_any};
+use nautilus_common::{
+    enums::Environment,
+    logging::logger::LoggerConfig,
+    msgbus::{publish_any, publish_position_event, switchboard},
+};
+use nautilus_core::{UUID4, UnixNanos};
 use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
-use nautilus_model::identifiers::TraderId;
+use nautilus_model::{
+    enums::{AssetClass, CurrencyType, OmsType, OrderSide, OrderType, PositionSide, TimeInForce},
+    events::{PositionEvent, PositionOpened},
+    identifiers::{ClientOrderId, PositionId, StrategyId, Symbol, TraderId},
+    instruments::{InstrumentAny, binary_option::BinaryOption, stubs::audusd_sim},
+    stubs::stub_position_long,
+    types::{Currency, Price, Quantity},
+};
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
-    clear_mock_data_subscriptions, recorded_mock_data_subscriptions,
+    clear_mock_data_subscriptions, clear_mock_submitted_orders, mock_data_subscription_records,
+    recorded_mock_data_subscriptions, recorded_mock_submitted_orders,
 };
 use tempfile::tempdir;
 use tokio::{sync::Notify, task::LocalSet};
@@ -309,6 +322,44 @@ fn build_lifecycle_node() -> LiveNode {
         .unwrap()
 }
 
+fn add_runtime_polymarket_instrument(node: &LiveNode, instrument_id: &str) {
+    let instrument = BinaryOption::new(
+        instrument_id.into(),
+        Symbol::from(
+            "71321045679252212594626385532706912750332728571942532289631379312455583992563",
+        ),
+        AssetClass::Alternative,
+        Currency::new("USDC", 6, 0, "USDC", CurrencyType::Crypto),
+        UnixNanos::default(),
+        UnixNanos::default(),
+        4,
+        0,
+        Price::from("0.0001"),
+        Quantity::from("1"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    );
+
+    node.kernel()
+        .cache()
+        .borrow_mut()
+        .add_instrument(InstrumentAny::BinaryOption(instrument))
+        .unwrap();
+}
+
 fn uploaded_records(uploader: &MockUploader) -> Vec<serde_json::Value> {
     uploader
         .calls()
@@ -450,6 +501,11 @@ where
     runtime.block_on(local.run_until(test));
 }
 
+fn runtime_subscription_test_lock() -> &'static Mutex<()> {
+    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn runtime_error(run_result: Result<()>, shutdown_result: Result<()>) -> anyhow::Error {
     match (run_result.err(), shutdown_result.err()) {
         (Some(error), _) => error,
@@ -588,7 +644,10 @@ fn candidate_market(
         tag_slug: "bitcoin".to_string(),
         declared_resolution_basis: binance_btcusdt_1m(),
         accepting_orders: true,
+        start_ts_ms: None,
         liquidity_num,
+        maker_base_fee_bps: None,
+        taker_base_fee_bps: None,
         seconds_to_end,
     }
 }
@@ -615,7 +674,10 @@ async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick
                 tag_slug: "bitcoin".to_string(),
                 declared_resolution_basis: binance_btcusdt_1m(),
                 accepting_orders: true,
+                start_ts_ms: None,
                 liquidity_num: 999.0,
+                maker_base_fee_bps: None,
+                taker_base_fee_bps: None,
                 seconds_to_end: 120,
             },
             candidate_market("mkt-active", "ACTIVE.POLYMARKET", 2_000.0, 120),
@@ -711,6 +773,79 @@ async fn eligible_market_emits_active_decision() {
 }
 
 #[test]
+fn runtime_retains_ranked_eligible_candidate_set_for_strategy_handoff() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = lifecycle_test_config(dir.path());
+        let strategy_id = StrategyId::from("EXEC_TESTER-TEMPLATE-001");
+        let selection_topic = runtime_selection_topic(&strategy_id);
+        let services = services_with(
+            vec![
+                CandidateMarket {
+                    market_id: "mkt-low".to_string(),
+                    instrument_id: "LOW.POLYMARKET".to_string(),
+                    tag_slug: "bitcoin".to_string(),
+                    declared_resolution_basis: binance_btcusdt_1m(),
+                    accepting_orders: true,
+                    start_ts_ms: Some(5_000),
+                    liquidity_num: 1_500.0,
+                    maker_base_fee_bps: Some(12),
+                    taker_base_fee_bps: Some(34),
+                    seconds_to_end: 180,
+                },
+                CandidateMarket {
+                    market_id: "mkt-high".to_string(),
+                    instrument_id: "HIGH.POLYMARKET".to_string(),
+                    tag_slug: "bitcoin".to_string(),
+                    declared_resolution_basis: binance_btcusdt_1m(),
+                    accepting_orders: true,
+                    start_ts_ms: Some(9_000),
+                    liquidity_num: 2_500.0,
+                    maker_base_fee_bps: Some(56),
+                    taker_base_fee_bps: Some(78),
+                    seconds_to_end: 240,
+                },
+            ],
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        tokio::spawn(async move {
+            wait_for_running(&handle).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stop_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        let snapshot = guards
+            .runtime_selection_snapshot()
+            .expect("runtime should retain the last strategy selection snapshot");
+        guards.shutdown().await.unwrap();
+
+        assert_eq!(
+            snapshot
+                .eligible_candidates
+                .iter()
+                .map(|market| market.market_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mkt-high", "mkt-low"]
+        );
+        assert_eq!(snapshot.eligible_candidates[0].start_ts_ms, Some(9_000));
+        assert_eq!(snapshot.eligible_candidates[0].maker_base_fee_bps, Some(56));
+        assert_eq!(snapshot.eligible_candidates[0].taker_base_fee_bps, Some(78));
+        assert_eq!(
+            runtime_selection_topic(&strategy_id),
+            selection_topic,
+            "selection snapshots should remain keyed by strategy id"
+        );
+    });
+}
+
+#[test]
 fn active_selector_state_registers_exactly_one_runtime_strategy() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
@@ -754,6 +889,75 @@ fn active_selector_state_registers_exactly_one_runtime_strategy() {
         control_result.unwrap();
 
         assert_eq!(trader.borrow().strategy_ids().len(), 1);
+    });
+}
+
+#[test]
+fn runtime_managed_exec_tester_uses_delta_backed_book_fallback() {
+    let _guard = runtime_subscription_test_lock().lock().unwrap();
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let activation_budget = Duration::from_secs(1);
+        let template = cfg.strategies[0]
+            .config
+            .as_table_mut()
+            .expect("exec_tester template config should be a table");
+        template.insert("subscribe_book".to_string(), toml::Value::Boolean(true));
+        template.insert("book_interval_ms".to_string(), toml::Value::Integer(250));
+        clear_mock_data_subscriptions();
+        let services = services_with(
+            vec![candidate_market(
+                "mkt-active-book-fallback",
+                "ACTIVE-BOOK.POLYMARKET",
+                2_000.0,
+                120,
+            )],
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        add_runtime_polymarket_instrument(&node, "ACTIVE-BOOK.POLYMARKET");
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                activation_budget,
+                &stop_handle,
+                "the runtime-managed exec_tester to subscribe via the delta-backed book fallback",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && mock_data_subscription_records().iter().any(|record| {
+                            record.kind == "book_deltas"
+                                && record.instrument_id == "ACTIVE-BOOK.POLYMARKET"
+                        })
+                },
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        let records = mock_data_subscription_records();
+        assert!(records.iter().any(|record| {
+            record.kind == "book_deltas" && record.instrument_id == "ACTIVE-BOOK.POLYMARKET"
+        }));
+        assert!(!records.iter().any(|record| {
+            record.kind == "book_depth10" && record.instrument_id == "ACTIVE-BOOK.POLYMARKET"
+        }));
     });
 }
 
@@ -881,7 +1085,7 @@ fn idle_transition_removes_previously_active_runtime_strategy() {
         let dir = tempdir().unwrap();
         let spool_dir = dir.path().to_path_buf();
         let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        cfg.rulesets[0].selector_poll_interval_ms = 50;
         let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
         let services = services_with_loader(
             Arc::new(SequencedLoader::new(vec![
@@ -933,7 +1137,85 @@ fn idle_transition_removes_previously_active_runtime_strategy() {
 }
 
 #[test]
+fn runtime_managed_exec_tester_submits_fok_opening_order() {
+    let _guard = runtime_subscription_test_lock().lock().unwrap();
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let activation_budget = Duration::from_secs(1);
+        let template = cfg.strategies[0]
+            .config
+            .as_table_mut()
+            .expect("exec_tester template config should be a table");
+        template.insert(
+            "open_position_on_start_qty".to_string(),
+            toml::Value::String("5".to_string()),
+        );
+        template.insert(
+            "open_position_time_in_force".to_string(),
+            toml::Value::String("Fok".to_string()),
+        );
+        clear_mock_submitted_orders();
+        let services = services_with(
+            vec![candidate_market(
+                "mkt-active-fok-open",
+                "ACTIVE-FOK.POLYMARKET",
+                2_000.0,
+                120,
+            )],
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        add_runtime_polymarket_instrument(&node, "ACTIVE-FOK.POLYMARKET");
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                activation_budget,
+                &stop_handle,
+                "the runtime-managed exec_tester to submit a Fok opening order",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && recorded_mock_submitted_orders().iter().any(|order| {
+                            order.instrument_id == "ACTIVE-FOK.POLYMARKET"
+                                && order.order_type == OrderType::Market
+                                && order.order_side == OrderSide::Buy
+                                && order.time_in_force == TimeInForce::Fok
+                        })
+                },
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        let submitted_orders = recorded_mock_submitted_orders();
+        assert!(submitted_orders.iter().any(|order| {
+            order.instrument_id == "ACTIVE-FOK.POLYMARKET"
+                && order.order_type == OrderType::Market
+                && order.order_side == OrderSide::Buy
+                && order.time_in_force == TimeInForce::Fok
+        }));
+    });
+}
+
+#[test]
 fn active_market_switch_replaces_runtime_strategy_with_new_market() {
+    let _guard = runtime_subscription_test_lock().lock().unwrap();
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
         let spool_dir = dir.path().to_path_buf();
@@ -1001,6 +1283,246 @@ fn active_market_switch_replaces_runtime_strategy_with_new_market() {
             recorded_mock_data_subscriptions()
                 .iter()
                 .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
+        );
+    });
+}
+
+#[test]
+fn live_position_blocks_cross_market_preemption() {
+    let _guard = runtime_subscription_test_lock().lock().unwrap();
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 50;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        clear_mock_data_subscriptions();
+        let uploader = MockUploader::default();
+        let services = services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-switch-a",
+                    "ACTIVE-A.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the initial runtime-managed strategy on ACTIVE-A.POLYMARKET",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && recorded_mock_data_subscriptions()
+                            .iter()
+                            .any(|instrument_id| instrument_id == "ACTIVE-A.POLYMARKET")
+                },
+            )
+            .await?;
+
+            let strategy_id = trader.borrow().strategy_ids()[0];
+            publish_position_event(
+                switchboard::get_event_positions_topic(strategy_id),
+                &PositionEvent::PositionOpened(PositionOpened {
+                    trader_id: TraderId::from("BOLT-001"),
+                    strategy_id,
+                    instrument_id: nautilus_model::identifiers::InstrumentId::from(
+                        "ACTIVE-A.POLYMARKET",
+                    ),
+                    position_id: PositionId::from("P-001"),
+                    account_id: nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
+                    opening_order_id: ClientOrderId::from("O-001"),
+                    entry: nautilus_model::enums::OrderSide::Buy,
+                    side: nautilus_model::enums::PositionSide::Long,
+                    signed_qty: 10.0,
+                    quantity: Quantity::from("10"),
+                    last_qty: Quantity::from("10"),
+                    last_px: Price::from("0.51"),
+                    currency: Currency::USD(),
+                    avg_px_open: 0.51,
+                    event_id: UUID4::default(),
+                    ts_event: 21.into(),
+                    ts_init: 22.into(),
+                }),
+            );
+
+            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the runtime-managed strategy to stay on the incumbent market while a live position exists",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && !recorded_mock_data_subscriptions()
+                            .iter()
+                            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
+                },
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert!(
+            records.iter().any(|record| {
+                record["kind"] == "selector_decision"
+                    && record["state"] == "freeze"
+                    && record["market_id"] == "mkt-active-switch-a"
+                    && record["instrument_id"] == "ACTIVE-A.POLYMARKET"
+                    && record["reason"] == "live position blocks cross-market preemption"
+            }),
+            "expected freeze decision for incumbent market, got {records:?}"
+        );
+    });
+}
+
+#[test]
+fn startup_cached_live_position_blocks_cross_market_preemption() {
+    let _guard = runtime_subscription_test_lock().lock().unwrap();
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 50;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        clear_mock_data_subscriptions();
+        let uploader = MockUploader::default();
+        let services = services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-switch-a",
+                    "ACTIVE-A.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
+
+        let mut node = build_lifecycle_node();
+        add_runtime_polymarket_instrument(&node, "ACTIVE-A.POLYMARKET");
+        let mut position = stub_position_long(audusd_sim());
+        position.strategy_id = StrategyId::from("EXEC_TESTER-TEMPLATE-001");
+        position.instrument_id =
+            nautilus_model::identifiers::InstrumentId::from("ACTIVE-A.POLYMARKET");
+        let cached_position_id = position.id;
+        node.kernel()
+            .cache()
+            .borrow_mut()
+            .add_position(&position, OmsType::Netting)
+            .unwrap();
+
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let cache = node.kernel().cache();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the startup runtime-managed strategy on cached incumbent ACTIVE-A.POLYMARKET",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && recorded_mock_data_subscriptions()
+                            .iter()
+                            .any(|instrument_id| instrument_id == "ACTIVE-A.POLYMARKET")
+                },
+            )
+            .await?;
+
+            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the runtime-managed strategy to stay on cached incumbent A and never subscribe B at startup",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && !recorded_mock_data_subscriptions()
+                            .iter()
+                            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
+                },
+            )
+            .await?;
+
+            let mut closed_position = position.clone();
+            closed_position.side = PositionSide::Flat;
+            closed_position.signed_qty = 0.0;
+            closed_position.quantity = Quantity::from("0");
+            closed_position.ts_closed = Some(UnixNanos::from(1_u64));
+            cache
+                .borrow_mut()
+                .update_position(&closed_position)
+                .expect("seeded cached position should be closable in the test cache");
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the seeded cached position to be marked closed before shutdown",
+                || cache.borrow().is_position_closed(&cached_position_id),
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert!(
+            records.iter().any(|record| {
+                record["kind"] == "selector_decision"
+                    && record["state"] == "freeze"
+                    && record["market_id"] == "mkt-active-switch-a"
+                    && record["instrument_id"] == "ACTIVE-A.POLYMARKET"
+                    && record["reason"] == "live position blocks cross-market preemption"
+            }),
+            "expected startup cached live position to freeze incumbent market, got {records:?}"
         );
     });
 }

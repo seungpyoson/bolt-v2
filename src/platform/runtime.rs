@@ -12,12 +12,17 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use nautilus_common::{
     actor::{DataActor, DataActorConfig, DataActorCore},
+    cache::Cache,
     component::Component,
-    msgbus::{self, Endpoint, MStr, ShareableMessageHandler, TypedHandler, get_message_bus},
+    msgbus::{
+        self, Endpoint, MStr, ShareableMessageHandler, TypedHandler, get_message_bus,
+        switchboard::get_event_positions_topic,
+    },
     nautilus_actor,
 };
 use nautilus_core::UUID4;
 use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
+use nautilus_model::events::PositionEvent;
 use nautilus_model::identifiers::{ActorId, ClientId, InstrumentId, StrategyId};
 use nautilus_system::trader::Trader;
 use tokio::{
@@ -100,6 +105,7 @@ pub struct PlatformRuntimeGuards {
     pub cancellation: CancellationToken,
     reference_snapshot_audit: Option<ReferenceSnapshotAuditSubscription>,
     runtime_strategy_applier_failure: Option<Arc<Mutex<Option<String>>>>,
+    runtime_selection_state: Option<Arc<Mutex<Option<RuntimeSelectionSnapshot>>>>,
     pub join_handles: Vec<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
@@ -115,10 +121,34 @@ struct RuntimeManagedStrategy {
     instrument_id: InstrumentId,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeSelectionSnapshot {
+    pub ruleset_id: String,
+    pub decision: SelectionDecision,
+    pub eligible_candidates: Vec<CandidateMarket>,
+}
+
+pub fn runtime_selection_topic(strategy_id: &StrategyId) -> String {
+    format!("platform.runtime.selection.{strategy_id}")
+}
+
+const LIVE_POSITION_PREEMPTION_REASON: &str = "live position blocks cross-market preemption";
+
+#[derive(Debug, Default)]
+struct RuntimeStrategySharedState {
+    active_market: Option<CandidateMarket>,
+    open_position_instruments: Vec<InstrumentId>,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeStrategyPositionSubscription {
+    strategy_id: StrategyId,
+    handler: TypedHandler<PositionEvent>,
+}
+
 #[derive(Clone, Debug)]
 enum RuntimeStrategyCommand {
-    Activate { instrument_id: String },
-    Clear,
+    SyncSelection { snapshot: RuntimeSelectionSnapshot },
 }
 
 #[derive(Clone, Debug)]
@@ -135,7 +165,12 @@ struct RuntimeStrategyApplier {
 struct RuntimeStrategyApplierState {
     template: RuntimeStrategyTemplate,
     trader: Rc<RefCell<Trader>>,
+    cache: Rc<RefCell<Cache>>,
     active_runtime_strategy: Option<RuntimeManagedStrategy>,
+    position_subscription: Option<RuntimeStrategyPositionSubscription>,
+    shared_state: Arc<Mutex<RuntimeStrategySharedState>>,
+    selection_state: Arc<Mutex<Option<RuntimeSelectionSnapshot>>>,
+    selection_topic: String,
     failure: Arc<Mutex<Option<String>>>,
     cancellation: CancellationToken,
     node_handle: LiveNodeHandle,
@@ -160,17 +195,26 @@ impl RuntimeStrategyApplier {
         config: RuntimeStrategyApplierConfig,
         template: RuntimeStrategyTemplate,
         trader: Rc<RefCell<Trader>>,
+        cache: Rc<RefCell<Cache>>,
+        shared_state: Arc<Mutex<RuntimeStrategySharedState>>,
+        selection_state: Arc<Mutex<Option<RuntimeSelectionSnapshot>>>,
         failure: Arc<Mutex<Option<String>>>,
         cancellation: CancellationToken,
         node_handle: LiveNodeHandle,
     ) -> Self {
+        let selection_topic = runtime_selection_topic(&template.strategy_id);
         Self {
             core: DataActorCore::new(config.base.clone()),
             config,
             state: Rc::new(RefCell::new(RuntimeStrategyApplierState {
                 template,
                 trader,
+                cache,
                 active_runtime_strategy: None,
+                position_subscription: None,
+                shared_state,
+                selection_state,
+                selection_topic,
                 failure,
                 cancellation,
                 node_handle,
@@ -244,19 +288,21 @@ impl RuntimeStrategyApplier {
 
 impl RuntimeStrategyApplierState {
     fn execute(&mut self, command: RuntimeStrategyCommand) -> Result<()> {
-        let desired_instrument_id = match command {
-            RuntimeStrategyCommand::Activate { instrument_id } => {
-                Some(InstrumentId::from(instrument_id.as_str()))
-            }
-            RuntimeStrategyCommand::Clear => None,
+        let snapshot = match command {
+            RuntimeStrategyCommand::SyncSelection { snapshot } => snapshot,
         };
+        let desired_instrument_id = self.desired_instrument_id(&snapshot);
 
         reconcile_runtime_strategy(
             &self.trader,
             &self.template,
             desired_instrument_id,
             &mut self.active_runtime_strategy,
-        )
+        )?;
+        self.sync_position_subscription();
+        self.update_shared_state(&snapshot);
+        msgbus::publish_any(self.selection_topic.as_str().into(), &snapshot);
+        Ok(())
     }
 
     fn record_failure(&self, error_message: String) {
@@ -264,6 +310,138 @@ impl RuntimeStrategyApplierState {
             && failure.is_none()
         {
             *failure = Some(error_message);
+        }
+    }
+
+    fn desired_instrument_id(&self, snapshot: &RuntimeSelectionSnapshot) -> Option<InstrumentId> {
+        match &snapshot.decision.state {
+            SelectionState::Active { market } => Some(InstrumentId::from(market.instrument_id.as_str())),
+            SelectionState::Freeze { market, .. } if self.should_hold_incumbent(market) => {
+                Some(InstrumentId::from(market.instrument_id.as_str()))
+            }
+            SelectionState::Idle { .. } | SelectionState::Freeze { .. } => None,
+        }
+    }
+
+    fn should_hold_incumbent(&self, market: &CandidateMarket) -> bool {
+        let open_position_instruments = self
+            .shared_state
+            .lock()
+            .expect("runtime strategy shared state mutex poisoned")
+            .open_position_instruments
+            .clone();
+        let market_instrument = InstrumentId::from(market.instrument_id.as_str());
+        open_position_instruments.contains(&market_instrument)
+    }
+
+    fn clear_position_subscription(&mut self) {
+        if let Some(subscription) = self.position_subscription.take() {
+            msgbus::unsubscribe_position_events(
+                get_event_positions_topic(subscription.strategy_id).into(),
+                &subscription.handler,
+            );
+        }
+        if let Ok(mut shared_state) = self.shared_state.lock() {
+            shared_state.open_position_instruments.clear();
+        }
+    }
+
+    fn sync_position_subscription(&mut self) {
+        let next_strategy_id = self
+            .active_runtime_strategy
+            .as_ref()
+            .map(|strategy| strategy.strategy_id);
+        let current_strategy_id = self
+            .position_subscription
+            .as_ref()
+            .map(|subscription| subscription.strategy_id);
+        if current_strategy_id == next_strategy_id {
+            return;
+        }
+
+        self.clear_position_subscription();
+
+        let Some(strategy_id) = next_strategy_id else {
+            return;
+        };
+        let shared_state = Arc::clone(&self.shared_state);
+        let cache = Rc::clone(&self.cache);
+        let handler = TypedHandler::from(move |event: &PositionEvent| {
+            if let Ok(mut shared_state) = shared_state.lock() {
+                match event {
+                    PositionEvent::PositionOpened(opened) => {
+                        if !shared_state
+                            .open_position_instruments
+                            .contains(&opened.instrument_id)
+                        {
+                            shared_state.open_position_instruments.push(opened.instrument_id);
+                        }
+                    }
+                    PositionEvent::PositionClosed(closed) => {
+                        if let Some(index) = shared_state
+                            .open_position_instruments
+                            .iter()
+                            .position(|instrument_id| instrument_id == &closed.instrument_id)
+                        {
+                            shared_state.open_position_instruments.remove(index);
+                        }
+                    }
+                    _ => {
+                        let open_position_instruments = {
+                            let cache = cache.borrow();
+                            cache
+                                .positions_open(None, None, Some(&strategy_id), None, None)
+                                .into_iter()
+                                .map(|position| position.instrument_id)
+                                .collect::<Vec<_>>()
+                        };
+                        shared_state.open_position_instruments = open_position_instruments;
+                    }
+                }
+            }
+        });
+        msgbus::subscribe_position_events(
+            get_event_positions_topic(strategy_id).into(),
+            handler.clone(),
+            None,
+        );
+        self.seed_live_position_from_cache(strategy_id);
+        self.position_subscription = Some(RuntimeStrategyPositionSubscription {
+            strategy_id,
+            handler,
+        });
+    }
+
+    fn seed_live_position_from_cache(&mut self, strategy_id: StrategyId) {
+        let open_position_instruments = self
+            .cache
+            .borrow()
+            .positions_open(None, None, Some(&strategy_id), None, None)
+            .into_iter()
+            .map(|position| position.instrument_id)
+            .collect::<Vec<_>>();
+        if let Ok(mut shared_state) = self.shared_state.lock() {
+            shared_state.open_position_instruments = open_position_instruments;
+        }
+    }
+
+    fn update_shared_state(&self, snapshot: &RuntimeSelectionSnapshot) {
+        let Ok(mut shared_state) = self.shared_state.lock() else {
+            return;
+        };
+
+        shared_state.active_market = match &snapshot.decision.state {
+            SelectionState::Active { market } | SelectionState::Freeze { market, .. } => {
+                Some(market.clone())
+            }
+            SelectionState::Idle { .. } => None,
+        };
+        if let Ok(mut selection_state) = self.selection_state.lock() {
+            *selection_state = Some(snapshot.clone());
+        }
+
+        if self.active_runtime_strategy.is_none() {
+            shared_state.open_position_instruments.clear();
         }
     }
 }
@@ -277,12 +455,22 @@ impl DataActor for RuntimeStrategyApplier {
     }
 
     fn on_stop(&mut self) -> Result<()> {
+        self.state.borrow_mut().clear_position_subscription();
         self.deregister_execute_endpoint();
         Ok(())
     }
 }
 
 impl PlatformRuntimeGuards {
+    pub fn runtime_selection_snapshot(&self) -> Option<RuntimeSelectionSnapshot> {
+        self.runtime_selection_state.as_ref().and_then(|selection_state| {
+            selection_state
+                .lock()
+                .ok()
+                .and_then(|selection_state| selection_state.clone())
+        })
+    }
+
     pub async fn shutdown(mut self) -> anyhow::Result<()> {
         self.cancellation.cancel();
 
@@ -358,8 +546,11 @@ pub fn wire_platform_runtime_with_services(
         .first()
         .cloned()
         .context("platform runtime requires one active ruleset")?;
+    let cache = node.kernel().cache();
     let runtime_strategy_template = runtime_strategy_template(cfg)?;
     let runtime_strategy_applier_failure = Arc::new(Mutex::new(None::<String>));
+    let runtime_strategy_shared_state = Arc::new(Mutex::new(RuntimeStrategySharedState::default()));
+    let runtime_selection_state = Arc::new(Mutex::new(None::<RuntimeSelectionSnapshot>));
     let selector_poll_interval = Duration::from_millis(ruleset.selector_poll_interval_ms);
     let cancellation = CancellationToken::new();
     let audit_cfg = cfg
@@ -373,6 +564,9 @@ pub fn wire_platform_runtime_with_services(
             Some(add_runtime_strategy_applier_actor(
                 node,
                 runtime_strategy_template,
+                cache,
+                Arc::clone(&runtime_strategy_shared_state),
+                Arc::clone(&runtime_selection_state),
                 Arc::clone(&runtime_strategy_applier_failure),
                 node.handle(),
                 cancellation.clone(),
@@ -413,6 +607,7 @@ pub fn wire_platform_runtime_with_services(
             services.candidate_loader,
             services.now_ms,
             audit_tx,
+            Arc::clone(&runtime_strategy_shared_state),
             runtime_strategy_actor_id,
             cancellation.clone(),
             node.handle(),
@@ -423,6 +618,9 @@ pub fn wire_platform_runtime_with_services(
         cancellation,
         reference_snapshot_audit: Some(reference_snapshot_audit),
         runtime_strategy_applier_failure: Some(runtime_strategy_applier_failure),
+        runtime_selection_state: runtime_strategy_actor_id
+            .as_ref()
+            .map(|_| Arc::clone(&runtime_selection_state)),
         join_handles: vec![audit_task, selector_task],
     })
 }
@@ -465,6 +663,9 @@ fn add_reference_actor(node: &mut LiveNode, cfg: &Config) -> Result<()> {
 fn add_runtime_strategy_applier_actor(
     node: &mut LiveNode,
     template: RuntimeStrategyTemplate,
+    cache: Rc<RefCell<Cache>>,
+    shared_state: Arc<Mutex<RuntimeStrategySharedState>>,
+    selection_state: Arc<Mutex<Option<RuntimeSelectionSnapshot>>>,
     failure: Arc<Mutex<Option<String>>>,
     node_handle: LiveNodeHandle,
     cancellation: CancellationToken,
@@ -480,6 +681,9 @@ fn add_runtime_strategy_applier_actor(
         },
         template,
         Rc::clone(node.kernel().trader()),
+        cache,
+        shared_state,
+        selection_state,
         failure,
         cancellation,
         node_handle,
@@ -548,6 +752,7 @@ async fn run_selector_task(
     selector_loader: Arc<dyn CandidateMarketLoader>,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
     audit_tx: AuditSender,
+    runtime_strategy_shared_state: Arc<Mutex<RuntimeStrategySharedState>>,
     runtime_strategy_actor_id: Option<ActorId>,
     cancellation: CancellationToken,
     node_handle: LiveNodeHandle,
@@ -593,7 +798,11 @@ async fn run_selector_task(
             return Ok(());
         }
 
-        let evaluation = evaluate_market_selection(&ruleset, &candidates);
+        let evaluation = apply_live_position_guard(
+            evaluate_market_selection(&ruleset, &candidates),
+            &candidates,
+            &runtime_strategy_shared_state,
+        );
         if let Err(error) = send_selector_evaluation(&audit_tx, &evaluation, &now_ms) {
             if cancellation.is_cancelled() {
                 return Ok(());
@@ -606,9 +815,14 @@ async fn run_selector_task(
             ));
         }
 
-        if let Some(runtime_strategy_actor_id) = runtime_strategy_actor_id.as_ref()
-            && let Err(error) =
-                apply_runtime_strategy_command(runtime_strategy_actor_id, &evaluation.decision)
+        if let Some(runtime_strategy_actor_id) = runtime_strategy_actor_id.as_ref() {
+            let snapshot = RuntimeSelectionSnapshot {
+                ruleset_id: evaluation.decision.ruleset_id.clone(),
+                decision: evaluation.decision.clone(),
+                eligible_candidates: evaluation.eligible_candidates.clone(),
+            };
+            if let Err(error) =
+                apply_runtime_strategy_command(runtime_strategy_actor_id, snapshot)
         {
             if cancellation.is_cancelled() {
                 return Ok(());
@@ -619,8 +833,57 @@ async fn run_selector_task(
                 &cancellation,
                 error.context("runtime-managed strategy command send failed"),
             ));
+            }
         }
     }
+}
+
+fn apply_live_position_guard(
+    mut evaluation: SelectionEvaluation,
+    candidates: &[CandidateMarket],
+    runtime_strategy_shared_state: &Arc<Mutex<RuntimeStrategySharedState>>,
+) -> SelectionEvaluation {
+    let Ok(shared_state) = runtime_strategy_shared_state.lock() else {
+        return evaluation;
+    };
+    if shared_state.open_position_instruments.is_empty() {
+        return evaluation;
+    }
+    let active_market = shared_state
+        .active_market
+        .as_ref()
+        .filter(|market| {
+            let instrument_id = InstrumentId::from(market.instrument_id.as_str());
+            shared_state.open_position_instruments.contains(&instrument_id)
+        })
+        .cloned()
+        .or_else(|| {
+            candidates.iter().find_map(|market| {
+                let instrument_id = InstrumentId::from(market.instrument_id.as_str());
+                shared_state
+                    .open_position_instruments
+                    .contains(&instrument_id)
+                    .then(|| market.clone())
+            })
+        });
+    let Some(active_market) = active_market else {
+        return evaluation;
+    };
+
+    let active_instrument_id = active_market.instrument_id.clone();
+    let should_preempt = match &evaluation.decision.state {
+        SelectionState::Active { market } => market.instrument_id != active_instrument_id,
+        SelectionState::Idle { .. } | SelectionState::Freeze { .. } => true,
+    };
+    if !should_preempt {
+        return evaluation;
+    }
+
+    evaluation.decision.state = SelectionState::Freeze {
+        market: active_market,
+        reason: LIVE_POSITION_PREEMPTION_REASON.to_string(),
+    };
+    evaluation
 }
 
 fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTemplate>> {
@@ -757,18 +1020,12 @@ fn reconcile_runtime_strategy(
 
 fn apply_runtime_strategy_command(
     runtime_strategy_actor_id: &ActorId,
-    decision: &SelectionDecision,
+    snapshot: RuntimeSelectionSnapshot,
 ) -> Result<()> {
-    let command = match &decision.state {
-        SelectionState::Active { market } => RuntimeStrategyCommand::Activate {
-            instrument_id: market.instrument_id.clone(),
-        },
-        SelectionState::Idle { .. } | SelectionState::Freeze { .. } => {
-            RuntimeStrategyCommand::Clear
-        }
-    };
-
-    RuntimeStrategyApplier::send(runtime_strategy_actor_id, command)
+    RuntimeStrategyApplier::send(
+        runtime_strategy_actor_id,
+        RuntimeStrategyCommand::SyncSelection { snapshot },
+    )
 }
 
 fn build_runtime_exec_tester(

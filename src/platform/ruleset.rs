@@ -11,7 +11,10 @@ pub struct CandidateMarket {
     pub tag_slug: String,
     pub declared_resolution_basis: ResolutionBasis,
     pub accepting_orders: bool,
+    pub start_ts_ms: Option<u64>,
     pub liquidity_num: f64,
+    pub maker_base_fee_bps: Option<i32>,
+    pub taker_base_fee_bps: Option<i32>,
     pub seconds_to_end: u64,
 }
 
@@ -67,6 +70,7 @@ pub struct RejectedCandidate {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionEvaluation {
     pub decision: SelectionDecision,
+    pub eligible_candidates: Vec<CandidateMarket>,
     /// Rejected candidates preserve the original candidate iteration order.
     pub rejected_candidates: Vec<RejectedCandidate>,
 }
@@ -95,6 +99,10 @@ pub fn evaluate_market_selection(
             .total_cmp(&lhs.liquidity_num)
             .then_with(|| lhs.market_id.cmp(&rhs.market_id))
     });
+    let eligible_candidates = eligible
+        .iter()
+        .map(|market| (*market).clone())
+        .collect::<Vec<_>>();
 
     let state = match eligible.into_iter().next() {
         None => SelectionState::Idle {
@@ -116,6 +124,7 @@ pub fn evaluate_market_selection(
             ruleset_id: ruleset.id.clone(),
             state,
         },
+        eligible_candidates,
         rejected_candidates,
     }
 }

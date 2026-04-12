@@ -10,7 +10,7 @@ use bolt_v2::{
         build_reference_data_client, reference_client_name_for_kind, wire_platform_runtime,
     },
     secrets, startup_validation,
-    strategies::exec_tester,
+    strategies::registry::{StrategyBuildContext, default_strategy_registry},
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
@@ -139,6 +139,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build()?;
             let local = tokio::task::LocalSet::new();
             let app: AppFuture = Box::pin(async move {
+                let strategy_registry = default_strategy_registry();
+                let strategy_build_context =
+                    StrategyBuildContext::new(std::sync::Arc::new(
+                        polymarket::fees::NoopFeeProvider,
+                    ));
                 let mut node = builder.build()?;
                 let node_handle = node.handle();
                 let normalized_sink_guards = if cfg.streaming.catalog_path.trim().is_empty() {
@@ -159,18 +164,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if cfg.rulesets.is_empty() {
                     for strategy in &cfg.strategies {
-                        match strategy.kind.as_str() {
-                            "exec_tester" => {
-                                let strategy = exec_tester::build_exec_tester(&strategy.config)?;
-                                node.add_strategy(strategy)?;
-                            }
-                            other => {
-                                return Err(Box::new(std::io::Error::other(format!(
-                                    "Unsupported strategy type: {other}"
-                                )))
-                                    as Box<dyn std::error::Error>);
-                            }
-                        }
+                        let Some(builder) = strategy_registry.get(&strategy.kind) else {
+                            return Err(Box::new(std::io::Error::other(format!(
+                                "Unsupported strategy type: {}",
+                                strategy.kind
+                            ))) as Box<dyn std::error::Error>);
+                        };
+                        builder
+                            .build(&strategy.config, &strategy_build_context)?
+                            .add_to_node(&mut node)?;
                     }
                 }
                 let platform_runtime_guards = if cfg.rulesets.is_empty() {

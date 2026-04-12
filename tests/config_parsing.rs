@@ -8,6 +8,8 @@ use toml::Value;
 #[test]
 fn parses_runtime_config_with_optional_streaming_section() {
     let toml = r#"
+        strategies = []
+
         [node]
         name = "bolt-v2"
         trader_id = "TRADER-001"
@@ -48,17 +50,6 @@ fn parses_runtime_config_with_optional_streaming_section() {
         api_secret = "/secret"
         passphrase = "/pass"
 
-        [[strategies]]
-        type = "exec_tester"
-        [strategies.config]
-        strategy_id = "EXEC-001"
-        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-        client_id = "POLYMARKET"
-        order_qty = "1"
-        log_data = true
-        tob_offset_ticks = 1
-        use_post_only = true
-
         [raw_capture]
         output_dir = "var/raw"
 
@@ -80,161 +71,6 @@ fn parses_runtime_config_with_optional_streaming_section() {
     );
 }
 
-#[test]
-fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema() {
-    let tempdir = TempCaseDir::new("config-parsing");
-    std::fs::write(
-        tempdir.path().join("Cargo.toml"),
-        "[package]\nname = \"temp\"\n",
-    )
-    .unwrap();
-    let config_dir = tempdir.path().join("config");
-    std::fs::create_dir_all(&config_dir).unwrap();
-    let input_path = config_dir.join("live.local.toml");
-    let output_path = tempdir.path().join("live.toml");
-    let toml = r#"
-        [node]
-        name = "bolt-v2"
-        trader_id = "TRADER-001"
-
-        [polymarket]
-        event_slug = "btc-updown-5m"
-        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-        account_id = "POLYMARKET-001"
-        funder = "0xdeadbeef"
-
-        [secrets]
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-
-        [raw_capture]
-        output_dir = "var/raw"
-
-        [streaming]
-        catalog_path = "var/catalog"
-        flush_interval_ms = 250
-        contract_path = "contracts/polymarket.toml"
-    "#;
-
-    fs::write(&input_path, toml).unwrap();
-    materialize_live_config(&input_path, &output_path).unwrap();
-    let rendered = fs::read_to_string(&output_path).unwrap();
-    let cfg: Config = toml::from_str(&rendered).unwrap();
-
-    assert!(rendered.contains("[streaming]"));
-    assert!(rendered.contains("[raw_capture]"));
-    assert_eq!(cfg.node.timeout_connection_secs, 60);
-    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
-    assert_eq!(cfg.streaming.catalog_path, "var/catalog");
-    assert_eq!(cfg.streaming.flush_interval_ms, 250);
-    let expected_root = std::fs::canonicalize(tempdir.path()).unwrap();
-    assert_eq!(
-        cfg.streaming.contract_path.as_deref(),
-        Some(
-            expected_root
-                .join("contracts/polymarket.toml")
-                .to_str()
-                .unwrap()
-        )
-    );
-}
-
-#[test]
-fn rendered_runtime_toml_preserves_phase1_platform_values() {
-    let tempdir = TempCaseDir::new("phase1-config-parsing");
-    let input_path = tempdir.path().join("live.local.toml");
-    let output_path = tempdir.path().join("live.toml");
-    let toml = r#"
-        [node]
-        name = "BOLT-V2-001"
-        trader_id = "BOLT-001"
-
-        [polymarket]
-        event_slug = "what-price-will-bitcoin-hit-before-2027"
-        instrument_id = "0xabc-123.POLYMARKET"
-        account_id = "POLYMARKET-001"
-        funder = "0xabc"
-        signature_type = 2
-
-        [strategy]
-        strategy_id = "EXEC_TESTER-001"
-        order_qty = "5"
-
-        [secrets]
-        region = "eu-west-1"
-        pk = "/bolt/poly/pk"
-        api_key = "/bolt/poly/key"
-        api_secret = "/bolt/poly/secret"
-        passphrase = "/bolt/poly/passphrase"
-
-        [reference]
-        publish_topic = "platform.reference.default"
-        min_publish_interval_ms = 100
-
-        [[reference.venues]]
-        name = "BINANCE-BTC"
-        type = "binance"
-        instrument_id = "BTCUSDT.BINANCE"
-        base_weight = 0.35
-        stale_after_ms = 1500
-        disable_after_ms = 5000
-
-        [[rulesets]]
-        id = "PRIMARY"
-        venue = "polymarket"
-        tag_slug = "bitcoin"
-        resolution_basis = "binance_btcusdt_1m"
-        min_time_to_expiry_secs = 60
-        max_time_to_expiry_secs = 900
-        min_liquidity_num = 1000
-        require_accepting_orders = true
-freeze_before_end_secs = 90
-selector_poll_interval_ms = 250
-candidate_load_timeout_secs = 12
-
-[audit]
-local_dir = "var/audit"
-s3_uri = "s3://bolt-runtime-history/phase1"
-ship_interval_secs = 30
-upload_attempt_timeout_secs = 45
-roll_max_bytes = 1048576
-roll_max_secs = 300
-max_local_backlog_bytes = 10485760
-    "#;
-
-    fs::write(&input_path, toml).unwrap();
-    materialize_live_config(&input_path, &output_path).unwrap();
-    let rendered = fs::read_to_string(&output_path).unwrap();
-    let value: Value = toml::from_str(&rendered).unwrap();
-
-    assert_eq!(
-        value["reference"]["venues"][0]["type"].as_str(),
-        Some("binance")
-    );
-    assert_eq!(value["rulesets"][0]["id"].as_str(), Some("PRIMARY"));
-    assert_eq!(
-        value["rulesets"][0]["require_accepting_orders"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        value["rulesets"][0]["selector_poll_interval_ms"].as_integer(),
-        Some(250)
-    );
-    assert_eq!(
-        value["rulesets"][0]["candidate_load_timeout_secs"].as_integer(),
-        Some(12)
-    );
-    assert_eq!(
-        value["audit"]["s3_uri"].as_str(),
-        Some("s3://bolt-runtime-history/phase1")
-    );
-    assert_eq!(
-        value["audit"]["upload_attempt_timeout_secs"].as_integer(),
-        Some(45)
-    );
-}
 
 #[test]
 fn parses_runtime_config_with_nested_chainlink_reference_settings() {
@@ -274,6 +110,7 @@ price_scale = 8"#,
     assert_eq!(shared.api_secret, "/bolt/chainlink/api_secret");
     assert_eq!(shared.ws_url, "wss://streams.chain.link");
     assert_eq!(shared.ws_reconnect_alert_threshold, 5);
+    assert_eq!(cfg.rulesets[0].event_slug_prefix, "btc-updown-5m-");
     assert_eq!(
         chainlink.feed_id,
         "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
@@ -330,12 +167,15 @@ disable_after_ms = 5000"#,
         "chainlink_btcusd",
     );
 
-    fs::write(&path, toml).unwrap();
-    let error = Config::load(&path)
-        .expect_err("chainlink runtime config without nested settings should fail")
-        .to_string();
-
-    assert!(error.contains("reference.venues[0].chainlink"));
+    fs::write(&path, &toml).unwrap();
+    let cfg: Config = toml::from_str(&toml).expect("runtime config should parse");
+    let errors = bolt_v2::validate::validate_runtime(&cfg);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "reference.venues[0].chainlink"),
+        "{errors:?}"
+    );
 }
 
 #[test]
@@ -357,12 +197,15 @@ price_scale = 8"#,
         "chainlink_btcusd",
     );
 
-    fs::write(&path, toml).unwrap();
-    let error = Config::load(&path)
-        .expect_err("chainlink runtime config without shared settings should fail")
-        .to_string();
-
-    assert!(error.contains("reference.chainlink"));
+    fs::write(&path, &toml).unwrap();
+    let cfg: Config = toml::from_str(&toml).expect("runtime config should parse");
+    let errors = bolt_v2::validate::validate_runtime(&cfg);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "reference.chainlink"),
+        "{errors:?}"
+    );
 }
 
 #[test]
@@ -389,11 +232,19 @@ price_scale = 8"#,
         "binance_btcusdt_1m",
     );
 
-    fs::write(&path, toml).unwrap();
-    let error = Config::load(&path)
-        .expect_err("orphaned chainlink settings should fail")
-        .to_string();
-
-    assert!(error.contains("reference.chainlink"));
-    assert!(error.contains("reference.venues[0].chainlink"));
+    fs::write(&path, &toml).unwrap();
+    let cfg: Config = toml::from_str(&toml).expect("runtime config should parse");
+    let errors = bolt_v2::validate::validate_runtime(&cfg);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "reference.chainlink"),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "reference.venues[0].chainlink"),
+        "{errors:?}"
+    );
 }

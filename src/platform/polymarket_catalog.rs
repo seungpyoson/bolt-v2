@@ -1,5 +1,6 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+use nautilus_model::identifiers::InstrumentId;
 use nautilus_polymarket::http::{
     gamma::PolymarketGammaRawHttpClient, models::GammaMarket, query::GetGammaEventsParams,
 };
@@ -38,6 +39,10 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
         .flat_map(|event| event.markets.into_iter())
         .filter_map(|market| translate_market(market, &ruleset.tag_slug, now))
         .collect())
+}
+
+pub fn polymarket_instrument_id(condition_id: &str, token_id: &str) -> InstrumentId {
+    InstrumentId::from(format!("{condition_id}-{token_id}.POLYMARKET").as_str())
 }
 
 async fn fetch_gamma_events_paginated(
@@ -97,15 +102,23 @@ fn translate_market(
             return None;
         }
     };
-    let instrument_id = first_token_id(&market.clob_token_ids)?;
+    let (up_token_id, down_token_id) = token_ids(&market.clob_token_ids)?;
     let accepting_orders = market.accepting_orders?;
     let liquidity_num = market.liquidity_num?;
     let end_date = market.end_date?;
     let seconds_to_end = seconds_to_end(now, &end_date)?;
+    let start_ts_ms = market
+        .start_date
+        .as_deref()
+        .and_then(timestamp_ms_from_rfc3339);
 
     Some(CandidateMarket {
         market_id: market.id,
-        instrument_id,
+        instrument_id: polymarket_instrument_id(&market.condition_id, &up_token_id).to_string(),
+        condition_id: market.condition_id,
+        up_token_id,
+        down_token_id,
+        start_ts_ms,
         // Gamma event queries are scoped to a single ruleset slug in phase 1.
         tag_slug: tag_slug.to_string(),
         declared_resolution_basis,
@@ -115,11 +128,13 @@ fn translate_market(
     })
 }
 
-fn first_token_id(clob_token_ids: &str) -> Option<String> {
-    serde_json::from_str::<Vec<String>>(clob_token_ids)
+fn token_ids(clob_token_ids: &str) -> Option<(String, String)> {
+    let mut token_ids = serde_json::from_str::<Vec<String>>(clob_token_ids)
         .ok()?
-        .into_iter()
-        .next()
+        .into_iter();
+    let up_token_id = token_ids.next()?;
+    let down_token_id = token_ids.next()?;
+    Some((up_token_id, down_token_id))
 }
 
 fn seconds_to_end(now: DateTime<Utc>, end_date: &str) -> Option<u64> {
@@ -128,4 +143,13 @@ fn seconds_to_end(now: DateTime<Utc>, end_date: &str) -> Option<u64> {
         .with_timezone(&Utc);
     let delta = end_time.signed_duration_since(now).num_seconds();
     Some(delta.max(0) as u64)
+}
+
+fn timestamp_ms_from_rfc3339(value: &str) -> Option<u64> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()?
+        .with_timezone(&Utc)
+        .timestamp_millis()
+        .try_into()
+        .ok()
 }

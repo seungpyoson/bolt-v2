@@ -8,6 +8,10 @@ use std::cmp::Ordering;
 pub struct CandidateMarket {
     pub market_id: String,
     pub instrument_id: String,
+    pub condition_id: String,
+    pub up_token_id: String,
+    pub down_token_id: String,
+    pub start_ts_ms: Option<u64>,
     pub tag_slug: String,
     pub declared_resolution_basis: ResolutionBasis,
     pub accepting_orders: bool,
@@ -67,6 +71,7 @@ pub struct RejectedCandidate {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionEvaluation {
     pub decision: SelectionDecision,
+    pub eligible_candidates: Vec<CandidateMarket>,
     /// Rejected candidates preserve the original candidate iteration order.
     pub rejected_candidates: Vec<RejectedCandidate>,
 }
@@ -96,6 +101,8 @@ pub fn evaluate_market_selection(
             .then_with(|| lhs.market_id.cmp(&rhs.market_id))
     });
 
+    let eligible_candidates: Vec<CandidateMarket> = eligible.iter().map(|market| (*market).clone()).collect();
+
     let state = match eligible.into_iter().next() {
         None => SelectionState::Idle {
             reason: "no eligible market".to_string(),
@@ -116,6 +123,7 @@ pub fn evaluate_market_selection(
             ruleset_id: ruleset.id.clone(),
             state,
         },
+        eligible_candidates,
         rejected_candidates,
     }
 }

@@ -10,7 +10,9 @@ use std::{
 use bolt_v2::{
     config::{RulesetConfig, RulesetVenueKind},
     platform::{
-        polymarket_catalog::load_candidate_markets_for_ruleset_with_gamma_client,
+        polymarket_catalog::{
+            load_candidate_markets_for_ruleset_with_gamma_client, polymarket_instrument_id,
+        },
         resolution_basis::{
             CandleInterval, ResolutionBasis, ResolutionSourceKind, parse_declared_resolution_basis,
             parse_ruleset_resolution_basis,
@@ -18,6 +20,7 @@ use bolt_v2::{
     },
 };
 use chrono::{Duration as ChronoDuration, Utc};
+use nautilus_model::identifiers::InstrumentId;
 use nautilus_polymarket::http::gamma::PolymarketGammaRawHttpClient;
 use serde_json::{Value, json};
 use tokio::{
@@ -55,6 +58,7 @@ fn ruleset() -> RulesetConfig {
         id: "btc-5m".to_string(),
         venue: RulesetVenueKind::Polymarket,
         tag_slug: "bitcoin".to_string(),
+        event_slug_prefix: "btc-updown-5m-".to_string(),
         resolution_basis: "binance_btcusdt_1m".to_string(),
         min_time_to_expiry_secs: 120,
         max_time_to_expiry_secs: 1_800,
@@ -198,11 +202,19 @@ fn valid_market_with(id: &str, clob_token_ids: &str, end_date: String) -> Value 
         "outcomes": "[\"Yes\",\"No\"]",
         "question": "Will BTC finish green?",
         "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTCUSDT has a final close above the opening price. The resolution source for this market is Binance, specifically the BTCUSDT \"Close\" prices available with \"1m\" and \"Candles\" selected on the top bar.",
+        "startDate": "2026-04-12T08:00:00Z",
         "acceptingOrders": true,
         "liquidityNum": 4567.0,
         "endDate": end_date,
         "slug": id
     })
+}
+
+#[test]
+fn polymarket_instrument_id_formats_condition_and_token_ids() {
+    let instrument_id = polymarket_instrument_id("0xcondition1", "111");
+
+    assert_eq!(instrument_id, InstrumentId::from("0xcondition1-111.POLYMARKET"));
 }
 
 #[test]
@@ -326,7 +338,11 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert_eq!(request_count.load(Ordering::Relaxed), 1);
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-good");
-    assert_eq!(markets[0].instrument_id, "111");
+    assert_eq!(markets[0].instrument_id, "0xcondition1-111.POLYMARKET");
+    assert_eq!(markets[0].condition_id, "0xcondition1");
+    assert_eq!(markets[0].up_token_id, "111");
+    assert_eq!(markets[0].down_token_id, "222");
+    assert_eq!(markets[0].start_ts_ms, Some(1_775_980_800_000));
     assert_eq!(markets[0].tag_slug, "bitcoin");
     assert_eq!(
         markets[0].declared_resolution_basis,
@@ -386,7 +402,7 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
             .iter()
             .map(|market| market.instrument_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["111", "333"]
+        vec!["0xcondition1-111.POLYMARKET", "0xcondition1-333.POLYMARKET"]
     );
     assert!(markets.iter().all(|market| market.tag_slug == "bitcoin"));
 }

@@ -5,9 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bolt_v2::materialize_live_config;
 mod support;
-use support::repo_path;
 use tempfile::tempdir;
 
 static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -56,6 +54,8 @@ fn secrets_check_reports_complete_secret_config() {
 fn secrets_check_fails_on_invalid_config_via_load_validation() {
     let path = write_temp_config(
         r#"
+strategies = []
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT001"
@@ -92,14 +92,6 @@ pk = "/x/pk"
 api_key = "/x/key"
 api_secret = "/x/secret"
 passphrase = "/x/pass"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -123,6 +115,8 @@ order_qty = "5"
 fn secrets_check_fails_when_required_fields_are_missing() {
     let path = write_temp_config(
         r#"
+strategies = []
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT-001"
@@ -155,14 +149,6 @@ signature_type = 2
 funder = "0xabc"
 [exec_clients.secrets]
 region = "eu-west-1"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -189,6 +175,8 @@ order_qty = "5"
 fn secrets_resolve_fails_fast_when_required_fields_are_missing() {
     let path = write_temp_config(
         r#"
+strategies = []
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT-001"
@@ -221,14 +209,6 @@ signature_type = 2
 funder = "0xabc"
 [exec_clients.secrets]
 region = "eu-west-1"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -255,6 +235,8 @@ order_qty = "5"
 fn secrets_check_fails_when_region_is_blank() {
     let path = write_temp_config(
         r#"
+strategies = []
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT-001"
@@ -291,14 +273,6 @@ pk = "/x/pk"
 api_key = "/x/key"
 api_secret = "/x/secret"
 passphrase = "/x/pass"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -322,6 +296,8 @@ order_qty = "5"
 fn secrets_resolve_fails_fast_when_region_is_blank() {
     let path = write_temp_config(
         r#"
+strategies = []
+
 [node]
 name = "BOLT-V2-001"
 trader_id = "BOLT-001"
@@ -358,14 +334,6 @@ pk = "/x/pk"
 api_key = "/x/key"
 api_secret = "/x/secret"
 passphrase = "/x/pass"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -455,8 +423,50 @@ fn write_generated_runtime_config() -> std::path::PathBuf {
         .expect("time should move forward")
         .as_nanos();
     let path = temp_config_path_for_timestamp(timestamp_nanos);
-    materialize_live_config(&repo_path("config/live.local.example.toml"), &path)
-        .expect("tracked template should materialize");
+    fs::write(
+        &path,
+        r#"
+strategies = []
+
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 60
+timeout_reconciliation_secs = 30
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 10
+delay_shutdown_secs = 5
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[data_clients.config]
+event_slugs = ["btc-updown-5m"]
+
+[[exec_clients]]
+name = "POLYMARKET"
+type = "polymarket"
+[exec_clients.config]
+account_id = "POLYMARKET-001"
+signature_type = 2
+funder = "0xabc"
+[exec_clients.secrets]
+region = "eu-west-1"
+pk = "/x/pk"
+api_key = "/x/key"
+api_secret = "/x/secret"
+passphrase = "/x/pass"
+"#,
+    )
+    .expect("temp config should be written");
     path
 }
 

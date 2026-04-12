@@ -1,13 +1,6 @@
 mod support;
 
-use std::{
-    collections::VecDeque,
-    fs,
-    future::Future,
-    path::Path,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::VecDeque, fs, future::Future, path::Path, sync::{Arc, Mutex}, time::Duration};
 
 use anyhow::{Result, anyhow};
 use bolt_v2::{
@@ -26,17 +19,19 @@ use bolt_v2::{
         ruleset::CandidateMarket,
         runtime::{
             CandidateMarketLoadFuture, CandidateMarketLoader, PlatformAuditTaskFactory,
-            PlatformRuntimeServices, wire_platform_runtime_with_services,
+            PlatformRuntimeServices, wire_platform_runtime_with_services_and_registry,
         },
     },
-    strategies::exec_tester::build_exec_tester,
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig, msgbus::publish_any};
 use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
 use nautilus_model::identifiers::TraderId;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
-    clear_mock_data_subscriptions, recorded_mock_data_subscriptions,
+    stub_runtime_strategy::{
+        clear_stub_runtime_observations, stub_runtime_build_count, stub_runtime_snapshots,
+    },
+    test_strategy_build_context, test_strategy_registry,
 };
 use tempfile::tempdir;
 use tokio::{sync::Notify, task::LocalSet};
@@ -100,7 +95,7 @@ impl PlatformAuditTaskFactory for RecordingAuditTaskFactory {
     ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         self.configs.lock().unwrap().push(audit_config.clone());
         let worker = spawn_audit_worker(audit_rx, self.uploader.clone(), audit_config);
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             cancellation.cancelled().await;
             worker.shutdown().await
         })
@@ -119,7 +114,7 @@ impl PlatformAuditTaskFactory for FailingAuditTaskFactory {
         cancellation: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         let release = Arc::clone(&self.release);
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             let _audit_rx = audit_rx;
 
             tokio::select! {
@@ -195,6 +190,7 @@ fn test_config(audit_dir: &Path) -> Config {
             id: "PRIMARY".to_string(),
             venue: RulesetVenueKind::Polymarket,
             tag_slug: "bitcoin".to_string(),
+            event_slug_prefix: "btc-updown-5m-".to_string(),
             resolution_basis: "binance_btcusdt_1m".to_string(),
             min_time_to_expiry_secs: 60,
             max_time_to_expiry_secs: 900,
@@ -255,18 +251,9 @@ fn lifecycle_test_config(audit_dir: &Path) -> Config {
         },
     }];
     cfg.strategies = vec![StrategyEntry {
-        kind: "exec_tester".to_string(),
+        kind: "stub_runtime".to_string(),
         config: toml::toml! {
-            strategy_id = "EXEC_TESTER-TEMPLATE-001"
-            instrument_id = "RUNTIME_OVERRIDE.POLYMARKET"
-            client_id = "TEST"
-            order_qty = "5"
-            log_data = false
-            tob_offset_ticks = 5
-            use_post_only = true
-            enable_limit_sells = false
-            enable_stop_buys = false
-            enable_stop_sells = false
+            strategy_id = "RUNTIME-STUB-001"
         }
         .into(),
     }];
@@ -450,6 +437,16 @@ where
     runtime.block_on(local.run_until(test));
 }
 
+fn wire_platform_runtime_with_services(
+    node: &mut LiveNode,
+    cfg: &Config,
+    services: PlatformRuntimeServices,
+) -> anyhow::Result<bolt_v2::platform::runtime::PlatformRuntimeGuards> {
+    let registry = test_strategy_registry();
+    let build_context = test_strategy_build_context();
+    wire_platform_runtime_with_services_and_registry(node, cfg, services, &registry, &build_context)
+}
+
 fn runtime_error(run_result: Result<()>, shutdown_result: Result<()>) -> anyhow::Error {
     match (run_result.err(), shutdown_result.err()) {
         (Some(error), _) => error,
@@ -514,66 +511,70 @@ impl CandidateMarketLoader for SequencedLoader {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn platform_runtime_starts_and_stops_with_node() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let uploader = MockUploader::default();
-    let audit_task_factory = Arc::new(RecordingAuditTaskFactory::new(uploader.clone()));
-    let services = services_with(Vec::new(), audit_task_factory.clone());
+#[test]
+fn platform_runtime_starts_and_stops_with_node() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let uploader = MockUploader::default();
+        let audit_task_factory = Arc::new(RecordingAuditTaskFactory::new(uploader.clone()));
+        let services = services_with(Vec::new(), audit_task_factory.clone());
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        handle.stop();
+        tokio::task::spawn_local(async move {
+            wait_for_running(&handle).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+
+        assert_eq!(node.state(), NodeState::Stopped);
+        assert!(!uploader.calls().is_empty());
+        assert_eq!(
+            audit_task_factory.configs()[0].upload_attempt_timeout,
+            Duration::from_secs(cfg.audit.as_ref().unwrap().upload_attempt_timeout_secs)
+        );
     });
-
-    node.run().await.unwrap();
-    guards.shutdown().await.unwrap();
-
-    assert_eq!(node.state(), NodeState::Stopped);
-    assert!(!uploader.calls().is_empty());
-    assert_eq!(
-        audit_task_factory.configs()[0].upload_attempt_timeout,
-        Duration::from_secs(cfg.audit.as_ref().unwrap().upload_attempt_timeout_secs)
-    );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn no_eligible_market_emits_idle_decision_and_keeps_running() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let uploader = MockUploader::default();
-    let services = services_with(
-        Vec::new(),
-        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
-    );
+#[test]
+fn no_eligible_market_emits_idle_decision_and_keeps_running() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let uploader = MockUploader::default();
+        let services = services_with(
+            Vec::new(),
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    let stop_handle = handle.clone();
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(handle.is_running(), "idle selector must not stop the node");
-        stop_handle.stop();
+        let stop_handle = handle.clone();
+        tokio::task::spawn_local(async move {
+            wait_for_running(&handle).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(handle.is_running(), "idle selector must not stop the node");
+            stop_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert!(records.iter().any(|record| {
+            record["kind"] == "selector_decision"
+                && record["state"] == "idle"
+                && record["reason"] == "no eligible market"
+        }));
     });
-
-    node.run().await.unwrap();
-    guards.shutdown().await.unwrap();
-
-    let records = uploaded_records(&uploader);
-    assert!(records.iter().any(|record| {
-        record["kind"] == "selector_decision"
-            && record["state"] == "idle"
-            && record["reason"] == "no eligible market"
-    }));
 }
 
 fn candidate_market(
@@ -585,6 +586,10 @@ fn candidate_market(
     CandidateMarket {
         market_id: market_id.to_string(),
         instrument_id: instrument_id.to_string(),
+        condition_id: format!("{market_id}-condition"),
+        up_token_id: format!("{market_id}-up"),
+        down_token_id: format!("{market_id}-down"),
+        start_ts_ms: Some(1_744_444_800_000),
         tag_slug: "bitcoin".to_string(),
         declared_resolution_basis: binance_btcusdt_1m(),
         accepting_orders: true,
@@ -601,113 +606,121 @@ fn binance_btcusdt_1m() -> ResolutionBasis {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick() {
-    let dir = tempdir().unwrap();
-    let mut cfg = test_config(dir.path());
-    cfg.rulesets[0].selector_poll_interval_ms = 1_000;
-    let uploader = MockUploader::default();
-    let services = services_with(
-        vec![
-            CandidateMarket {
-                market_id: "mkt-low-liquidity".to_string(),
-                instrument_id: "LOW_LIQ.POLYMARKET".to_string(),
-                tag_slug: "bitcoin".to_string(),
-                declared_resolution_basis: binance_btcusdt_1m(),
-                accepting_orders: true,
-                liquidity_num: 999.0,
-                seconds_to_end: 120,
-            },
-            candidate_market("mkt-active", "ACTIVE.POLYMARKET", 2_000.0, 120),
-        ],
-        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
-    );
+#[test]
+fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 1_000;
+        let uploader = MockUploader::default();
+        let services = services_with(
+            vec![
+                CandidateMarket {
+                    market_id: "mkt-low-liquidity".to_string(),
+                    instrument_id: "LOW_LIQ.POLYMARKET".to_string(),
+                    condition_id: "mkt-low-liquidity-condition".to_string(),
+                    up_token_id: "mkt-low-liquidity-up".to_string(),
+                    down_token_id: "mkt-low-liquidity-down".to_string(),
+                    start_ts_ms: Some(1_744_444_800_000),
+                    tag_slug: "bitcoin".to_string(),
+                    declared_resolution_basis: binance_btcusdt_1m(),
+                    accepting_orders: true,
+                    liquidity_num: 999.0,
+                    seconds_to_end: 120,
+                },
+                candidate_market("mkt-active", "ACTIVE.POLYMARKET", 2_000.0, 120),
+            ],
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let stop_handle = handle.clone();
-    let spool_dir = dir.path().to_path_buf();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let spool_dir = dir.path().to_path_buf();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-        wait_for_kind_record_count(&spool_dir, "eligibility_reject", 1).await;
-        wait_for_kind_record_count(&spool_dir, "selector_decision", 1).await;
-        stop_handle.stop();
+        tokio::task::spawn_local(async move {
+            wait_for_running(&handle).await;
+            wait_for_kind_record_count(&spool_dir, "eligibility_reject", 1).await;
+            wait_for_kind_record_count(&spool_dir, "selector_decision", 1).await;
+            stop_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert_eq!(count_kind_records(&records, "eligibility_reject"), 1);
+        assert_eq!(count_kind_records(&records, "selector_decision"), 1);
+
+        let reject_record = records.iter().find(|record| {
+            record["kind"] == "eligibility_reject"
+                && record["ruleset_id"] == "PRIMARY"
+                && record["market_id"] == "mkt-low-liquidity"
+                && record["instrument_id"] == "LOW_LIQ.POLYMARKET"
+                && record["reason"] == "low_liquidity"
+        });
+        let decision_record = records.iter().find(|record| {
+            record["kind"] == "selector_decision"
+                && record["state"] == "active"
+                && record["ruleset_id"] == "PRIMARY"
+                && record["market_id"] == "mkt-active"
+                && record["instrument_id"] == "ACTIVE.POLYMARKET"
+        });
+
+        assert!(
+            reject_record.is_some(),
+            "expected eligibility reject audit record, got {records:?}"
+        );
+        assert!(
+            decision_record.is_some(),
+            "expected selector decision audit record, got {records:?}"
+        );
+        assert_eq!(reject_record.unwrap()["ts_ms"], 1_000);
+        assert_eq!(decision_record.unwrap()["ts_ms"], 1_000);
     });
-
-    node.run().await.unwrap();
-    guards.shutdown().await.unwrap();
-
-    let records = uploaded_records(&uploader);
-    assert_eq!(count_kind_records(&records, "eligibility_reject"), 1);
-    assert_eq!(count_kind_records(&records, "selector_decision"), 1);
-
-    let reject_record = records.iter().find(|record| {
-        record["kind"] == "eligibility_reject"
-            && record["ruleset_id"] == "PRIMARY"
-            && record["market_id"] == "mkt-low-liquidity"
-            && record["instrument_id"] == "LOW_LIQ.POLYMARKET"
-            && record["reason"] == "low_liquidity"
-    });
-    let decision_record = records.iter().find(|record| {
-        record["kind"] == "selector_decision"
-            && record["state"] == "active"
-            && record["ruleset_id"] == "PRIMARY"
-            && record["market_id"] == "mkt-active"
-            && record["instrument_id"] == "ACTIVE.POLYMARKET"
-    });
-
-    assert!(
-        reject_record.is_some(),
-        "expected eligibility reject audit record, got {records:?}"
-    );
-    assert!(
-        decision_record.is_some(),
-        "expected selector decision audit record, got {records:?}"
-    );
-    assert_eq!(reject_record.unwrap()["ts_ms"], 1_000);
-    assert_eq!(decision_record.unwrap()["ts_ms"], 1_000);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn eligible_market_emits_active_decision() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let uploader = MockUploader::default();
-    let services = services_with(
-        vec![candidate_market(
-            "mkt-active",
-            "ACTIVE.POLYMARKET",
-            2_000.0,
-            120,
-        )],
-        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
-    );
+#[test]
+fn eligible_market_emits_active_decision() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let uploader = MockUploader::default();
+        let services = services_with(
+            vec![candidate_market(
+                "mkt-active",
+                "ACTIVE.POLYMARKET",
+                2_000.0,
+                120,
+            )],
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let stop_handle = handle.clone();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        stop_handle.stop();
+        tokio::task::spawn_local(async move {
+            wait_for_running(&handle).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stop_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert!(records.iter().any(|record| {
+            record["kind"] == "selector_decision"
+                && record["state"] == "active"
+                && record["ruleset_id"] == "PRIMARY"
+                && record["market_id"] == "mkt-active"
+                && record["instrument_id"] == "ACTIVE.POLYMARKET"
+                && record["reason"].is_null()
+        }));
     });
-
-    node.run().await.unwrap();
-    guards.shutdown().await.unwrap();
-
-    let records = uploaded_records(&uploader);
-    assert!(records.iter().any(|record| {
-        record["kind"] == "selector_decision"
-            && record["state"] == "active"
-            && record["ruleset_id"] == "PRIMARY"
-            && record["market_id"] == "mkt-active"
-            && record["instrument_id"] == "ACTIVE.POLYMARKET"
-            && record["reason"].is_null()
-    }));
 }
 
 #[test]
@@ -757,48 +770,50 @@ fn active_selector_state_registers_exactly_one_runtime_strategy() {
     });
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn freeze_window_market_emits_freeze_decision() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let uploader = MockUploader::default();
-    let services = services_with(
-        vec![candidate_market(
-            "mkt-freeze",
-            "FREEZE.POLYMARKET",
-            2_000.0,
-            60,
-        )],
-        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
-    );
+#[test]
+fn freeze_window_market_emits_freeze_decision() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let uploader = MockUploader::default();
+        let services = services_with(
+            vec![candidate_market(
+                "mkt-freeze",
+                "FREEZE.POLYMARKET",
+                2_000.0,
+                60,
+            )],
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let stop_handle = handle.clone();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        stop_handle.stop();
+        tokio::spawn(async move {
+            wait_for_running(&handle).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stop_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert!(records.iter().any(|record| {
+            record["kind"] == "selector_decision"
+                && record["state"] == "freeze"
+                && record["ruleset_id"] == "PRIMARY"
+                && record["market_id"] == "mkt-freeze"
+                && record["instrument_id"] == "FREEZE.POLYMARKET"
+                && record["reason"] == "freeze window"
+        }));
     });
-
-    node.run().await.unwrap();
-    guards.shutdown().await.unwrap();
-
-    let records = uploaded_records(&uploader);
-    assert!(records.iter().any(|record| {
-        record["kind"] == "selector_decision"
-            && record["state"] == "freeze"
-            && record["ruleset_id"] == "PRIMARY"
-            && record["market_id"] == "mkt-freeze"
-            && record["instrument_id"] == "FREEZE.POLYMARKET"
-            && record["reason"] == "freeze window"
-    }));
 }
 
 #[test]
-fn no_eligible_market_registers_no_runtime_strategy() {
+fn no_eligible_market_keeps_persistent_runtime_strategy_registered() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
         let spool_dir = dir.path().to_path_buf();
@@ -819,8 +834,8 @@ fn no_eligible_market_registers_no_runtime_strategy() {
             wait_for_running(&handle).await;
             wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
             assert!(
-                trader.borrow().strategy_ids().is_empty(),
-                "runtime should not register a strategy when no market is eligible"
+                trader.borrow().strategy_ids().len() == 1,
+                "persistent runtime strategy should stay registered even when no market is eligible"
             );
             stop_handle.stop();
             Ok::<(), anyhow::Error>(())
@@ -831,7 +846,86 @@ fn no_eligible_market_registers_no_runtime_strategy() {
         guards.shutdown().await.unwrap();
         control_result.unwrap();
 
-        assert!(trader.borrow().strategy_ids().is_empty());
+        assert_eq!(trader.borrow().strategy_ids().len(), 1);
+    });
+}
+
+#[test]
+fn runtime_strategy_persists_across_switch_idle_and_resume_snapshots() {
+    run_multithread_localset_test(async {
+        clear_stub_runtime_observations();
+
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let strategy_id = "RUNTIME-STUB-001";
+        let services = services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market("mkt-active-a", "ACTIVE-A.POLYMARKET", 2_000.0, 120)],
+                vec![candidate_market("mkt-active-b", "ACTIVE-B.POLYMARKET", 2_000.0, 120)],
+                Vec::new(),
+                vec![candidate_market("mkt-active-c", "ACTIVE-C.POLYMARKET", 2_000.0, 120)],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "active", 3, poll_budget).await;
+            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                Duration::from_secs(1),
+                &stop_handle,
+                "persistent runtime strategy snapshot sequence",
+                || {
+                    stub_runtime_build_count(strategy_id) == 1
+                        && stub_runtime_snapshots(strategy_id).len() >= 4
+                        && trader.borrow().strategy_ids().len() == 1
+                },
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        assert_eq!(stub_runtime_build_count(strategy_id), 1);
+        assert_eq!(trader.borrow().strategy_ids().len(), 1);
+
+        let snapshots = stub_runtime_snapshots(strategy_id);
+        assert_eq!(snapshots.len(), 4);
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|snapshot| match &snapshot.decision.state {
+                    bolt_v2::platform::ruleset::SelectionState::Active { market } => {
+                        format!("active:{}", market.instrument_id)
+                    }
+                    bolt_v2::platform::ruleset::SelectionState::Idle { .. } => "idle".to_string(),
+                    bolt_v2::platform::ruleset::SelectionState::Freeze { market, .. } => {
+                        format!("freeze:{}", market.instrument_id)
+                    }
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                "active:ACTIVE-A.POLYMARKET".to_string(),
+                "active:ACTIVE-B.POLYMARKET".to_string(),
+                "idle".to_string(),
+                "active:ACTIVE-C.POLYMARKET".to_string(),
+            ]
+        );
     });
 }
 
@@ -841,18 +935,9 @@ fn ruleset_mode_rejects_duplicate_runtime_strategy_templates() {
         let dir = tempdir().unwrap();
         let mut cfg = lifecycle_test_config(dir.path());
         cfg.strategies.push(StrategyEntry {
-            kind: "exec_tester".to_string(),
+            kind: "stub_runtime".to_string(),
             config: toml::toml! {
-                strategy_id = "EXEC_TESTER-TEMPLATE-002"
-                instrument_id = "RUNTIME_DUPLICATE.POLYMARKET"
-                client_id = "TEST"
-                order_qty = "5"
-                log_data = false
-                tob_offset_ticks = 5
-                use_post_only = true
-                enable_limit_sells = false
-                enable_stop_buys = false
-                enable_stop_sells = false
+                strategy_id = "RUNTIME-STUB-002"
             }
             .into(),
         });
@@ -869,317 +954,71 @@ fn ruleset_mode_rejects_duplicate_runtime_strategy_templates() {
         assert!(
             error
                 .to_string()
-                .contains("at most one exec_tester strategy template"),
+                .contains("at most one registered strategy template"),
             "{error}"
         );
     });
 }
 
 #[test]
-fn idle_transition_removes_previously_active_runtime_strategy() {
+fn cancellation_token_stops_background_tasks_cleanly() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-then-idle",
-                    "ACTIVE-IDLE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-then-idle",
-                    "ACTIVE-IDLE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                Vec::new(),
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        let cfg = test_config(dir.path());
+        let uploader = MockUploader::default();
+        let services = services_with(
+            Vec::new(),
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
         );
 
-        let mut node = build_lifecycle_node();
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
+        let mut node = build_node();
         let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
-            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
-            wait_for_condition_or_stop(
-                poll_budget,
-                &stop_handle,
-                "the previously active runtime-managed strategy to be removed on idle transition",
-                || trader.borrow().strategy_ids().is_empty(),
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
+        tokio::time::timeout(Duration::from_millis(500), guards.shutdown())
+            .await
+            .expect("runtime shutdown should not hang")
+            .unwrap();
 
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert!(trader.borrow().strategy_ids().is_empty());
+        assert!(uploader.calls().len() <= 1);
     });
 }
 
 #[test]
-fn active_market_switch_replaces_runtime_strategy_with_new_market() {
+fn audit_task_failure_triggers_fail_closed_shutdown() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let switch_budget = Duration::from_secs(2);
-        clear_mock_data_subscriptions();
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-switch-a",
-                    "ACTIVE-A.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-switch-b",
-                    "ACTIVE-B.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-switch-b",
-                    "ACTIVE-B.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        let cfg = test_config(dir.path());
+        let release = Arc::new(Notify::new());
+        let services = services_with(
+            Vec::new(),
+            Arc::new(FailingAuditTaskFactory {
+                release: Arc::clone(&release),
+            }),
         );
 
-        let mut node = build_lifecycle_node();
-        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let mut node = build_node();
         let handle = node.handle();
-        let stop_handle = handle.clone();
         let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-        let control = async {
+        tokio::spawn(async move {
             wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 2, poll_budget).await;
-            wait_for_condition_or_stop(
-                switch_budget,
-                &stop_handle,
-                "runtime strategy replacement for the newly selected active market",
-                || {
-                    trader.borrow().strategy_ids().len() == 1
-                        && recorded_mock_data_subscriptions()
-                            .iter()
-                            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
-                },
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
+            release.notify_one();
+        });
 
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert_eq!(trader.borrow().strategy_ids().len(), 1);
+        let run_result = node.run().await;
+        assert_eq!(node.state(), NodeState::Stopped);
+        let shutdown_result = guards.shutdown().await;
+        let error = runtime_error(run_result, shutdown_result);
         assert!(
-            recorded_mock_data_subscriptions()
-                .iter()
-                .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
+            error.to_string().contains("platform audit task failed")
+                || error.to_string().contains("injected audit failure"),
+            "{error:#}"
         );
     });
 }
 
 #[test]
-fn freeze_transition_removes_previously_active_runtime_strategy() {
-    run_multithread_localset_test(async {
-        let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-then-freeze",
-                    "ACTIVE-FREEZE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-then-freeze",
-                    "ACTIVE-FREEZE.POLYMARKET",
-                    2_000.0,
-                    60,
-                )],
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-        );
-
-        let mut node = build_lifecycle_node();
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
-            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
-            wait_for_condition_or_stop(
-                poll_budget,
-                &stop_handle,
-                "the previously active runtime-managed strategy to be removed on freeze transition",
-                || trader.borrow().strategy_ids().is_empty(),
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert!(trader.borrow().strategy_ids().is_empty());
-    });
-}
-
-#[test]
-fn pre_registered_template_strategy_is_replaced_and_cleared_by_runtime() {
-    run_multithread_localset_test(async {
-        let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-template-replace",
-                    "ACTIVE-TEMPLATE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-template-replace",
-                    "ACTIVE-TEMPLATE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                Vec::new(),
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-        );
-
-        let mut node = build_lifecycle_node();
-        let template_strategy = build_exec_tester(&cfg.strategies[0].config).unwrap();
-        node.add_strategy(template_strategy).unwrap();
-
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
-            assert!(
-                trader.borrow().strategy_ids().len() <= 1,
-                "runtime replacement should not leave duplicate strategies registered"
-            );
-            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
-            wait_for_condition_or_stop(
-                poll_budget,
-                &stop_handle,
-                "the pre-registered template strategy to be cleared on idle",
-                || trader.borrow().strategy_ids().is_empty(),
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert!(trader.borrow().strategy_ids().is_empty());
-    });
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn cancellation_token_stops_background_tasks_cleanly() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let uploader = MockUploader::default();
-    let services = services_with(
-        Vec::new(),
-        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
-    );
-
-    let mut node = build_node();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-    tokio::time::timeout(Duration::from_millis(500), guards.shutdown())
-        .await
-        .expect("runtime shutdown should not hang")
-        .unwrap();
-
-    assert!(uploader.calls().len() <= 1);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn audit_task_failure_triggers_fail_closed_shutdown() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let release = Arc::new(Notify::new());
-    let services = services_with(
-        Vec::new(),
-        Arc::new(FailingAuditTaskFactory {
-            release: Arc::clone(&release),
-        }),
-    );
-
-    let mut node = build_node();
-    let handle = node.handle();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-        release.notify_one();
-    });
-
-    let run_result = node.run().await;
-    assert_eq!(node.state(), NodeState::Stopped);
-    let shutdown_result = guards.shutdown().await;
-    let error = runtime_error(run_result, shutdown_result);
-    assert!(
-        error.to_string().contains("platform audit task failed")
-            || error.to_string().contains("injected audit failure"),
-        "{error:#}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn selector_loader_failure_triggers_fail_closed_shutdown() {
+fn selector_loader_failure_triggers_fail_closed_shutdown() {
     struct FailingLoader;
 
     impl CandidateMarketLoader for FailingLoader {
@@ -1188,72 +1027,34 @@ async fn selector_loader_failure_triggers_fail_closed_shutdown() {
         }
     }
 
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let uploader = MockUploader::default();
-    let services = services_with_loader(
-        Arc::new(FailingLoader),
-        Arc::new(RecordingAuditTaskFactory::new(uploader)),
-    );
-
-    let mut node = build_node();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-    let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
-        .await
-        .expect("selector failure should stop the node");
-    assert_eq!(node.state(), NodeState::Stopped);
-    let shutdown_result = guards.shutdown().await;
-    let error = runtime_error(run_result, shutdown_result);
-    assert!(
-        error.to_string().contains("selector polling failed")
-            || error.to_string().contains("injected selector failure"),
-        "{error:#}"
-    );
-}
-
-#[test]
-fn runtime_strategy_apply_failure_triggers_fail_closed_shutdown() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        cfg.strategies[0]
-            .config
-            .as_table_mut()
-            .expect("exec_tester template config should be a table")
-            .remove("client_id");
-        let services = services_with(
-            vec![candidate_market(
-                "mkt-active-runtime-failure",
-                "ACTIVE-FAIL.POLYMARKET",
-                2_000.0,
-                120,
-            )],
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        let cfg = test_config(dir.path());
+        let uploader = MockUploader::default();
+        let services = services_with_loader(
+            Arc::new(FailingLoader),
+            Arc::new(RecordingAuditTaskFactory::new(uploader)),
         );
 
-        let mut node = build_lifecycle_node();
+        let mut node = build_node();
         let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
         let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
             .await
-            .expect("runtime strategy apply failure should stop the node");
+            .expect("selector failure should stop the node");
         assert_eq!(node.state(), NodeState::Stopped);
         let shutdown_result = guards.shutdown().await;
         let error = runtime_error(run_result, shutdown_result);
         assert!(
-            error
-                .to_string()
-                .contains("runtime-managed strategy apply failed")
-                || error.to_string().contains("missing field `client_id`"),
+            error.to_string().contains("selector polling failed")
+                || error.to_string().contains("injected selector failure"),
             "{error:#}"
         );
     });
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn runtime_passes_ruleset_loader_timeout_through_config() {
+#[test]
+fn runtime_passes_ruleset_loader_timeout_through_config() {
     #[derive(Default)]
     struct CapturingLoader {
         seen_rulesets: Arc<Mutex<Vec<RulesetConfig>>>,
@@ -1272,214 +1073,220 @@ async fn runtime_passes_ruleset_loader_timeout_through_config() {
         }
     }
 
-    let dir = tempdir().unwrap();
-    let mut cfg = test_config(dir.path());
-    cfg.rulesets[0].candidate_load_timeout_secs = 42;
-    let loader = Arc::new(CapturingLoader::default());
-    let uploader = MockUploader::default();
-    let services = services_with_loader(
-        loader.clone(),
-        Arc::new(RecordingAuditTaskFactory::new(uploader)),
-    );
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.rulesets[0].candidate_load_timeout_secs = 42;
+        let loader = Arc::new(CapturingLoader::default());
+        let uploader = MockUploader::default();
+        let services = services_with_loader(
+            loader.clone(),
+            Arc::new(RecordingAuditTaskFactory::new(uploader)),
+        );
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let stop_handle = handle.clone();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        stop_handle.stop();
+        tokio::spawn(async move {
+            wait_for_running(&handle).await;
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            stop_handle.stop();
+        });
+
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
+
+        assert!(
+            loader
+                .seen_rulesets()
+                .iter()
+                .any(|ruleset| ruleset.candidate_load_timeout_secs == 42),
+            "selector loader should receive the configured candidate load timeout"
+        );
     });
-
-    node.run().await.unwrap();
-    guards.shutdown().await.unwrap();
-
-    assert!(
-        loader
-            .seen_rulesets()
-            .iter()
-            .any(|ruleset| ruleset.candidate_load_timeout_secs == 42),
-        "selector loader should receive the configured candidate load timeout"
-    );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn reference_snapshot_is_forwarded_into_audit_spool() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let publish_topic = cfg.reference.publish_topic.clone();
-    let uploader = MockUploader::default();
-    let services = services_with(
-        Vec::new(),
-        Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
-    );
+#[test]
+fn reference_snapshot_is_forwarded_into_audit_spool() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let publish_topic = cfg.reference.publish_topic.clone();
+        let uploader = MockUploader::default();
+        let services = services_with(
+            Vec::new(),
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
+        tokio::task::spawn_local(async move {
+            wait_for_running(&handle).await;
 
-        let snapshot = ReferenceSnapshot {
-            ts_ms: 4_242,
-            topic: publish_topic.clone(),
-            fair_value: Some(42.5),
-            confidence: 0.8,
-            venues: vec![
-                bolt_v2::platform::reference::EffectiveVenueState {
-                    venue_name: "BINANCE-BTC".to_string(),
-                    base_weight: 0.7,
-                    effective_weight: 0.7,
-                    stale: false,
-                    health: bolt_v2::platform::reference::VenueHealth::Healthy,
-                    observed_ts_ms: Some(4_200),
-                    venue_kind: bolt_v2::platform::reference::VenueKind::Orderbook,
-                    observed_price: Some(42.0),
-                    observed_bid: Some(41.9),
-                    observed_ask: Some(42.1),
-                },
-                bolt_v2::platform::reference::EffectiveVenueState {
-                    venue_name: "KRAKEN-BTC".to_string(),
-                    base_weight: 0.3,
-                    effective_weight: 0.0,
-                    stale: true,
-                    health: bolt_v2::platform::reference::VenueHealth::Disabled {
-                        reason: "feed lagging".to_string(),
-                    },
-                    observed_ts_ms: Some(4_100),
-                    venue_kind: bolt_v2::platform::reference::VenueKind::Oracle,
-                    observed_price: Some(43.0),
-                    observed_bid: None,
-                    observed_ask: None,
-                },
-            ],
-        };
-        publish_any(publish_topic.into(), &snapshot);
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        handle.stop();
-    });
-
-    node.run().await.unwrap();
-    guards.shutdown().await.unwrap();
-
-    let records = uploaded_records(&uploader);
-    assert!(records.iter().any(|record| {
-        record["kind"] == "reference_snapshot"
-            && record["ts_ms"] == 4_242
-            && record["topic"] == cfg.reference.publish_topic
-            && record["fair_value"] == 42.5
-            && record["confidence"] == 0.8
-            && record["venues"]
-                == serde_json::to_value(vec![
-                    ReferenceVenueSnapshot {
+            let snapshot = ReferenceSnapshot {
+                ts_ms: 4_242,
+                topic: publish_topic.clone(),
+                fair_value: Some(42.5),
+                confidence: 0.8,
+                venues: vec![
+                    bolt_v2::platform::reference::EffectiveVenueState {
                         venue_name: "BINANCE-BTC".to_string(),
                         base_weight: 0.7,
                         effective_weight: 0.7,
                         stale: false,
-                        health: VenueHealthState::Healthy,
-                        reason: None,
+                        health: bolt_v2::platform::reference::VenueHealth::Healthy,
                         observed_ts_ms: Some(4_200),
-                        venue_kind: bolt_v2::platform::audit::VenueKindState::Orderbook,
+                        venue_kind: bolt_v2::platform::reference::VenueKind::Orderbook,
                         observed_price: Some(42.0),
                         observed_bid: Some(41.9),
                         observed_ask: Some(42.1),
                     },
-                    ReferenceVenueSnapshot {
+                    bolt_v2::platform::reference::EffectiveVenueState {
                         venue_name: "KRAKEN-BTC".to_string(),
                         base_weight: 0.3,
                         effective_weight: 0.0,
                         stale: true,
-                        health: VenueHealthState::Disabled,
-                        reason: Some("feed lagging".to_string()),
+                        health: bolt_v2::platform::reference::VenueHealth::Disabled {
+                            reason: "feed lagging".to_string(),
+                        },
                         observed_ts_ms: Some(4_100),
-                        venue_kind: bolt_v2::platform::audit::VenueKindState::Oracle,
+                        venue_kind: bolt_v2::platform::reference::VenueKind::Oracle,
                         observed_price: Some(43.0),
                         observed_bid: None,
                         observed_ask: None,
                     },
-                ])
-                .unwrap()
-    }));
-}
+                ],
+            };
+            publish_any(publish_topic.into(), &snapshot);
 
-#[tokio::test(flavor = "current_thread")]
-async fn background_producers_stop_emitting_before_runtime_shutdown() {
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let publish_topic = cfg.reference.publish_topic.clone();
-    let services = services_with(
-        Vec::new(),
-        Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-    );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            handle.stop();
+        });
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let stop_handle = handle.clone();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        node.run().await.unwrap();
+        guards.shutdown().await.unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
-
-        publish_any(
-            publish_topic.clone().into(),
-            &ReferenceSnapshot {
-                ts_ms: 6_000,
-                topic: publish_topic,
-                fair_value: Some(12.5),
-                confidence: 0.7,
-                venues: Vec::new(),
-            },
-        );
-
-        tokio::time::sleep(Duration::from_millis(60)).await;
-        stop_handle.stop();
+        let records = uploaded_records(&uploader);
+        assert!(records.iter().any(|record| {
+            record["kind"] == "reference_snapshot"
+                && record["ts_ms"] == 4_242
+                && record["topic"] == cfg.reference.publish_topic
+                && record["fair_value"] == 42.5
+                && record["confidence"] == 0.8
+                && record["venues"]
+                    == serde_json::to_value(vec![
+                        ReferenceVenueSnapshot {
+                            venue_name: "BINANCE-BTC".to_string(),
+                            base_weight: 0.7,
+                            effective_weight: 0.7,
+                            stale: false,
+                            health: VenueHealthState::Healthy,
+                            reason: None,
+                            observed_ts_ms: Some(4_200),
+                            venue_kind: bolt_v2::platform::audit::VenueKindState::Orderbook,
+                            observed_price: Some(42.0),
+                            observed_bid: Some(41.9),
+                            observed_ask: Some(42.1),
+                        },
+                        ReferenceVenueSnapshot {
+                            venue_name: "KRAKEN-BTC".to_string(),
+                            base_weight: 0.3,
+                            effective_weight: 0.0,
+                            stale: true,
+                            health: VenueHealthState::Disabled,
+                            reason: Some("feed lagging".to_string()),
+                            observed_ts_ms: Some(4_100),
+                            venue_kind: bolt_v2::platform::audit::VenueKindState::Oracle,
+                            observed_price: Some(43.0),
+                            observed_bid: None,
+                            observed_ask: None,
+                        },
+                    ])
+                    .unwrap()
+        }));
     });
-
-    node.run().await.unwrap();
-
-    wait_for_kind_record_count(dir.path(), "selector_decision", 1).await;
-    wait_for_kind_record_count(dir.path(), "reference_snapshot", 1).await;
-
-    let before_gap_records = local_records(dir.path());
-    let selector_before_gap = count_kind_records(&before_gap_records, "selector_decision");
-    let snapshot_before_gap = count_kind_records(&before_gap_records, "reference_snapshot");
-
-    for ts_ms in [7_001_u64, 7_002, 7_003] {
-        publish_any(
-            cfg.reference.publish_topic.clone().into(),
-            &ReferenceSnapshot {
-                ts_ms,
-                topic: cfg.reference.publish_topic.clone(),
-                fair_value: Some(99.0),
-                confidence: 0.5,
-                venues: Vec::new(),
-            },
-        );
-    }
-
-    tokio::time::sleep(Duration::from_millis(90)).await;
-
-    let after_gap_records = local_records(dir.path());
-    assert_eq!(
-        count_kind_records(&after_gap_records, "selector_decision"),
-        selector_before_gap,
-        "selector loop should stop emitting after node stop and before runtime shutdown"
-    );
-    assert_eq!(
-        count_kind_records(&after_gap_records, "reference_snapshot"),
-        snapshot_before_gap,
-        "snapshot forwarding should stop emitting after node stop and before runtime shutdown"
-    );
-
-    guards.shutdown().await.unwrap();
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn reference_snapshot_audit_send_failure_surfaces_through_shutdown() {
+#[test]
+fn background_producers_stop_emitting_before_runtime_shutdown() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let publish_topic = cfg.reference.publish_topic.clone();
+        let services = services_with(
+            Vec::new(),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_node();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        tokio::spawn(async move {
+            wait_for_running(&handle).await;
+
+            publish_any(
+                publish_topic.clone().into(),
+                &ReferenceSnapshot {
+                    ts_ms: 6_000,
+                    topic: publish_topic,
+                    fair_value: Some(12.5),
+                    confidence: 0.7,
+                    venues: Vec::new(),
+                },
+            );
+
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            stop_handle.stop();
+        });
+
+        node.run().await.unwrap();
+
+        wait_for_kind_record_count(dir.path(), "selector_decision", 1).await;
+        wait_for_kind_record_count(dir.path(), "reference_snapshot", 1).await;
+
+        let before_gap_records = local_records(dir.path());
+        let selector_before_gap = count_kind_records(&before_gap_records, "selector_decision");
+        let snapshot_before_gap = count_kind_records(&before_gap_records, "reference_snapshot");
+
+        for ts_ms in [7_001_u64, 7_002, 7_003] {
+            publish_any(
+                cfg.reference.publish_topic.clone().into(),
+                &ReferenceSnapshot {
+                    ts_ms,
+                    topic: cfg.reference.publish_topic.clone(),
+                    fair_value: Some(99.0),
+                    confidence: 0.5,
+                    venues: Vec::new(),
+                },
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(90)).await;
+
+        let after_gap_records = local_records(dir.path());
+        assert_eq!(
+            count_kind_records(&after_gap_records, "selector_decision"),
+            selector_before_gap,
+            "selector loop should stop emitting after node stop and before runtime shutdown"
+        );
+        assert_eq!(
+            count_kind_records(&after_gap_records, "reference_snapshot"),
+            snapshot_before_gap,
+            "snapshot forwarding should stop emitting after node stop and before runtime shutdown"
+        );
+
+        guards.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn reference_snapshot_audit_send_failure_surfaces_through_shutdown() {
     struct PendingLoader;
 
     impl CandidateMarketLoader for PendingLoader {
@@ -1488,50 +1295,52 @@ async fn reference_snapshot_audit_send_failure_surfaces_through_shutdown() {
         }
     }
 
-    let dir = tempdir().unwrap();
-    let cfg = test_config(dir.path());
-    let publish_topic = cfg.reference.publish_topic.clone();
-    let services = services_with_loader(
-        Arc::new(PendingLoader),
-        Arc::new(DroppedReceiverAuditTaskFactory),
-    );
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let publish_topic = cfg.reference.publish_topic.clone();
+        let services = services_with_loader(
+            Arc::new(PendingLoader),
+            Arc::new(DroppedReceiverAuditTaskFactory),
+        );
 
-    let mut node = build_node();
-    let handle = node.handle();
-    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        let mut node = build_node();
+        let handle = node.handle();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
 
-    tokio::spawn(async move {
-        wait_for_running(&handle).await;
+        tokio::task::spawn_local(async move {
+            wait_for_running(&handle).await;
 
-        for _ in 0..50 {
-            publish_any(
-                publish_topic.clone().into(),
-                &ReferenceSnapshot {
-                    ts_ms: 5_001,
-                    topic: "reference.test".to_string(),
-                    fair_value: Some(1.5),
-                    confidence: 0.9,
-                    venues: Vec::new(),
-                },
-            );
+            for _ in 0..50 {
+                publish_any(
+                    publish_topic.clone().into(),
+                    &ReferenceSnapshot {
+                        ts_ms: 5_001,
+                        topic: "reference.test".to_string(),
+                        fair_value: Some(1.5),
+                        confidence: 0.9,
+                        venues: Vec::new(),
+                    },
+                );
 
-            if !handle.is_running() {
-                break;
+                if !handle.is_running() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    });
+        });
 
-    let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
-        .await
-        .expect("snapshot audit send failure should stop the node");
-    assert_eq!(node.state(), NodeState::Stopped);
-    let shutdown_result = guards.shutdown().await;
-    let error = runtime_error(run_result, shutdown_result);
-    assert!(
-        error
-            .to_string()
-            .contains("reference snapshot audit send failed"),
-        "{error:#}"
-    );
+        let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
+            .await
+            .expect("snapshot audit send failure should stop the node");
+        assert_eq!(node.state(), NodeState::Stopped);
+        let shutdown_result = guards.shutdown().await;
+        let error = runtime_error(run_result, shutdown_result);
+        assert!(
+            error
+                .to_string()
+                .contains("reference snapshot audit send failed"),
+            "{error:#}"
+        );
+    });
 }

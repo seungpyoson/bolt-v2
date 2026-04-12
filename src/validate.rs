@@ -4,6 +4,7 @@ use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
 use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
+use crate::strategies::registry::{StrategyRegistry, default_strategy_registry};
 use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
 use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
@@ -665,8 +666,6 @@ const VALID_ENVIRONMENTS: &[&str] = &["Live", "Sandbox"];
 const VALID_LOG_LEVELS: &[&str] = &["Trace", "Debug", "Info", "Warn", "Error", "Off"];
 const VALID_DATA_CLIENT_TYPES: &[&str] = &["polymarket"];
 const VALID_EXEC_CLIENT_TYPES: &[&str] = &["polymarket"];
-const VALID_STRATEGY_TYPES: &[&str] = &["exec_tester"];
-
 /// Validate a human-edited live local config before rendering.
 /// Returns all validation errors found, sorted by field path for deterministic output.
 pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
@@ -1029,6 +1028,22 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
 /// Checks cross-section consistency and re-applies the same domain validation
 /// that the local live config uses.
 pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
+    validate_runtime_impl(config, Some(&default_strategy_registry()))
+}
+
+/// Validate a rendered runtime config before it reaches the NT builder using an explicit
+/// strategy registry.
+pub fn validate_runtime_with_registry(
+    config: &Config,
+    registry: &StrategyRegistry,
+) -> Vec<ValidationError> {
+    validate_runtime_impl(config, Some(registry))
+}
+
+fn validate_runtime_impl(
+    config: &Config,
+    registry: Option<&StrategyRegistry>,
+) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     check_non_empty(&mut errors, "node.name", &config.node.name);
@@ -1256,13 +1271,32 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
     let mut strategy_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, strategy) in config.strategies.iter().enumerate() {
         let strategy_type_field = format!("strategies[{i}].type");
-        check_allowlist(
-            &mut errors,
-            &strategy_type_field,
-            &strategy.kind,
-            VALID_STRATEGY_TYPES,
-            "unsupported_type",
-        );
+        if let Some(registry) = registry {
+            if let Some(builder) = registry.get(&strategy.kind) {
+                let mut kind_errors = Vec::new();
+                builder.validate_config(&strategy.config, &mut kind_errors);
+                for error in kind_errors {
+                    push_error(
+                        &mut errors,
+                        &format!("strategies[{i}].config.{}", error.field),
+                        error.code,
+                        error.message,
+                    );
+                }
+            } else {
+                let valid_strategy_types = registry.kinds();
+                let allowlist: Vec<&str> = valid_strategy_types.iter().map(String::as_str).collect();
+                check_allowlist(
+                    &mut errors,
+                    &strategy_type_field,
+                    &strategy.kind,
+                    &allowlist,
+                    "unsupported_type",
+                );
+            }
+        } else {
+            unreachable!("runtime validation requires a registry");
+        }
         match strategy.config.get("client_id") {
             None => push_error(
                 &mut errors,
@@ -1443,16 +1477,14 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         let runtime_strategy_templates = config
             .strategies
             .iter()
-            .filter(|strategy| strategy.kind == "exec_tester")
+            .filter(|strategy| registry.is_some_and(|registry| registry.get(&strategy.kind).is_some()))
             .count();
         if runtime_strategy_templates != 1 {
             push_error(
                 &mut errors,
                 "strategies",
                 "phase1_runtime_strategy_template_count",
-                format!(
-                    "ruleset mode requires exactly one exec_tester strategy template, got {runtime_strategy_templates}"
-                ),
+                format!("ruleset mode requires exactly one registered strategy template, got {runtime_strategy_templates}"),
             );
         }
     }
@@ -1603,6 +1635,13 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
 
         let tag_slug_field = format!("rulesets[{i}].tag_slug");
         check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
+
+        let event_slug_prefix_field = format!("rulesets[{i}].event_slug_prefix");
+        check_non_empty(
+            &mut errors,
+            &event_slug_prefix_field,
+            &ruleset.event_slug_prefix,
+        );
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
         check_non_empty(

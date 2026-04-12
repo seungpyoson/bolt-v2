@@ -1,6 +1,15 @@
 use super::*;
+use crate::{
+    clients::polymarket::fees::FeeProvider,
+    strategies::registry::{BuiltStrategy, StrategyBuildContext, StrategyBuilder, StrategyRegistry},
+};
+use anyhow::Result;
+use futures_util::future::BoxFuture;
+use rust_decimal::Decimal;
+use std::sync::Arc;
 use std::io::Write;
 use tempfile::NamedTempFile;
+use toml::Value;
 
 // ════════════════════════════════════════════════════════════════
 // Test infrastructure
@@ -21,7 +30,7 @@ account_id = "POLYMARKET-001"
 funder = "0xabc"
 
 [strategy]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "RUNTIME-STUB-001"
 order_qty = "5"
 
 [secrets]
@@ -55,6 +64,76 @@ fn parse_error_for(toml: &str) -> String {
 fn errors_for(toml: &str) -> Vec<ValidationError> {
     let config = parse(toml);
     validate_live_local(&config)
+}
+
+fn runtime_errors_for_with_registry(toml: &str, registry: &StrategyRegistry) -> Vec<ValidationError> {
+    let config: Config = toml::from_str(toml).expect("runtime test config should parse");
+    validate_runtime_with_registry(&config, registry)
+}
+
+fn test_runtime_registry() -> StrategyRegistry {
+    #[derive(Debug)]
+    struct ValidateOnlyBuilder;
+
+    #[derive(Debug)]
+    struct NoopFeeProvider;
+
+    impl FeeProvider for NoopFeeProvider {
+        fn fee_bps(&self, _token_id: &str) -> Option<Decimal> {
+            None
+        }
+
+        fn warm(&self, _token_id: &str) -> BoxFuture<'_, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl StrategyBuilder for ValidateOnlyBuilder {
+        fn kind(&self) -> &'static str {
+            "stub_runtime"
+        }
+
+        fn validate_config(
+            &self,
+            raw: &Value,
+            errors: &mut Vec<ValidationError>,
+        ) {
+            match raw.get("strategy_id") {
+                None => push_error(
+                    errors,
+                    "strategy_id",
+                    "missing_strategy_id",
+                    "is missing required string field".to_string(),
+                ),
+                Some(value) => match value.as_str() {
+                    Some(strategy_id) if !strategy_id.trim().is_empty() => {}
+                    Some(_) => push_error(
+                        errors,
+                        "strategy_id",
+                        "empty",
+                        "must not be empty, got \"\"".to_string(),
+                    ),
+                    None => push_error(
+                        errors,
+                        "strategy_id",
+                        "wrong_type",
+                        format!("must be a string, got {} value", value.type_str()),
+                    ),
+                },
+            }
+        }
+
+        fn build(&self, _raw: &Value, _ctx: &StrategyBuildContext) -> Result<BuiltStrategy> {
+            unreachable!("validation-only test builder must not build")
+        }
+    }
+
+    let mut registry = StrategyRegistry::new();
+    registry
+        .register(Arc::new(ValidateOnlyBuilder))
+        .expect("test registry should accept stub_runtime");
+    let _ctx = StrategyBuildContext::new(Arc::new(NoopFeeProvider));
+    registry
 }
 
 fn assert_has_error(errors: &[ValidationError], field: &str, code: &str) {
@@ -280,7 +359,7 @@ fn account_id_without_hyphen_rejected() {
 fn strategy_id_without_hyphen_rejected() {
     let toml = replace(
         &valid_toml(),
-        "strategy_id = \"EXEC_TESTER-001\"",
+        "strategy_id = \"RUNTIME-STUB-001\"",
         "strategy_id = \"EXECTESTER001\"",
     );
     let errors = errors_for(&toml);
@@ -291,7 +370,7 @@ fn strategy_id_without_hyphen_rejected() {
 fn strategy_id_external_accepted() {
     let toml = replace(
         &valid_toml(),
-        "strategy_id = \"EXEC_TESTER-001\"",
+        "strategy_id = \"RUNTIME-STUB-001\"",
         "strategy_id = \"EXTERNAL\"",
     );
     let errors = errors_for(&toml);
@@ -1020,7 +1099,6 @@ fn phase1_ruleset_tag_slug_must_be_non_empty() {
     assert_has_error(&errors, "rulesets[0].tag_slug", "empty");
 }
 
-#[test]
 fn phase1_ruleset_resolution_basis_must_be_non_empty() {
     let toml = replace(
         &valid_phase1_toml(),
@@ -1284,9 +1362,9 @@ api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
 
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime"
 [strategies.config]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "RUNTIME-STUB-001"
 instrument_id = "0xabc-12345.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "5"
@@ -1356,6 +1434,7 @@ disable_after_ms = 5000
 id = "PRIMARY"
 venue = "polymarket"
 tag_slug = "bitcoin"
+event_slug_prefix = "btc-updown-5m-"
 resolution_basis = "binance_btcusdt_1m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -1386,17 +1465,25 @@ ws_reconnect_alert_threshold = 5
 "#;
 
 fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
-    let config: Config = toml::from_str(toml_str).expect("runtime test config should parse");
-    validate_runtime(&config)
+    runtime_errors_for_with_registry(toml_str, &test_runtime_registry())
 }
 
 fn runtime_load_error_for(toml_str: &str) -> String {
-    let mut file = NamedTempFile::new().expect("runtime temp file should be created");
-    file.write_all(toml_str.as_bytes())
-        .expect("runtime temp file should be written");
-    Config::load(file.path())
-        .expect_err("runtime config should fail validation")
-        .to_string()
+    let errors = runtime_errors_for(toml_str);
+    assert!(
+        !errors.is_empty(),
+        "runtime config should fail validation for this helper"
+    );
+    format!(
+        "Runtime config validation failed ({} error{}):\n{}",
+        errors.len(),
+        if errors.len() == 1 { "" } else { "s" },
+        errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 #[test]
@@ -1524,18 +1611,18 @@ fn duplicate_strategy_id_names_first_occurrence() {
         valid_runtime_toml(),
         r#"
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime"
 [strategies.config]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "RUNTIME-STUB-001"
 instrument_id = "0xdef-67890.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "10"
 "#,
         r#"
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime"
 [strategies.config]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "RUNTIME-STUB-001"
 instrument_id = "0xghi-13579.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "15"
@@ -1547,14 +1634,14 @@ order_qty = "15"
         &errors,
         "strategies",
         "duplicate_strategy_id",
-        "strategies[1] has duplicate strategy_id \"EXEC_TESTER-001\"",
+        "strategies[1] has duplicate strategy_id \"RUNTIME-STUB-001\"",
     );
     assert!(
         errors.iter().any(|e| {
             e.field == "strategies"
                 && e.code == "duplicate_strategy_id"
                 && e.message
-                    .contains("strategies[2] has duplicate strategy_id \"EXEC_TESTER-001\" (first defined at strategies[0])")
+                    .contains("strategies[2] has duplicate strategy_id \"RUNTIME-STUB-001\" (first defined at strategies[0])")
         }),
         "expected third duplicate to reference the original first occurrence, got: {errors:?}"
     );
@@ -1596,7 +1683,7 @@ fn strategy_referencing_existing_client_accepted() {
 
 #[test]
 fn runtime_missing_strategy_id_rejected() {
-    let toml = valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
+    let toml = valid_runtime_toml().replace("strategy_id = \"RUNTIME-STUB-001\"\n", "");
     let errors = runtime_errors_for(&toml);
     assert_has_error(
         &errors,
@@ -1608,7 +1695,7 @@ fn runtime_missing_strategy_id_rejected() {
 #[test]
 fn runtime_strategy_id_wrong_type_rejected() {
     let toml =
-        valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"", "strategy_id = 42");
+        valid_runtime_toml().replace("strategy_id = \"RUNTIME-STUB-001\"", "strategy_id = 42");
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "strategies[0].config.strategy_id", "wrong_type");
     assert_error_message_contains(
@@ -1789,7 +1876,7 @@ fn runtime_unsupported_client_type_rejected() {
     let toml = valid_runtime_toml()
         .replacen("type = \"polymarket\"", "type = \"bogus\"", 1)
         .replacen("type = \"polymarket\"", "type = \"bogus\"", 1)
-        .replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
+        .replacen("type = \"stub_runtime\"", "type = \"bogus\"", 1);
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "data_clients[0].type", "unsupported_type");
     assert_has_error(&errors, "exec_clients[0].type", "unsupported_type");
@@ -1820,6 +1907,7 @@ fn phase1_runtime_requires_exactly_one_active_ruleset() {
 id = "SECONDARY"
 venue = "polymarket"
 tag_slug = "bitcoin-2"
+event_slug_prefix = "btc-updown-5m-"
 resolution_basis = "binance_btcusdt_5m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -1867,10 +1955,11 @@ fn phase1_runtime_requires_audit_when_ruleset_is_configured() {
 }
 
 #[test]
-fn phase1_runtime_requires_exactly_one_exec_tester_template() {
+fn phase1_runtime_requires_exactly_one_registered_template() {
+    let registry = test_runtime_registry();
     let toml =
-        valid_phase1_runtime_toml().replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
-    let errors = runtime_errors_for(&toml);
+        valid_phase1_runtime_toml().replacen("type = \"stub_runtime\"", "type = \"bogus\"", 1);
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
     assert_has_error(&errors, "strategies[0].type", "unsupported_type");
     assert_has_error(
         &errors,
@@ -1881,26 +1970,27 @@ fn phase1_runtime_requires_exactly_one_exec_tester_template() {
         &errors,
         "strategies",
         "phase1_runtime_strategy_template_count",
-        "exactly one exec_tester strategy template",
+        "exactly one registered strategy template",
     );
 }
 
 #[test]
-fn phase1_runtime_rejects_duplicate_exec_tester_templates() {
+fn phase1_runtime_rejects_duplicate_registered_templates() {
+    let registry = test_runtime_registry();
     let toml = format!(
         "{}\n{}",
         valid_phase1_runtime_toml(),
         r#"
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime"
 [strategies.config]
-strategy_id = "EXEC_TESTER-002"
+strategy_id = "RUNTIME-STUB-002"
 instrument_id = "0xdef-67890.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "7"
 "#
     );
-    let errors = runtime_errors_for(&toml);
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
     assert_has_error(
         &errors,
         "strategies",
@@ -1910,21 +2000,33 @@ order_qty = "7"
         &errors,
         "strategies",
         "phase1_runtime_strategy_template_count",
-        "exactly one exec_tester strategy template",
+        "exactly one registered strategy template",
     );
 }
 
 #[test]
-fn phase1_runtime_load_rejects_missing_exec_tester_template() {
+fn phase1_runtime_load_rejects_missing_registered_template() {
+    let registry = test_runtime_registry();
     let toml =
-        valid_phase1_runtime_toml().replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
-    let error = runtime_load_error_for(&toml);
+        valid_phase1_runtime_toml().replacen("type = \"stub_runtime\"", "type = \"bogus\"", 1);
+    let config: Config = toml::from_str(&toml).expect("runtime test config should parse");
+    let errors = validate_runtime_with_registry(&config, &registry);
+    let error = format!(
+        "Runtime config validation failed ({} error{}):\n{}",
+        errors.len(),
+        if errors.len() == 1 { "" } else { "s" },
+        errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     assert!(
         error.contains("strategies"),
         "runtime load error should mention strategies: {error}"
     );
     assert!(
-        error.contains("exactly one exec_tester strategy template"),
+        error.contains("exactly one registered strategy template"),
         "runtime load error should mention template invariant: {error}"
     );
 }
@@ -1959,6 +2061,17 @@ fn phase1_runtime_rejects_empty_ruleset_id() {
 }
 
 #[test]
+fn phase1_runtime_rejects_empty_event_slug_prefix() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "event_slug_prefix = \"btc-updown-5m-\"",
+        "event_slug_prefix = \"\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "rulesets[0].event_slug_prefix", "empty");
+}
+
+#[test]
 fn phase1_runtime_rejects_duplicate_ruleset_ids() {
     let toml = format!(
         "{}\n{}",
@@ -1968,6 +2081,7 @@ fn phase1_runtime_rejects_duplicate_ruleset_ids() {
 id = "PRIMARY"
 venue = "polymarket"
 tag_slug = "bitcoin-2"
+event_slug_prefix = "btc-updown-5m-"
 resolution_basis = "binance_btcusdt_5m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -1992,6 +2106,7 @@ fn phase1_runtime_load_rejects_duplicate_ruleset_ids() {
 id = "PRIMARY"
 venue = "polymarket"
 tag_slug = "bitcoin-2"
+event_slug_prefix = "btc-updown-5m-"
 resolution_basis = "binance_btcusdt_5m"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -2016,6 +2131,7 @@ fn phase1_runtime_rejects_orphaned_reference_min_publish_interval_without_rulese
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
+        .replace("event_slug_prefix = \"btc-updown-5m-\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")
         .replace("max_time_to_expiry_secs = 900\n", "")
@@ -2058,6 +2174,7 @@ fn phase1_runtime_rejects_orphaned_reference_zero_min_publish_interval_without_r
         .replace("id = \"PRIMARY\"\n", "")
         .replace("venue = \"polymarket\"\n", "")
         .replace("tag_slug = \"bitcoin\"\n", "")
+        .replace("event_slug_prefix = \"btc-updown-5m-\"\n", "")
         .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
         .replace("min_time_to_expiry_secs = 60\n", "")
         .replace("max_time_to_expiry_secs = 900\n", "")

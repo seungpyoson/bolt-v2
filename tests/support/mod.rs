@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod stub_runtime_strategy;
+
 use std::{
     any::Any,
     cell::RefCell,
@@ -14,6 +16,10 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bolt_v2::{
+    clients::polymarket::fees::FeeProvider,
+    strategies::registry::{StrategyBuildContext, StrategyRegistry},
+};
 use nautilus_common::{
     cache::Cache,
     clients::{DataClient, ExecutionClient},
@@ -26,7 +32,35 @@ use nautilus_model::{
     identifiers::{AccountId, ClientId, Venue},
     types::{AccountBalance, MarginBalance},
 };
+use futures_util::future::BoxFuture;
 use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+use rust_decimal::Decimal;
+use std::sync::Arc;
+
+#[derive(Debug)]
+pub struct NoopFeeProvider;
+
+impl FeeProvider for NoopFeeProvider {
+    fn fee_bps(&self, _token_id: &str) -> Option<Decimal> {
+        None
+    }
+
+    fn warm(&self, _token_id: &str) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+pub fn test_strategy_registry() -> StrategyRegistry {
+    let mut registry = StrategyRegistry::new();
+    registry
+        .register(Arc::new(stub_runtime_strategy::StubRuntimeStrategyBuilder::new()))
+        .expect("stub runtime strategy builder should register");
+    registry
+}
+
+pub fn test_strategy_build_context() -> StrategyBuildContext {
+    StrategyBuildContext::new(Arc::new(NoopFeeProvider))
+}
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -76,6 +110,8 @@ pub fn runtime_toml_with_reference_venue(
 ) -> String {
     format!(
         r#"
+strategies = []
+
 [node]
 name = "bolt-v2"
 trader_id = "TRADER-001"
@@ -116,17 +152,6 @@ api_key = "/key"
 api_secret = "/secret"
 passphrase = "/pass"
 
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC-001"
-instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-client_id = "POLYMARKET"
-order_qty = "1"
-log_data = true
-tob_offset_ticks = 1
-use_post_only = true
-
 [reference]
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
@@ -139,6 +164,7 @@ min_publish_interval_ms = 100
 id = "PRIMARY"
 venue = "polymarket"
 tag_slug = "bitcoin"
+event_slug_prefix = "btc-updown-5m-"
 resolution_basis = "{resolution_basis}"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900

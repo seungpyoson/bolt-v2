@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use bolt_v2::{
     config::{
         AuditConfig, Config, ExecClientEntry, ExecClientSecrets, LoggingConfig, NodeConfig,
@@ -29,12 +29,17 @@ use bolt_v2::{
         ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionState},
         runtime::{
             CandidateMarketLoadFuture, CandidateMarketLoader, PlatformAuditTaskFactory,
-            PlatformRuntimeServices, runtime_selection_topic, wire_platform_runtime_with_services,
+            PlatformRuntimeServices, RuntimeStrategyFactory, runtime_selection_topic,
+            wire_platform_runtime_with_services,
         },
     },
-    strategies::exec_tester::build_exec_tester,
+    strategies::{
+        exec_tester::build_exec_tester,
+        registry::StrategyBuilder,
+    },
 };
 use nautilus_common::{
+    component::Component,
     enums::Environment,
     logging::logger::LoggerConfig,
     msgbus::{ShareableMessageHandler, publish_any, subscribe_any, unsubscribe_any},
@@ -43,7 +48,7 @@ use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
 use nautilus_model::identifiers::{StrategyId, TraderId};
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
-    clear_mock_data_subscriptions, recorded_mock_data_subscriptions,
+    stub_runtime_strategy::{StubRuntimeStrategy, StubRuntimeStrategyBuilder},
 };
 use toml::Value;
 
@@ -287,6 +292,18 @@ fn lifecycle_test_config(audit_dir: &Path) -> Config {
     cfg
 }
 
+fn stub_runtime_lifecycle_config(audit_dir: &Path) -> Config {
+    let mut cfg = lifecycle_test_config(audit_dir);
+    cfg.strategies = vec![StrategyEntry {
+        kind: StubRuntimeStrategyBuilder::kind().to_string(),
+        config: toml::toml! {
+            strategy_id = "STUB-RUNTIME-001"
+        }
+        .into(),
+    }];
+    cfg
+}
+
 fn build_lifecycle_node() -> LiveNode {
     LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
         .unwrap()
@@ -480,6 +497,15 @@ fn services_with_loader(
         candidate_loader,
         audit_task_factory,
         now_ms: Arc::new(|| 1_000),
+        runtime_strategy_factory: Arc::new(|trader, raw_config: &toml::Value| {
+            let strategy = build_exec_tester(raw_config)
+                .map_err(|error| anyhow!(error.to_string()))?;
+            let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
+
+            trader.borrow_mut().add_strategy(strategy)?;
+
+            Ok(strategy_id)
+        }),
     }
 }
 
@@ -525,6 +551,35 @@ impl CandidateMarketLoader for SequencedLoader {
             .pop_front()
             .unwrap_or_else(|| self.fallback.clone());
         Box::pin(async move { Ok(next) })
+    }
+}
+
+fn stub_runtime_factory(builds: Arc<Mutex<Vec<String>>>) -> RuntimeStrategyFactory {
+    Arc::new(move |trader, raw_config: &toml::Value| {
+        let strategy_id = raw_config
+            .get("strategy_id")
+            .and_then(toml::Value::as_str)
+            .context("stub runtime strategy requires strategy_id")?;
+        builds.lock().unwrap().push(strategy_id.to_string());
+        let strategy = StubRuntimeStrategy::new(strategy_id);
+        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
+
+        trader.borrow_mut().add_strategy(strategy)?;
+
+        Ok(strategy_id)
+    })
+}
+
+fn stub_runtime_services_with_loader(
+    candidate_loader: Arc<dyn CandidateMarketLoader>,
+    audit_task_factory: Arc<dyn PlatformAuditTaskFactory>,
+    builds: Arc<Mutex<Vec<String>>>,
+) -> PlatformRuntimeServices {
+    PlatformRuntimeServices {
+        candidate_loader,
+        audit_task_factory,
+        now_ms: Arc::new(|| 1_000),
+        runtime_strategy_factory: stub_runtime_factory(builds),
     }
 }
 
@@ -819,21 +874,103 @@ fn runtime_selection_snapshot_publishes_active_decision_once() {
 }
 
 #[test]
-fn active_selector_state_registers_exactly_one_runtime_strategy() {
+fn runtime_strategy_persists_component_id_across_selection_changes() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
-        let cfg = lifecycle_test_config(dir.path());
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let activation_budget = Duration::from_secs(1);
         let spool_dir = dir.path().to_path_buf();
-        let services = services_with(
-            vec![candidate_market(
-                "mkt-active-runtime",
-                "ACTIVE-RT.POLYMARKET",
-                2_000.0,
-                120,
-            )],
+        let mut cfg = stub_runtime_lifecycle_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let builds = Arc::new(Mutex::new(Vec::<String>::new()));
+        let services = stub_runtime_services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-switch-a",
+                    "ACTIVE-A.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                Vec::new(),
+                vec![candidate_market(
+                    "mkt-freeze-after-idle",
+                    "FREEZE-AFTER-IDLE.POLYMARKET",
+                    2_000.0,
+                    60,
+                )],
+            ])),
             Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+            Arc::clone(&builds),
+        );
+
+        let mut node = build_lifecycle_node();
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "active", 2, poll_budget).await;
+            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
+            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                Duration::from_secs(1),
+                &stop_handle,
+                "runtime strategy persistence across active, switch, idle, and freeze transitions",
+                || trader.borrow().strategy_ids() == vec![StrategyId::from("STUB-RUNTIME-001")],
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        control_result.unwrap();
+
+        assert_eq!(builds.lock().unwrap().as_slice(), ["STUB-RUNTIME-001"]);
+        assert_eq!(
+            trader.borrow().strategy_ids(),
+            vec![StrategyId::from("STUB-RUNTIME-001")]
+        );
+
+        guards.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn runtime_strategy_removes_only_at_shutdown() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = stub_runtime_lifecycle_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let builds = Arc::new(Mutex::new(Vec::<String>::new()));
+        let services = stub_runtime_services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-runtime",
+                    "ACTIVE-RT.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                Vec::new(),
+                vec![candidate_market(
+                    "mkt-freeze-runtime",
+                    "FREEZE-RT.POLYMARKET",
+                    2_000.0,
+                    60,
+                )],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+            Arc::clone(&builds),
         );
 
         let mut node = build_lifecycle_node();
@@ -845,11 +982,13 @@ fn active_selector_state_registers_exactly_one_runtime_strategy() {
         let control = async {
             wait_for_running(&handle).await;
             wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
+            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
+            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
             wait_for_condition_or_stop(
-                activation_budget,
+                Duration::from_secs(1),
                 &stop_handle,
-                "exactly one runtime-managed strategy for an active selector state",
-                || trader.borrow().strategy_ids().len() == 1,
+                "runtime strategy to remain registered until shutdown begins",
+                || trader.borrow().strategy_ids() == vec![StrategyId::from("STUB-RUNTIME-001")],
             )
             .await?;
             stop_handle.stop();
@@ -858,10 +997,79 @@ fn active_selector_state_registers_exactly_one_runtime_strategy() {
 
         let (run_result, control_result) = tokio::join!(node.run(), control);
         run_result.unwrap();
-        guards.shutdown().await.unwrap();
         control_result.unwrap();
 
-        assert_eq!(trader.borrow().strategy_ids().len(), 1);
+        assert_eq!(
+            trader.borrow().strategy_ids(),
+            vec![StrategyId::from("STUB-RUNTIME-001")],
+            "runtime strategy should remain registered until shutdown"
+        );
+        guards.shutdown().await.unwrap();
+        assert_eq!(
+            trader.borrow().strategy_ids(),
+            Vec::<StrategyId>::new(),
+            "runtime shutdown should remove the runtime-managed strategy"
+        );
+        assert_eq!(builds.lock().unwrap().as_slice(), ["STUB-RUNTIME-001"]);
+    });
+}
+
+#[test]
+fn runtime_does_not_remove_pre_registered_template_strategy_on_shutdown() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let mut cfg = stub_runtime_lifecycle_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let builds = Arc::new(Mutex::new(Vec::<String>::new()));
+        let services = stub_runtime_services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-pre-registered",
+                    "ACTIVE-PRE.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                Vec::new(),
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+            Arc::clone(&builds),
+        );
+
+        let mut node = build_lifecycle_node();
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let pre_registered = StubRuntimeStrategy::new("STUB-RUNTIME-001");
+        node.add_strategy(pre_registered).unwrap();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let spool_dir = dir.path().to_path_buf();
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        control_result.unwrap();
+
+        assert_eq!(
+            trader.borrow().strategy_ids(),
+            vec![StrategyId::from("STUB-RUNTIME-001")]
+        );
+        guards.shutdown().await.unwrap();
+        assert_eq!(
+            trader.borrow().strategy_ids(),
+            vec![StrategyId::from("STUB-RUNTIME-001")],
+            "runtime shutdown should not remove an adopted pre-registered strategy"
+        );
+        assert!(
+            builds.lock().unwrap().is_empty(),
+            "runtime should not rebuild a pre-registered matching strategy"
+        );
     });
 }
 
@@ -906,61 +1114,14 @@ async fn freeze_window_market_emits_freeze_decision() {
 }
 
 #[test]
-fn no_eligible_market_registers_no_runtime_strategy() {
-    run_multithread_localset_test(async {
-        let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let cfg = lifecycle_test_config(dir.path());
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let services = services_with(
-            Vec::new(),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-        );
-
-        let mut node = build_lifecycle_node();
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
-            assert!(
-                trader.borrow().strategy_ids().is_empty(),
-                "runtime should not register a strategy when no market is eligible"
-            );
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert!(trader.borrow().strategy_ids().is_empty());
-    });
-}
-
-#[test]
 fn ruleset_mode_rejects_duplicate_runtime_strategy_templates() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
-        let mut cfg = lifecycle_test_config(dir.path());
+        let mut cfg = stub_runtime_lifecycle_config(dir.path());
         cfg.strategies.push(StrategyEntry {
-            kind: "exec_tester".to_string(),
+            kind: StubRuntimeStrategyBuilder::kind().to_string(),
             config: toml::toml! {
-                strategy_id = "EXEC_TESTER-TEMPLATE-002"
-                instrument_id = "RUNTIME_DUPLICATE.POLYMARKET"
-                client_id = "TEST"
-                order_qty = "5"
-                log_data = false
-                tob_offset_ticks = 5
-                use_post_only = true
-                enable_limit_sells = false
-                enable_stop_buys = false
-                enable_stop_sells = false
+                strategy_id = "STUB-RUNTIME-002"
             }
             .into(),
         });
@@ -977,259 +1138,9 @@ fn ruleset_mode_rejects_duplicate_runtime_strategy_templates() {
         assert!(
             error
                 .to_string()
-                .contains("at most one exec_tester strategy template"),
+                .contains("at most one runtime strategy template"),
             "{error}"
         );
-    });
-}
-
-#[test]
-fn idle_transition_removes_previously_active_runtime_strategy() {
-    run_multithread_localset_test(async {
-        let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-then-idle",
-                    "ACTIVE-IDLE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-then-idle",
-                    "ACTIVE-IDLE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                Vec::new(),
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-        );
-
-        let mut node = build_lifecycle_node();
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
-            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
-            wait_for_condition_or_stop(
-                poll_budget,
-                &stop_handle,
-                "the previously active runtime-managed strategy to be removed on idle transition",
-                || trader.borrow().strategy_ids().is_empty(),
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert!(trader.borrow().strategy_ids().is_empty());
-    });
-}
-
-#[test]
-fn active_market_switch_replaces_runtime_strategy_with_new_market() {
-    run_multithread_localset_test(async {
-        let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let switch_budget = Duration::from_secs(2);
-        clear_mock_data_subscriptions();
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-switch-a",
-                    "ACTIVE-A.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-switch-b",
-                    "ACTIVE-B.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-switch-b",
-                    "ACTIVE-B.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-        );
-
-        let mut node = build_lifecycle_node();
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 2, poll_budget).await;
-            wait_for_condition_or_stop(
-                switch_budget,
-                &stop_handle,
-                "runtime strategy replacement for the newly selected active market",
-                || {
-                    trader.borrow().strategy_ids().len() == 1
-                        && recorded_mock_data_subscriptions()
-                            .iter()
-                            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
-                },
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert_eq!(trader.borrow().strategy_ids().len(), 1);
-        assert!(
-            recorded_mock_data_subscriptions()
-                .iter()
-                .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
-        );
-    });
-}
-
-#[test]
-fn freeze_transition_removes_previously_active_runtime_strategy() {
-    run_multithread_localset_test(async {
-        let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-then-freeze",
-                    "ACTIVE-FREEZE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-then-freeze",
-                    "ACTIVE-FREEZE.POLYMARKET",
-                    2_000.0,
-                    60,
-                )],
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-        );
-
-        let mut node = build_lifecycle_node();
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
-            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
-            wait_for_condition_or_stop(
-                poll_budget,
-                &stop_handle,
-                "the previously active runtime-managed strategy to be removed on freeze transition",
-                || trader.borrow().strategy_ids().is_empty(),
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert!(trader.borrow().strategy_ids().is_empty());
-    });
-}
-
-#[test]
-fn pre_registered_template_strategy_is_replaced_and_cleared_by_runtime() {
-    run_multithread_localset_test(async {
-        let dir = tempdir().unwrap();
-        let spool_dir = dir.path().to_path_buf();
-        let mut cfg = lifecycle_test_config(dir.path());
-        cfg.rulesets[0].selector_poll_interval_ms = 10;
-        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
-        let services = services_with_loader(
-            Arc::new(SequencedLoader::new(vec![
-                vec![candidate_market(
-                    "mkt-active-template-replace",
-                    "ACTIVE-TEMPLATE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                vec![candidate_market(
-                    "mkt-active-template-replace",
-                    "ACTIVE-TEMPLATE.POLYMARKET",
-                    2_000.0,
-                    120,
-                )],
-                Vec::new(),
-            ])),
-            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
-        );
-
-        let mut node = build_lifecycle_node();
-        let template_strategy = build_exec_tester(&cfg.strategies[0].config).unwrap();
-        node.add_strategy(template_strategy).unwrap();
-
-        let trader = std::rc::Rc::clone(node.kernel().trader());
-        let handle = node.handle();
-        let stop_handle = handle.clone();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let control = async {
-            wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
-            assert!(
-                trader.borrow().strategy_ids().len() <= 1,
-                "runtime replacement should not leave duplicate strategies registered"
-            );
-            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
-            wait_for_condition_or_stop(
-                poll_budget,
-                &stop_handle,
-                "the pre-registered template strategy to be cleared on idle",
-                || trader.borrow().strategy_ids().is_empty(),
-            )
-            .await?;
-            stop_handle.stop();
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (run_result, control_result) = tokio::join!(node.run(), control);
-        run_result.unwrap();
-        guards.shutdown().await.unwrap();
-        control_result.unwrap();
-
-        assert!(trader.borrow().strategy_ids().is_empty());
     });
 }
 
@@ -1342,18 +1253,12 @@ fn runtime_strategy_apply_failure_triggers_fail_closed_shutdown() {
         );
 
         let mut node = build_lifecycle_node();
-        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
-
-        let run_result = tokio::time::timeout(Duration::from_secs(1), node.run())
-            .await
-            .expect("runtime strategy apply failure should stop the node");
-        assert_eq!(node.state(), NodeState::Stopped);
-        let shutdown_result = guards.shutdown().await;
-        let error = runtime_error(run_result, shutdown_result);
+        let error = match wire_platform_runtime_with_services(&mut node, &cfg, services) {
+            Ok(_) => panic!("runtime strategy build failure should surface during wiring"),
+            Err(error) => error,
+        };
         assert!(
-            error
-                .to_string()
-                .contains("runtime-managed strategy apply failed")
+            error.to_string().contains("failed building runtime-managed strategy from template")
                 || error.to_string().contains("missing field `client_id`"),
             "{error:#}"
         );

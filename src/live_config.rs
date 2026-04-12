@@ -240,6 +240,14 @@ pub struct LiveStrategyInput {
     pub order_qty: String,
     #[serde(default)]
     pub log_data: bool,
+    #[serde(default)]
+    pub subscribe_book: bool,
+    #[serde(default)]
+    pub book_interval_ms: Option<usize>,
+    #[serde(default)]
+    pub open_position_on_start_qty: Option<String>,
+    #[serde(default)]
+    pub open_position_time_in_force: Option<String>,
     #[serde(default = "default_tob_offset_ticks")]
     pub tob_offset_ticks: u64,
     #[serde(default = "default_use_post_only")]
@@ -258,6 +266,10 @@ impl Default for LiveStrategyInput {
             strategy_id: default_strategy_id(),
             order_qty: default_order_qty(),
             log_data: false,
+            subscribe_book: false,
+            book_interval_ms: None,
+            open_position_on_start_qty: None,
+            open_position_time_in_force: None,
             tob_offset_ticks: default_tob_offset_ticks(),
             use_post_only: default_use_post_only(),
             enable_limit_sells: false,
@@ -482,6 +494,13 @@ struct RenderedStrategyConfig {
     client_id: String,
     order_qty: String,
     log_data: bool,
+    subscribe_book: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    book_interval_ms: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_position_on_start_qty: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_position_time_in_force: Option<String>,
     tob_offset_ticks: u64,
     use_post_only: bool,
     enable_limit_sells: bool,
@@ -679,6 +698,10 @@ fn render_runtime_config(
                 client_id: input.polymarket.client_name.clone(),
                 order_qty: input.strategy.order_qty.clone(),
                 log_data: input.strategy.log_data,
+                subscribe_book: input.strategy.subscribe_book,
+                book_interval_ms: input.strategy.book_interval_ms,
+                open_position_on_start_qty: input.strategy.open_position_on_start_qty.clone(),
+                open_position_time_in_force: input.strategy.open_position_time_in_force.clone(),
                 tob_offset_ticks: input.strategy.tob_offset_ticks,
                 use_post_only: input.strategy.use_post_only,
                 enable_limit_sells: input.strategy.enable_limit_sells,

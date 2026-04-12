@@ -44,6 +44,7 @@ use crate::{
         polymarket_catalog::load_candidate_markets_for_ruleset,
         reference::{ReferenceSnapshot, VenueHealth, VenueKind},
         reference_actor::{ReferenceActor, ReferenceActorConfig, ReferenceSubscription},
+        resolution_basis::parse_ruleset_resolution_basis,
         ruleset::{
             CandidateMarket, SelectionDecision, SelectionEvaluation, SelectionState,
             evaluate_market_selection,
@@ -315,7 +316,9 @@ impl RuntimeStrategyApplierState {
 
     fn desired_instrument_id(&self, snapshot: &RuntimeSelectionSnapshot) -> Option<InstrumentId> {
         match &snapshot.decision.state {
-            SelectionState::Active { market } => Some(InstrumentId::from(market.instrument_id.as_str())),
+            SelectionState::Active { market } => {
+                Some(InstrumentId::from(market.instrument_id.as_str()))
+            }
             SelectionState::Freeze { market, .. } if self.should_hold_incumbent(market) => {
                 Some(InstrumentId::from(market.instrument_id.as_str()))
             }
@@ -374,7 +377,9 @@ impl RuntimeStrategyApplierState {
                             .open_position_instruments
                             .contains(&opened.instrument_id)
                         {
-                            shared_state.open_position_instruments.push(opened.instrument_id);
+                            shared_state
+                                .open_position_instruments
+                                .push(opened.instrument_id);
                         }
                     }
                     PositionEvent::PositionClosed(closed) => {
@@ -463,12 +468,14 @@ impl DataActor for RuntimeStrategyApplier {
 
 impl PlatformRuntimeGuards {
     pub fn runtime_selection_snapshot(&self) -> Option<RuntimeSelectionSnapshot> {
-        self.runtime_selection_state.as_ref().and_then(|selection_state| {
-            selection_state
-                .lock()
-                .ok()
-                .and_then(|selection_state| selection_state.clone())
-        })
+        self.runtime_selection_state
+            .as_ref()
+            .and_then(|selection_state| {
+                selection_state
+                    .lock()
+                    .ok()
+                    .and_then(|selection_state| selection_state.clone())
+            })
     }
 
     pub async fn shutdown(mut self) -> anyhow::Result<()> {
@@ -561,6 +568,11 @@ pub fn wire_platform_runtime_with_services(
     add_reference_actor(node, cfg)?;
     let runtime_strategy_actor_id =
         if let Some(runtime_strategy_template) = runtime_strategy_template {
+            seed_runtime_strategy_shared_state_from_cache(
+                &cache,
+                runtime_strategy_template.strategy_id,
+                &runtime_strategy_shared_state,
+            );
             Some(add_runtime_strategy_applier_actor(
                 node,
                 runtime_strategy_template,
@@ -800,6 +812,7 @@ async fn run_selector_task(
 
         let evaluation = apply_live_position_guard(
             evaluate_market_selection(&ruleset, &candidates),
+            &ruleset,
             &candidates,
             &runtime_strategy_shared_state,
         );
@@ -821,18 +834,17 @@ async fn run_selector_task(
                 decision: evaluation.decision.clone(),
                 eligible_candidates: evaluation.eligible_candidates.clone(),
             };
-            if let Err(error) =
-                apply_runtime_strategy_command(runtime_strategy_actor_id, snapshot)
-        {
-            if cancellation.is_cancelled() {
-                return Ok(());
-            }
+            if let Err(error) = apply_runtime_strategy_command(runtime_strategy_actor_id, snapshot)
+            {
+                if cancellation.is_cancelled() {
+                    return Ok(());
+                }
 
-            return Err(fail_closed(
-                &node_handle,
-                &cancellation,
-                error.context("runtime-managed strategy command send failed"),
-            ));
+                return Err(fail_closed(
+                    &node_handle,
+                    &cancellation,
+                    error.context("runtime-managed strategy command send failed"),
+                ));
             }
         }
     }
@@ -840,6 +852,7 @@ async fn run_selector_task(
 
 fn apply_live_position_guard(
     mut evaluation: SelectionEvaluation,
+    ruleset: &RulesetConfig,
     candidates: &[CandidateMarket],
     runtime_strategy_shared_state: &Arc<Mutex<RuntimeStrategySharedState>>,
 ) -> SelectionEvaluation {
@@ -854,7 +867,9 @@ fn apply_live_position_guard(
         .as_ref()
         .filter(|market| {
             let instrument_id = InstrumentId::from(market.instrument_id.as_str());
-            shared_state.open_position_instruments.contains(&instrument_id)
+            shared_state
+                .open_position_instruments
+                .contains(&instrument_id)
         })
         .cloned()
         .or_else(|| {
@@ -866,6 +881,13 @@ fn apply_live_position_guard(
                     .then(|| market.clone())
             })
         });
+    let active_market = active_market.or_else(|| {
+        shared_state
+            .open_position_instruments
+            .first()
+            .copied()
+            .map(|instrument_id| synthetic_incumbent_candidate(ruleset, instrument_id))
+    });
     let Some(active_market) = active_market else {
         return evaluation;
     };
@@ -884,6 +906,41 @@ fn apply_live_position_guard(
         reason: LIVE_POSITION_PREEMPTION_REASON.to_string(),
     };
     evaluation
+}
+
+fn synthetic_incumbent_candidate(
+    ruleset: &RulesetConfig,
+    instrument_id: InstrumentId,
+) -> CandidateMarket {
+    CandidateMarket {
+        market_id: instrument_id.to_string(),
+        instrument_id: instrument_id.to_string(),
+        tag_slug: ruleset.tag_slug.clone(),
+        declared_resolution_basis: parse_ruleset_resolution_basis(&ruleset.resolution_basis)
+            .expect("ruleset resolution basis validated at config load"),
+        accepting_orders: false,
+        start_ts_ms: None,
+        liquidity_num: 0.0,
+        maker_base_fee_bps: None,
+        taker_base_fee_bps: None,
+        seconds_to_end: 0,
+    }
+}
+
+fn seed_runtime_strategy_shared_state_from_cache(
+    cache: &Rc<RefCell<Cache>>,
+    strategy_id: StrategyId,
+    shared_state: &Arc<Mutex<RuntimeStrategySharedState>>,
+) {
+    let open_position_instruments = cache
+        .borrow()
+        .positions_open(None, None, Some(&strategy_id), None, None)
+        .into_iter()
+        .map(|position| position.instrument_id)
+        .collect::<Vec<_>>();
+    if let Ok(mut shared_state) = shared_state.lock() {
+        shared_state.open_position_instruments = open_position_instruments;
+    }
 }
 
 fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTemplate>> {

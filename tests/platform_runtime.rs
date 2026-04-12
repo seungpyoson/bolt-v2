@@ -1528,6 +1528,111 @@ fn startup_cached_live_position_blocks_cross_market_preemption() {
 }
 
 #[test]
+fn startup_cached_live_position_blocks_preemption_even_without_incumbent_candidate_load() {
+    let _guard = runtime_subscription_test_lock().lock().unwrap();
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 50;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        clear_mock_data_subscriptions();
+        let uploader = MockUploader::default();
+        let services = services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+                vec![candidate_market(
+                    "mkt-active-switch-b",
+                    "ACTIVE-B.POLYMARKET",
+                    2_000.0,
+                    120,
+                )],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+        );
+
+        let mut node = build_lifecycle_node();
+        add_runtime_polymarket_instrument(&node, "ACTIVE-A.POLYMARKET");
+        let mut position = stub_position_long(audusd_sim());
+        position.strategy_id = StrategyId::from("EXEC_TESTER-TEMPLATE-001");
+        position.instrument_id =
+            nautilus_model::identifiers::InstrumentId::from("ACTIVE-A.POLYMARKET");
+        let cached_position_id = position.id;
+        node.kernel()
+            .cache()
+            .borrow_mut()
+            .add_position(&position, OmsType::Netting)
+            .unwrap();
+
+        let trader = std::rc::Rc::clone(node.kernel().trader());
+        let cache = node.kernel().cache();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "freeze", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the runtime-managed strategy to stay on cached incumbent A when loader only returns B",
+                || {
+                    trader.borrow().strategy_ids().len() == 1
+                        && recorded_mock_data_subscriptions()
+                            .iter()
+                            .any(|instrument_id| instrument_id == "ACTIVE-A.POLYMARKET")
+                        && !recorded_mock_data_subscriptions()
+                            .iter()
+                            .any(|instrument_id| instrument_id == "ACTIVE-B.POLYMARKET")
+                },
+            )
+            .await?;
+
+            let mut closed_position = position.clone();
+            closed_position.side = PositionSide::Flat;
+            closed_position.signed_qty = 0.0;
+            closed_position.quantity = Quantity::from("0");
+            closed_position.ts_closed = Some(UnixNanos::from(1_u64));
+            cache
+                .borrow_mut()
+                .update_position(&closed_position)
+                .expect("seeded cached position should be closable in the test cache");
+            wait_for_condition_or_stop(
+                poll_budget,
+                &stop_handle,
+                "the synthetic incumbent cached position to be marked closed before shutdown",
+                || cache.borrow().is_position_closed(&cached_position_id),
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        guards.shutdown().await.unwrap();
+        control_result.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert!(
+            records.iter().any(|record| {
+                record["kind"] == "selector_decision"
+                    && record["state"] == "freeze"
+                    && record["instrument_id"] == "ACTIVE-A.POLYMARKET"
+                    && record["reason"] == "live position blocks cross-market preemption"
+            }),
+            "expected synthetic incumbent freeze decision, got {records:?}"
+        );
+    });
+}
+
+#[test]
 fn freeze_transition_removes_previously_active_runtime_strategy() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();

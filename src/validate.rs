@@ -567,6 +567,16 @@ fn check_polymarket_ruleset_selector(
     let Some(table) = get_required_table(errors, selector, field, "missing_selector_table") else {
         return;
     };
+    for key in table.keys() {
+        if key != "tag_slug" && key != "event_slug_prefix" {
+            push_error(
+                errors,
+                &format!("{field}.{key}"),
+                "unknown_field",
+                format!("unknown selector field \"{key}\""),
+            );
+        }
+    }
     let selector_value = Value::Table(table.clone());
 
     let tag_slug_field = format!("{field}.tag_slug");

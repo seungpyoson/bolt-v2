@@ -32,6 +32,16 @@ fn polymarket_selector(tag_slug: &str) -> TomlValue {
     TomlValue::Table(selector)
 }
 
+fn polymarket_selector_with_prefix(tag_slug: &str, prefix: &str) -> TomlValue {
+    let mut selector = toml::map::Map::new();
+    selector.insert("tag_slug".to_string(), TomlValue::String(tag_slug.to_string()));
+    selector.insert(
+        "event_slug_prefix".to_string(),
+        TomlValue::String(prefix.to_string()),
+    );
+    TomlValue::Table(selector)
+}
+
 fn exchange_candle(
     source: ResolutionSourceKind,
     pair: &str,
@@ -70,6 +80,13 @@ fn ruleset() -> RulesetConfig {
         freeze_before_end_secs: 300,
         selector_poll_interval_ms: 1_000,
         candidate_load_timeout_secs: 30,
+    }
+}
+
+fn ruleset_with_prefix(prefix: &str) -> RulesetConfig {
+    RulesetConfig {
+        selector: polymarket_selector_with_prefix("bitcoin", prefix),
+        ..ruleset()
     }
 }
 
@@ -120,20 +137,30 @@ async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<Atom
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(0);
                 let page_index = offset / limit.max(1);
-                let (status_line, body) = if path == "/events"
-                    && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
-                {
-                    let body = state
-                        .response_bodies
-                        .get(page_index)
-                        .cloned()
-                        .unwrap_or_else(|| json!([]));
-                    ("HTTP/1.1 200 OK", body.to_string())
+                let (status_line, body) = if path == "/events" {
+                    if params.get("tag_slug").map(String::as_str) == Some("bitcoin") {
+                        let body = state
+                            .response_bodies
+                            .get(page_index)
+                            .cloned()
+                            .unwrap_or_else(|| json!([]));
+                        ("HTTP/1.1 200 OK", body.to_string())
+                    } else if let Some(slug) = params.get("slug") {
+                        let matching_events: Vec<Value> = state
+                            .response_bodies
+                            .iter()
+                            .flat_map(|body| body.as_array().cloned().unwrap_or_default())
+                            .filter(|event| event.get("slug").and_then(Value::as_str) == Some(slug.as_str()))
+                            .collect();
+                        ("HTTP/1.1 200 OK", Value::Array(matching_events).to_string())
+                    } else {
+                        (
+                            "HTTP/1.1 400 Bad Request",
+                            "expected /events?tag_slug=bitcoin or /events?slug=<event>".to_string(),
+                        )
+                    }
                 } else {
-                    (
-                        "HTTP/1.1 400 Bad Request",
-                        "expected /events?tag_slug=bitcoin".to_string(),
-                    )
+                    ("HTTP/1.1 400 Bad Request", "expected /events".to_string())
                 };
                 let response = format!(
                     "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -183,11 +210,37 @@ async fn load_markets_from_event_pages(
     (markets, request_count)
 }
 
+async fn load_markets_from_ruleset_and_event_pages(
+    ruleset: RulesetConfig,
+    event_pages: Vec<Vec<Value>>,
+) -> (
+    Vec<bolt_v2::platform::ruleset::CandidateMarket>,
+    Arc<AtomicUsize>,
+) {
+    let response_bodies = event_pages.into_iter().map(Value::Array).collect();
+    let (addr, request_count) = spawn_test_server(response_bodies).await;
+    let client = test_gamma_client(addr);
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset, &client)
+        .await
+        .unwrap();
+
+    (markets, request_count)
+}
+
 fn event_with_markets(id: &str, markets: Vec<Value>) -> Value {
     json!({
         "id": id,
         "slug": "bitcoin",
         "title": "Bitcoin 5m",
+        "markets": markets
+    })
+}
+
+fn event_with_slug_and_markets(id: &str, slug: &str, title: &str, markets: Vec<Value>) -> Value {
+    json!({
+        "id": id,
+        "slug": slug,
+        "title": title,
         "markets": markets
     })
 }
@@ -394,6 +447,33 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
             .collect::<Vec<_>>(),
         vec!["111", "333"]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_ruleset_and_event_pages(
+        ruleset_with_prefix("bitcoin-5m"),
+        vec![vec![
+            event_with_slug_and_markets(
+                "event-1",
+                "bitcoin-5m-alpha",
+                "Bitcoin 5m",
+                vec![valid_market_with("market-prefix-match", "[\"111\",\"222\"]", end_date.clone())],
+            ),
+            event_with_slug_and_markets(
+                "event-2",
+                "bitcoin-15m-beta",
+                "Bitcoin 15m",
+                vec![valid_market_with("market-prefix-miss", "[\"333\",\"444\"]", end_date)],
+            ),
+        ]],
+    )
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
+    assert_eq!(markets.len(), 1);
+    assert_eq!(markets[0].market_id, "market-prefix-match");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

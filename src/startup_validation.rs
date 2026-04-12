@@ -25,8 +25,8 @@ impl PolymarketDiscoveryMode {
 
 #[derive(Debug, PartialEq, Eq)]
 struct PolymarketStartupValidationTargets {
-    discovery_mode: PolymarketDiscoveryMode,
-    discovery_keys: Vec<String>,
+    tag_slugs: Vec<String>,
+    event_slugs: Vec<String>,
     configured_instrument_ids: Vec<String>,
 }
 
@@ -41,25 +41,32 @@ pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
         .build()?;
     let instruments = runtime.block_on(async {
         let mut instruments = Vec::new();
-        for discovery_key in &targets.discovery_keys {
-            let mut batch = match targets.discovery_mode {
-                PolymarketDiscoveryMode::EventSlugs => instrument_client
-                    .request_instruments_by_event_slugs(vec![discovery_key.clone()])
-                    .await,
-                PolymarketDiscoveryMode::TagSlugs => {
-                    instrument_client
-                        .request_instruments_by_event_params(GetGammaEventsParams {
-                            tag_slug: Some(discovery_key.clone()),
-                            ..Default::default()
-                        })
-                        .await
-                }
-            }
+        for tag_slug in &targets.tag_slugs {
+            let mut batch = instrument_client
+                .request_instruments_by_event_params(GetGammaEventsParams {
+                    tag_slug: Some(tag_slug.clone()),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Polymarket startup validation failed while resolving {} [{}]: {error}",
+                        PolymarketDiscoveryMode::TagSlugs.noun(),
+                        targets.tag_slugs.join(", ")
+                    ))
+                })?;
+            instruments.append(&mut batch);
+        }
+
+        if !targets.event_slugs.is_empty() {
+            let mut batch = instrument_client
+                .request_instruments_by_event_slugs(targets.event_slugs.clone())
+                .await
             .map_err(|error| {
                 std::io::Error::other(format!(
                     "Polymarket startup validation failed while resolving {} [{}]: {error}",
-                    targets.discovery_mode.noun(),
-                    targets.discovery_keys.join(", ")
+                    PolymarketDiscoveryMode::EventSlugs.noun(),
+                    targets.event_slugs.join(", ")
                 ))
             })?;
             instruments.append(&mut batch);
@@ -77,14 +84,28 @@ pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
 fn collect_polymarket_startup_validation_targets(
     cfg: &Config,
 ) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>> {
-    let mut discovery_mode = PolymarketDiscoveryMode::EventSlugs;
-    let mut discovery_keys = BTreeSet::new();
+    let mut tag_slugs = BTreeSet::new();
+    let mut event_slugs = BTreeSet::new();
 
-    let selector_tag_slugs = polymarket::polymarket_ruleset_tag_slugs(&cfg.rulesets)?;
-    if !selector_tag_slugs.is_empty() {
-        discovery_mode = PolymarketDiscoveryMode::TagSlugs;
-        for tag_slug in selector_tag_slugs {
-            discovery_keys.insert(tag_slug);
+    let selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
+    if !selectors.is_empty() {
+        for selector in &selectors {
+            if selector.event_slug_prefix.is_none() {
+                tag_slugs.insert(selector.tag_slug.clone());
+            }
+        }
+
+        let prefix_selectors: Vec<_> = selectors
+            .iter()
+            .filter(|selector| selector.event_slug_prefix.is_some())
+            .cloned()
+            .collect();
+        if !prefix_selectors.is_empty() {
+            let resolved_event_slugs =
+                polymarket::resolve_event_slugs_for_selectors(&prefix_selectors, cfg.node.timeout_connection_secs)?;
+            for event_slug in resolved_event_slugs {
+                event_slugs.insert(event_slug);
+            }
         }
     } else {
         for client in &cfg.data_clients {
@@ -96,7 +117,7 @@ fn collect_polymarket_startup_validation_targets(
             for event_slug in input.event_slugs {
                 let trimmed = event_slug.trim();
                 if !trimmed.is_empty() {
-                    discovery_keys.insert(trimmed.to_string());
+                    event_slugs.insert(trimmed.to_string());
                 }
             }
         }
@@ -117,26 +138,25 @@ fn collect_polymarket_startup_validation_targets(
         }
     }
 
-    if discovery_keys.is_empty() {
+    if tag_slugs.is_empty() && event_slugs.is_empty() {
         if configured_instrument_ids.is_empty() {
             return Ok(None);
         }
 
         return Err(std::io::Error::other(format!(
-            "Polymarket startup validation cannot validate configured instrument_id(s) [{}] because no Polymarket {} are available for discovery",
+            "Polymarket startup validation cannot validate configured instrument_id(s) [{}] because no Polymarket selector discovery targets are available",
             configured_instrument_ids
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>()
-                .join(", "),
-            discovery_mode.noun(),
+                .join(", ")
         ))
         .into());
     }
 
     Ok(Some(PolymarketStartupValidationTargets {
-        discovery_mode,
-        discovery_keys: discovery_keys.into_iter().collect(),
+        tag_slugs: tag_slugs.into_iter().collect(),
+        event_slugs: event_slugs.into_iter().collect(),
         configured_instrument_ids: configured_instrument_ids.into_iter().collect(),
     }))
 }
@@ -147,9 +167,8 @@ fn validate_polymarket_startup_results(
 ) -> AppResult {
     if discovered_instrument_ids.is_empty() {
         return Err(std::io::Error::other(format!(
-            "Polymarket startup validation resolved zero instruments while querying {} [{}]",
-            targets.discovery_mode.noun(),
-            targets.discovery_keys.join(", ")
+            "Polymarket startup validation resolved zero instruments while querying {}",
+            describe_discovery_targets(targets)
         ))
         .into());
     }
@@ -163,15 +182,25 @@ fn validate_polymarket_startup_results(
 
     if !missing_instrument_ids.is_empty() {
         return Err(std::io::Error::other(format!(
-            "Polymarket startup validation could not find configured instrument_id(s) [{}] in Gamma-discovered instrument IDs while querying {} [{}]",
+            "Polymarket startup validation could not find configured instrument_id(s) [{}] in Gamma-discovered instrument IDs while querying {}",
             missing_instrument_ids.join(", "),
-            targets.discovery_mode.noun(),
-            targets.discovery_keys.join(", ")
+            describe_discovery_targets(targets)
         ))
         .into());
     }
 
     Ok(())
+}
+
+fn describe_discovery_targets(targets: &PolymarketStartupValidationTargets) -> String {
+    let mut parts = Vec::new();
+    if !targets.tag_slugs.is_empty() {
+        parts.push(format!("tag slugs [{}]", targets.tag_slugs.join(", ")));
+    }
+    if !targets.event_slugs.is_empty() {
+        parts.push(format!("event slugs [{}]", targets.event_slugs.join(", ")));
+    }
+    parts.join(" and ")
 }
 
 #[cfg(test)]
@@ -194,8 +223,8 @@ mod tests {
             .expect("targets should collect")
             .expect("polymarket targets should exist");
 
-        assert_eq!(targets.discovery_mode, PolymarketDiscoveryMode::TagSlugs);
-        assert_eq!(targets.discovery_keys, vec!["tag-a", "tag-b"]);
+        assert_eq!(targets.tag_slugs, vec!["tag-a", "tag-b"]);
+        assert!(targets.event_slugs.is_empty());
         assert_eq!(
             targets.configured_instrument_ids,
             vec!["alpha.POLYMARKET", "beta.POLYMARKET"]
@@ -212,8 +241,8 @@ mod tests {
             .expect("targets should collect")
             .expect("polymarket targets should exist");
 
-        assert_eq!(targets.discovery_mode, PolymarketDiscoveryMode::TagSlugs);
-        assert_eq!(targets.discovery_keys, vec!["tag-a", "tag-b", "tag-c"]);
+        assert_eq!(targets.tag_slugs, vec!["tag-a", "tag-b", "tag-c"]);
+        assert!(targets.event_slugs.is_empty());
     }
 
     #[test]
@@ -228,7 +257,7 @@ mod tests {
             .expect_err("missing event slugs should fail closed")
             .to_string();
 
-        assert!(err.contains("event slugs"), "{err}");
+        assert!(err.contains("selector discovery targets"), "{err}");
         assert!(
             err.contains("0xpresent-condition-present-token.POLYMARKET"),
             "{err}"

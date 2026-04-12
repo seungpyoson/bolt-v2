@@ -46,6 +46,7 @@ struct PolymarketDataClientCommonInput {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PolymarketRulesetSelector {
     pub tag_slug: String,
     #[serde(default)]
@@ -323,7 +324,7 @@ pub fn resolve_event_slugs_for_selectors(
     ))
 }
 
-async fn resolve_event_slugs_for_selectors_with_gamma_client(
+pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
     selectors: &[PolymarketRulesetSelector],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -367,7 +368,7 @@ async fn resolve_event_slugs_for_selectors_with_gamma_client(
     Ok(event_slugs)
 }
 
-async fn fetch_gamma_events_paginated(
+pub(crate) async fn fetch_gamma_events_paginated(
     client: &PolymarketGammaRawHttpClient,
     base_params: GetGammaEventsParams,
 ) -> Result<Vec<GammaEvent>, Box<dyn std::error::Error>> {
@@ -529,5 +530,41 @@ mod tests {
 
         assert!(debug.contains("EventSlugFilter"), "{debug}");
         assert!(debug.contains("new_market_filter"), "{debug}");
+    }
+
+    #[test]
+    fn build_data_client_uses_event_params_filter_for_tag_only_selectors() {
+        let selectors = vec![PolymarketRulesetSelector {
+            tag_slug: "bitcoin".to_string(),
+            event_slug_prefix: None,
+        }];
+        let raw = toml::toml! {
+            subscribe_new_markets = true
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 45
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let (_, config) = build_data_client(&raw, &selectors, None).unwrap();
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("EventParamsFilter"), "{debug}");
+        assert!(!debug.contains("EventSlugFilter"), "{debug}");
+    }
+
+    #[test]
+    fn selector_state_accepts_exact_and_prefix_new_market_slugs() {
+        let selector_state = PolymarketSelectorState::new(
+            vec![PolymarketRulesetSelector {
+                tag_slug: "bitcoin".to_string(),
+                event_slug_prefix: Some("bitcoin-5m".to_string()),
+            }],
+            vec!["bitcoin-1m-alpha".to_string()],
+        );
+
+        assert!(selector_state.accepts_new_market_slug("bitcoin-1m-alpha"));
+        assert!(selector_state.accepts_new_market_slug("bitcoin-5m-beta"));
+        assert!(!selector_state.accepts_new_market_slug("ethereum-5m-gamma"));
     }
 }

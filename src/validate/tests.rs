@@ -1037,6 +1037,16 @@ fn phase1_ruleset_selector_tag_slug_must_not_contain_whitespace() {
 }
 
 #[test]
+fn phase1_ruleset_selector_unknown_field_rejected() {
+    let toml = valid_phase1_toml().replace(
+        "[rulesets.selector]\ntag_slug = \"bitcoin\"",
+        "[rulesets.selector]\ntag_slug = \"bitcoin\"\nevent_slug_prefx = \"btc-5m\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "rulesets[0].selector.event_slug_prefx", "unknown_field");
+}
+
+#[test]
 fn phase1_ruleset_resolution_basis_must_be_non_empty() {
     let toml = replace(
         &valid_phase1_toml(),

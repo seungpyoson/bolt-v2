@@ -3,20 +3,15 @@ use chrono::{DateTime, Utc};
 use nautilus_polymarket::http::{
     gamma::PolymarketGammaRawHttpClient, models::GammaMarket, query::GetGammaEventsParams,
 };
-use serde::Deserialize;
 
 use crate::{
+    clients::polymarket::{
+        PolymarketRulesetSelector, fetch_gamma_events_paginated,
+        resolve_event_slugs_for_selectors_with_gamma_client,
+    },
     config::RulesetConfig,
     platform::{resolution_basis::parse_declared_resolution_basis, ruleset::CandidateMarket},
 };
-
-#[derive(Debug, Clone, Deserialize)]
-struct PolymarketSelector {
-    tag_slug: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    event_slug_prefix: Option<String>,
-}
 
 pub async fn load_candidate_markets_for_ruleset(
     ruleset: &RulesetConfig,
@@ -31,20 +26,14 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
     ruleset: &RulesetConfig,
     client: &PolymarketGammaRawHttpClient,
 ) -> anyhow::Result<Vec<CandidateMarket>> {
-    let selector: PolymarketSelector = ruleset
+    let selector: PolymarketRulesetSelector = ruleset
         .selector
         .clone()
         .try_into()
         .context("failed to parse polymarket selector")?;
-    let events = fetch_gamma_events_paginated(
-        client,
-        GetGammaEventsParams {
-            tag_slug: Some(selector.tag_slug.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .context("failed to fetch gamma events")?;
+    let events = load_events_for_selector(&selector, client)
+        .await
+        .context("failed to fetch gamma events")?;
     let now = Utc::now();
 
     Ok(events
@@ -54,42 +43,39 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
         .collect())
 }
 
-async fn fetch_gamma_events_paginated(
+async fn load_events_for_selector(
+    selector: &PolymarketRulesetSelector,
     client: &PolymarketGammaRawHttpClient,
-    base_params: GetGammaEventsParams,
 ) -> anyhow::Result<Vec<nautilus_polymarket::http::models::GammaEvent>> {
-    const PAGE_LIMIT: u32 = 100;
-
-    let page_size = base_params.limit.unwrap_or(PAGE_LIMIT);
-    let max_events = base_params.max_events;
-    let mut all_events = Vec::new();
-    let mut offset = base_params.offset.unwrap_or(0);
-
-    loop {
-        let page = client
-            .get_gamma_events(GetGammaEventsParams {
-                limit: Some(page_size),
-                offset: Some(offset),
-                ..base_params.clone()
-            })
-            .await?;
-        let page_len = page.len() as u32;
-        all_events.extend(page);
-
-        if let Some(cap) = max_events
-            && all_events.len() as u32 >= cap
-        {
-            all_events.truncate(cap as usize);
-            break;
-        }
-
-        if page_len < page_size {
-            break;
-        }
-
-        offset += page_size;
+    if selector.event_slug_prefix.is_none() {
+        return fetch_gamma_events_paginated(
+            client,
+            GetGammaEventsParams {
+                tag_slug: Some(selector.tag_slug.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()));
     }
 
+    let event_slugs =
+        resolve_event_slugs_for_selectors_with_gamma_client(std::slice::from_ref(selector), client)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut all_events = Vec::new();
+    for event_slug in event_slugs {
+        let mut events = fetch_gamma_events_paginated(
+            client,
+            GetGammaEventsParams {
+                slug: Some(event_slug),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        all_events.append(&mut events);
+    }
     Ok(all_events)
 }
 

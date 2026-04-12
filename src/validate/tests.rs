@@ -1439,6 +1439,34 @@ fn runtime_malformed_legacy_event_slugs_allowed_when_rulesets_drive_selection() 
 }
 
 #[test]
+fn runtime_gamma_refresh_interval_secs_must_be_positive_when_present() {
+    let toml = valid_runtime_toml().replace(
+        "event_slugs = [\"btc-updown-5m\"]",
+        "event_slugs = [\"btc-updown-5m\"]\ngamma_refresh_interval_secs = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.gamma_refresh_interval_secs",
+        "not_positive",
+    );
+}
+
+#[test]
+fn runtime_gamma_refresh_interval_secs_wrong_type_rejected_when_present() {
+    let toml = valid_runtime_toml().replace(
+        "event_slugs = [\"btc-updown-5m\"]",
+        "event_slugs = [\"btc-updown-5m\"]\ngamma_refresh_interval_secs = \"fast\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.gamma_refresh_interval_secs",
+        "wrong_type",
+    );
+}
+
+#[test]
 fn runtime_event_slugs_wrong_type_rejected() {
     let toml = valid_runtime_toml().replace(
         "event_slugs = [\"btc-updown-5m\"]",

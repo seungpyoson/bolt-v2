@@ -67,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fileout_level: parse_log_level(&cfg.logging.file_level)?,
                 ..Default::default()
             };
+            let polymarket_selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
 
             let mut builder = LiveNode::builder(trader_id, environment)?
                 .with_name(cfg.node.name.clone())
@@ -79,14 +80,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_timeout_disconnection_secs(cfg.node.timeout_disconnection_secs)
                 .with_delay_post_stop_secs(cfg.node.delay_post_stop_secs)
                 .with_delay_shutdown_secs(cfg.node.delay_shutdown_secs);
+            let mut polymarket_selector_refresh_plan = None;
 
             for client in &cfg.data_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        let selector_tag_slugs =
-                            polymarket::polymarket_ruleset_tag_slugs(&cfg.rulesets)?;
+                        let selector_state = polymarket::build_selector_state(
+                            &polymarket_selectors,
+                            cfg.node.timeout_connection_secs,
+                        )?;
+                        if let Some(selector_state) = selector_state.clone() {
+                            polymarket_selector_refresh_plan = Some((
+                                selector_state,
+                                polymarket::gamma_refresh_interval_secs(&client.config)?,
+                                cfg.node.timeout_connection_secs,
+                            ));
+                        }
                         let (factory, config) =
-                            polymarket::build_data_client(&client.config, &selector_tag_slugs)?;
+                            polymarket::build_data_client(
+                                &client.config,
+                                &polymarket_selectors,
+                                selector_state.clone(),
+                            )?;
                         builder =
                             builder.add_data_client(Some(client.name.clone()), factory, config)?;
                     }
@@ -144,6 +159,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app: AppFuture = Box::pin(async move {
                 let mut node = builder.build()?;
                 let node_handle = node.handle();
+                let polymarket_selector_refresh_guard = polymarket_selector_refresh_plan
+                    .map(|(selector_state, interval_secs, timeout_secs)| {
+                        polymarket::spawn_selector_refresh_task(
+                            selector_state,
+                            interval_secs,
+                            timeout_secs,
+                        )
+                    })
+                    .transpose()?;
                 let normalized_sink_guards = if cfg.streaming.catalog_path.trim().is_empty() {
                     None
                 } else {
@@ -198,6 +222,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         run_future.await
                     }
                 };
+                if let Some(guard) = polymarket_selector_refresh_guard {
+                    guard.shutdown().await;
+                }
                 let platform_shutdown_result = if let Some(guards) = platform_runtime_guards {
                     guards.shutdown().await.map_err(|e| {
                         Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>

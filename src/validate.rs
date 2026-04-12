@@ -835,6 +835,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.signature_type",
         i64::from(config.polymarket.signature_type),
     );
+    check_positive_u64(
+        &mut errors,
+        "polymarket.gamma_refresh_interval_secs",
+        config.polymarket.gamma_refresh_interval_secs,
+    );
 
     if config.strategy.strategy_id != "EXTERNAL" {
         check_nt_hyphenated(
@@ -1237,6 +1242,27 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                     );
                 }
             }
+        }
+        if let Some(gamma_refresh_interval_secs) = client
+            .config
+            .get("gamma_refresh_interval_secs")
+            .and_then(Value::as_integer)
+        {
+            if gamma_refresh_interval_secs <= 0 {
+                push_error(
+                    &mut errors,
+                    &format!("data_clients[{i}].config.gamma_refresh_interval_secs"),
+                    "not_positive",
+                    format!("must be > 0, got {gamma_refresh_interval_secs}"),
+                );
+            }
+        } else if client.config.get("gamma_refresh_interval_secs").is_some() {
+            push_error(
+                &mut errors,
+                &format!("data_clients[{i}].config.gamma_refresh_interval_secs"),
+                "wrong_type",
+                "must be an integer".to_string(),
+            );
         }
     }
 

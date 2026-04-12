@@ -57,7 +57,7 @@ fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
     let selector_inputs =
         polymarket::polymarket_ruleset_selectors(&cfg.rulesets).expect("selectors should parse");
     let (data_factory, data_config) =
-        polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs)
+        polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs, None)
             .expect("data config should translate");
     let data_config_debug = format!("{data_config:?}");
     assert!(
@@ -133,8 +133,9 @@ fn ruleset_mode_ignores_malformed_legacy_event_slugs_during_bootstrap() {
 
     let selector_inputs =
         polymarket::polymarket_ruleset_selectors(&cfg.rulesets).expect("selectors should parse");
-    let (_, data_config) = polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs)
-        .expect("selector-driven bootstrap should ignore malformed legacy event_slugs");
+    let (_, data_config) =
+        polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs, None)
+            .expect("selector-driven bootstrap should ignore malformed legacy event_slugs");
 
     let data_config_debug = format!("{data_config:?}");
     assert!(

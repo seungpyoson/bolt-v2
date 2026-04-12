@@ -30,6 +30,7 @@ funder = "0xabc"
 signature_type = 2
 subscribe_new_markets = false
 update_instruments_interval_mins = 60
+gamma_refresh_interval_secs = 60
 ws_max_subscriptions = 200
 
 [strategy]
@@ -113,6 +114,7 @@ candidate_load_timeout_secs = 30
 
 [rulesets.selector]
 tag_slug = "bitcoin"
+event_slug_prefix = "bitcoin"
 
 [audit]
 local_dir = "var/audit"

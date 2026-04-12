@@ -19,6 +19,10 @@ use toml::Value;
 use crate::config::{RulesetConfig, RulesetVenueKind};
 use crate::secrets::ResolvedPolymarketSecrets;
 
+pub mod fees;
+
+pub use fees::{FeeProvider, PolymarketClobFeeProvider};
+
 #[derive(Debug, Deserialize)]
 pub struct PolymarketDataClientInput {
     #[serde(default)]

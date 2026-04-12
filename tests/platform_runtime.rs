@@ -1,10 +1,13 @@
 mod support;
 
 use std::{
+    any::Any,
+    cell::RefCell,
     collections::VecDeque,
     fs,
     future::Future,
     path::Path,
+    rc::Rc,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -23,17 +26,21 @@ use bolt_v2::{
         },
         reference::ReferenceSnapshot,
         resolution_basis::{CandleInterval, ResolutionBasis, ResolutionSourceKind},
-        ruleset::CandidateMarket,
+        ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionState},
         runtime::{
             CandidateMarketLoadFuture, CandidateMarketLoader, PlatformAuditTaskFactory,
-            PlatformRuntimeServices, wire_platform_runtime_with_services,
+            PlatformRuntimeServices, runtime_selection_topic, wire_platform_runtime_with_services,
         },
     },
     strategies::exec_tester::build_exec_tester,
 };
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig, msgbus::publish_any};
+use nautilus_common::{
+    enums::Environment,
+    logging::logger::LoggerConfig,
+    msgbus::{ShareableMessageHandler, publish_any, subscribe_any, unsubscribe_any},
+};
 use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
-use nautilus_model::identifiers::TraderId;
+use nautilus_model::identifiers::{StrategyId, TraderId};
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     clear_mock_data_subscriptions, recorded_mock_data_subscriptions,
@@ -589,9 +596,14 @@ fn candidate_market(
     liquidity_num: f64,
     seconds_to_end: u64,
 ) -> CandidateMarket {
+    let base = market_id.replace('-', "");
     CandidateMarket {
         market_id: market_id.to_string(),
         instrument_id: instrument_id.to_string(),
+        condition_id: format!("0x{base}"),
+        up_token_id: format!("{base}01"),
+        down_token_id: format!("{base}02"),
+        start_ts_ms: 1_700_000_000_000,
         declared_resolution_basis: binance_btcusdt_1m(),
         accepting_orders: true,
         liquidity_num,
@@ -618,6 +630,10 @@ async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick
             CandidateMarket {
                 market_id: "mkt-low-liquidity".to_string(),
                 instrument_id: "LOW_LIQ.POLYMARKET".to_string(),
+                condition_id: "0xmktlowliquidity".to_string(),
+                up_token_id: "mktlowliquidity01".to_string(),
+                down_token_id: "mktlowliquidity02".to_string(),
+                start_ts_ms: 1_700_000_000_000,
                 declared_resolution_basis: binance_btcusdt_1m(),
                 accepting_orders: true,
                 liquidity_num: 999.0,
@@ -713,6 +729,93 @@ async fn eligible_market_emits_active_decision() {
             && record["instrument_id"] == "ACTIVE.POLYMARKET"
             && record["reason"].is_null()
     }));
+}
+
+#[test]
+fn runtime_selection_snapshot_publishes_active_decision_once() {
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let mut cfg = lifecycle_test_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 25;
+        let topic = runtime_selection_topic(&StrategyId::from("EXEC_TESTER-TEMPLATE-001"));
+        let observed = Rc::new(RefCell::new(Vec::<RuntimeSelectionSnapshot>::new()));
+        let handler_observed = Rc::clone(&observed);
+        let handler = ShareableMessageHandler::from_any(move |message: &dyn Any| {
+            if let Some(snapshot) = message.downcast_ref::<RuntimeSelectionSnapshot>() {
+                handler_observed.borrow_mut().push(snapshot.clone());
+            }
+        });
+
+        let first_market =
+            candidate_market("mkt-active-runtime-a", "ACTIVE-A.POLYMARKET", 2_000.0, 120);
+        let second_market =
+            candidate_market("mkt-active-runtime-b", "ACTIVE-B.POLYMARKET", 2_500.0, 120);
+        let services = services_with_loader(
+            Arc::new(SequencedLoader::new(vec![
+                vec![first_market.clone()],
+                vec![second_market.clone()],
+            ])),
+            Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+        );
+
+        let mut node = build_lifecycle_node();
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            subscribe_any(topic.clone().into(), handler.clone(), None);
+            wait_for_condition_or_stop(
+                Duration::from_secs(1),
+                &stop_handle,
+                "runtime selection snapshot publication",
+                || !observed.borrow().is_empty(),
+            )
+            .await?;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        let shutdown_result = guards.shutdown().await;
+        unsubscribe_any(topic.into(), &handler);
+
+        run_result.unwrap();
+        control_result.unwrap();
+        shutdown_result.unwrap();
+
+        let snapshots = observed.borrow();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0],
+            RuntimeSelectionSnapshot {
+                ruleset_id: "PRIMARY".to_string(),
+                decision: bolt_v2::platform::ruleset::SelectionDecision {
+                    ruleset_id: "PRIMARY".to_string(),
+                    state: SelectionState::Active {
+                        market: first_market.clone(),
+                    },
+                },
+                eligible_candidates: vec![first_market],
+                published_at_ms: 1_000,
+            }
+        );
+        assert_eq!(
+            snapshots[1],
+            RuntimeSelectionSnapshot {
+                ruleset_id: "PRIMARY".to_string(),
+                decision: bolt_v2::platform::ruleset::SelectionDecision {
+                    ruleset_id: "PRIMARY".to_string(),
+                    state: SelectionState::Active {
+                        market: second_market.clone(),
+                    },
+                },
+                eligible_candidates: vec![second_market],
+                published_at_ms: 1_000,
+            }
+        );
+    });
 }
 
 #[test]

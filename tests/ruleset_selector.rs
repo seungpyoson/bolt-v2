@@ -50,9 +50,14 @@ fn candidate(
     liquidity_num: f64,
     seconds_to_end: u64,
 ) -> CandidateMarket {
+    let base = market_id.replace('-', "");
     CandidateMarket {
         market_id: market_id.to_string(),
         instrument_id: format!("{market_id}-yes"),
+        condition_id: format!("0x{base}"),
+        up_token_id: format!("{base}01"),
+        down_token_id: format!("{base}02"),
+        start_ts_ms: 1_700_000_000_000,
         declared_resolution_basis: parse_ruleset_resolution_basis(declared_resolution_basis)
             .expect("test fixture basis should be canonical"),
         accepting_orders: true,
@@ -189,6 +194,10 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
     let candidates = vec![CandidateMarket {
         market_id: "market-many-failures".to_string(),
         instrument_id: "market-many-failures-yes".to_string(),
+        condition_id: "0xmarketmanyfailures".to_string(),
+        up_token_id: "marketmanyfailures01".to_string(),
+        down_token_id: "marketmanyfailures02".to_string(),
+        start_ts_ms: 1_700_000_000_000,
         declared_resolution_basis: chainlink_btcusd(),
         accepting_orders: false,
         liquidity_num: 500.0,
@@ -203,6 +212,10 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
             market: CandidateMarket {
                 market_id: "market-many-failures".to_string(),
                 instrument_id: "market-many-failures-yes".to_string(),
+                condition_id: "0xmarketmanyfailures".to_string(),
+                up_token_id: "marketmanyfailures01".to_string(),
+                down_token_id: "marketmanyfailures02".to_string(),
+                start_ts_ms: 1_700_000_000_000,
                 declared_resolution_basis: chainlink_btcusd(),
                 accepting_orders: false,
                 liquidity_num: 500.0,
@@ -229,6 +242,10 @@ fn returns_idle_when_no_market_is_eligible() {
         CandidateMarket {
             market_id: "market-orders-closed".to_string(),
             instrument_id: "market-orders-closed-yes".to_string(),
+            condition_id: "0xmarketordersclosed".to_string(),
+            up_token_id: "marketordersclosed01".to_string(),
+            down_token_id: "marketordersclosed02".to_string(),
+            start_ts_ms: 1_700_000_000_000,
             declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
             liquidity_num: 5_000.0,
@@ -408,6 +425,10 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
         CandidateMarket {
             market_id: "market-orders-closed".to_string(),
             instrument_id: "market-orders-closed-yes".to_string(),
+            condition_id: "0xmarketordersclosed".to_string(),
+            up_token_id: "marketordersclosed01".to_string(),
+            down_token_id: "marketordersclosed02".to_string(),
+            start_ts_ms: 1_700_000_000_000,
             declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
             liquidity_num: 5_000.0,
@@ -441,6 +462,10 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
                 market: CandidateMarket {
                     market_id: "market-orders-closed".to_string(),
                     instrument_id: "market-orders-closed-yes".to_string(),
+                    condition_id: "0xmarketordersclosed".to_string(),
+                    up_token_id: "marketordersclosed01".to_string(),
+                    down_token_id: "marketordersclosed02".to_string(),
+                    start_ts_ms: 1_700_000_000_000,
                     declared_resolution_basis: binance_btcusdt_1m(),
                     accepting_orders: false,
                     liquidity_num: 5_000.0,

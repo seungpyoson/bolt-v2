@@ -1,8 +1,10 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+use nautilus_model::identifiers::InstrumentId;
 use nautilus_polymarket::http::{
     gamma::PolymarketGammaRawHttpClient, models::GammaMarket, query::GetGammaEventsParams,
 };
+use std::str::FromStr;
 
 use crate::{
     clients::polymarket::{
@@ -77,7 +79,10 @@ fn translate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<Candidate
             return None;
         }
     };
-    let instrument_id = first_token_id(&market.clob_token_ids)?;
+    let (up_token_id, down_token_id) =
+        binary_up_down_token_ids(&market.clob_token_ids, &market.outcomes)?;
+    let start_ts_ms = parse_timestamp_ms(market.start_date.as_deref()?)?;
+    let instrument_id = polymarket_instrument_id(&market.condition_id, &up_token_id).to_string();
     let accepting_orders = market.accepting_orders?;
     let liquidity_num = market.liquidity_num?;
     let end_date = market.end_date?;
@@ -86,6 +91,10 @@ fn translate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<Candidate
     Some(CandidateMarket {
         market_id: market.id,
         instrument_id,
+        condition_id: market.condition_id,
+        up_token_id,
+        down_token_id,
+        start_ts_ms,
         declared_resolution_basis,
         accepting_orders,
         liquidity_num,
@@ -93,11 +102,35 @@ fn translate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<Candidate
     })
 }
 
-fn first_token_id(clob_token_ids: &str) -> Option<String> {
-    serde_json::from_str::<Vec<String>>(clob_token_ids)
-        .ok()?
-        .into_iter()
-        .next()
+#[must_use]
+pub fn polymarket_instrument_id(condition_id: &str, token_id: &str) -> InstrumentId {
+    InstrumentId::from_str(&format!("{condition_id}-{token_id}.POLYMARKET"))
+        .expect("polymarket instrument id format should be valid")
+}
+
+fn binary_up_down_token_ids(clob_token_ids: &str, outcomes: &str) -> Option<(String, String)> {
+    let token_ids = serde_json::from_str::<Vec<String>>(clob_token_ids).ok()?;
+    let outcomes = serde_json::from_str::<Vec<String>>(outcomes).ok()?;
+    if token_ids.len() != 2 || outcomes.len() != 2 {
+        return None;
+    }
+
+    let mut up_token_id = None;
+    let mut down_token_id = None;
+    for (outcome, token_id) in outcomes.into_iter().zip(token_ids.into_iter()) {
+        match outcome.as_str() {
+            "Up" => up_token_id = Some(token_id),
+            "Down" => down_token_id = Some(token_id),
+            _ => return None,
+        }
+    }
+
+    Some((up_token_id?, down_token_id?))
+}
+
+fn parse_timestamp_ms(value: &str) -> Option<u64> {
+    let timestamp_ms = DateTime::parse_from_rfc3339(value).ok()?.timestamp_millis();
+    Some(timestamp_ms.max(0) as u64)
 }
 
 fn seconds_to_end(now: DateTime<Utc>, end_date: &str) -> Option<u64> {

@@ -32,6 +32,7 @@ nautilus-system = { git = "https://github.com/nautechsystems/nautilus_trader.git
 nautilus-testkit = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
 nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
 parquet = "58.1.0"
+rust_decimal = "1.41.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"

@@ -142,6 +142,77 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
 }
 
 #[test]
+fn rendered_operator_config_preserves_polymarket_snapshot_fallback_fields() {
+    let tempdir = TempCaseDir::new("snapshot-fallback");
+    std::fs::write(
+        tempdir.path().join("Cargo.toml"),
+        "[package]\nname = \"temp\"\n",
+    )
+    .unwrap();
+    let config_dir = tempdir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let input_path = config_dir.join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let toml = r#"
+        [node]
+        name = "bolt-v2"
+        trader_id = "TRADER-001"
+
+        [polymarket]
+        event_slug = "btc-updown-5m"
+        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+        account_id = "POLYMARKET-001"
+        funder = "0xdeadbeef"
+
+        [secrets]
+        pk = "/pk"
+        api_key = "/key"
+        api_secret = "/secret"
+        passphrase = "/pass"
+
+        [strategy]
+        subscribe_book = true
+        book_interval_ms = 10
+        open_position_on_start_qty = "5"
+        open_position_time_in_force = "FOK"
+    "#;
+
+    fs::write(&input_path, toml).unwrap();
+    materialize_live_config(&input_path, &output_path).unwrap();
+    let rendered = fs::read_to_string(&output_path).unwrap();
+    let cfg: Config = toml::from_str(&rendered).unwrap();
+    let strategy_config = cfg.strategies[0]
+        .config
+        .as_table()
+        .expect("strategy config should remain a TOML table");
+
+    assert_eq!(
+        strategy_config
+            .get("subscribe_book")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        strategy_config
+            .get("book_interval_ms")
+            .and_then(|value| value.as_integer()),
+        Some(10)
+    );
+    assert_eq!(
+        strategy_config
+            .get("open_position_on_start_qty")
+            .and_then(|value| value.as_str()),
+        Some("5")
+    );
+    assert_eq!(
+        strategy_config
+            .get("open_position_time_in_force")
+            .and_then(|value| value.as_str()),
+        Some("FOK")
+    );
+}
+
+#[test]
 fn rendered_runtime_toml_preserves_phase1_platform_values() {
     let tempdir = TempCaseDir::new("phase1-config-parsing");
     let input_path = tempdir.path().join("live.local.toml");

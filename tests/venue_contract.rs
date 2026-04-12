@@ -151,6 +151,25 @@ fn loads_polymarket_contract() {
 }
 
 #[test]
+fn polymarket_depth_contract_points_to_snapshot_fallback_not_native_depth_streams() {
+    let contract =
+        VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
+            .expect("polymarket contract should load");
+
+    let depth = contract
+        .streams
+        .get("order_book_depths")
+        .expect("depth stream should exist in the contract");
+    assert_eq!(depth.capability, Capability::Unsupported);
+    assert_eq!(
+        depth.reason.as_deref(),
+        Some(
+            "Polymarket has no native OrderBookDepth10 stream; use delta-backed subscribe_book_at_interval snapshots instead"
+        )
+    );
+}
+
+#[test]
 fn rejects_contract_missing_stream_class() {
     let mut streams = base_polymarket_streams();
     streams.remove("quotes");

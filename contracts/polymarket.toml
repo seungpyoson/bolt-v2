@@ -19,7 +19,7 @@ provenance = "native"
 
 [streams.order_book_depths]
 capability = "unsupported"
-reason = "Polymarket emits L2 deltas only, no depth10 snapshots"
+reason = "Polymarket has no native OrderBookDepth10 stream; use delta-backed subscribe_book_at_interval snapshots instead"
 
 [streams.index_prices]
 capability = "unsupported"

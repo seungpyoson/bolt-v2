@@ -933,6 +933,47 @@ fn idle_transition_removes_previously_active_runtime_strategy() {
 }
 
 #[test]
+fn runtime_exec_tester_builder_preserves_delta_backed_book_fallback_and_fok_open_position() {
+    let raw = toml::toml! {
+        strategy_id = "EXEC_TESTER-TEMPLATE-001"
+        instrument_id = "RUNTIME_OVERRIDE.POLYMARKET"
+        client_id = "TEST"
+        order_qty = "5"
+        log_data = false
+        subscribe_book = true
+        book_interval_ms = 10
+        open_position_on_start_qty = "5"
+        open_position_time_in_force = "FOK"
+        tob_offset_ticks = 5
+        use_post_only = false
+        enable_limit_sells = false
+        enable_stop_buys = false
+        enable_stop_sells = false
+    }
+    .into();
+
+    let strategy = build_exec_tester(&raw).expect("fallback-enabled exec_tester should build");
+    let debug = format!("{strategy:?}");
+
+    assert!(
+        debug.contains("subscribe_book: true"),
+        "exec_tester should preserve delta-backed book fallback flag: {debug}"
+    );
+    assert!(
+        debug.contains("book_interval_ms: 10"),
+        "exec_tester should preserve book snapshot interval: {debug}"
+    );
+    assert!(
+        debug.contains("open_position_on_start_qty: Some(5)"),
+        "exec_tester should preserve open-position quantity: {debug}"
+    );
+    assert!(
+        debug.contains("open_position_time_in_force: Fok"),
+        "exec_tester should preserve FOK open-position behavior: {debug}"
+    );
+}
+
+#[test]
 fn active_market_switch_replaces_runtime_strategy_with_new_market() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();

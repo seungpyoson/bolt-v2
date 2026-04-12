@@ -35,6 +35,12 @@ ws_max_subscriptions = 200
 strategy_id = "EXEC_TESTER-001"
 order_qty = "5"
 log_data = false
+# Delta-backed book fallback for Polymarket. This does not enable native
+# `order_book_depths`; it drives periodic `subscribe_book_at_interval` snapshots instead.
+subscribe_book = false
+book_interval_ms = 1000
+# open_position_on_start_qty = "5"
+# open_position_time_in_force = "FOK"
 tob_offset_ticks = 5
 use_post_only = true
 enable_limit_sells = false

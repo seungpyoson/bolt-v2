@@ -441,7 +441,8 @@ struct RenderedDataClientConfig {
     subscribe_new_markets: bool,
     update_instruments_interval_mins: u64,
     ws_max_subscriptions: usize,
-    event_slugs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_slugs: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -653,7 +654,11 @@ fn render_runtime_config(
                 subscribe_new_markets: input.polymarket.subscribe_new_markets,
                 update_instruments_interval_mins: input.polymarket.update_instruments_interval_mins,
                 ws_max_subscriptions: input.polymarket.ws_max_subscriptions,
-                event_slugs: vec![input.polymarket.event_slug.clone()],
+                event_slugs: if platform_enabled {
+                    None
+                } else {
+                    Some(vec![input.polymarket.event_slug.clone()])
+                },
             },
         }],
         exec_clients: vec![RenderedExecClientEntry {
@@ -1098,10 +1103,15 @@ mod tests {
             client_name
         );
         assert_eq!(
-            cfg.data_clients[0].config["event_slugs"]
-                .as_array()
-                .expect("event slugs should exist"),
-            &vec![toml::Value::String(input.polymarket.event_slug.clone())]
+            cfg.data_clients[0].config.get("event_slugs"),
+            None,
+            "ruleset mode should not materialize legacy event_slugs"
+        );
+        assert_eq!(
+            cfg.rulesets[0].selector["tag_slug"]
+                .as_str()
+                .expect("ruleset selector tag_slug should exist"),
+            "bitcoin"
         );
         assert_eq!(
             cfg.strategies[0].config["instrument_id"]

@@ -1,5 +1,7 @@
 mod support;
 
+use std::fs;
+
 use bolt_v2::{
     clients::polymarket, config::Config, materialize_live_config,
     secrets::ResolvedPolymarketSecrets,
@@ -52,8 +54,20 @@ fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
         ..Default::default()
     };
 
-    let (data_factory, data_config) = polymarket::build_data_client(&cfg.data_clients[0].config)
-        .expect("data config should translate");
+    let selector_inputs =
+        polymarket::polymarket_ruleset_selectors(&cfg.rulesets).expect("selectors should parse");
+    let (data_factory, data_config) =
+        polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs)
+            .expect("data config should translate");
+    let data_config_debug = format!("{data_config:?}");
+    assert!(
+        data_config_debug.contains("EventParamsFilter"),
+        "ruleset mode should bootstrap the data client from selector-derived Gamma event params: {data_config_debug}"
+    );
+    assert!(
+        !data_config_debug.contains("EventSlugFilter"),
+        "ruleset mode should no longer bootstrap from legacy event slug filters: {data_config_debug}"
+    );
 
     let dummy = bootstrap_test_secrets();
     let (exec_factory, exec_config) =
@@ -96,4 +110,35 @@ fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
     // This offline seam test stops at compile-checking the final `run()` call.
     // Polling it would turn the test into a live integration test against external services.
     let _run_future = node.run();
+}
+
+#[test]
+fn ruleset_mode_ignores_malformed_legacy_event_slugs_during_bootstrap() {
+    let tempdir = TempCaseDir::new("polymarket-bootstrap-legacy-event-slugs");
+    let generated_path = tempdir.path().join("live.toml");
+    materialize_live_config(&repo_path("config/live.local.example.toml"), &generated_path)
+        .expect("tracked template should materialize");
+
+    let mutated = fs::read_to_string(&generated_path)
+        .expect("materialized config should be readable")
+        .replace(
+            "ws_max_subscriptions = 200\n",
+            "ws_max_subscriptions = 200\nevent_slugs = 7\n",
+        );
+    let mutated_path = tempdir.path().join("live-mutated.toml");
+    fs::write(&mutated_path, mutated).expect("mutated config should be written");
+
+    let cfg = Config::load(&mutated_path)
+        .expect("ruleset mode should ignore malformed legacy event_slugs during validation");
+
+    let selector_inputs =
+        polymarket::polymarket_ruleset_selectors(&cfg.rulesets).expect("selectors should parse");
+    let (_, data_config) = polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs)
+        .expect("selector-driven bootstrap should ignore malformed legacy event_slugs");
+
+    let data_config_debug = format!("{data_config:?}");
+    assert!(
+        data_config_debug.contains("EventParamsFilter"),
+        "ruleset mode should still use selector-derived event params: {data_config_debug}"
+    );
 }

@@ -22,7 +22,8 @@ post_stop_delay_secs = 5
 shutdown_delay_secs = 5
 
 [polymarket]
-event_slug = "microstrategy-sell-any-bitcoin-in-2025"
+# event_slug is only used in legacy non-ruleset mode.
+# event_slug = "microstrategy-sell-any-bitcoin-in-2025"
 instrument_id = "0x8213d395e079614d6c4d7f4cbb9be9337ab51648a21cc2a334ae8f1966d164b4-111128191581505463501777127559667396812474366956707382672202929745167742497287.POLYMARKET"
 account_id = "POLYMARKET-001"
 funder = "0xabc"

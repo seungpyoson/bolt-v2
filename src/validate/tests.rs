@@ -1026,6 +1026,17 @@ fn phase1_ruleset_selector_tag_slug_must_be_non_empty() {
 }
 
 #[test]
+fn phase1_ruleset_selector_tag_slug_must_not_contain_whitespace() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "tag_slug = \"bitcoin\"",
+        "tag_slug = \" bitcoin \"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "rulesets[0].selector.tag_slug", "contains_whitespace");
+}
+
+#[test]
 fn phase1_ruleset_resolution_basis_must_be_non_empty() {
     let toml = replace(
         &valid_phase1_toml(),
@@ -1409,6 +1420,21 @@ fn runtime_load_error_for(toml_str: &str) -> String {
 #[test]
 fn valid_runtime_config_passes() {
     let errors = runtime_errors_for(valid_runtime_toml());
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn runtime_missing_event_slugs_allowed_when_rulesets_drive_selection() {
+    let toml = valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn runtime_malformed_legacy_event_slugs_allowed_when_rulesets_drive_selection() {
+    let toml =
+        valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]", "event_slugs = 7");
+    let errors = runtime_errors_for(&toml);
     assert_no_errors(&errors);
 }
 

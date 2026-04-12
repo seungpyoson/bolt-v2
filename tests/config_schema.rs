@@ -93,6 +93,10 @@ fn tracked_template_materializes_to_parseable_runtime_config() {
     assert_eq!(cfg.data_clients[0].kind, "polymarket");
     assert_eq!(cfg.exec_clients[0].kind, "polymarket");
     assert_eq!(cfg.strategies[0].kind, "exec_tester");
+    assert!(
+        cfg.data_clients[0].config.get("event_slugs").is_none(),
+        "ruleset mode should not materialize legacy event_slugs into runtime data-client config"
+    );
     assert_eq!(cfg.rulesets[0].selector_poll_interval_ms, 1_000);
     assert_eq!(cfg.rulesets[0].candidate_load_timeout_secs, 30);
     assert_eq!(cfg.audit.as_ref().unwrap().upload_attempt_timeout_secs, 30);

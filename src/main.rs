@@ -83,7 +83,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for client in &cfg.data_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        let (factory, config) = polymarket::build_data_client(&client.config)?;
+                        let selector_tag_slugs =
+                            polymarket::polymarket_ruleset_tag_slugs(&cfg.rulesets)?;
+                        let (factory, config) =
+                            polymarket::build_data_client(&client.config, &selector_tag_slugs)?;
                         builder =
                             builder.add_data_client(Some(client.name.clone()), factory, config)?;
                     }

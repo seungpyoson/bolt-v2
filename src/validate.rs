@@ -577,7 +577,7 @@ fn check_polymarket_ruleset_selector(
         &tag_slug_field,
         "missing_tag_slug",
     ) {
-        check_non_empty(errors, &tag_slug_field, tag_slug);
+        check_non_empty_no_whitespace(errors, &tag_slug_field, tag_slug);
     }
 
     let event_slug_prefix_field = format!("{field}.event_slug_prefix");
@@ -810,11 +810,13 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.client_name",
         &config.polymarket.client_name,
     );
-    check_non_empty_no_whitespace(
-        &mut errors,
-        "polymarket.event_slug",
-        &config.polymarket.event_slug,
-    );
+    if config.rulesets.is_empty() || !config.polymarket.event_slug.trim().is_empty() {
+        check_non_empty_no_whitespace(
+            &mut errors,
+            "polymarket.event_slug",
+            &config.polymarket.event_slug,
+        );
+    }
     check_instrument_id(
         &mut errors,
         "polymarket.instrument_id",
@@ -1203,35 +1205,37 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             );
         }
 
-        let event_slugs_field = format!("data_clients[{i}].config.event_slugs");
-        if let Some(event_slugs) = get_required_array(
-            &mut errors,
-            &client.config,
-            "event_slugs",
-            &event_slugs_field,
-            "missing_event_slugs",
-        ) {
-            for (j, event_slug) in event_slugs.iter().enumerate() {
-                let field = format!("data_clients[{i}].config.event_slugs[{j}]");
-                match event_slug.as_str() {
-                    Some(event_slug) => {
-                        check_non_empty_no_whitespace(&mut errors, &field, event_slug)
+        if config.rulesets.is_empty() {
+            let event_slugs_field = format!("data_clients[{i}].config.event_slugs");
+            if let Some(event_slugs) = get_required_array(
+                &mut errors,
+                &client.config,
+                "event_slugs",
+                &event_slugs_field,
+                "missing_event_slugs",
+            ) {
+                for (j, event_slug) in event_slugs.iter().enumerate() {
+                    let field = format!("data_clients[{i}].config.event_slugs[{j}]");
+                    match event_slug.as_str() {
+                        Some(event_slug) => {
+                            check_non_empty_no_whitespace(&mut errors, &field, event_slug)
+                        }
+                        None => push_error(
+                            &mut errors,
+                            &field,
+                            "invalid_type",
+                            "must be a string".to_string(),
+                        ),
                     }
-                    None => push_error(
-                        &mut errors,
-                        &field,
-                        "invalid_type",
-                        "must be a string".to_string(),
-                    ),
                 }
-            }
-            if event_slugs.is_empty() {
-                push_error(
-                    &mut errors,
-                    &event_slugs_field,
-                    "empty",
-                    "must not be empty, got []".to_string(),
-                );
+                if event_slugs.is_empty() {
+                    push_error(
+                        &mut errors,
+                        &event_slugs_field,
+                        "empty",
+                        "must not be empty, got []".to_string(),
+                    );
+                }
             }
         }
     }

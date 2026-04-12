@@ -316,6 +316,10 @@ max_local_backlog_bytes = 10485760
     let rendered = fs::read_to_string(&output_path).unwrap();
     let value: Value = toml::from_str(&rendered).unwrap();
 
+    assert!(
+        !rendered.contains("event_slugs"),
+        "ruleset-backed runtime config should not emit event slugs: {rendered}"
+    );
     assert_eq!(
         value["reference"]["venues"][0]["type"].as_str(),
         Some("binance")

@@ -8,11 +8,13 @@ use std::{
     future::Future,
     path::Path,
     rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
+use async_trait::async_trait;
 use bolt_v2::{
     config::{
         AuditConfig, Config, ExecClientEntry, ExecClientSecrets, LoggingConfig, NodeConfig,
@@ -33,19 +35,31 @@ use bolt_v2::{
             wire_platform_runtime_with_services,
         },
     },
-    strategies::{
-        exec_tester::build_exec_tester,
-        registry::StrategyBuilder,
-    },
+    strategies::{exec_tester::build_exec_tester, registry::StrategyBuilder},
 };
 use nautilus_common::{
+    cache::Cache,
+    clients::DataClient,
+    clock::Clock,
     component::Component,
     enums::Environment,
     logging::logger::LoggerConfig,
     msgbus::{ShareableMessageHandler, publish_any, subscribe_any, unsubscribe_any},
 };
+use nautilus_core::{UUID4, UnixNanos};
 use nautilus_live::node::{LiveNode, LiveNodeHandle, NodeState};
-use nautilus_model::identifiers::{StrategyId, TraderId};
+use nautilus_model::{
+    enums::{LiquiditySide, OmsType, OrderSide, OrderType},
+    events::OrderFilled,
+    identifiers::{
+        AccountId, ClientId, ClientOrderId, PositionId, StrategyId, TradeId, TraderId, Venue,
+        VenueOrderId,
+    },
+    instruments::{Instrument, InstrumentAny, stubs::binary_option},
+    position::Position,
+    types::{Currency, Money, Price, Quantity},
+};
+use nautilus_system::factories::{ClientConfig, DataClientFactory};
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     stub_runtime_strategy::{StubRuntimeStrategy, StubRuntimeStrategyBuilder},
@@ -340,6 +354,139 @@ fn build_lifecycle_node() -> LiveNode {
         .unwrap()
 }
 
+#[derive(Debug)]
+struct DelayedDataClientConfig {
+    client_id: String,
+    venue: String,
+}
+
+impl DelayedDataClientConfig {
+    fn new(client_id: &str, venue: &str) -> Self {
+        Self {
+            client_id: client_id.to_string(),
+            venue: venue.to_string(),
+        }
+    }
+}
+
+impl ClientConfig for DelayedDataClientConfig {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[derive(Debug)]
+struct DelayedDataClientFactory {
+    release: Arc<Notify>,
+}
+
+impl DataClientFactory for DelayedDataClientFactory {
+    fn create(
+        &self,
+        _name: &str,
+        config: &dyn ClientConfig,
+        _cache: Rc<RefCell<Cache>>,
+        _clock: Rc<RefCell<dyn Clock>>,
+    ) -> anyhow::Result<Box<dyn DataClient>> {
+        let cfg = config
+            .as_any()
+            .downcast_ref::<DelayedDataClientConfig>()
+            .ok_or_else(|| anyhow!("DelayedDataClientFactory received wrong config type"))?;
+
+        Ok(Box::new(DelayedDataClient {
+            client_id: ClientId::from(cfg.client_id.as_str()),
+            venue: Venue::from(cfg.venue.as_str()),
+            release: Arc::clone(&self.release),
+            connected: false,
+        }))
+    }
+
+    fn name(&self) -> &str {
+        "delayed-mock-data"
+    }
+
+    fn config_type(&self) -> &str {
+        "DelayedDataClientConfig"
+    }
+}
+
+#[derive(Debug)]
+struct DelayedDataClient {
+    client_id: ClientId,
+    venue: Venue,
+    release: Arc<Notify>,
+    connected: bool,
+}
+
+#[async_trait(?Send)]
+impl DataClient for DelayedDataClient {
+    fn client_id(&self) -> ClientId {
+        self.client_id
+    }
+
+    fn venue(&self) -> Option<Venue> {
+        Some(self.venue)
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.connected = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
+
+    fn reset(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
+
+    fn dispose(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    fn is_disconnected(&self) -> bool {
+        !self.connected
+    }
+
+    async fn connect(&mut self) -> anyhow::Result<()> {
+        self.release.notified().await;
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
+}
+
+fn build_delayed_start_node(release: Arc<Notify>) -> LiveNode {
+    LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
+        .unwrap()
+        .with_name("TEST-NODE")
+        .with_logging(LoggerConfig::default())
+        .with_timeout_connection(1)
+        .with_timeout_disconnection_secs(1)
+        .with_delay_post_stop_secs(0)
+        .with_delay_shutdown_secs(0)
+        .add_data_client(
+            Some("BINANCE".to_string()),
+            Box::new(DelayedDataClientFactory { release }),
+            Box::new(DelayedDataClientConfig::new("BINANCE", "BINANCE")),
+        )
+        .unwrap()
+        .build()
+        .unwrap()
+}
+
 fn uploaded_records(uploader: &MockUploader) -> Vec<serde_json::Value> {
     uploader
         .calls()
@@ -498,8 +645,8 @@ fn services_with_loader(
         audit_task_factory,
         now_ms: Arc::new(|| 1_000),
         runtime_strategy_factory: Arc::new(|trader, raw_config: &toml::Value| {
-            let strategy = build_exec_tester(raw_config)
-                .map_err(|error| anyhow!(error.to_string()))?;
+            let strategy =
+                build_exec_tester(raw_config).map_err(|error| anyhow!(error.to_string()))?;
             let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
 
             trader.borrow_mut().add_strategy(strategy)?;
@@ -525,6 +672,38 @@ fn services_with(
     }
 
     services_with_loader(Arc::new(StaticLoader { markets }), audit_task_factory)
+}
+
+fn seed_open_position_for_strategy(node: &LiveNode, strategy_id: StrategyId) {
+    let instrument = InstrumentAny::BinaryOption(binary_option());
+    let mut fill = OrderFilled::new(
+        TraderId::from("BOLT-001"),
+        strategy_id,
+        instrument.id(),
+        ClientOrderId::from("O-PREEMPT-001"),
+        VenueOrderId::from("V-PREEMPT-001"),
+        AccountId::from("TEST-ACCOUNT"),
+        TradeId::from("E-PREEMPT-001"),
+        OrderSide::Buy,
+        OrderType::Market,
+        Quantity::from("1"),
+        Price::from("0.550"),
+        Currency::USDC(),
+        LiquiditySide::Taker,
+        UUID4::new(),
+        UnixNanos::default(),
+        UnixNanos::default(),
+        false,
+        None,
+        Some(Money::from("0.01 USDC")),
+    );
+    fill.position_id = Some(PositionId::from("P-PREEMPT-001"));
+
+    let position = Position::new(&instrument, fill);
+    let cache = node.kernel().cache();
+    let mut cache = cache.borrow_mut();
+    cache.add_instrument(instrument).unwrap();
+    cache.add_position(&position, OmsType::Netting).unwrap();
 }
 
 struct SequencedLoader {
@@ -784,6 +963,140 @@ async fn eligible_market_emits_active_decision() {
             && record["instrument_id"] == "ACTIVE.POLYMARKET"
             && record["reason"].is_null()
     }));
+}
+
+#[test]
+fn selector_preemption_suppresses_active_decision_while_positions_open() {
+    struct FailingIfCalledLoader {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CandidateMarketLoader for FailingIfCalledLoader {
+        fn load(&self, _ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(anyhow!("selector loader must stay dormant while preempted")) })
+        }
+    }
+
+    run_multithread_localset_test(async {
+        let dir = tempdir().unwrap();
+        let spool_dir = dir.path().to_path_buf();
+        let mut cfg = stub_runtime_lifecycle_config(dir.path());
+        cfg.rulesets[0].selector_poll_interval_ms = 10;
+        let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
+        let builds = Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let uploader = MockUploader::default();
+        let services = stub_runtime_services_with_loader(
+            Arc::new(FailingIfCalledLoader {
+                calls: Arc::clone(&calls),
+            }),
+            Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
+            Arc::clone(&builds),
+        );
+
+        let mut node = build_lifecycle_node();
+        seed_open_position_for_strategy(&node, StrategyId::from("STUB-RUNTIME-001"));
+        let handle = node.handle();
+        let stop_handle = handle.clone();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+        let control = async {
+            wait_for_running(&handle).await;
+            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
+            stop_handle.stop();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (run_result, control_result) = tokio::join!(node.run(), control);
+        run_result.unwrap();
+        control_result.unwrap();
+        guards.shutdown().await.unwrap();
+
+        let records = uploaded_records(&uploader);
+        assert!(records.iter().any(|record| {
+            record["kind"] == "selector_decision"
+                && record["state"] == "idle"
+                && record["reason"] == "no eligible market"
+        }));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "selector should not call the loader while preempted"
+        );
+        assert!(
+            !records.iter().any(|record| {
+                record["kind"] == "selector_decision"
+                    && record["state"] == "active"
+                    && record["market_id"] == "mkt-preempted"
+            }),
+            "preempted selector should not emit an active decision: {records:?}"
+        );
+        assert_eq!(builds.lock().unwrap().as_slice(), ["STUB-RUNTIME-001"]);
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn selector_waits_for_running_before_polling_candidates() {
+    struct CountingLoader {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CandidateMarketLoader for CountingLoader {
+        fn load(&self, _ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    cfg.rulesets[0].selector_poll_interval_ms = 10;
+    let release = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let services = services_with_loader(
+        Arc::new(CountingLoader {
+            calls: Arc::clone(&calls),
+        }),
+        Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+    );
+
+    let mut node = build_delayed_start_node(Arc::clone(&release));
+    let handle = node.handle();
+    let stop_handle = handle.clone();
+    let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+
+    let control = async {
+        wait_for_condition_or_stop(
+            Duration::from_secs(1),
+            &stop_handle,
+            "node entering Starting",
+            || matches!(handle.state(), NodeState::Starting),
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "selector must not poll candidates before node is Running"
+        );
+        release.notify_one();
+        wait_for_running(&handle).await;
+        wait_for_condition_or_stop(
+            Duration::from_secs(1),
+            &stop_handle,
+            "selector polling after node reaches Running",
+            || calls.load(Ordering::SeqCst) > 0,
+        )
+        .await?;
+        stop_handle.stop();
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let (run_result, control_result) = tokio::join!(node.run(), control);
+    run_result.unwrap();
+    control_result.unwrap();
+    guards.shutdown().await.unwrap();
 }
 
 #[test]
@@ -1258,7 +1571,9 @@ fn runtime_strategy_apply_failure_triggers_fail_closed_shutdown() {
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("failed building runtime-managed strategy from template")
+            error
+                .to_string()
+                .contains("failed building runtime-managed strategy from template")
                 || error.to_string().contains("missing field `client_id`"),
             "{error:#}"
         );

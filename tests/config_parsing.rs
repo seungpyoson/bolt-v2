@@ -206,26 +206,15 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
     "#;
 
     fs::write(&input_path, toml).unwrap();
-    materialize_live_config(&input_path, &output_path).unwrap();
-    let rendered = fs::read_to_string(&output_path).unwrap();
-    let cfg: Config = toml::from_str(&rendered).unwrap();
+    let error = materialize_live_config(&input_path, &output_path)
+        .expect_err("non-phase1 operator config should fail closed")
+        .to_string();
 
-    assert!(rendered.contains("[streaming]"));
-    assert!(rendered.contains("[raw_capture]"));
-    assert_eq!(cfg.node.timeout_connection_secs, 60);
-    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
-    assert_eq!(cfg.streaming.catalog_path, "var/catalog");
-    assert_eq!(cfg.streaming.flush_interval_ms, 250);
-    let expected_root = std::fs::canonicalize(tempdir.path()).unwrap();
-    assert_eq!(
-        cfg.streaming.contract_path.as_deref(),
-        Some(
-            expected_root
-                .join("contracts/polymarket.toml")
-                .to_str()
-                .unwrap()
-        )
+    assert!(
+        error.contains("at least one ruleset or strategy"),
+        "expected fail-closed runtime-shape error, got: {error}"
     );
+    assert!(!output_path.exists());
 }
 
 #[test]

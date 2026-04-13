@@ -13,7 +13,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use nautilus_common::{
     actor::{DataActor, DataActorConfig, DataActorCore},
     cache::Cache,
-    component::Component,
     msgbus::{self, ShareableMessageHandler},
     nautilus_actor,
 };
@@ -45,14 +44,14 @@ use crate::{
             SelectionState, evaluate_market_selection,
         },
     },
-    strategies::exec_tester::build_exec_tester,
+    strategies::registry::{StrategyBuildContext, StrategyRegistry},
 };
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 pub type CandidateMarketLoadFuture = BoxFuture<Result<Vec<CandidateMarket>>>;
 pub type RuntimeStrategyFactory =
-    Arc<dyn Fn(&Rc<RefCell<Trader>>, &Value) -> Result<StrategyId> + Send + Sync>;
+    Arc<dyn Fn(&Rc<RefCell<Trader>>, &str, &Value) -> Result<StrategyId> + Send + Sync>;
 
 pub trait CandidateMarketLoader: Send + Sync + 'static {
     fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture;
@@ -86,7 +85,7 @@ pub struct PlatformRuntimeServices {
 }
 
 impl PlatformRuntimeServices {
-    pub fn production() -> Self {
+    pub fn production(runtime_strategy_factory: RuntimeStrategyFactory) -> Self {
         Self {
             candidate_loader: Arc::new(ProductionCandidateMarketLoader),
             audit_task_factory: Arc::new(ProductionAuditTaskFactory),
@@ -96,20 +95,7 @@ impl PlatformRuntimeServices {
                     .expect("system clock should be after UNIX_EPOCH")
                     .as_millis() as u64
             }),
-            runtime_strategy_factory: Arc::new(|trader, raw_config| {
-                let strategy =
-                    build_exec_tester(raw_config).map_err(|error| anyhow!(error.to_string()))?;
-                let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-
-                trader
-                    .borrow_mut()
-                    .add_strategy(strategy)
-                    .with_context(|| {
-                        format!("failed registering runtime-managed strategy {strategy_id}")
-                    })?;
-
-                Ok(strategy_id)
-            }),
+            runtime_strategy_factory,
         }
     }
 }
@@ -157,6 +143,7 @@ impl RuntimeStrategyShutdown {
 
 #[derive(Clone)]
 struct RuntimeStrategyTemplate {
+    kind: String,
     strategy_id: StrategyId,
     raw_config: Value,
 }
@@ -382,8 +369,13 @@ pub fn build_reference_data_client(
 pub fn wire_platform_runtime(
     node: &mut LiveNode,
     cfg: &Config,
+    runtime_strategy_factory: RuntimeStrategyFactory,
 ) -> anyhow::Result<PlatformRuntimeGuards> {
-    wire_platform_runtime_with_services(node, cfg, PlatformRuntimeServices::production())
+    wire_platform_runtime_with_services(
+        node,
+        cfg,
+        PlatformRuntimeServices::production(runtime_strategy_factory),
+    )
 }
 
 pub fn wire_platform_runtime_with_services(
@@ -585,7 +577,7 @@ fn register_runtime_strategy(
         });
     }
 
-    let strategy_id = runtime_strategy_factory(&trader, &template.raw_config)
+    let strategy_id = runtime_strategy_factory(&trader, &template.kind, &template.raw_config)
         .context("failed building runtime-managed strategy from template")?;
 
     Ok(RuntimeManagedStrategy {
@@ -805,9 +797,19 @@ fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTempl
         .context("runtime strategy template must include strategy_id")?;
 
     Ok(Some(RuntimeStrategyTemplate {
+        kind: strategy.kind.clone(),
         strategy_id: StrategyId::from(strategy_id),
         raw_config: strategy.config.clone(),
     }))
+}
+
+pub fn registry_runtime_strategy_factory(
+    registry: StrategyRegistry,
+    build_context: StrategyBuildContext,
+) -> RuntimeStrategyFactory {
+    Arc::new(move |trader, kind, raw_config| {
+        registry.register_strategy(kind, raw_config, &build_context, trader)
+    })
 }
 
 pub fn runtime_selection_topic(strategy_id: &StrategyId) -> String {
@@ -1072,5 +1074,78 @@ impl PlatformAuditTaskFactory for ProductionAuditTaskFactory {
     ) -> JoinHandle<Result<()>> {
         let worker = spawn_audit_worker(audit_rx, AwsCliUploader, audit_config);
         tokio::spawn(async move { worker.run_until_cancelled(cancellation).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        Config, ExecClientEntry, ExecClientSecrets, LoggingConfig, NodeConfig, RawCaptureConfig,
+        ReferenceConfig, StrategyEntry, StreamingCaptureConfig,
+    };
+
+    fn config_with_runtime_strategy(kind: &str) -> Config {
+        Config {
+            node: NodeConfig {
+                name: "TEST-NODE".to_string(),
+                trader_id: "BOLT-001".to_string(),
+                environment: "Live".to_string(),
+                load_state: false,
+                save_state: false,
+                timeout_connection_secs: 1,
+                timeout_reconciliation_secs: 1,
+                timeout_portfolio_secs: 1,
+                timeout_disconnection_secs: 1,
+                delay_post_stop_secs: 0,
+                delay_shutdown_secs: 0,
+            },
+            logging: LoggingConfig {
+                stdout_level: "Info".to_string(),
+                file_level: "Debug".to_string(),
+            },
+            data_clients: Vec::new(),
+            exec_clients: vec![ExecClientEntry {
+                name: "TEST".to_string(),
+                kind: "polymarket".to_string(),
+                config: toml::toml! {
+                    account_id = "POLYMARKET-001"
+                    signature_type = 2
+                    funder = "0xabc"
+                }
+                .into(),
+                secrets: ExecClientSecrets {
+                    region: "us-east-1".to_string(),
+                    pk: Some("/pk".to_string()),
+                    api_key: Some("/key".to_string()),
+                    api_secret: Some("/secret".to_string()),
+                    passphrase: Some("/pass".to_string()),
+                },
+            }],
+            strategies: vec![StrategyEntry {
+                kind: kind.to_string(),
+                config: toml::toml! {
+                    strategy_id = "STUB-RUNTIME-001"
+                }
+                .into(),
+            }],
+            raw_capture: RawCaptureConfig::default(),
+            streaming: StreamingCaptureConfig::default(),
+            reference: ReferenceConfig::default(),
+            rulesets: Vec::new(),
+            audit: None,
+        }
+    }
+
+    #[test]
+    fn runtime_strategy_template_preserves_strategy_kind() {
+        let cfg = config_with_runtime_strategy("stub_runtime_strategy");
+
+        let template = runtime_strategy_template(&cfg)
+            .expect("runtime strategy template should build")
+            .expect("runtime strategy template should exist");
+
+        assert_eq!(template.kind, "stub_runtime_strategy");
+        assert_eq!(template.strategy_id, StrategyId::from("STUB-RUNTIME-001"));
     }
 }

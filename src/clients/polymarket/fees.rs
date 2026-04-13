@@ -53,7 +53,8 @@ pub struct PolymarketClobFeeProvider {
 
 impl std::fmt::Debug for PolymarketClobFeeProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PolymarketClobFeeProvider").finish_non_exhaustive()
+        f.debug_struct("PolymarketClobFeeProvider")
+            .finish_non_exhaustive()
     }
 }
 
@@ -217,7 +218,8 @@ mod tests {
     async fn fee_provider_cold_miss_fetches_and_caches() {
         let clock = TestClock::new();
         let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Success(decimal("1.75"))]);
-        let provider = PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
+        let provider =
+            PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
 
         assert_eq!(provider.fee_bps("token-a"), None);
         provider.warm("token-a").await.expect("warm should succeed");
@@ -230,10 +232,17 @@ mod tests {
     async fn fee_provider_cache_hit_within_ttl_skips_refresh() {
         let clock = TestClock::new();
         let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Success(decimal("2.50"))]);
-        let provider = PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
+        let provider =
+            PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
 
-        provider.warm("token-b").await.expect("first warm should succeed");
-        provider.warm("token-b").await.expect("second warm should reuse cache");
+        provider
+            .warm("token-b")
+            .await
+            .expect("first warm should succeed");
+        provider
+            .warm("token-b")
+            .await
+            .expect("second warm should reuse cache");
 
         assert_eq!(provider.fee_bps("token-b"), Some(decimal("2.50")));
         assert_eq!(fetcher.call_count(), 1);
@@ -246,9 +255,13 @@ mod tests {
             MockFetchResult::Success(decimal("3.10")),
             MockFetchResult::Failure("refresh down"),
         ]);
-        let provider = PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
+        let provider =
+            PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
 
-        provider.warm("token-c").await.expect("initial warm should succeed");
+        provider
+            .warm("token-c")
+            .await
+            .expect("initial warm should succeed");
         clock.advance(FEE_TTL + Duration::from_secs(1));
 
         provider
@@ -270,7 +283,8 @@ mod tests {
     async fn fee_provider_cold_miss_failure_stays_empty() {
         let clock = TestClock::new();
         let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Failure("network down")]);
-        let provider = PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
+        let provider =
+            PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
 
         let error = provider
             .warm("token-d")

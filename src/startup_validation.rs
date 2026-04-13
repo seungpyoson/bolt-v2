@@ -62,13 +62,13 @@ pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
             let mut batch = instrument_client
                 .request_instruments_by_event_slugs(targets.event_slugs.clone())
                 .await
-            .map_err(|error| {
-                std::io::Error::other(format!(
-                    "Polymarket startup validation failed while resolving {} [{}]: {error}",
-                    PolymarketDiscoveryMode::EventSlugs.noun(),
-                    targets.event_slugs.join(", ")
-                ))
-            })?;
+                .map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Polymarket startup validation failed while resolving {} [{}]: {error}",
+                        PolymarketDiscoveryMode::EventSlugs.noun(),
+                        targets.event_slugs.join(", ")
+                    ))
+                })?;
             instruments.append(&mut batch);
         }
         Ok::<_, Box<dyn std::error::Error>>(instruments)
@@ -267,20 +267,21 @@ mod tests {
         cfg.rulesets
             .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
 
-        let targets = collect_polymarket_startup_validation_targets_with_resolver(&cfg, |selectors, _| {
-            assert_eq!(selectors.len(), 1);
-            assert_eq!(selectors[0].tag_slug, "bitcoin");
-            assert_eq!(
-                selectors[0].event_slug_prefix.as_deref(),
-                Some("bitcoin-5m")
-            );
-            Ok(vec![
-                "bitcoin-5m-alpha".to_string(),
-                "bitcoin-5m-beta".to_string(),
-            ])
-        })
-        .expect("targets should collect")
-        .expect("polymarket targets should exist");
+        let targets =
+            collect_polymarket_startup_validation_targets_with_resolver(&cfg, |selectors, _| {
+                assert_eq!(selectors.len(), 1);
+                assert_eq!(selectors[0].tag_slug, "bitcoin");
+                assert_eq!(
+                    selectors[0].event_slug_prefix.as_deref(),
+                    Some("bitcoin-5m")
+                );
+                Ok(vec![
+                    "bitcoin-5m-alpha".to_string(),
+                    "bitcoin-5m-beta".to_string(),
+                ])
+            })
+            .expect("targets should collect")
+            .expect("polymarket targets should exist");
 
         assert_eq!(targets.tag_slugs, vec!["ethereum"]);
         assert_eq!(
@@ -563,7 +564,11 @@ mod tests {
         }
     }
 
-    fn polymarket_prefix_ruleset(id: &str, tag_slug: &str, event_slug_prefix: &str) -> RulesetConfig {
+    fn polymarket_prefix_ruleset(
+        id: &str,
+        tag_slug: &str,
+        event_slug_prefix: &str,
+    ) -> RulesetConfig {
         RulesetConfig {
             id: id.to_string(),
             venue: RulesetVenueKind::Polymarket,

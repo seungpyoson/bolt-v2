@@ -644,7 +644,7 @@ fn services_with_loader(
         candidate_loader,
         audit_task_factory,
         now_ms: Arc::new(|| 1_000),
-        runtime_strategy_factory: Arc::new(|trader, raw_config: &toml::Value| {
+        runtime_strategy_factory: Arc::new(|trader, _kind, raw_config: &toml::Value| {
             let strategy =
                 build_exec_tester(raw_config).map_err(|error| anyhow!(error.to_string()))?;
             let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
@@ -734,7 +734,7 @@ impl CandidateMarketLoader for SequencedLoader {
 }
 
 fn stub_runtime_factory(builds: Arc<Mutex<Vec<String>>>) -> RuntimeStrategyFactory {
-    Arc::new(move |trader, raw_config: &toml::Value| {
+    Arc::new(move |trader, _kind, raw_config: &toml::Value| {
         let strategy_id = raw_config
             .get("strategy_id")
             .and_then(toml::Value::as_str)

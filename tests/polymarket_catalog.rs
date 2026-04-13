@@ -32,13 +32,19 @@ use toml::Value as TomlValue;
 
 fn polymarket_selector(tag_slug: &str) -> TomlValue {
     let mut selector = toml::map::Map::new();
-    selector.insert("tag_slug".to_string(), TomlValue::String(tag_slug.to_string()));
+    selector.insert(
+        "tag_slug".to_string(),
+        TomlValue::String(tag_slug.to_string()),
+    );
     TomlValue::Table(selector)
 }
 
 fn polymarket_selector_with_prefix(tag_slug: &str, prefix: &str) -> TomlValue {
     let mut selector = toml::map::Map::new();
-    selector.insert("tag_slug".to_string(), TomlValue::String(tag_slug.to_string()));
+    selector.insert(
+        "tag_slug".to_string(),
+        TomlValue::String(tag_slug.to_string()),
+    );
     selector.insert(
         "event_slug_prefix".to_string(),
         TomlValue::String(prefix.to_string()),
@@ -154,7 +160,9 @@ async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<Atom
                             .response_bodies
                             .iter()
                             .flat_map(|body| body.as_array().cloned().unwrap_or_default())
-                            .filter(|event| event.get("slug").and_then(Value::as_str) == Some(slug.as_str()))
+                            .filter(|event| {
+                                event.get("slug").and_then(Value::as_str) == Some(slug.as_str())
+                            })
                             .collect();
                         ("HTTP/1.1 200 OK", Value::Array(matching_events).to_string())
                     } else {
@@ -463,10 +471,7 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
             .iter()
             .map(|market| market.instrument_id.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            "0xcondition1-111.POLYMARKET",
-            "0xcondition1-333.POLYMARKET"
-        ]
+        vec!["0xcondition1-111.POLYMARKET", "0xcondition1-333.POLYMARKET"]
     );
 }
 
@@ -480,13 +485,21 @@ async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
                 "event-1",
                 "bitcoin-5m-alpha",
                 "Bitcoin 5m",
-                vec![valid_market_with("market-prefix-match", "[\"111\",\"222\"]", end_date.clone())],
+                vec![valid_market_with(
+                    "market-prefix-match",
+                    "[\"111\",\"222\"]",
+                    end_date.clone(),
+                )],
             ),
             event_with_slug_and_markets(
                 "event-2",
                 "bitcoin-15m-beta",
                 "Bitcoin 15m",
-                vec![valid_market_with("market-prefix-miss", "[\"333\",\"444\"]", end_date)],
+                vec![valid_market_with(
+                    "market-prefix-miss",
+                    "[\"333\",\"444\"]",
+                    end_date,
+                )],
             ),
         ]],
     )

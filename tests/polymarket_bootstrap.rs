@@ -116,8 +116,11 @@ fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
 fn ruleset_mode_rejects_legacy_event_slugs_during_bootstrap() {
     let tempdir = TempCaseDir::new("polymarket-bootstrap-legacy-event-slugs");
     let generated_path = tempdir.path().join("live.toml");
-    materialize_live_config(&repo_path("config/live.local.example.toml"), &generated_path)
-        .expect("tracked template should materialize");
+    materialize_live_config(
+        &repo_path("config/live.local.example.toml"),
+        &generated_path,
+    )
+    .expect("tracked template should materialize");
 
     let mutated = fs::read_to_string(&generated_path)
         .expect("materialized config should be readable")

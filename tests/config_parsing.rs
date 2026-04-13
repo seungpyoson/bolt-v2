@@ -178,7 +178,10 @@ fn runtime_config_parses_ruleset_selector_table() {
     let cfg: Config = toml::from_str(toml).unwrap();
 
     assert_eq!(cfg.rulesets[0].id, "PRIMARY");
-    assert_eq!(cfg.rulesets[0].selector["tag_slug"].as_str(), Some("bitcoin"));
+    assert_eq!(
+        cfg.rulesets[0].selector["tag_slug"].as_str(),
+        Some("bitcoin")
+    );
     assert_eq!(
         cfg.rulesets[0].selector["event_slug_prefix"].as_str(),
         Some("btc-updown")

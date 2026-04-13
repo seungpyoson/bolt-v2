@@ -108,7 +108,12 @@ fn rejects_market_when_resolution_basis_mismatches() {
 fn selector_contents_do_not_affect_platform_side_eligibility() {
     let mut ruleset = ruleset();
     ruleset.selector = polymarket_selector_with_prefix("bitcoin", "btc-updown");
-    let candidates = vec![candidate("market-best", "binance_btcusdt_1m", 9_000.0, 1_200)];
+    let candidates = vec![candidate(
+        "market-best",
+        "binance_btcusdt_1m",
+        9_000.0,
+        1_200,
+    )];
 
     let decision = select_market(&ruleset, &candidates);
 

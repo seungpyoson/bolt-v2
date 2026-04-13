@@ -1,4 +1,12 @@
+use std::{cell::RefCell, rc::Rc};
+
 use super::*;
+use crate::strategies::registry::{
+    BoxedStrategy, StrategyBuildContext, StrategyBuilder, StrategyRegistry,
+};
+use anyhow::anyhow;
+use nautilus_model::identifiers::StrategyId;
+use nautilus_system::trader::Trader;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -1033,7 +1041,11 @@ fn phase1_ruleset_selector_tag_slug_must_not_contain_whitespace() {
         "tag_slug = \" bitcoin \"",
     );
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "rulesets[0].selector.tag_slug", "contains_whitespace");
+    assert_has_error(
+        &errors,
+        "rulesets[0].selector.tag_slug",
+        "contains_whitespace",
+    );
 }
 
 #[test]
@@ -1043,7 +1055,11 @@ fn phase1_ruleset_selector_unknown_field_rejected() {
         "[rulesets.selector]\ntag_slug = \"bitcoin\"\nevent_slug_prefx = \"btc-5m\"",
     );
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "rulesets[0].selector.event_slug_prefx", "unknown_field");
+    assert_has_error(
+        &errors,
+        "rulesets[0].selector.event_slug_prefx",
+        "unknown_field",
+    );
 }
 
 #[test]
@@ -1054,7 +1070,11 @@ fn phase1_event_slug_rejected_when_rulesets_are_enabled() {
         "[polymarket]\nevent_slug = \"btc-updown-5m\"\n",
     );
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "polymarket.event_slug", "forbidden_in_ruleset_mode");
+    assert_has_error(
+        &errors,
+        "polymarket.event_slug",
+        "forbidden_in_ruleset_mode",
+    );
 }
 
 #[test]
@@ -1424,9 +1444,56 @@ ws_url = "wss://streams.chain.link"
 ws_reconnect_alert_threshold = 5
 "#;
 
+struct StubRuntimeTemplateBuilder;
+
+impl StrategyBuilder for StubRuntimeTemplateBuilder {
+    fn kind() -> &'static str {
+        "stub_runtime_strategy"
+    }
+
+    fn validate_config(
+        _raw: &toml::Value,
+        _field_prefix: &str,
+        _errors: &mut Vec<ValidationError>,
+    ) {
+    }
+
+    fn build(_raw: &toml::Value, _context: &StrategyBuildContext) -> anyhow::Result<BoxedStrategy> {
+        Err(anyhow!(
+            "validate tests should not build runtime strategies"
+        ))
+    }
+
+    fn register(
+        _raw: &toml::Value,
+        _context: &StrategyBuildContext,
+        _trader: &Rc<RefCell<Trader>>,
+    ) -> anyhow::Result<StrategyId> {
+        Err(anyhow!(
+            "validate tests should not register runtime strategies"
+        ))
+    }
+}
+
+fn stub_runtime_registry() -> StrategyRegistry {
+    let mut registry = StrategyRegistry::new();
+    registry
+        .register::<StubRuntimeTemplateBuilder>()
+        .expect("stub runtime builder should register");
+    registry
+}
+
 fn runtime_errors_for(toml_str: &str) -> Vec<ValidationError> {
     let config: Config = toml::from_str(toml_str).expect("runtime test config should parse");
     validate_runtime(&config)
+}
+
+fn runtime_errors_for_with_registry(
+    toml_str: &str,
+    registry: &StrategyRegistry,
+) -> Vec<ValidationError> {
+    let config: Config = toml::from_str(toml_str).expect("runtime test config should parse");
+    validate_runtime_with_registry(&config, registry)
 }
 
 fn runtime_load_error_for(toml_str: &str) -> String {
@@ -1979,7 +2046,54 @@ fn phase1_runtime_requires_exactly_one_exec_tester_template() {
         &errors,
         "strategies",
         "phase1_runtime_strategy_template_count",
-        "exactly one exec_tester strategy template",
+        "exactly one runtime strategy template",
+    );
+}
+
+#[test]
+fn phase1_runtime_accepts_registered_stub_runtime_template_via_registry() {
+    let toml = valid_phase1_runtime_toml()
+        .replacen(
+            "type = \"exec_tester\"",
+            &format!("type = \"{}\"", StubRuntimeTemplateBuilder::kind()),
+            1,
+        )
+        .replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "")
+        .replace("client_id = \"POLYMARKET\"\n", "")
+        .replace("order_qty = \"5\"\n", "");
+    let registry = stub_runtime_registry();
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
+
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.field == "strategies[0].type" && e.code == "unsupported_type"),
+        "registered stub runtime kind should be accepted, got: {errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.field == "strategies" && e.code == "phase1_runtime_strategy_template_count"),
+        "registered stub runtime kind should satisfy the runtime template invariant, got: {errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.field == "strategies[0].config.client_id" && e.code == "missing_client_id"),
+        "stub runtime validation should not inherit exec_tester-only client_id requirements, got: {errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.field == "strategies[0].config.instrument_id"
+                && e.code == "missing_instrument_id"),
+        "stub runtime validation should not inherit exec_tester-only instrument_id requirements, got: {errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.field == "strategies[0].config.order_qty" && e.code == "missing_order_qty"),
+        "stub runtime validation should not inherit exec_tester-only order_qty requirements, got: {errors:?}"
     );
 }
 
@@ -2008,7 +2122,7 @@ order_qty = "7"
         &errors,
         "strategies",
         "phase1_runtime_strategy_template_count",
-        "exactly one exec_tester strategy template",
+        "exactly one runtime strategy template",
     );
 }
 
@@ -2022,7 +2136,7 @@ fn phase1_runtime_load_rejects_missing_exec_tester_template() {
         "runtime load error should mention strategies: {error}"
     );
     assert!(
-        error.contains("exactly one exec_tester strategy template"),
+        error.contains("exactly one runtime strategy template"),
         "runtime load error should mention template invariant: {error}"
     );
 }

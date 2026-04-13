@@ -2,14 +2,17 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Context;
-use nautilus_polymarket::http::query::GetGammaEventsParams;
 use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_polymarket::http::query::GetGammaEventsParams;
 use nautilus_polymarket::{
+    common::credential::Secrets as PolymarketSecrets,
     common::enums::SignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
     filters::{EventParamsFilter, EventSlugFilter, InstrumentFilter, NewMarketPredicateFilter},
-    http::{gamma::PolymarketGammaRawHttpClient, models::GammaEvent},
+    http::{
+        clob::PolymarketClobHttpClient, gamma::PolymarketGammaRawHttpClient, models::GammaEvent,
+    },
 };
 use serde::Deserialize;
 use tokio::{task::JoinHandle, time::MissedTickBehavior};
@@ -86,7 +89,11 @@ impl PolymarketSelectorState {
     }
 
     fn accepts_new_market_slug(&self, slug: &str) -> bool {
-        if self.current_event_slugs().iter().any(|event_slug| event_slug == slug) {
+        if self
+            .current_event_slugs()
+            .iter()
+            .any(|event_slug| event_slug == slug)
+        {
             return true;
         }
 
@@ -228,11 +235,8 @@ pub fn polymarket_ruleset_selectors(
             continue;
         }
 
-        let selector: PolymarketRulesetSelector = ruleset
-            .selector
-            .clone()
-            .try_into()
-            .map_err(|error| {
+        let selector: PolymarketRulesetSelector =
+            ruleset.selector.clone().try_into().map_err(|error| {
                 format!(
                     "failed to parse polymarket selector for ruleset {}: {error}",
                     ruleset.id
@@ -389,11 +393,13 @@ pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
     selectors: &[PolymarketRulesetSelector],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    Ok(resolve_matching_events_for_selectors_with_gamma_client(selectors, client)
-        .await?
-        .into_iter()
-        .filter_map(|event| event.slug)
-        .collect())
+    Ok(
+        resolve_matching_events_for_selectors_with_gamma_client(selectors, client)
+            .await?
+            .into_iter()
+            .filter_map(|event| event.slug)
+            .collect(),
+    )
 }
 
 pub(crate) async fn fetch_gamma_events_paginated(
@@ -427,7 +433,6 @@ pub(crate) async fn fetch_gamma_events_paginated(
     Ok(all_events)
 }
 
-
 pub fn build_exec_client(
     raw: &Value,
     trader_id: TraderId,
@@ -454,6 +459,27 @@ pub fn build_exec_client(
     };
 
     Ok((Box::new(PolymarketExecutionClientFactory), Box::new(config)))
+}
+
+pub fn build_fee_provider(
+    raw: &Value,
+    secrets: &ResolvedPolymarketSecrets,
+    timeout_secs: u64,
+) -> Result<Arc<dyn FeeProvider>, Box<dyn std::error::Error>> {
+    let input: PolymarketExecClientInput = raw.clone().try_into()?;
+    let secrets = PolymarketSecrets::resolve(
+        Some(secrets.private_key.as_str()),
+        Some(secrets.api_key.clone()),
+        Some(secrets.api_secret.clone()),
+        Some(secrets.passphrase.clone()),
+        Some(input.funder),
+    )
+    .map_err(|error| format!("failed to resolve Polymarket fee credentials: {error}"))?;
+    let client =
+        PolymarketClobHttpClient::new(secrets.credential, secrets.address, None, timeout_secs)
+            .map_err(|error| format!("failed to create Polymarket fee HTTP client: {error}"))?;
+
+    Ok(Arc::new(PolymarketClobFeeProvider::new(client)))
 }
 
 #[cfg(test)]
@@ -529,8 +555,9 @@ mod tests {
             event_slug_prefix: Some("bitcoin-5m".to_string()),
         }];
 
-        let event_slugs =
-            resolve_event_slugs_for_selectors_with_gamma_client(&selectors, &client).await.unwrap();
+        let event_slugs = resolve_event_slugs_for_selectors_with_gamma_client(&selectors, &client)
+            .await
+            .unwrap();
 
         assert_eq!(event_slugs, vec!["bitcoin-5m-alpha".to_string()]);
     }

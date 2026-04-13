@@ -1,7 +1,9 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use nautilus_common::{actor::DataActor, component::Component};
+use nautilus_model::identifiers::StrategyId;
+use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
 use toml::Value;
 
@@ -20,15 +22,21 @@ pub struct StrategyBuildContext {
 
 pub trait StrategyBuilder: Send + Sync + 'static {
     fn kind() -> &'static str;
-    fn validate_config(raw: &Value, errors: &mut Vec<ValidationError>);
+    fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>);
     fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy>;
+    fn register(
+        raw: &Value,
+        context: &StrategyBuildContext,
+        trader: &Rc<RefCell<Trader>>,
+    ) -> Result<StrategyId>;
 }
 
 #[derive(Clone, Copy)]
 pub struct StrategyRegistration {
     kind: &'static str,
-    validate_config: fn(&Value, &mut Vec<ValidationError>),
+    validate_config: fn(&Value, &str, &mut Vec<ValidationError>),
     build: fn(&Value, &StrategyBuildContext) -> Result<BoxedStrategy>,
+    register: fn(&Value, &StrategyBuildContext, &Rc<RefCell<Trader>>) -> Result<StrategyId>,
 }
 
 impl StrategyRegistration {
@@ -36,12 +44,26 @@ impl StrategyRegistration {
         self.kind
     }
 
-    pub fn validate_config(&self, raw: &Value, errors: &mut Vec<ValidationError>) {
-        (self.validate_config)(raw, errors);
+    pub fn validate_config(
+        &self,
+        raw: &Value,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        (self.validate_config)(raw, field_prefix, errors);
     }
 
     pub fn build(&self, raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
         (self.build)(raw, context)
+    }
+
+    pub fn register(
+        &self,
+        raw: &Value,
+        context: &StrategyBuildContext,
+        trader: &Rc<RefCell<Trader>>,
+    ) -> Result<StrategyId> {
+        (self.register)(raw, context, trader)
     }
 }
 
@@ -60,6 +82,7 @@ impl StrategyRegistry {
             kind: B::kind(),
             validate_config: B::validate_config,
             build: B::build,
+            register: B::register,
         };
 
         if self.registrations.contains_key(registration.kind()) {
@@ -69,13 +92,49 @@ impl StrategyRegistry {
             ));
         }
 
-        self.registrations
-            .insert(registration.kind(), registration);
+        self.registrations.insert(registration.kind(), registration);
         Ok(())
     }
 
     pub fn get(&self, kind: &str) -> Option<&StrategyRegistration> {
         self.registrations.get(kind)
+    }
+
+    pub fn validate(
+        &self,
+        kind: &str,
+        raw: &Value,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        if let Some(registration) = self.get(kind) {
+            registration.validate_config(raw, field_prefix, errors);
+        }
+    }
+
+    pub fn build(
+        &self,
+        kind: &str,
+        raw: &Value,
+        context: &StrategyBuildContext,
+    ) -> Result<BoxedStrategy> {
+        let registration = self
+            .get(kind)
+            .with_context(|| format!("unsupported strategy kind '{kind}'"))?;
+        registration.build(raw, context)
+    }
+
+    pub fn register_strategy(
+        &self,
+        kind: &str,
+        raw: &Value,
+        context: &StrategyBuildContext,
+        trader: &Rc<RefCell<Trader>>,
+    ) -> Result<StrategyId> {
+        let registration = self
+            .get(kind)
+            .with_context(|| format!("unsupported strategy kind '{kind}'"))?;
+        registration.register(raw, context, trader)
     }
 
     pub fn kinds(&self) -> Vec<&'static str> {
@@ -132,10 +191,10 @@ mod tests {
             "alpha_runtime"
         }
 
-        fn validate_config(raw: &Value, errors: &mut Vec<ValidationError>) {
+        fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>) {
             if raw.get("strategy_id").and_then(Value::as_str).is_none() {
                 errors.push(ValidationError {
-                    field: "strategies[0].config.strategy_id".to_string(),
+                    field: format!("{field_prefix}.strategy_id"),
                     code: "missing_strategy_id",
                     message: "is missing required string field".to_string(),
                 });
@@ -149,6 +208,21 @@ mod tests {
                 .context("alpha builder requires strategy_id")?;
             Ok(Box::new(TestStrategy::new(strategy_id)))
         }
+
+        fn register(
+            raw: &Value,
+            _context: &StrategyBuildContext,
+            trader: &Rc<RefCell<Trader>>,
+        ) -> Result<StrategyId> {
+            let strategy_id = raw
+                .get("strategy_id")
+                .and_then(Value::as_str)
+                .context("alpha builder requires strategy_id")?;
+            let strategy = TestStrategy::new(strategy_id);
+            let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
+            trader.borrow_mut().add_strategy(strategy)?;
+            Ok(strategy_id)
+        }
     }
 
     struct BetaBuilder;
@@ -158,9 +232,17 @@ mod tests {
             "beta_runtime"
         }
 
-        fn validate_config(_raw: &Value, _errors: &mut Vec<ValidationError>) {}
+        fn validate_config(_raw: &Value, _field_prefix: &str, _errors: &mut Vec<ValidationError>) {}
 
         fn build(_raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+            Err(anyhow!("beta builder is test-only"))
+        }
+
+        fn register(
+            _raw: &Value,
+            _context: &StrategyBuildContext,
+            _trader: &Rc<RefCell<Trader>>,
+        ) -> Result<StrategyId> {
             Err(anyhow!("beta builder is test-only"))
         }
     }
@@ -179,7 +261,10 @@ mod tests {
         registry.register::<AlphaBuilder>().unwrap();
 
         assert_eq!(registry.kinds(), vec!["alpha_runtime", "beta_runtime"]);
-        assert_eq!(registry.get("alpha_runtime").unwrap().kind(), "alpha_runtime");
+        assert_eq!(
+            registry.get("alpha_runtime").unwrap().kind(),
+            "alpha_runtime"
+        );
         assert!(registry.get("missing").is_none());
     }
 
@@ -205,7 +290,7 @@ mod tests {
         .into();
         let mut errors = Vec::new();
 
-        registration.validate_config(&raw, &mut errors);
+        registration.validate_config(&raw, "strategies[0].config", &mut errors);
         assert!(errors.is_empty());
 
         let strategy = registration.build(&raw, &test_context()).unwrap();
@@ -221,7 +306,7 @@ mod tests {
         let raw = toml::Value::Table(Default::default());
         let mut errors = Vec::new();
 
-        registration.validate_config(&raw, &mut errors);
+        registration.validate_config(&raw, "strategies[0].config", &mut errors);
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, "missing_strategy_id");

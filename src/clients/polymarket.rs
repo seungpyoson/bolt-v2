@@ -607,8 +607,8 @@ mod tests {
         assert!(debug.contains("EventParamsFilter"), "{debug}");
         assert!(debug.contains("EventSlugFilter"), "{debug}");
         assert!(
-            debug.contains("new_market_filter: None"),
-            "mixed selectors should fail open for WS new-market discovery: {debug}"
+            config.new_market_filter.is_none(),
+            "mixed selectors should fail open for WS new-market discovery"
         );
     }
 

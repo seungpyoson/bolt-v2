@@ -113,7 +113,7 @@ fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
 }
 
 #[test]
-fn ruleset_mode_ignores_malformed_legacy_event_slugs_during_bootstrap() {
+fn ruleset_mode_rejects_legacy_event_slugs_during_bootstrap() {
     let tempdir = TempCaseDir::new("polymarket-bootstrap-legacy-event-slugs");
     let generated_path = tempdir.path().join("live.toml");
     materialize_live_config(&repo_path("config/live.local.example.toml"), &generated_path)
@@ -128,18 +128,16 @@ fn ruleset_mode_ignores_malformed_legacy_event_slugs_during_bootstrap() {
     let mutated_path = tempdir.path().join("live-mutated.toml");
     fs::write(&mutated_path, mutated).expect("mutated config should be written");
 
-    let cfg = Config::load(&mutated_path)
-        .expect("ruleset mode should ignore malformed legacy event_slugs during validation");
+    let error = Config::load(&mutated_path)
+        .expect_err("ruleset mode should reject legacy event_slugs")
+        .to_string();
 
-    let selector_inputs =
-        polymarket::polymarket_ruleset_selectors(&cfg.rulesets).expect("selectors should parse");
-    let (_, data_config) =
-        polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs, None)
-            .expect("selector-driven bootstrap should ignore malformed legacy event_slugs");
-
-    let data_config_debug = format!("{data_config:?}");
     assert!(
-        data_config_debug.contains("EventParamsFilter"),
-        "ruleset mode should still use selector-derived event params: {data_config_debug}"
+        error.contains("data_clients[0].config.event_slugs"),
+        "ruleset mode error should mention legacy event_slugs: {error}"
+    );
+    assert!(
+        error.contains("forbidden_in_ruleset_mode"),
+        "ruleset mode error should explain the field is forbidden: {error}"
     );
 }

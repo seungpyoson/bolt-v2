@@ -169,6 +169,7 @@ pub struct ChainlinkSharedConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RulesetConfig {
     pub id: String,
     pub venue: RulesetVenueKind,

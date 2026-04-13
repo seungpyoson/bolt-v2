@@ -471,7 +471,7 @@ async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
     )
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 2);
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-prefix-match");
 }

@@ -508,3 +508,28 @@ price_scale = 8"#,
     assert!(error.contains("reference.chainlink"));
     assert!(error.contains("reference.venues[0].chainlink"));
 }
+
+#[test]
+fn runtime_config_rejects_unknown_ruleset_field_at_parse_time() {
+    let toml = runtime_toml_with_reference_venue(
+        "",
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 1.0
+stale_after_ms = 1500
+disable_after_ms = 5000"#,
+        "binance_btcusdt_1m",
+    )
+    .replace(
+        "candidate_load_timeout_secs = 12",
+        "candidate_load_timeout_secs = 12\nselector_poll_intrvl_ms = 250",
+    );
+
+    let error = toml::from_str::<Config>(&toml)
+        .expect_err("unknown ruleset field should fail to parse")
+        .to_string();
+
+    assert!(error.contains("selector_poll_intrvl_ms"));
+}

@@ -1441,11 +1441,26 @@ fn runtime_missing_event_slugs_allowed_when_rulesets_drive_selection() {
 }
 
 #[test]
-fn runtime_malformed_legacy_event_slugs_allowed_when_rulesets_drive_selection() {
+fn runtime_legacy_event_slugs_rejected_when_rulesets_drive_selection() {
+    let toml = valid_phase1_runtime_toml();
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.event_slugs",
+        "forbidden_in_ruleset_mode",
+    );
+}
+
+#[test]
+fn runtime_malformed_legacy_event_slugs_rejected_when_rulesets_drive_selection() {
     let toml =
         valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]", "event_slugs = 7");
     let errors = runtime_errors_for(&toml);
-    assert_no_errors(&errors);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.event_slugs",
+        "forbidden_in_ruleset_mode",
+    );
 }
 
 #[test]

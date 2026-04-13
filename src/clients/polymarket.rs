@@ -139,6 +139,12 @@ pub fn build_data_client(
     ),
     Box<dyn std::error::Error>,
 > {
+    if !selectors.is_empty() && raw.get("event_slugs").is_some() {
+        return Err(
+            "data_clients[].config.event_slugs must be omitted when rulesets are enabled".into(),
+        );
+    }
+
     let common_input: PolymarketDataClientCommonInput = raw.clone().try_into()?;
 
     let filters: Vec<Arc<dyn InstrumentFilter>> = if selectors.is_empty() {
@@ -324,11 +330,11 @@ pub fn resolve_event_slugs_for_selectors(
     ))
 }
 
-pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
+pub(crate) async fn resolve_matching_events_for_selectors_with_gamma_client(
     selectors: &[PolymarketRulesetSelector],
     client: &PolymarketGammaRawHttpClient,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut event_slugs = Vec::new();
+) -> Result<Vec<GammaEvent>, Box<dyn std::error::Error>> {
+    let mut matched_events = Vec::new();
     let mut seen_event_slugs: Vec<String> = Vec::new();
 
     let mut unique_tag_slugs = Vec::new();
@@ -360,12 +366,23 @@ pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
                 && !seen_event_slugs.iter().any(|seen| seen == event_slug)
             {
                 seen_event_slugs.push(event_slug.to_string());
-                event_slugs.push(event_slug.to_string());
+                matched_events.push(event);
             }
         }
     }
 
-    Ok(event_slugs)
+    Ok(matched_events)
+}
+
+pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
+    selectors: &[PolymarketRulesetSelector],
+    client: &PolymarketGammaRawHttpClient,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    Ok(resolve_matching_events_for_selectors_with_gamma_client(selectors, client)
+        .await?
+        .into_iter()
+        .filter_map(|event| event.slug)
+        .collect())
 }
 
 pub(crate) async fn fetch_gamma_events_paginated(

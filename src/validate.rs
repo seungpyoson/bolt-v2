@@ -1252,6 +1252,13 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
                     );
                 }
             }
+        } else if client.config.get("event_slugs").is_some() {
+            push_error(
+                &mut errors,
+                &format!("data_clients[{i}].config.event_slugs"),
+                "forbidden_in_ruleset_mode",
+                "must be omitted when rulesets are enabled; rulesets[*].selector is the source of truth".to_string(),
+            );
         }
         if let Some(gamma_refresh_interval_secs) = client
             .config

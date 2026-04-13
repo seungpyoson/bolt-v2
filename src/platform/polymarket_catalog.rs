@@ -7,7 +7,7 @@ use nautilus_polymarket::http::{
 use crate::{
     clients::polymarket::{
         PolymarketRulesetSelector, fetch_gamma_events_paginated,
-        resolve_event_slugs_for_selectors_with_gamma_client,
+        resolve_matching_events_for_selectors_with_gamma_client,
     },
     config::RulesetConfig,
     platform::{resolution_basis::parse_declared_resolution_basis, ruleset::CandidateMarket},
@@ -59,24 +59,9 @@ async fn load_events_for_selector(
         .map_err(|error| anyhow::anyhow!(error.to_string()));
     }
 
-    let event_slugs =
-        resolve_event_slugs_for_selectors_with_gamma_client(std::slice::from_ref(selector), client)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let mut all_events = Vec::new();
-    for event_slug in event_slugs {
-        let mut events = fetch_gamma_events_paginated(
-            client,
-            GetGammaEventsParams {
-                slug: Some(event_slug),
-                ..Default::default()
-            },
-        )
+    resolve_matching_events_for_selectors_with_gamma_client(std::slice::from_ref(selector), client)
         .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        all_events.append(&mut events);
-    }
-    Ok(all_events)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 fn translate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<CandidateMarket> {

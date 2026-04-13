@@ -366,6 +366,7 @@ pub struct LiveReferenceVenueInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveRulesetInput {
     pub id: String,
     pub venue: crate::config::RulesetVenueKind,

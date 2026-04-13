@@ -137,7 +137,7 @@ fn ruleset_mode_rejects_legacy_event_slugs_during_bootstrap() {
         "ruleset mode error should mention legacy event_slugs: {error}"
     );
     assert!(
-        error.contains("forbidden_in_ruleset_mode"),
+        error.contains("must be omitted when rulesets are enabled"),
         "ruleset mode error should explain the field is forbidden: {error}"
     );
 }

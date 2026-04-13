@@ -1,6 +1,6 @@
 use crate::clients::chainlink::parse_chainlink_ws_origins;
 use crate::config::{Config, ReferenceConfig, ReferenceVenueKind, RulesetVenueKind};
-use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
+use crate::live_config::{LiveLocalConfig, LiveReferenceInput, LiveStrategyInput};
 use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
@@ -882,6 +882,14 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "strategy.order_qty",
         &config.strategy.order_qty,
     );
+    if !config.rulesets.is_empty() && config.strategy != LiveStrategyInput::default() {
+        push_error(
+            &mut errors,
+            "strategy",
+            "forbidden_in_ruleset_mode",
+            "must not be customized when rulesets are enabled; live.local [strategy] is not materialized in ruleset mode".to_string(),
+        );
+    }
 
     check_non_empty(&mut errors, "secrets.region", &config.secrets.region);
     check_ssm_path(&mut errors, "secrets.pk", &config.secrets.pk);

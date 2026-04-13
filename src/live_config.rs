@@ -66,7 +66,7 @@ fn default_ws_max_subscriptions() -> usize {
 }
 
 fn default_strategy_id() -> String {
-    "EXEC_TESTER-001".to_string()
+    "STRATEGY-001".to_string()
 }
 
 fn default_order_qty() -> String {
@@ -239,7 +239,7 @@ impl Default for LivePolymarketInput {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveStrategyInput {
     #[serde(default = "default_strategy_id")]

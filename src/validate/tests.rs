@@ -29,7 +29,7 @@ account_id = "POLYMARKET-001"
 funder = "0xabc"
 
 [strategy]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "STRATEGY-001"
 order_qty = "5"
 
 [secrets]
@@ -288,7 +288,7 @@ fn account_id_without_hyphen_rejected() {
 fn strategy_id_without_hyphen_rejected() {
     let toml = replace(
         &valid_toml(),
-        "strategy_id = \"EXEC_TESTER-001\"",
+        "strategy_id = \"STRATEGY-001\"",
         "strategy_id = \"EXECTESTER001\"",
     );
     let errors = errors_for(&toml);
@@ -299,7 +299,7 @@ fn strategy_id_without_hyphen_rejected() {
 fn strategy_id_external_accepted() {
     let toml = replace(
         &valid_toml(),
-        "strategy_id = \"EXEC_TESTER-001\"",
+        "strategy_id = \"STRATEGY-001\"",
         "strategy_id = \"EXTERNAL\"",
     );
     let errors = errors_for(&toml);
@@ -768,6 +768,17 @@ fn phase1_audit_required_when_rulesets_are_configured() {
         .replace("max_local_backlog_bytes = 10485760\n", "");
     let errors = errors_for(&toml);
     assert_has_error(&errors, "audit", "missing_audit");
+}
+
+#[test]
+fn phase1_non_default_strategy_input_rejected_when_rulesets_are_configured() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "strategy_id = \"STRATEGY-001\"",
+        "strategy_id = \"STRATEGY-002\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy", "forbidden_in_ruleset_mode");
 }
 
 #[test]

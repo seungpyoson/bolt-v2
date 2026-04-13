@@ -84,6 +84,22 @@ pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
 fn collect_polymarket_startup_validation_targets(
     cfg: &Config,
 ) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>> {
+    collect_polymarket_startup_validation_targets_with_resolver(
+        cfg,
+        polymarket::resolve_event_slugs_for_selectors,
+    )
+}
+
+fn collect_polymarket_startup_validation_targets_with_resolver<F>(
+    cfg: &Config,
+    resolve_event_slugs: F,
+) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>>
+where
+    F: Fn(
+        &[polymarket::PolymarketRulesetSelector],
+        u64,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>>,
+{
     let mut tag_slugs = BTreeSet::new();
     let mut event_slugs = BTreeSet::new();
 
@@ -102,7 +118,7 @@ fn collect_polymarket_startup_validation_targets(
             .collect();
         if !prefix_selectors.is_empty() {
             let resolved_event_slugs =
-                polymarket::resolve_event_slugs_for_selectors(&prefix_selectors, cfg.node.timeout_connection_secs)?;
+                resolve_event_slugs(&prefix_selectors, cfg.node.timeout_connection_secs)?;
             for event_slug in resolved_event_slugs {
                 event_slugs.insert(event_slug);
             }
@@ -243,6 +259,48 @@ mod tests {
 
         assert_eq!(targets.tag_slugs, vec!["tag-a", "tag-b", "tag-c"]);
         assert!(targets.event_slugs.is_empty());
+    }
+
+    #[test]
+    fn startup_validation_collects_prefix_targets_without_live_gamma_and_reports_mixed_scope() {
+        let mut cfg = test_config(vec!["ethereum"], vec!["alpha.POLYMARKET"]);
+        cfg.rulesets
+            .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
+
+        let targets = collect_polymarket_startup_validation_targets_with_resolver(&cfg, |selectors, _| {
+            assert_eq!(selectors.len(), 1);
+            assert_eq!(selectors[0].tag_slug, "bitcoin");
+            assert_eq!(
+                selectors[0].event_slug_prefix.as_deref(),
+                Some("bitcoin-5m")
+            );
+            Ok(vec![
+                "bitcoin-5m-alpha".to_string(),
+                "bitcoin-5m-beta".to_string(),
+            ])
+        })
+        .expect("targets should collect")
+        .expect("polymarket targets should exist");
+
+        assert_eq!(targets.tag_slugs, vec!["ethereum"]);
+        assert_eq!(
+            targets.event_slugs,
+            vec![
+                "bitcoin-5m-alpha".to_string(),
+                "bitcoin-5m-beta".to_string()
+            ]
+        );
+
+        let err = validate_polymarket_startup_results(&targets, &BTreeSet::new())
+            .expect_err("validation should fail when nothing resolves")
+            .to_string();
+
+        assert!(err.contains("tag slugs [ethereum]"), "{err}");
+        assert!(
+            err.contains("event slugs [bitcoin-5m-alpha, bitcoin-5m-beta]"),
+            "{err}"
+        );
+        assert!(err.contains(" and "), "{err}");
     }
 
     #[test]
@@ -492,6 +550,26 @@ mod tests {
             venue: RulesetVenueKind::Polymarket,
             selector: toml::toml! {
                 tag_slug = tag_slug
+            }
+            .into(),
+            resolution_basis: "binance_btcusdt_1m".to_string(),
+            min_time_to_expiry_secs: 60,
+            max_time_to_expiry_secs: 900,
+            min_liquidity_num: 1000.0,
+            require_accepting_orders: true,
+            freeze_before_end_secs: 90,
+            selector_poll_interval_ms: 1_000,
+            candidate_load_timeout_secs: 30,
+        }
+    }
+
+    fn polymarket_prefix_ruleset(id: &str, tag_slug: &str, event_slug_prefix: &str) -> RulesetConfig {
+        RulesetConfig {
+            id: id.to_string(),
+            venue: RulesetVenueKind::Polymarket,
+            selector: toml::toml! {
+                tag_slug = tag_slug
+                event_slug_prefix = event_slug_prefix
             }
             .into(),
             resolution_basis: "binance_btcusdt_1m".to_string(),

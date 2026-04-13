@@ -399,6 +399,7 @@ struct RenderedConfig {
     raw_capture: RenderedRawCaptureConfig,
     data_clients: Vec<RenderedDataClientEntry>,
     exec_clients: Vec<RenderedExecClientEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     strategies: Vec<RenderedStrategyEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     streaming: Option<RenderedStreamingConfig>,
@@ -609,25 +610,27 @@ fn validate_rendered_runtime_config(rendered: &str) -> Result<(), Box<dyn std::e
         .map_err(|e| format!("Failed to parse rendered runtime config: {e}"))?;
 
     let validation_errors = crate::validate::validate_runtime(&config);
-    if validation_errors.is_empty() {
-        return Ok(());
+    if !validation_errors.is_empty() {
+        let details: Vec<String> = validation_errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect();
+        return Err(format!(
+            "Runtime config validation failed ({} error{}):\n{}",
+            validation_errors.len(),
+            if validation_errors.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            details.join("\n"),
+        )
+        .into());
     }
 
-    let details: Vec<String> = validation_errors
-        .iter()
-        .map(|e| format!("  - {e}"))
-        .collect();
-    Err(format!(
-        "Runtime config validation failed ({} error{}):\n{}",
-        validation_errors.len(),
-        if validation_errors.len() == 1 {
-            ""
-        } else {
-            "s"
-        },
-        details.join("\n"),
-    )
-    .into())
+    crate::config::ensure_runtime_has_active_path(&config)?;
+
+    Ok(())
 }
 
 fn render_runtime_config(
@@ -687,21 +690,7 @@ fn render_runtime_config(
                 passphrase: input.secrets.passphrase.clone(),
             },
         }],
-        strategies: vec![RenderedStrategyEntry {
-            kind: "exec_tester".to_string(),
-            config: RenderedStrategyConfig {
-                strategy_id: input.strategy.strategy_id.clone(),
-                instrument_id: input.polymarket.instrument_id.clone(),
-                client_id: input.polymarket.client_name.clone(),
-                order_qty: input.strategy.order_qty.clone(),
-                log_data: input.strategy.log_data,
-                tob_offset_ticks: input.strategy.tob_offset_ticks,
-                use_post_only: input.strategy.use_post_only,
-                enable_limit_sells: input.strategy.enable_limit_sells,
-                enable_stop_buys: input.strategy.enable_stop_buys,
-                enable_stop_sells: input.strategy.enable_stop_sells,
-            },
-        }],
+        strategies: Vec::new(),
         streaming: if input.streaming.catalog_path.trim().is_empty() {
             None
         } else {
@@ -1100,18 +1089,12 @@ mod tests {
         let client_name = input.polymarket.client_name.as_str();
         assert_eq!(cfg.data_clients.len(), 1);
         assert_eq!(cfg.exec_clients.len(), 1);
-        assert_eq!(cfg.strategies.len(), 1);
+        assert_eq!(cfg.strategies.len(), 0);
         assert_eq!(cfg.data_clients[0].name, client_name);
         assert_eq!(cfg.data_clients[0].kind, "polymarket");
         assert_eq!(cfg.exec_clients[0].name, client_name);
         assert_eq!(cfg.exec_clients[0].kind, "polymarket");
-        assert_eq!(cfg.strategies[0].kind, "exec_tester");
-        assert_eq!(
-            cfg.strategies[0].config["client_id"]
-                .as_str()
-                .expect("strategy client_id should exist"),
-            client_name
-        );
+        assert!(!rendered.contains("[[strategies]]"));
         assert_eq!(
             cfg.data_clients[0].config.get("event_slugs"),
             None,
@@ -1128,12 +1111,6 @@ mod tests {
                 .as_integer()
                 .expect("gamma_refresh_interval_secs should exist"),
             input.polymarket.gamma_refresh_interval_secs as i64
-        );
-        assert_eq!(
-            cfg.strategies[0].config["instrument_id"]
-                .as_str()
-                .expect("instrument_id should exist"),
-            input.polymarket.instrument_id
         );
         assert_eq!(
             cfg.exec_clients[0].config["signature_type"]
@@ -1167,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn minimal_operator_input_uses_defaults_and_renders_valid_runtime_config() {
+    fn minimal_operator_input_without_phase1_sections_fails_closed() {
         let raw = r#"
 [node]
 name = "BOLT-V2-TEST"
@@ -1203,12 +1180,14 @@ passphrase = "/bolt/poly/passphrase"
         assert_eq!(cfg.node.delay_shutdown_secs, 5);
         assert_eq!(cfg.data_clients[0].name, "POLYMARKET");
         assert_eq!(cfg.exec_clients[0].name, "POLYMARKET");
-        assert_eq!(cfg.strategies[0].kind, "exec_tester");
-        assert_eq!(
-            cfg.strategies[0].config["strategy_id"]
-                .as_str()
-                .expect("strategy_id should exist"),
-            "EXEC_TESTER-001"
+        assert!(cfg.strategies.is_empty());
+        assert!(!rendered.contains("[[strategies]]"));
+        let error = validate_rendered_runtime_config(&rendered)
+            .expect_err("non-phase1 operator config should fail closed")
+            .to_string();
+        assert!(
+            error.contains("at least one ruleset or strategy"),
+            "expected fail-closed runtime-shape error, got: {error}"
         );
         assert_eq!(
             cfg.exec_clients[0].config["signature_type"]

@@ -1463,19 +1463,18 @@ fn validate_runtime_with_registry(
             &mut errors,
         );
 
-        if let Some(value) = strategy.config.get("client_id") {
-            if let Some(client_id) = value.as_str()
-                && !exec_name_indices.contains_key(client_id)
-            {
-                push_error(
-                    &mut errors,
-                    "strategies",
-                    "unknown_client_id",
-                    format!(
-                        "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
-                    ),
-                );
-            }
+        if let Some(value) = strategy.config.get("client_id")
+            && let Some(client_id) = value.as_str()
+            && !exec_name_indices.contains_key(client_id)
+        {
+            push_error(
+                &mut errors,
+                "strategies",
+                "unknown_client_id",
+                format!(
+                    "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
+                ),
+            );
         }
     }
 
@@ -1541,13 +1540,13 @@ fn validate_runtime_with_registry(
             .iter()
             .filter(|strategy| registry.get(&strategy.kind).is_some())
             .count();
-        if runtime_strategy_templates != 1 {
+        if runtime_strategy_templates > 1 {
             push_error(
                 &mut errors,
                 "strategies",
                 "phase1_runtime_strategy_template_count",
                 format!(
-                    "ruleset mode requires exactly one runtime strategy template, got {runtime_strategy_templates}"
+                    "ruleset mode supports at most one runtime strategy template, got {runtime_strategy_templates}"
                 ),
             );
         }

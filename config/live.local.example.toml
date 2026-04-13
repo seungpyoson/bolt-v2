@@ -33,16 +33,6 @@ update_instruments_interval_mins = 60
 gamma_refresh_interval_secs = 60
 ws_max_subscriptions = 200
 
-[strategy]
-strategy_id = "EXEC_TESTER-001"
-order_qty = "5"
-log_data = false
-tob_offset_ticks = 5
-use_post_only = true
-enable_limit_sells = false
-enable_stop_buys = false
-enable_stop_sells = false
-
 [secrets]
 region = "eu-west-1"
 pk = "/bolt/poly/pk"

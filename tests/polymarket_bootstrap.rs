@@ -35,7 +35,7 @@ fn seam_test_uses_non_secret_placeholders() {
 }
 
 #[test]
-fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
+fn builds_live_node_without_pre_registering_runtime_templates_in_ruleset_mode() {
     let tempdir = TempCaseDir::new("polymarket-bootstrap");
     let config_path = tempdir.path().join("live.toml");
     materialize_live_config(&repo_path("config/live.local.example.toml"), &config_path)
@@ -44,6 +44,10 @@ fn builds_live_node_without_pre_registering_exec_tester_in_ruleset_mode() {
     assert!(
         !cfg.rulesets.is_empty(),
         "tracked seam config should exercise ruleset mode"
+    );
+    assert!(
+        cfg.strategies.is_empty(),
+        "ruleset mode should materialize zero runtime strategy templates"
     );
 
     let trader_id = TraderId::from(cfg.node.trader_id.as_str());

@@ -35,7 +35,7 @@ use bolt_v2::{
             wire_platform_runtime_with_services,
         },
     },
-    strategies::{exec_tester::build_exec_tester, registry::StrategyBuilder},
+    strategies::registry::StrategyBuilder,
 };
 use nautilus_common::{
     cache::Cache,
@@ -287,22 +287,7 @@ fn lifecycle_test_config(audit_dir: &Path) -> Config {
             passphrase: None,
         },
     }];
-    cfg.strategies = vec![StrategyEntry {
-        kind: "exec_tester".to_string(),
-        config: toml::toml! {
-            strategy_id = "EXEC_TESTER-TEMPLATE-001"
-            instrument_id = "RUNTIME_OVERRIDE.POLYMARKET"
-            client_id = "TEST"
-            order_qty = "5"
-            log_data = false
-            tob_offset_ticks = 5
-            use_post_only = true
-            enable_limit_sells = false
-            enable_stop_buys = false
-            enable_stop_sells = false
-        }
-        .into(),
-    }];
+    cfg.strategies = Vec::new();
     cfg
 }
 
@@ -644,14 +629,10 @@ fn services_with_loader(
         candidate_loader,
         audit_task_factory,
         now_ms: Arc::new(|| 1_000),
-        runtime_strategy_factory: Arc::new(|trader, _kind, raw_config: &toml::Value| {
-            let strategy =
-                build_exec_tester(raw_config).map_err(|error| anyhow!(error.to_string()))?;
-            let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-
-            trader.borrow_mut().add_strategy(strategy)?;
-
-            Ok(strategy_id)
+        runtime_strategy_factory: Arc::new(|_trader, kind, _raw_config: &toml::Value| {
+            Err(anyhow!(
+                "unexpected runtime strategy build through zero-template services for kind {kind}"
+            ))
         }),
     }
 }
@@ -1100,12 +1081,12 @@ async fn selector_waits_for_running_before_polling_candidates() {
 }
 
 #[test]
-fn runtime_selection_snapshot_publishes_active_decision_once() {
+fn runtime_selection_snapshot_publishes_on_selection_changes() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
-        let mut cfg = lifecycle_test_config(dir.path());
+        let mut cfg = stub_runtime_lifecycle_config(dir.path());
         cfg.rulesets[0].selector_poll_interval_ms = 25;
-        let topic = runtime_selection_topic(&StrategyId::from("EXEC_TESTER-TEMPLATE-001"));
+        let topic = runtime_selection_topic(&StrategyId::from("STUB-RUNTIME-001"));
         let observed = Rc::new(RefCell::new(Vec::<RuntimeSelectionSnapshot>::new()));
         let handler_observed = Rc::clone(&observed);
         let handler = ShareableMessageHandler::from_any(move |message: &dyn Any| {
@@ -1113,17 +1094,19 @@ fn runtime_selection_snapshot_publishes_active_decision_once() {
                 handler_observed.borrow_mut().push(snapshot.clone());
             }
         });
+        let builds = Arc::new(Mutex::new(Vec::<String>::new()));
 
         let first_market =
             candidate_market("mkt-active-runtime-a", "ACTIVE-A.POLYMARKET", 2_000.0, 120);
         let second_market =
             candidate_market("mkt-active-runtime-b", "ACTIVE-B.POLYMARKET", 2_500.0, 120);
-        let services = services_with_loader(
+        let services = stub_runtime_services_with_loader(
             Arc::new(SequencedLoader::new(vec![
                 vec![first_market.clone()],
                 vec![second_market.clone()],
             ])),
             Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+            Arc::clone(&builds),
         );
 
         let mut node = build_lifecycle_node();
@@ -1154,6 +1137,7 @@ fn runtime_selection_snapshot_publishes_active_decision_once() {
         shutdown_result.unwrap();
 
         let snapshots = observed.borrow();
+        assert_eq!(builds.lock().unwrap().as_slice(), ["STUB-RUNTIME-001"]);
         assert_eq!(snapshots.len(), 2);
         assert_eq!(
             snapshots[0],
@@ -1545,24 +1529,25 @@ async fn selector_loader_failure_triggers_fail_closed_shutdown() {
 }
 
 #[test]
-fn runtime_strategy_apply_failure_triggers_fail_closed_shutdown() {
+fn runtime_strategy_build_failure_surfaces_during_wiring() {
     run_multithread_localset_test(async {
         let dir = tempdir().unwrap();
-        let mut cfg = lifecycle_test_config(dir.path());
+        let mut cfg = stub_runtime_lifecycle_config(dir.path());
         cfg.rulesets[0].selector_poll_interval_ms = 10;
         cfg.strategies[0]
             .config
             .as_table_mut()
-            .expect("exec_tester template config should be a table")
-            .remove("client_id");
-        let services = services_with(
-            vec![candidate_market(
+            .expect("stub runtime template config should be a table")
+            .remove("strategy_id");
+        let services = stub_runtime_services_with_loader(
+            Arc::new(SequencedLoader::new(vec![vec![candidate_market(
                 "mkt-active-runtime-failure",
                 "ACTIVE-FAIL.POLYMARKET",
                 2_000.0,
                 120,
-            )],
+            )]])),
             Arc::new(RecordingAuditTaskFactory::new(MockUploader::default())),
+            Arc::new(Mutex::new(Vec::<String>::new())),
         );
 
         let mut node = build_lifecycle_node();
@@ -1574,7 +1559,12 @@ fn runtime_strategy_apply_failure_triggers_fail_closed_shutdown() {
             error
                 .to_string()
                 .contains("failed building runtime-managed strategy from template")
-                || error.to_string().contains("missing field `client_id`"),
+                || error
+                    .to_string()
+                    .contains("runtime strategy template must include strategy_id")
+                || error
+                    .to_string()
+                    .contains("stub runtime strategy requires strategy_id"),
             "{error:#}"
         );
     });

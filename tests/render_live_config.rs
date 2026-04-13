@@ -160,7 +160,7 @@ fn render_live_config_binary_supports_relative_paths() {
 }
 
 #[test]
-fn legacy_operator_config_without_phase1_sections_still_materializes() {
+fn legacy_operator_config_without_phase1_sections_fails_closed() {
     let tempdir = TempCaseDir::new("legacy-phase1-compat");
     let input_path = tempdir.path().join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
@@ -184,16 +184,15 @@ passphrase = "/bolt/poly/passphrase"
 
     fs::write(&input_path, input).expect("input config should be written");
 
-    let outcome = materialize_live_config(&input_path, &output_path)
-        .expect("legacy operator config should still materialize");
+    let error = materialize_live_config(&input_path, &output_path)
+        .expect_err("legacy operator config should fail closed without an active runtime path")
+        .to_string();
 
-    assert_eq!(outcome, MaterializationOutcome::Created);
-
-    let rendered = fs::read_to_string(&output_path).expect("rendered config should be readable");
-    assert!(!rendered.contains("\n[reference]\n"));
-    assert!(!rendered.contains("\n[[rulesets]]\n"));
-    assert!(!rendered.contains("\n[audit]\n"));
-    assert_generated_output(&output_path);
+    assert!(
+        error.contains("at least one ruleset or strategy"),
+        "expected fail-closed runtime-shape error, got: {error}"
+    );
+    assert!(!output_path.exists());
 }
 
 #[test]
@@ -460,11 +459,14 @@ fn tracked_live_local_example() -> String {
 
 fn assert_generated_output(path: &Path) {
     let rendered = fs::read_to_string(path).expect("generated output should be readable");
+    let cfg: Config = toml::from_str(&rendered).expect("generated output should parse");
+
     assert!(rendered.contains("# GENERATED FILE - DO NOT EDIT."));
     assert!(rendered.contains("# Source of truth:"));
     assert!(rendered.contains("[[data_clients]]"));
     assert!(rendered.contains("[[exec_clients]]"));
-    assert!(rendered.contains("[[strategies]]"));
+    assert!(cfg.strategies.is_empty());
+    assert!(!rendered.contains("[[strategies]]"));
 }
 
 fn assert_read_only(path: &Path) {

@@ -2,7 +2,6 @@ mod support;
 
 use std::time::Duration;
 
-use bolt_v2::strategies::exec_tester;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::{LiveNode, NodeState};
 use nautilus_model::identifiers::TraderId;
@@ -11,27 +10,10 @@ use support::{
 };
 
 #[test]
-fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
+fn run_starts_and_stops_cleanly_with_test_clients_and_no_strategies() {
     let trader_id = TraderId::from("BOLT-001");
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
-
-    let strategy = exec_tester::build_exec_tester(
-        &toml::toml! {
-            strategy_id = "EXEC_TESTER-001"
-            instrument_id = "TOKEN.TESTVENUE"
-            client_id = "TEST"
-            order_qty = "5"
-            log_data = false
-            tob_offset_ticks = 5
-            use_post_only = true
-            enable_limit_sells = false
-            enable_stop_buys = false
-            enable_stop_sells = false
-        }
-        .into(),
-    )
-    .expect("strategy should translate");
 
     let mut node = LiveNode::builder(trader_id, Environment::Live)
         .expect("builder should construct")
@@ -56,9 +38,6 @@ fn run_starts_and_stops_cleanly_with_test_clients_and_exec_tester() {
         .expect("exec client should register")
         .build()
         .expect("node should build");
-
-    node.add_strategy(strategy)
-        .expect("strategy should register");
 
     let handle = node.handle();
     let runtime = tokio::runtime::Builder::new_current_thread()

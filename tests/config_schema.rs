@@ -48,26 +48,12 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "POLYMARKET"
-order_qty = "5"
-log_data = false
-tob_offset_ticks = 5
-use_post_only = true
-enable_limit_sells = false
-enable_stop_buys = false
-enable_stop_sells = false
 "#;
 
     let cfg: Config = toml::from_str(raw).expect("config should parse");
     assert_eq!(cfg.data_clients.len(), 1);
     assert_eq!(cfg.exec_clients.len(), 1);
-    assert_eq!(cfg.strategies.len(), 1);
+    assert_eq!(cfg.strategies.len(), 0);
 }
 
 #[test]
@@ -89,10 +75,13 @@ fn tracked_template_materializes_to_parseable_runtime_config() {
     assert!(!rendered.contains("Regenerate with:"));
     assert_eq!(cfg.data_clients.len(), 1);
     assert_eq!(cfg.exec_clients.len(), 1);
-    assert_eq!(cfg.strategies.len(), 1);
+    assert_eq!(cfg.strategies.len(), 0);
     assert_eq!(cfg.data_clients[0].kind, "polymarket");
     assert_eq!(cfg.exec_clients[0].kind, "polymarket");
-    assert_eq!(cfg.strategies[0].kind, "exec_tester");
+    assert!(
+        !rendered.contains("[[strategies]]"),
+        "ruleset mode should not materialize runtime strategy templates into the generated config"
+    );
     assert!(
         cfg.data_clients[0].config.get("event_slugs").is_none(),
         "ruleset mode should not materialize legacy event_slugs into runtime data-client config"
@@ -121,10 +110,6 @@ instrument_id = "0xabc-123.POLYMARKET"
 account_id = "POLYMARKET-001"
 funder = "0xabc"
 signature_type = 2
-
-[strategy]
-strategy_id = "EXEC_TESTER-001"
-order_qty = "5"
 
 [secrets]
 region = "eu-west-1"
@@ -192,6 +177,10 @@ max_local_backlog_bytes = 10485760
     assert_eq!(
         value["reference"]["venues"].as_array().map(Vec::len),
         Some(1)
+    );
+    assert!(
+        value.get("strategies").is_none(),
+        "ruleset mode should omit runtime strategy templates from rendered TOML"
     );
     assert_eq!(value["rulesets"].as_array().map(Vec::len), Some(1));
     assert_eq!(value["rulesets"][0]["venue"].as_str(), Some("polymarket"));

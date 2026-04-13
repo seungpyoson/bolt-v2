@@ -374,9 +374,9 @@ mod tests {
     fn startup_validation_ignores_strategies_without_instrument_id_key() {
         let mut cfg = test_config(vec!["bitcoin"], vec!["alpha.POLYMARKET"]);
         cfg.strategies.push(StrategyEntry {
-            kind: "exec_tester".to_string(),
+            kind: "stub_runtime_strategy".to_string(),
             config: toml::toml! {
-                strategy_id = "EXEC_TESTER-002"
+                strategy_id = "STUB-RUNTIME-002"
                 client_id = "POLYMARKET"
                 order_qty = "5"
             }
@@ -523,9 +523,9 @@ mod tests {
             strategies: strategy_instrument_ids
                 .into_iter()
                 .map(|instrument_id| StrategyEntry {
-                    kind: "exec_tester".to_string(),
+                    kind: "stub_runtime_strategy".to_string(),
                     config: toml::toml! {
-                        strategy_id = "EXEC_TESTER-001"
+                        strategy_id = "STUB-RUNTIME-001"
                         instrument_id = instrument_id
                         client_id = "POLYMARKET"
                         order_qty = "5"

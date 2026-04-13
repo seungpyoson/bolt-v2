@@ -4,7 +4,7 @@ use std::{collections::HashSet, path::PathBuf, rc::Rc};
 
 use bolt_v2::{
     clients::{chainlink, polymarket},
-    config::{Config, ReferenceVenueKind},
+    config::{Config, ReferenceVenueKind, ensure_runtime_has_active_path},
     normalized_sink,
     platform::runtime::{
         build_reference_data_client, reference_client_name_for_kind,
@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Run { config } => {
             bolt_v2::log_sweep::sweep_stale_logs();
             let cfg = Config::load(&config)?;
+            ensure_runtime_has_active_path(&cfg)?;
             startup_validation::validate_polymarket_startup(&cfg)?;
 
             let trader_id = TraderId::from(cfg.node.trader_id.as_str());

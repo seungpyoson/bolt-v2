@@ -118,17 +118,6 @@ api_key = "/key"
 api_secret = "/secret"
 passphrase = "/pass"
 
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC-001"
-instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-client_id = "POLYMARKET"
-order_qty = "1"
-log_data = true
-tob_offset_ticks = 1
-use_post_only = true
-
 [reference]
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100

@@ -48,17 +48,6 @@ fn parses_runtime_config_with_optional_streaming_section() {
         api_secret = "/secret"
         passphrase = "/pass"
 
-        [[strategies]]
-        type = "exec_tester"
-        [strategies.config]
-        strategy_id = "EXEC-001"
-        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-        client_id = "POLYMARKET"
-        order_qty = "1"
-        log_data = true
-        tob_offset_ticks = 1
-        use_post_only = true
-
         [raw_capture]
         output_dir = "var/raw"
 
@@ -123,17 +112,6 @@ fn runtime_config_parses_ruleset_selector_table() {
         api_secret = "/secret"
         passphrase = "/pass"
 
-        [[strategies]]
-        type = "exec_tester"
-        [strategies.config]
-        strategy_id = "EXEC-001"
-        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-        client_id = "POLYMARKET"
-        order_qty = "1"
-        log_data = true
-        tob_offset_ticks = 1
-        use_post_only = true
-
         [raw_capture]
         output_dir = "var/raw"
 
@@ -177,6 +155,7 @@ fn runtime_config_parses_ruleset_selector_table() {
 
     let cfg: Config = toml::from_str(toml).unwrap();
 
+    assert!(cfg.strategies.is_empty());
     assert_eq!(cfg.rulesets[0].id, "PRIMARY");
     assert_eq!(
         cfg.rulesets[0].selector["tag_slug"].as_str(),
@@ -265,10 +244,6 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         funder = "0xabc"
         signature_type = 2
 
-        [strategy]
-        strategy_id = "EXEC_TESTER-001"
-        order_qty = "5"
-
         [secrets]
         region = "eu-west-1"
         pk = "/bolt/poly/pk"
@@ -321,6 +296,10 @@ max_local_backlog_bytes = 10485760
     assert!(
         !rendered.contains("event_slugs"),
         "ruleset-backed runtime config should not emit event slugs: {rendered}"
+    );
+    assert!(
+        value.get("strategies").is_none(),
+        "ruleset-backed runtime config should omit runtime strategy templates: {rendered}"
     );
     assert_eq!(
         value["reference"]["venues"][0]["type"].as_str(),

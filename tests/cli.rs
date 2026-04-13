@@ -92,14 +92,6 @@ pk = "/x/pk"
 api_key = "/x/key"
 api_secret = "/x/secret"
 passphrase = "/x/pass"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -155,14 +147,6 @@ signature_type = 2
 funder = "0xabc"
 [exec_clients.secrets]
 region = "eu-west-1"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -221,14 +205,6 @@ signature_type = 2
 funder = "0xabc"
 [exec_clients.secrets]
 region = "eu-west-1"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -291,14 +267,6 @@ pk = "/x/pk"
 api_key = "/x/key"
 api_secret = "/x/secret"
 passphrase = "/x/pass"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 
@@ -358,14 +326,6 @@ pk = "/x/pk"
 api_key = "/x/key"
 api_secret = "/x/secret"
 passphrase = "/x/pass"
-
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC_TESTER-001"
-instrument_id = "TOKEN.POLYMARKET"
-client_id = "TEST"
-order_qty = "5"
 "#,
     );
 

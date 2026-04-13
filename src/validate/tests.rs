@@ -1339,15 +1339,23 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+"#
+}
 
+fn valid_runtime_toml_with_stub_strategy() -> String {
+    format!(
+        "{}\n{}",
+        valid_runtime_toml(),
+        r#"
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime_strategy"
 [strategies.config]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "STUB-RUNTIME-001"
 instrument_id = "0xabc-12345.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "5"
 "#
+    )
 }
 
 fn valid_phase1_toml() -> String {
@@ -1685,40 +1693,42 @@ fn runtime_empty_client_name_rejected() {
 fn duplicate_strategy_id_names_first_occurrence() {
     let toml = format!(
         "{}\n{}\n{}",
-        valid_runtime_toml(),
+        valid_runtime_toml_with_stub_strategy(),
         r#"
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime_strategy"
 [strategies.config]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "STUB-RUNTIME-001"
 instrument_id = "0xdef-67890.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "10"
 "#,
         r#"
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime_strategy"
 [strategies.config]
-strategy_id = "EXEC_TESTER-001"
+strategy_id = "STUB-RUNTIME-001"
 instrument_id = "0xghi-13579.POLYMARKET"
 client_id = "POLYMARKET"
 order_qty = "15"
 "#
     );
-    let errors = runtime_errors_for(&toml);
+    let registry = stub_runtime_registry();
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
     assert_has_error(&errors, "strategies", "duplicate_strategy_id");
     assert_error_message_contains(
         &errors,
         "strategies",
         "duplicate_strategy_id",
-        "strategies[1] has duplicate strategy_id \"EXEC_TESTER-001\"",
+        "strategies[1] has duplicate strategy_id \"STUB-RUNTIME-001\"",
     );
     assert!(
         errors.iter().any(|e| {
             e.field == "strategies"
                 && e.code == "duplicate_strategy_id"
-                && e.message
-                    .contains("strategies[2] has duplicate strategy_id \"EXEC_TESTER-001\" (first defined at strategies[0])")
+                && e.message.contains(
+                    "strategies[2] has duplicate strategy_id \"STUB-RUNTIME-001\" (first defined at strategies[0])"
+                )
         }),
         "expected third duplicate to reference the original first occurrence, got: {errors:?}"
     );
@@ -1732,26 +1742,18 @@ order_qty = "15"
 
 #[test]
 fn strategy_referencing_nonexistent_client_rejected() {
-    let toml =
-        valid_runtime_toml().replace("client_id = \"POLYMARKET\"", "client_id = \"NONEXISTENT\"");
-    let errors = runtime_errors_for(&toml);
+    let toml = valid_runtime_toml_with_stub_strategy()
+        .replace("client_id = \"POLYMARKET\"", "client_id = \"NONEXISTENT\"");
+    let registry = stub_runtime_registry();
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
     assert_has_error(&errors, "strategies", "unknown_client_id");
 }
 
 #[test]
-fn strategy_missing_client_id_rejected() {
-    let toml = valid_runtime_toml().replace("client_id = \"POLYMARKET\"\n", "");
-    let errors = runtime_errors_for(&toml);
-    assert_has_error(
-        &errors,
-        "strategies[0].config.client_id",
-        "missing_client_id",
-    );
-}
-
-#[test]
 fn strategy_referencing_existing_client_accepted() {
-    let errors = runtime_errors_for(valid_runtime_toml());
+    let registry = stub_runtime_registry();
+    let errors =
+        runtime_errors_for_with_registry(&valid_runtime_toml_with_stub_strategy(), &registry);
     assert!(
         !errors.iter().any(|e| e.code == "unknown_client_id"),
         "valid client_id should not produce errors"
@@ -1760,8 +1762,10 @@ fn strategy_referencing_existing_client_accepted() {
 
 #[test]
 fn runtime_missing_strategy_id_rejected() {
-    let toml = valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"\n", "");
-    let errors = runtime_errors_for(&toml);
+    let toml =
+        valid_runtime_toml_with_stub_strategy().replace("strategy_id = \"STUB-RUNTIME-001\"\n", "");
+    let registry = stub_runtime_registry();
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
     assert_has_error(
         &errors,
         "strategies[0].config.strategy_id",
@@ -1771,79 +1775,16 @@ fn runtime_missing_strategy_id_rejected() {
 
 #[test]
 fn runtime_strategy_id_wrong_type_rejected() {
-    let toml =
-        valid_runtime_toml().replace("strategy_id = \"EXEC_TESTER-001\"", "strategy_id = 42");
-    let errors = runtime_errors_for(&toml);
+    let toml = valid_runtime_toml_with_stub_strategy()
+        .replace("strategy_id = \"STUB-RUNTIME-001\"", "strategy_id = 42");
+    let registry = stub_runtime_registry();
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
     assert_has_error(&errors, "strategies[0].config.strategy_id", "wrong_type");
     assert_error_message_contains(
         &errors,
         "strategies[0].config.strategy_id",
         "wrong_type",
         "must be a string, got integer value",
-    );
-}
-
-#[test]
-fn runtime_missing_instrument_id_rejected() {
-    let toml = valid_runtime_toml().replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "");
-    let errors = runtime_errors_for(&toml);
-    assert_has_error(
-        &errors,
-        "strategies[0].config.instrument_id",
-        "missing_instrument_id",
-    );
-}
-
-#[test]
-fn runtime_missing_order_qty_rejected() {
-    let toml = valid_runtime_toml().replace("order_qty = \"5\"\n", "");
-    let errors = runtime_errors_for(&toml);
-    assert_has_error(
-        &errors,
-        "strategies[0].config.order_qty",
-        "missing_order_qty",
-    );
-}
-
-#[test]
-fn runtime_missing_strategy_field_uses_indexed_path() {
-    let toml = valid_runtime_toml().replace("client_id = \"POLYMARKET\"\n", "");
-    let errors = runtime_errors_for(&toml);
-    assert_has_error(
-        &errors,
-        "strategies[0].config.client_id",
-        "missing_client_id",
-    );
-    assert!(
-        !errors
-            .iter()
-            .any(|e| e.field == "strategies" && e.code == "missing_client_id"),
-        "missing client_id should use indexed field path, got: {errors:?}"
-    );
-}
-
-#[test]
-fn runtime_invalid_instrument_id_rejected() {
-    let toml = valid_runtime_toml().replace(
-        "instrument_id = \"0xabc-12345.POLYMARKET\"",
-        "instrument_id = \"TOKEN.TEST\"",
-    );
-    let errors = runtime_errors_for(&toml);
-    assert_has_error(
-        &errors,
-        "strategies[0].config.instrument_id",
-        "missing_venue_suffix",
-    );
-}
-
-#[test]
-fn runtime_invalid_order_qty_rejected() {
-    let toml = valid_runtime_toml().replace("order_qty = \"5\"", "order_qty = \"0\"");
-    let errors = runtime_errors_for(&toml);
-    assert_has_error(
-        &errors,
-        "strategies[0].config.order_qty",
-        "not_positive_number",
     );
 }
 
@@ -1952,12 +1893,10 @@ fn runtime_load_rejects_relative_contract_path() {
 fn runtime_unsupported_client_type_rejected() {
     let toml = valid_runtime_toml()
         .replacen("type = \"polymarket\"", "type = \"bogus\"", 1)
-        .replacen("type = \"polymarket\"", "type = \"bogus\"", 1)
-        .replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
+        .replacen("type = \"polymarket\"", "type = \"bogus\"", 1);
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "data_clients[0].type", "unsupported_type");
     assert_has_error(&errors, "exec_clients[0].type", "unsupported_type");
-    assert_has_error(&errors, "strategies[0].type", "unsupported_type");
 }
 
 #[test]
@@ -2032,35 +1971,34 @@ fn phase1_runtime_requires_audit_when_ruleset_is_configured() {
 }
 
 #[test]
-fn phase1_runtime_requires_exactly_one_exec_tester_template() {
-    let toml =
-        valid_phase1_runtime_toml().replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
+fn phase1_runtime_allows_zero_runtime_templates() {
+    let toml = valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]\n", "");
     let errors = runtime_errors_for(&toml);
-    assert_has_error(&errors, "strategies[0].type", "unsupported_type");
-    assert_has_error(
-        &errors,
-        "strategies",
-        "phase1_runtime_strategy_template_count",
-    );
-    assert_error_message_contains(
-        &errors,
-        "strategies",
-        "phase1_runtime_strategy_template_count",
-        "exactly one runtime strategy template",
-    );
+    assert_no_errors(&errors);
+}
+
+#[test]
+fn phase1_runtime_load_accepts_zero_runtime_templates() {
+    let toml = valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]\n", "");
+
+    let mut file = NamedTempFile::new().expect("runtime temp file should be created");
+    file.write_all(toml.as_bytes())
+        .expect("runtime temp file should be written");
+    Config::load(file.path()).expect("zero-template ruleset config should load");
 }
 
 #[test]
 fn phase1_runtime_accepts_registered_stub_runtime_template_via_registry() {
-    let toml = valid_phase1_runtime_toml()
-        .replacen(
-            "type = \"exec_tester\"",
-            &format!("type = \"{}\"", StubRuntimeTemplateBuilder::kind()),
-            1,
-        )
-        .replace("instrument_id = \"0xabc-12345.POLYMARKET\"\n", "")
-        .replace("client_id = \"POLYMARKET\"\n", "")
-        .replace("order_qty = \"5\"\n", "");
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]\n", ""),
+        r#"
+[[strategies]]
+type = "stub_runtime_strategy"
+[strategies.config]
+strategy_id = "STUB-RUNTIME-001"
+"#
+    );
     let registry = stub_runtime_registry();
     let errors = runtime_errors_for_with_registry(&toml, &registry);
 
@@ -2080,39 +2018,43 @@ fn phase1_runtime_accepts_registered_stub_runtime_template_via_registry() {
         !errors
             .iter()
             .any(|e| e.field == "strategies[0].config.client_id" && e.code == "missing_client_id"),
-        "stub runtime validation should not inherit exec_tester-only client_id requirements, got: {errors:?}"
+        "stub runtime validation should not inherit removed template-only client_id requirements, got: {errors:?}"
     );
     assert!(
         !errors
             .iter()
             .any(|e| e.field == "strategies[0].config.instrument_id"
                 && e.code == "missing_instrument_id"),
-        "stub runtime validation should not inherit exec_tester-only instrument_id requirements, got: {errors:?}"
+        "stub runtime validation should not inherit removed template-only instrument_id requirements, got: {errors:?}"
     );
     assert!(
         !errors
             .iter()
             .any(|e| e.field == "strategies[0].config.order_qty" && e.code == "missing_order_qty"),
-        "stub runtime validation should not inherit exec_tester-only order_qty requirements, got: {errors:?}"
+        "stub runtime validation should not inherit removed template-only order_qty requirements, got: {errors:?}"
     );
 }
 
 #[test]
-fn phase1_runtime_rejects_duplicate_exec_tester_templates() {
+fn phase1_runtime_rejects_duplicate_runtime_templates() {
     let toml = format!(
-        "{}\n{}",
-        valid_phase1_runtime_toml(),
+        "{}\n{}\n{}",
+        valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]\n", ""),
         r#"
 [[strategies]]
-type = "exec_tester"
+type = "stub_runtime_strategy"
 [strategies.config]
-strategy_id = "EXEC_TESTER-002"
-instrument_id = "0xdef-67890.POLYMARKET"
-client_id = "POLYMARKET"
-order_qty = "7"
+strategy_id = "STUB-RUNTIME-002"
+"#,
+        r#"
+[[strategies]]
+type = "stub_runtime_strategy"
+[strategies.config]
+strategy_id = "STUB-RUNTIME-003"
 "#
     );
-    let errors = runtime_errors_for(&toml);
+    let registry = stub_runtime_registry();
+    let errors = runtime_errors_for_with_registry(&toml, &registry);
     assert_has_error(
         &errors,
         "strategies",
@@ -2122,22 +2064,26 @@ order_qty = "7"
         &errors,
         "strategies",
         "phase1_runtime_strategy_template_count",
-        "exactly one runtime strategy template",
+        "at most one runtime strategy template",
     );
 }
 
 #[test]
-fn phase1_runtime_load_rejects_missing_exec_tester_template() {
-    let toml =
-        valid_phase1_runtime_toml().replacen("type = \"exec_tester\"", "type = \"bogus\"", 1);
+fn phase1_runtime_load_rejects_unsupported_runtime_template_kind() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[strategies]]
+type = "bogus"
+[strategies.config]
+strategy_id = "STUB-RUNTIME-002"
+"#
+    );
     let error = runtime_load_error_for(&toml);
     assert!(
-        error.contains("strategies"),
-        "runtime load error should mention strategies: {error}"
-    );
-    assert!(
-        error.contains("exactly one runtime strategy template"),
-        "runtime load error should mention template invariant: {error}"
+        error.contains("strategies[0].type"),
+        "runtime load error should mention unsupported strategy type: {error}"
     );
 }
 

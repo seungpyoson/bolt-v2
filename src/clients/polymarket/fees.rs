@@ -92,11 +92,12 @@ impl PolymarketClobFeeProvider {
                 }
                 Err(error) => {
                     let mut cache = self.cache.lock().expect("fee cache mutex poisoned");
-                    if let Some(entry) = cache.get_mut(&token_id) {
+                    if cache.get_mut(&token_id).is_some() {
                         log::warn!(
                             "fee refresh failed for token {token_id}, using stale cached value: {error}"
                         );
-                        entry.fetched_at = now;
+                        // Keep retrying on every warm call after the TTL has expired.
+                        // A failed refresh must not make stale fees look fresh again.
                         Ok(())
                     } else {
                         Err(error).context(format!("failed to warm fee rate for token {token_id}"))
@@ -254,6 +255,7 @@ mod tests {
         let fetcher = MockFeeRateFetcher::new(vec![
             MockFetchResult::Success(decimal("3.10")),
             MockFetchResult::Failure("refresh down"),
+            MockFetchResult::Failure("still down"),
         ]);
         let provider =
             PolymarketClobFeeProvider::new_for_tests(Arc::new(fetcher.clone()), clock.source());
@@ -272,11 +274,12 @@ mod tests {
         assert_eq!(provider.fee_bps("token-c"), Some(decimal("3.10")));
         assert_eq!(fetcher.call_count(), 2);
 
+        clock.advance(Duration::from_secs(1));
         provider
             .warm("token-c")
             .await
-            .expect("stale fallback should refresh ttl");
-        assert_eq!(fetcher.call_count(), 2);
+            .expect("stale fallback should keep retrying after ttl expiry");
+        assert_eq!(fetcher.call_count(), 3);
     }
 
     #[tokio::test]

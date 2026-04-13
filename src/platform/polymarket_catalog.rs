@@ -67,18 +67,53 @@ async fn load_events_for_selector(
 }
 
 fn translate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<CandidateMarket> {
-    let declared_resolution_basis = match parse_declared_resolution_basis(
-        market.description.as_deref(),
-    ) {
-        Some(basis) => basis,
+    let reason = match translate_market_drop_reason(&market, now) {
+        Some(reason) => reason,
         None => {
-            log::warn!(
-                "skipping candidate market {}: could not parse declared resolution basis from description",
-                market.id
+            return Some(
+                build_candidate_market(market, now)
+                    .expect("drop-reason helper and builder should agree"),
             );
-            return None;
         }
     };
+
+    log::warn!("skipping candidate market {}: {reason}", market.id);
+    None
+}
+
+fn translate_market_drop_reason(market: &GammaMarket, now: DateTime<Utc>) -> Option<String> {
+    if parse_declared_resolution_basis(market.description.as_deref()).is_none() {
+        return Some("could not parse declared resolution basis from description".to_string());
+    }
+    if binary_up_down_token_ids(&market.clob_token_ids, &market.outcomes).is_none() {
+        return Some("unsupported outcome labels or malformed token ids".to_string());
+    }
+    match market.start_date.as_deref() {
+        None => return Some("missing startDate".to_string()),
+        Some(value) if parse_timestamp_ms(value).is_none() => {
+            return Some(format!("invalid startDate {:?}", value));
+        }
+        Some(_) => {}
+    }
+    if market.accepting_orders.is_none() {
+        return Some("missing acceptingOrders".to_string());
+    }
+    if market.liquidity_num.is_none() {
+        return Some("missing liquidityNum".to_string());
+    }
+    match market.end_date.as_deref() {
+        None => return Some("missing endDate".to_string()),
+        Some(value) if seconds_to_end(now, value).is_none() => {
+            return Some(format!("invalid endDate {:?}", value));
+        }
+        Some(_) => {}
+    }
+
+    None
+}
+
+fn build_candidate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<CandidateMarket> {
+    let declared_resolution_basis = parse_declared_resolution_basis(market.description.as_deref())?;
     let (up_token_id, down_token_id) =
         binary_up_down_token_ids(&market.clob_token_ids, &market.outcomes)?;
     let start_ts_ms = parse_timestamp_ms(market.start_date.as_deref()?)?;
@@ -139,4 +174,67 @@ fn seconds_to_end(now: DateTime<Utc>, end_date: &str) -> Option<u64> {
         .with_timezone(&Utc);
     let delta = end_time.signed_duration_since(now).num_seconds();
     Some(delta.max(0) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn valid_market_json() -> serde_json::Value {
+        json!({
+            "id": "market-good",
+            "questionID": "0xquestion1",
+            "conditionId": "0xcondition1",
+            "clobTokenIds": "[\"111\",\"222\"]",
+            "outcomes": "[\"Up\",\"Down\"]",
+            "question": "Will BTC finish green?",
+            "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTCUSDT has a final close above the opening price. The resolution source for this market is Binance, specifically the BTCUSDT \"Close\" prices available with \"1m\" and \"Candles\" selected on the top bar.",
+            "startDate": (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            "acceptingOrders": true,
+            "liquidityNum": 4567.0,
+            "endDate": (Utc::now() + chrono::Duration::minutes(20)).to_rfc3339(),
+            "slug": "market-good"
+        })
+    }
+
+    fn parse_market(value: serde_json::Value) -> GammaMarket {
+        serde_json::from_value(value).expect("gamma market fixture should parse")
+    }
+
+    #[test]
+    fn translate_market_reports_invalid_outcome_labels() {
+        let mut market = valid_market_json();
+        market["outcomes"] = json!("[\"Yes\",\"No\"]");
+        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
+            .expect("invalid outcomes should produce a drop reason");
+        assert!(reason.contains("unsupported outcome labels"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_missing_start_date() {
+        let mut market = valid_market_json();
+        market.as_object_mut().unwrap().remove("startDate");
+        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
+            .expect("missing startDate should produce a drop reason");
+        assert!(reason.contains("missing startDate"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_missing_accepting_orders() {
+        let mut market = valid_market_json();
+        market.as_object_mut().unwrap().remove("acceptingOrders");
+        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
+            .expect("missing acceptingOrders should produce a drop reason");
+        assert!(reason.contains("missing acceptingOrders"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_invalid_end_date() {
+        let mut market = valid_market_json();
+        market["endDate"] = json!("not-a-date");
+        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
+            .expect("invalid endDate should produce a drop reason");
+        assert!(reason.contains("invalid endDate"), "{reason}");
+    }
 }

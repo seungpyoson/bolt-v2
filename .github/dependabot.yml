@@ -10,6 +10,15 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # See #155: our transitive graph (alloy, k256, ed25519-dalek, nautilus-*)
+    # is still on hmac 0.12 / sha2 0.10. Accepting 0.13 / 0.11 would force a
+    # dual-major build. Remove these ignores when upstream converges; see the
+    # "Revisit Conditions" in #155.
+    ignore:
+      - dependency-name: "hmac"
+        versions: [">=0.13"]
+      - dependency-name: "sha2"
+        versions: [">=0.11"]
     groups:
       cargo-dependencies:
         patterns:

@@ -53,6 +53,68 @@ fn secrets_check_reports_complete_secret_config() {
 }
 
 #[test]
+fn secrets_check_fails_when_runtime_has_no_active_path() {
+    let path = write_temp_config(
+        r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 60
+timeout_reconciliation_secs = 30
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 10
+delay_shutdown_secs = 5
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "TEST"
+type = "polymarket"
+[data_clients.config]
+event_slugs = ["btc-updown-5m"]
+
+[[exec_clients]]
+name = "TEST"
+type = "polymarket"
+[exec_clients.config]
+account_id = "TEST-001"
+signature_type = 2
+funder = "0xabc"
+[exec_clients.secrets]
+region = "eu-west-1"
+pk = "/x/pk"
+api_key = "/x/key"
+api_secret = "/x/secret"
+passphrase = "/x/pass"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "secrets",
+            "check",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("secrets check should run");
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Runtime config must enable at least one ruleset or strategy"),
+        "expected active-runtime-path error, got: {stderr}"
+    );
+}
+
+#[test]
 fn secrets_check_fails_on_invalid_config_via_load_validation() {
     let path = write_temp_config(
         r#"
@@ -225,6 +287,68 @@ region = "eu-west-1"
     assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.api_key");
     assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.api_secret");
     assert_runtime_validation_failed(&stderr, "exec_clients[0].secrets.passphrase");
+}
+
+#[test]
+fn secrets_resolve_fails_when_runtime_has_no_active_path() {
+    let path = write_temp_config(
+        r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 60
+timeout_reconciliation_secs = 30
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 10
+delay_shutdown_secs = 5
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "TEST"
+type = "polymarket"
+[data_clients.config]
+event_slugs = ["btc-updown-5m"]
+
+[[exec_clients]]
+name = "TEST"
+type = "polymarket"
+[exec_clients.config]
+account_id = "TEST-001"
+signature_type = 2
+funder = "0xabc"
+[exec_clients.secrets]
+region = "eu-west-1"
+pk = "/x/pk"
+api_key = "/x/key"
+api_secret = "/x/secret"
+passphrase = "/x/pass"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "secrets",
+            "resolve",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("secrets resolve should run");
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Runtime config must enable at least one ruleset or strategy"),
+        "expected active-runtime-path error, got: {stderr}"
+    );
 }
 
 #[test]

@@ -321,6 +321,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
     match command {
         SecretsCommand::Check { config } => {
             let cfg = Config::load(&config)?;
+            ensure_runtime_has_active_path(&cfg)?;
             let mut has_errors = false;
 
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
@@ -370,6 +371,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
         }
         SecretsCommand::Resolve { config } => {
             let cfg = Config::load(&config)?;
+            ensure_runtime_has_active_path(&cfg)?;
 
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
                 secrets::resolve_chainlink(

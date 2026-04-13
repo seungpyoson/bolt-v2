@@ -257,7 +257,6 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         trader_id = "BOLT-001"
 
         [polymarket]
-        event_slug = "what-price-will-bitcoin-hit-before-2027"
         instrument_id = "0xabc-123.POLYMARKET"
         account_id = "POLYMARKET-001"
         funder = "0xabc"

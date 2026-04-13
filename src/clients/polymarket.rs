@@ -175,12 +175,19 @@ pub fn build_data_client(
         filters
     };
 
-    let new_market_filter = selector_state.map(|selector_state| {
-        Arc::new(NewMarketPredicateFilter::new(
-            "ruleset-selector-prefix",
-            move |new_market| selector_state.accepts_new_market_slug(&new_market.slug),
-        )) as Arc<dyn InstrumentFilter>
-    });
+    let has_tag_only_selectors = selectors
+        .iter()
+        .any(|selector| selector.event_slug_prefix.is_none());
+    let new_market_filter = if has_tag_only_selectors {
+        None
+    } else {
+        selector_state.map(|selector_state| {
+            Arc::new(NewMarketPredicateFilter::new(
+                "ruleset-selector-prefix",
+                move |new_market| selector_state.accepts_new_market_slug(&new_market.slug),
+            )) as Arc<dyn InstrumentFilter>
+        })
+    };
 
     let config = PolymarketDataClientConfig {
         subscribe_new_markets: common_input.subscribe_new_markets,
@@ -314,7 +321,7 @@ impl PolymarketSelectorRefreshGuard {
     }
 }
 
-pub fn resolve_event_slugs_for_selectors(
+pub(crate) fn resolve_event_slugs_for_selectors(
     selectors: &[PolymarketRulesetSelector],
     timeout_secs: u64,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -568,6 +575,41 @@ mod tests {
 
         assert!(debug.contains("EventParamsFilter"), "{debug}");
         assert!(!debug.contains("EventSlugFilter"), "{debug}");
+    }
+
+    #[test]
+    fn build_data_client_skips_new_market_filter_for_mixed_selectors() {
+        let selectors = vec![
+            PolymarketRulesetSelector {
+                tag_slug: "bitcoin".to_string(),
+                event_slug_prefix: Some("bitcoin-5m".to_string()),
+            },
+            PolymarketRulesetSelector {
+                tag_slug: "ethereum".to_string(),
+                event_slug_prefix: None,
+            },
+        ];
+        let selector_state = Some(PolymarketSelectorState::new(
+            vec![selectors[0].clone()],
+            vec!["bitcoin-5m-alpha".to_string()],
+        ));
+        let raw = toml::toml! {
+            subscribe_new_markets = true
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 45
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let (_, config) = build_data_client(&raw, &selectors, selector_state).unwrap();
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("EventParamsFilter"), "{debug}");
+        assert!(debug.contains("EventSlugFilter"), "{debug}");
+        assert!(
+            debug.contains("new_market_filter: None"),
+            "mixed selectors should fail open for WS new-market discovery: {debug}"
+        );
     }
 
     #[test]

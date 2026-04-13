@@ -9,6 +9,7 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub data_clients: Vec<DataClientEntry>,
     pub exec_clients: Vec<ExecClientEntry>,
+    #[serde(default)]
     pub strategies: Vec<StrategyEntry>,
     #[serde(default)]
     pub raw_capture: RawCaptureConfig,
@@ -169,10 +170,11 @@ pub struct ChainlinkSharedConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RulesetConfig {
     pub id: String,
     pub venue: RulesetVenueKind,
-    pub tag_slug: String,
+    pub selector: Value,
     pub resolution_basis: String,
     pub min_time_to_expiry_secs: u64,
     pub max_time_to_expiry_secs: u64,
@@ -196,6 +198,14 @@ pub struct AuditConfig {
 
 pub(crate) fn default_raw_capture_output_dir() -> String {
     "var/raw".to_string()
+}
+
+pub fn ensure_runtime_has_active_path(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    if config.rulesets.is_empty() && config.strategies.is_empty() {
+        return Err("Runtime config must enable at least one ruleset or strategy".into());
+    }
+
+    Ok(())
 }
 
 impl Config {

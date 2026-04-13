@@ -1,16 +1,17 @@
 use clap::Parser;
 use log::LevelFilter;
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf, rc::Rc};
 
 use bolt_v2::{
     clients::{chainlink, polymarket},
-    config::{Config, ReferenceVenueKind},
+    config::{Config, ReferenceVenueKind, ensure_runtime_has_active_path},
     normalized_sink,
     platform::runtime::{
-        build_reference_data_client, reference_client_name_for_kind, wire_platform_runtime,
+        build_reference_data_client, reference_client_name_for_kind,
+        registry_runtime_strategy_factory, wire_platform_runtime,
     },
     secrets, startup_validation,
-    strategies::exec_tester,
+    strategies::{production_strategy_registry, registry::StrategyBuildContext},
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::node::LiveNode;
@@ -58,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Run { config } => {
             bolt_v2::log_sweep::sweep_stale_logs();
             let cfg = Config::load(&config)?;
+            ensure_runtime_has_active_path(&cfg)?;
             startup_validation::validate_polymarket_startup(&cfg)?;
 
             let trader_id = TraderId::from(cfg.node.trader_id.as_str());
@@ -67,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fileout_level: parse_log_level(&cfg.logging.file_level)?,
                 ..Default::default()
             };
+            let polymarket_selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
 
             let mut builder = LiveNode::builder(trader_id, environment)?
                 .with_name(cfg.node.name.clone())
@@ -79,11 +82,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_timeout_disconnection_secs(cfg.node.timeout_disconnection_secs)
                 .with_delay_post_stop_secs(cfg.node.delay_post_stop_secs)
                 .with_delay_shutdown_secs(cfg.node.delay_shutdown_secs);
+            let mut polymarket_selector_refresh_plan = None;
 
             for client in &cfg.data_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        let (factory, config) = polymarket::build_data_client(&client.config)?;
+                        let selector_state = polymarket::build_selector_state(
+                            &polymarket_selectors,
+                            cfg.node.timeout_connection_secs,
+                        )?;
+                        if let Some(selector_state) = selector_state.clone() {
+                            polymarket_selector_refresh_plan = Some((
+                                selector_state,
+                                polymarket::gamma_refresh_interval_secs(&client.config)?,
+                                cfg.node.timeout_connection_secs,
+                            ));
+                        }
+                        let (factory, config) = polymarket::build_data_client(
+                            &client.config,
+                            &polymarket_selectors,
+                            selector_state.clone(),
+                        )?;
                         builder =
                             builder.add_data_client(Some(client.name.clone()), factory, config)?;
                     }
@@ -121,10 +140,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            let mut strategy_build_context = None;
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
                         let resolved = secrets::resolve_polymarket(&client.secrets)?;
+                        if strategy_build_context.is_none() {
+                            strategy_build_context = Some(StrategyBuildContext {
+                                fee_provider: polymarket::build_fee_provider(
+                                    &client.config,
+                                    &resolved,
+                                    cfg.node.timeout_connection_secs,
+                                )?,
+                            });
+                        }
                         let (factory, config) =
                             polymarket::build_exec_client(&client.config, trader_id, resolved)?;
                         builder =
@@ -133,6 +162,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     other => return Err(format!("Unsupported exec client type: {other}").into()),
                 }
             }
+            let strategy_registry = production_strategy_registry()?;
+            let strategy_build_context = if cfg.strategies.is_empty() && cfg.rulesets.is_empty() {
+                None
+            } else {
+                Some(strategy_build_context.ok_or_else(|| {
+                    std::io::Error::other(
+                        "missing Polymarket exec client for strategy fee-provider context",
+                    )
+                })?)
+            };
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -141,6 +180,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app: AppFuture = Box::pin(async move {
                 let mut node = builder.build()?;
                 let node_handle = node.handle();
+                let polymarket_selector_refresh_guard = polymarket_selector_refresh_plan
+                    .map(|(selector_state, interval_secs, timeout_secs)| {
+                        polymarket::spawn_selector_refresh_task(
+                            selector_state,
+                            interval_secs,
+                            timeout_secs,
+                        )
+                    })
+                    .transpose()?;
                 let normalized_sink_guards = if cfg.streaming.catalog_path.trim().is_empty() {
                     None
                 } else {
@@ -158,25 +206,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|guards| guards.take_failure_receiver());
 
                 if cfg.rulesets.is_empty() {
+                    let strategy_build_context = strategy_build_context.as_ref().expect(
+                        "strategy build context should exist when strategies are configured",
+                    );
+                    let trader = Rc::clone(node.kernel().trader());
                     for strategy in &cfg.strategies {
-                        match strategy.kind.as_str() {
-                            "exec_tester" => {
-                                let strategy = exec_tester::build_exec_tester(&strategy.config)?;
-                                node.add_strategy(strategy)?;
-                            }
-                            other => {
-                                return Err(Box::new(std::io::Error::other(format!(
-                                    "Unsupported strategy type: {other}"
-                                )))
-                                    as Box<dyn std::error::Error>);
-                            }
-                        }
+                        strategy_registry
+                            .register_strategy(
+                                &strategy.kind,
+                                &strategy.config,
+                                strategy_build_context,
+                                &trader,
+                            )
+                            .map_err(|error| {
+                                Box::new(std::io::Error::other(format!(
+                                    "failed registering strategy kind {}: {error}",
+                                    strategy.kind
+                                ))) as Box<dyn std::error::Error>
+                            })?;
                     }
                 }
                 let platform_runtime_guards = if cfg.rulesets.is_empty() {
                     None
                 } else {
-                    Some(wire_platform_runtime(&mut node, &cfg)?)
+                    let runtime_strategy_factory = registry_runtime_strategy_factory(
+                        strategy_registry.clone(),
+                        strategy_build_context
+                            .as_ref()
+                            .expect("runtime strategy context should exist in ruleset mode")
+                            .clone(),
+                    );
+                    Some(wire_platform_runtime(
+                        &mut node,
+                        &cfg,
+                        runtime_strategy_factory,
+                    )?)
                 };
 
                 let run_result = {
@@ -195,6 +259,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         run_future.await
                     }
                 };
+                if let Some(guard) = polymarket_selector_refresh_guard {
+                    guard.shutdown().await;
+                }
                 let platform_shutdown_result = if let Some(guards) = platform_runtime_guards {
                     guards.shutdown().await.map_err(|e| {
                         Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
@@ -254,6 +321,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
     match command {
         SecretsCommand::Check { config } => {
             let cfg = Config::load(&config)?;
+            ensure_runtime_has_active_path(&cfg)?;
             let mut has_errors = false;
 
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
@@ -303,6 +371,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
         }
         SecretsCommand::Resolve { config } => {
             let cfg = Config::load(&config)?;
+            ensure_runtime_has_active_path(&cfg)?;
 
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
                 secrets::resolve_chainlink(

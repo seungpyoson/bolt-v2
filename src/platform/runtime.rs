@@ -12,8 +12,8 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use nautilus_common::{
     actor::{DataActor, DataActorConfig, DataActorCore},
-    component::Component,
-    msgbus::{self, Endpoint, MStr, ShareableMessageHandler, TypedHandler, get_message_bus},
+    cache::Cache,
+    msgbus::{self, ShareableMessageHandler},
     nautilus_actor,
 };
 use nautilus_core::UUID4;
@@ -40,16 +40,18 @@ use crate::{
         reference::{ReferenceSnapshot, VenueHealth, VenueKind},
         reference_actor::{ReferenceActor, ReferenceActorConfig, ReferenceSubscription},
         ruleset::{
-            CandidateMarket, SelectionDecision, SelectionEvaluation, SelectionState,
-            evaluate_market_selection,
+            CandidateMarket, RuntimeSelectionSnapshot, SelectionDecision, SelectionEvaluation,
+            SelectionState, evaluate_market_selection,
         },
     },
-    strategies::exec_tester::build_exec_tester,
+    strategies::registry::{StrategyBuildContext, StrategyRegistry},
 };
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 pub type CandidateMarketLoadFuture = BoxFuture<Result<Vec<CandidateMarket>>>;
+pub type RuntimeStrategyFactory =
+    Arc<dyn Fn(&Rc<RefCell<Trader>>, &str, &Value) -> Result<StrategyId> + Send + Sync>;
 
 pub trait CandidateMarketLoader: Send + Sync + 'static {
     fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture;
@@ -79,10 +81,11 @@ pub struct PlatformRuntimeServices {
     pub candidate_loader: Arc<dyn CandidateMarketLoader>,
     pub audit_task_factory: Arc<dyn PlatformAuditTaskFactory>,
     pub now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    pub runtime_strategy_factory: RuntimeStrategyFactory,
 }
 
 impl PlatformRuntimeServices {
-    pub fn production() -> Self {
+    pub fn production(runtime_strategy_factory: RuntimeStrategyFactory) -> Self {
         Self {
             candidate_loader: Arc::new(ProductionCandidateMarketLoader),
             audit_task_factory: Arc::new(ProductionAuditTaskFactory),
@@ -92,6 +95,7 @@ impl PlatformRuntimeServices {
                     .expect("system clock should be after UNIX_EPOCH")
                     .as_millis() as u64
             }),
+            runtime_strategy_factory,
         }
     }
 }
@@ -99,12 +103,47 @@ impl PlatformRuntimeServices {
 pub struct PlatformRuntimeGuards {
     pub cancellation: CancellationToken,
     reference_snapshot_audit: Option<ReferenceSnapshotAuditSubscription>,
+    runtime_strategy_shutdown: Option<RuntimeStrategyShutdown>,
     runtime_strategy_applier_failure: Option<Arc<Mutex<Option<String>>>>,
     pub join_handles: Vec<tokio::task::JoinHandle<anyhow::Result<()>>>,
 }
 
+struct RuntimeStrategyShutdown {
+    trader: Rc<RefCell<Trader>>,
+    strategy_id: StrategyId,
+    owned_by_runtime: bool,
+}
+
+impl RuntimeStrategyShutdown {
+    fn remove(self) -> Result<()> {
+        if !self.owned_by_runtime {
+            return Ok(());
+        }
+
+        if self
+            .trader
+            .borrow()
+            .strategy_ids()
+            .contains(&self.strategy_id)
+        {
+            self.trader
+                .borrow_mut()
+                .remove_strategy(&self.strategy_id)
+                .with_context(|| {
+                    format!(
+                        "failed removing runtime-managed strategy {} during shutdown",
+                        self.strategy_id
+                    )
+                })?;
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct RuntimeStrategyTemplate {
+    kind: String,
     strategy_id: StrategyId,
     raw_config: Value,
 }
@@ -112,18 +151,13 @@ struct RuntimeStrategyTemplate {
 #[derive(Clone, Debug)]
 struct RuntimeManagedStrategy {
     strategy_id: StrategyId,
-    instrument_id: InstrumentId,
-}
-
-#[derive(Clone, Debug)]
-enum RuntimeStrategyCommand {
-    Activate { instrument_id: String },
-    Clear,
+    owned_by_runtime: bool,
 }
 
 #[derive(Clone, Debug)]
 struct RuntimeStrategyApplierConfig {
     base: DataActorConfig,
+    selection_topic: String,
 }
 
 struct RuntimeStrategyApplier {
@@ -139,6 +173,7 @@ struct RuntimeStrategyApplierState {
     failure: Arc<Mutex<Option<String>>>,
     cancellation: CancellationToken,
     node_handle: LiveNodeHandle,
+    selection_handler: Option<ShareableMessageHandler>,
 }
 
 impl fmt::Debug for RuntimeStrategyApplier {
@@ -160,6 +195,7 @@ impl RuntimeStrategyApplier {
         config: RuntimeStrategyApplierConfig,
         template: RuntimeStrategyTemplate,
         trader: Rc<RefCell<Trader>>,
+        active_runtime_strategy: RuntimeManagedStrategy,
         failure: Arc<Mutex<Option<String>>>,
         cancellation: CancellationToken,
         node_handle: LiveNodeHandle,
@@ -170,49 +206,27 @@ impl RuntimeStrategyApplier {
             state: Rc::new(RefCell::new(RuntimeStrategyApplierState {
                 template,
                 trader,
-                active_runtime_strategy: None,
+                active_runtime_strategy: Some(active_runtime_strategy),
                 failure,
                 cancellation,
                 node_handle,
+                selection_handler: None,
             })),
         }
     }
 
-    fn execute_endpoint(actor_id: &ActorId) -> MStr<Endpoint> {
-        format!("{actor_id}.runtime-strategy-apply").into()
-    }
-
-    fn send(actor_id: &ActorId, command: RuntimeStrategyCommand) -> Result<()> {
-        let endpoint = Self::execute_endpoint(actor_id);
-        let handler = {
-            let msgbus = get_message_bus();
-            msgbus
-                .borrow_mut()
-                .endpoint_map::<RuntimeStrategyCommand>()
-                .get(endpoint)
-                .cloned()
-        };
-
-        let Some(handler) = handler else {
-            bail!(
-                "runtime strategy apply endpoint '{}' not registered",
-                endpoint.as_str()
-            );
-        };
-
-        handler.handle(&command);
-        Ok(())
-    }
-
-    fn register_execute_endpoint(&self) {
-        let actor_id = self.actor_id();
+    fn register_selection_subscription(&self) {
         let state = Rc::clone(&self.state);
-        let handler = TypedHandler::from(move |command: &RuntimeStrategyCommand| {
+        let topic = self.config.selection_topic.clone();
+        let handler = ShareableMessageHandler::from_any(move |message: &dyn Any| {
+            let Some(snapshot) = message.downcast_ref::<RuntimeSelectionSnapshot>() else {
+                return;
+            };
             let (result, node_handle, cancellation) = {
                 let mut state = state.borrow_mut();
                 let node_handle = state.node_handle.clone();
                 let cancellation = state.cancellation.clone();
-                let result = state.execute(command.clone()).map_err(|error| {
+                let result = state.execute(snapshot.clone()).map_err(|error| {
                     let error_message = error
                         .context("runtime-managed strategy apply failed")
                         .to_string();
@@ -227,36 +241,48 @@ impl RuntimeStrategyApplier {
             }
         });
 
-        get_message_bus()
-            .borrow_mut()
-            .endpoint_map::<RuntimeStrategyCommand>()
-            .register(Self::execute_endpoint(&actor_id), handler);
+        msgbus::subscribe_any(topic.into(), handler.clone(), None);
+        self.state.borrow_mut().selection_handler = Some(handler);
     }
 
-    fn deregister_execute_endpoint(&self) {
-        let actor_id = self.actor_id();
-        get_message_bus()
-            .borrow_mut()
-            .endpoint_map::<RuntimeStrategyCommand>()
-            .deregister(Self::execute_endpoint(&actor_id));
+    fn deregister_selection_subscription(&self) {
+        let handler = self.state.borrow_mut().selection_handler.take();
+        if let Some(handler) = handler {
+            msgbus::unsubscribe_any(self.config.selection_topic.clone().into(), &handler);
+        }
     }
 }
 
 impl RuntimeStrategyApplierState {
-    fn execute(&mut self, command: RuntimeStrategyCommand) -> Result<()> {
-        let desired_instrument_id = match command {
-            RuntimeStrategyCommand::Activate { instrument_id } => {
-                Some(InstrumentId::from(instrument_id.as_str()))
-            }
-            RuntimeStrategyCommand::Clear => None,
-        };
+    fn ensure_runtime_strategy_persisted(&mut self) -> Result<()> {
+        let strategy_id = self
+            .active_runtime_strategy
+            .as_ref()
+            .map(|strategy| strategy.strategy_id)
+            .unwrap_or(self.template.strategy_id);
 
-        reconcile_runtime_strategy(
-            &self.trader,
-            &self.template,
-            desired_instrument_id,
-            &mut self.active_runtime_strategy,
-        )
+        if self.trader.borrow().strategy_ids().contains(&strategy_id) {
+            if self.active_runtime_strategy.is_none() {
+                self.active_runtime_strategy = Some(RuntimeManagedStrategy {
+                    strategy_id,
+                    owned_by_runtime: false,
+                });
+            }
+            return Ok(());
+        }
+
+        if self.cancellation.is_cancelled() {
+            return Ok(());
+        }
+
+        bail!("runtime-managed strategy {strategy_id} missing before shutdown");
+    }
+
+    fn execute(&mut self, _snapshot: RuntimeSelectionSnapshot) -> Result<()> {
+        // Phase 1 keeps the runtime-owned strategy persistent for the full node run.
+        // Selection snapshots are a liveness signal here; strategies that need the
+        // payload must subscribe to the runtime selection topic directly.
+        self.ensure_runtime_strategy_persisted()
     }
 
     fn record_failure(&self, error_message: String) {
@@ -272,12 +298,12 @@ nautilus_actor!(RuntimeStrategyApplier);
 
 impl DataActor for RuntimeStrategyApplier {
     fn on_start(&mut self) -> Result<()> {
-        self.register_execute_endpoint();
+        self.register_selection_subscription();
         Ok(())
     }
 
     fn on_stop(&mut self) -> Result<()> {
-        self.deregister_execute_endpoint();
+        self.deregister_selection_subscription();
         Ok(())
     }
 }
@@ -289,6 +315,12 @@ impl PlatformRuntimeGuards {
         let mut first_error = None;
         if let Some(reference_snapshot_audit) = self.reference_snapshot_audit.take()
             && let Err(error) = reference_snapshot_audit.unsubscribe()
+        {
+            first_error = Some(error);
+        }
+        if let Some(runtime_strategy_shutdown) = self.runtime_strategy_shutdown.take()
+            && let Err(error) = runtime_strategy_shutdown.remove()
+            && first_error.is_none()
         {
             first_error = Some(error);
         }
@@ -340,8 +372,13 @@ pub fn build_reference_data_client(
 pub fn wire_platform_runtime(
     node: &mut LiveNode,
     cfg: &Config,
+    runtime_strategy_factory: RuntimeStrategyFactory,
 ) -> anyhow::Result<PlatformRuntimeGuards> {
-    wire_platform_runtime_with_services(node, cfg, PlatformRuntimeServices::production())
+    wire_platform_runtime_with_services(
+        node,
+        cfg,
+        PlatformRuntimeServices::production(runtime_strategy_factory),
+    )
 }
 
 pub fn wire_platform_runtime_with_services(
@@ -359,7 +396,14 @@ pub fn wire_platform_runtime_with_services(
         .cloned()
         .context("platform runtime requires one active ruleset")?;
     let runtime_strategy_template = runtime_strategy_template(cfg)?;
+    let runtime_strategy_id = runtime_strategy_template
+        .as_ref()
+        .map(|template| template.strategy_id);
+    let runtime_selection_topic = runtime_strategy_template
+        .as_ref()
+        .map(|template| runtime_selection_topic(&template.strategy_id));
     let runtime_strategy_applier_failure = Arc::new(Mutex::new(None::<String>));
+    let mut runtime_strategy_shutdown = None;
     let selector_poll_interval = Duration::from_millis(ruleset.selector_poll_interval_ms);
     let cancellation = CancellationToken::new();
     let audit_cfg = cfg
@@ -368,18 +412,29 @@ pub fn wire_platform_runtime_with_services(
         .context("platform runtime requires audit configuration")?;
 
     add_reference_actor(node, cfg)?;
-    let runtime_strategy_actor_id =
-        if let Some(runtime_strategy_template) = runtime_strategy_template {
-            Some(add_runtime_strategy_applier_actor(
-                node,
-                runtime_strategy_template,
-                Arc::clone(&runtime_strategy_applier_failure),
-                node.handle(),
-                cancellation.clone(),
-            )?)
-        } else {
-            None
-        };
+    if let Some(runtime_strategy_template) = runtime_strategy_template {
+        let active_runtime_strategy = register_runtime_strategy(
+            node,
+            &runtime_strategy_template,
+            Arc::clone(&services.runtime_strategy_factory),
+        )?;
+        runtime_strategy_shutdown = Some(RuntimeStrategyShutdown {
+            trader: Rc::clone(node.kernel().trader()),
+            strategy_id: active_runtime_strategy.strategy_id,
+            owned_by_runtime: active_runtime_strategy.owned_by_runtime,
+        });
+        add_runtime_strategy_applier_actor(
+            node,
+            runtime_strategy_template,
+            active_runtime_strategy,
+            runtime_selection_topic
+                .clone()
+                .expect("runtime selection topic should exist with a template"),
+            Arc::clone(&runtime_strategy_applier_failure),
+            node.handle(),
+            cancellation.clone(),
+        )?;
+    }
     let (audit_tx, audit_rx) = crate::platform::audit::audit_channel();
     let audit_config = AuditSpoolConfig {
         spool_dir: audit_cfg.local_dir.clone().into(),
@@ -405,23 +460,36 @@ pub fn wire_platform_runtime_with_services(
         cancellation.clone(),
         node.handle(),
     );
-    let selector_task = spawn_selector_task(
-        runtime_strategy_actor_id.is_some(),
-        run_selector_task(
+    let selector_task = if let Some(runtime_strategy_id) = runtime_strategy_id {
+        tokio::task::spawn_local(run_selector_task_with_preemption(
+            ruleset,
+            selector_poll_interval,
+            services.candidate_loader,
+            services.now_ms,
+            node.kernel().cache(),
+            audit_tx,
+            runtime_strategy_id,
+            runtime_selection_topic,
+            cancellation.clone(),
+            node.handle(),
+        ))
+    } else {
+        tokio::spawn(run_selector_task(
             ruleset,
             selector_poll_interval,
             services.candidate_loader,
             services.now_ms,
             audit_tx,
-            runtime_strategy_actor_id,
+            runtime_selection_topic,
             cancellation.clone(),
             node.handle(),
-        ),
-    );
+        ))
+    };
 
     Ok(PlatformRuntimeGuards {
         cancellation,
         reference_snapshot_audit: Some(reference_snapshot_audit),
+        runtime_strategy_shutdown,
         runtime_strategy_applier_failure: Some(runtime_strategy_applier_failure),
         join_handles: vec![audit_task, selector_task],
     })
@@ -465,10 +533,12 @@ fn add_reference_actor(node: &mut LiveNode, cfg: &Config) -> Result<()> {
 fn add_runtime_strategy_applier_actor(
     node: &mut LiveNode,
     template: RuntimeStrategyTemplate,
+    active_runtime_strategy: RuntimeManagedStrategy,
+    selection_topic: String,
     failure: Arc<Mutex<Option<String>>>,
     node_handle: LiveNodeHandle,
     cancellation: CancellationToken,
-) -> Result<ActorId> {
+) -> Result<()> {
     let actor = RuntimeStrategyApplier::new(
         RuntimeStrategyApplierConfig {
             base: DataActorConfig {
@@ -477,18 +547,46 @@ fn add_runtime_strategy_applier_actor(
                 )),
                 ..Default::default()
             },
+            selection_topic,
         },
         template,
         Rc::clone(node.kernel().trader()),
+        active_runtime_strategy,
         failure,
         cancellation,
         node_handle,
     );
-    let actor_id = actor.actor_id();
 
     node.add_actor(actor)
         .context("failed to register runtime strategy applier actor")?;
-    Ok(actor_id)
+    Ok(())
+}
+
+fn register_runtime_strategy(
+    node: &mut LiveNode,
+    template: &RuntimeStrategyTemplate,
+    runtime_strategy_factory: RuntimeStrategyFactory,
+) -> Result<RuntimeManagedStrategy> {
+    let trader = Rc::clone(node.kernel().trader());
+
+    if trader
+        .borrow()
+        .strategy_ids()
+        .contains(&template.strategy_id)
+    {
+        return Ok(RuntimeManagedStrategy {
+            strategy_id: template.strategy_id,
+            owned_by_runtime: false,
+        });
+    }
+
+    let strategy_id = runtime_strategy_factory(&trader, &template.kind, &template.raw_config)
+        .context("failed building runtime-managed strategy from template")?;
+
+    Ok(RuntimeManagedStrategy {
+        strategy_id,
+        owned_by_runtime: true,
+    })
 }
 
 fn client_id_for_reference_venue(cfg: &Config, venue: &ReferenceVenueEntry) -> Result<ClientId> {
@@ -530,17 +628,6 @@ async fn run_audit_task(
     supervise_audit_task(audit_task, cancellation, node_handle).await
 }
 
-fn spawn_selector_task<F>(uses_local_task: bool, task: F) -> JoinHandle<Result<()>>
-where
-    F: Future<Output = Result<()>> + Send + 'static,
-{
-    if uses_local_task {
-        tokio::task::spawn_local(task)
-    } else {
-        tokio::spawn(task)
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn run_selector_task(
     ruleset: RulesetConfig,
@@ -548,16 +635,73 @@ async fn run_selector_task(
     selector_loader: Arc<dyn CandidateMarketLoader>,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
     audit_tx: AuditSender,
-    runtime_strategy_actor_id: Option<ActorId>,
+    runtime_selection_topic: Option<String>,
     cancellation: CancellationToken,
     node_handle: LiveNodeHandle,
 ) -> Result<()> {
+    run_selector_task_inner(
+        ruleset,
+        poll_interval,
+        selector_loader,
+        now_ms,
+        audit_tx,
+        runtime_selection_topic,
+        cancellation,
+        node_handle,
+        || false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_selector_task_with_preemption(
+    ruleset: RulesetConfig,
+    poll_interval: Duration,
+    selector_loader: Arc<dyn CandidateMarketLoader>,
+    now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    cache: Rc<RefCell<Cache>>,
+    audit_tx: AuditSender,
+    runtime_strategy_id: StrategyId,
+    runtime_selection_topic: Option<String>,
+    cancellation: CancellationToken,
+    node_handle: LiveNodeHandle,
+) -> Result<()> {
+    run_selector_task_inner(
+        ruleset,
+        poll_interval,
+        selector_loader,
+        now_ms,
+        audit_tx,
+        runtime_selection_topic,
+        cancellation,
+        node_handle,
+        move || runtime_strategy_has_open_positions(&cache, &runtime_strategy_id),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_selector_task_inner<P>(
+    ruleset: RulesetConfig,
+    poll_interval: Duration,
+    selector_loader: Arc<dyn CandidateMarketLoader>,
+    now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    audit_tx: AuditSender,
+    runtime_selection_topic: Option<String>,
+    cancellation: CancellationToken,
+    node_handle: LiveNodeHandle,
+    preemption_check: P,
+) -> Result<()>
+where
+    P: Fn() -> bool,
+{
     if !wait_for_node_running(&node_handle, &cancellation).await {
         return Ok(());
     }
 
     let mut ticker = interval(poll_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut last_runtime_selection_decision = None;
 
     loop {
         if !node_is_running(&node_handle) {
@@ -573,19 +717,29 @@ async fn run_selector_task(
             return Ok(());
         }
 
-        let load_future = selector_loader.load(ruleset.clone());
-        tokio::pin!(load_future);
-        let candidates = match tokio::select! {
-            _ = cancellation.cancelled() => return Ok(()),
-            result = &mut load_future => result,
-        } {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                return Err(fail_closed(
-                    &node_handle,
-                    &cancellation,
-                    error.context("selector polling failed"),
-                ));
+        let candidates = if preemption_check() {
+            Vec::new()
+        } else {
+            let load_future = selector_loader.load(ruleset.clone());
+            tokio::pin!(load_future);
+            let candidates = match tokio::select! {
+                _ = cancellation.cancelled() => return Ok(()),
+                result = &mut load_future => result,
+            } {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    return Err(fail_closed(
+                        &node_handle,
+                        &cancellation,
+                        error.context("selector polling failed"),
+                    ));
+                }
+            };
+
+            if preemption_check() {
+                Vec::new()
+            } else {
+                candidates
             }
         };
 
@@ -594,7 +748,8 @@ async fn run_selector_task(
         }
 
         let evaluation = evaluate_market_selection(&ruleset, &candidates);
-        if let Err(error) = send_selector_evaluation(&audit_tx, &evaluation, &now_ms) {
+        let ts_ms = now_ms();
+        if let Err(error) = send_selector_evaluation(&audit_tx, &evaluation, ts_ms) {
             if cancellation.is_cancelled() {
                 return Ok(());
             }
@@ -606,37 +761,33 @@ async fn run_selector_task(
             ));
         }
 
-        if let Some(runtime_strategy_actor_id) = runtime_strategy_actor_id.as_ref()
-            && let Err(error) =
-                apply_runtime_strategy_command(runtime_strategy_actor_id, &evaluation.decision)
+        if let Some(runtime_selection_topic) = runtime_selection_topic.as_ref()
+            && last_runtime_selection_decision.as_ref() != Some(&evaluation.decision)
         {
-            if cancellation.is_cancelled() {
-                return Ok(());
-            }
-
-            return Err(fail_closed(
-                &node_handle,
-                &cancellation,
-                error.context("runtime-managed strategy command send failed"),
-            ));
+            publish_runtime_selection_snapshot(runtime_selection_topic, &evaluation, ts_ms);
+            last_runtime_selection_decision = Some(evaluation.decision.clone());
         }
     }
 }
 
-fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTemplate>> {
-    let matching_templates: Vec<_> = cfg
-        .strategies
-        .iter()
-        .filter(|strategy| strategy.kind == "exec_tester")
-        .collect();
+fn runtime_strategy_has_open_positions(
+    cache: &Rc<RefCell<Cache>>,
+    runtime_strategy_id: &StrategyId,
+) -> bool {
+    let cache = cache.borrow();
+    !cache
+        .positions_open(None, None, Some(runtime_strategy_id), None, None)
+        .is_empty()
+}
 
-    let strategy = match matching_templates.as_slice() {
+fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTemplate>> {
+    let strategy = match cfg.strategies.as_slice() {
         [] => return Ok(None),
-        [strategy] => *strategy,
+        [strategy] => strategy,
         _ => {
             bail!(
-                "platform runtime supports at most one exec_tester strategy template, got {}",
-                matching_templates.len()
+                "platform runtime supports at most one runtime strategy template, got {}",
+                cfg.strategies.len()
             );
         }
     };
@@ -646,145 +797,41 @@ fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTempl
         .as_table()
         .and_then(|table| table.get("strategy_id"))
         .and_then(Value::as_str)
-        .context("exec_tester strategy template must include strategy_id")?;
+        .context("runtime strategy template must include strategy_id")?;
 
     Ok(Some(RuntimeStrategyTemplate {
+        kind: strategy.kind.clone(),
         strategy_id: StrategyId::from(strategy_id),
         raw_config: strategy.config.clone(),
     }))
 }
 
-fn reconcile_runtime_strategy(
-    trader: &Rc<RefCell<Trader>>,
-    template: &RuntimeStrategyTemplate,
-    desired_instrument_id: Option<InstrumentId>,
-    active_runtime_strategy: &mut Option<RuntimeManagedStrategy>,
-) -> Result<()> {
-    let template_strategy_registered = trader
-        .borrow()
-        .strategy_ids()
-        .contains(&template.strategy_id);
-    let registered_strategy_id = active_runtime_strategy
-        .as_ref()
-        .filter(|strategy| {
-            trader
-                .borrow()
-                .strategy_ids()
-                .contains(&strategy.strategy_id)
-        })
-        .map(|strategy| strategy.strategy_id);
-
-    match desired_instrument_id {
-        Some(desired_instrument_id) => {
-            if active_runtime_strategy.as_ref().is_some_and(|strategy| {
-                strategy.instrument_id == desired_instrument_id
-                    && Some(strategy.strategy_id) == registered_strategy_id
-            }) {
-                return Ok(());
-            }
-
-            if let Some(strategy_id) = registered_strategy_id {
-                trader
-                    .borrow_mut()
-                    .remove_strategy(&strategy_id)
-                    .with_context(|| {
-                        format!(
-                            "failed removing runtime-managed strategy {strategy_id} before switch"
-                        )
-                    })?;
-                *active_runtime_strategy = None;
-            }
-
-            if template_strategy_registered && registered_strategy_id.is_none() {
-                trader
-                    .borrow_mut()
-                    .remove_strategy(&template.strategy_id)
-                    .with_context(|| {
-                        format!(
-                            "failed removing pre-registered template strategy {} before activation",
-                            template.strategy_id
-                        )
-                    })?;
-            }
-
-            let strategy = build_runtime_exec_tester(template, desired_instrument_id)?;
-            let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
-
-            trader
-                .borrow_mut()
-                .add_strategy(strategy)
-                .with_context(|| {
-                    format!("failed registering runtime-managed strategy {strategy_id}")
-                })?;
-            trader
-                .borrow()
-                .start_strategy(&strategy_id)
-                .with_context(|| {
-                    format!("failed starting runtime-managed strategy {strategy_id}")
-                })?;
-
-            *active_runtime_strategy = Some(RuntimeManagedStrategy {
-                strategy_id,
-                instrument_id: desired_instrument_id,
-            });
-        }
-        None => {
-            if let Some(strategy_id) = registered_strategy_id {
-                trader
-                    .borrow_mut()
-                    .remove_strategy(&strategy_id)
-                    .with_context(|| {
-                        format!("failed removing runtime-managed strategy {strategy_id}")
-                    })?;
-            }
-            if template_strategy_registered && registered_strategy_id.is_none() {
-                trader
-                    .borrow_mut()
-                    .remove_strategy(&template.strategy_id)
-                    .with_context(|| {
-                        format!(
-                            "failed removing pre-registered template strategy {}",
-                            template.strategy_id
-                        )
-                    })?;
-            }
-            *active_runtime_strategy = None;
-        }
-    }
-
-    Ok(())
+pub fn registry_runtime_strategy_factory(
+    registry: StrategyRegistry,
+    build_context: StrategyBuildContext,
+) -> RuntimeStrategyFactory {
+    Arc::new(move |trader, kind, raw_config| {
+        registry.register_strategy(kind, raw_config, &build_context, trader)
+    })
 }
 
-fn apply_runtime_strategy_command(
-    runtime_strategy_actor_id: &ActorId,
-    decision: &SelectionDecision,
-) -> Result<()> {
-    let command = match &decision.state {
-        SelectionState::Active { market } => RuntimeStrategyCommand::Activate {
-            instrument_id: market.instrument_id.clone(),
-        },
-        SelectionState::Idle { .. } | SelectionState::Freeze { .. } => {
-            RuntimeStrategyCommand::Clear
-        }
+pub fn runtime_selection_topic(strategy_id: &StrategyId) -> String {
+    format!("platform.runtime.selection.{strategy_id}")
+}
+
+fn publish_runtime_selection_snapshot(
+    runtime_selection_topic: &str,
+    evaluation: &SelectionEvaluation,
+    published_at_ms: u64,
+) {
+    let snapshot = RuntimeSelectionSnapshot {
+        ruleset_id: evaluation.decision.ruleset_id.clone(),
+        decision: evaluation.decision.clone(),
+        eligible_candidates: evaluation.eligible_candidates.clone(),
+        published_at_ms,
     };
 
-    RuntimeStrategyApplier::send(runtime_strategy_actor_id, command)
-}
-
-fn build_runtime_exec_tester(
-    template: &RuntimeStrategyTemplate,
-    instrument_id: InstrumentId,
-) -> Result<nautilus_testkit::testers::ExecTester> {
-    let mut raw_config = template.raw_config.clone();
-    let table = raw_config
-        .as_table_mut()
-        .context("exec_tester strategy template config must be a TOML table")?;
-    table.insert(
-        "instrument_id".to_string(),
-        Value::String(instrument_id.to_string()),
-    );
-
-    build_exec_tester(&raw_config).map_err(|error| anyhow!(error.to_string()))
+    msgbus::publish_any(runtime_selection_topic.to_string().into(), &snapshot);
 }
 
 struct ReferenceSnapshotAuditSubscription {
@@ -878,10 +925,8 @@ async fn supervise_audit_task(
 fn send_selector_evaluation(
     audit_tx: &AuditSender,
     evaluation: &SelectionEvaluation,
-    now_ms: &Arc<dyn Fn() -> u64 + Send + Sync>,
+    ts_ms: u64,
 ) -> Result<()> {
-    let ts_ms = now_ms();
-
     for rejected_candidate in &evaluation.rejected_candidates {
         audit_tx
             .send(AuditRecord::EligibilityReject {
@@ -1032,5 +1077,197 @@ impl PlatformAuditTaskFactory for ProductionAuditTaskFactory {
     ) -> JoinHandle<Result<()>> {
         let worker = spawn_audit_worker(audit_rx, AwsCliUploader, audit_config);
         tokio::spawn(async move { worker.run_until_cancelled(cancellation).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        AuditConfig, Config, ExecClientEntry, ExecClientSecrets, LoggingConfig, NodeConfig,
+        RawCaptureConfig, ReferenceConfig, RulesetConfig, RulesetVenueKind, StrategyEntry,
+        StreamingCaptureConfig,
+    };
+    use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+    use nautilus_live::node::LiveNode;
+    use nautilus_model::identifiers::TraderId;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    fn config_with_runtime_strategy(kind: &str) -> Config {
+        Config {
+            node: NodeConfig {
+                name: "TEST-NODE".to_string(),
+                trader_id: "BOLT-001".to_string(),
+                environment: "Live".to_string(),
+                load_state: false,
+                save_state: false,
+                timeout_connection_secs: 1,
+                timeout_reconciliation_secs: 1,
+                timeout_portfolio_secs: 1,
+                timeout_disconnection_secs: 1,
+                delay_post_stop_secs: 0,
+                delay_shutdown_secs: 0,
+            },
+            logging: LoggingConfig {
+                stdout_level: "Info".to_string(),
+                file_level: "Debug".to_string(),
+            },
+            data_clients: Vec::new(),
+            exec_clients: vec![ExecClientEntry {
+                name: "TEST".to_string(),
+                kind: "polymarket".to_string(),
+                config: toml::toml! {
+                    account_id = "POLYMARKET-001"
+                    signature_type = 2
+                    funder = "0xabc"
+                }
+                .into(),
+                secrets: ExecClientSecrets {
+                    region: "us-east-1".to_string(),
+                    pk: Some("/pk".to_string()),
+                    api_key: Some("/key".to_string()),
+                    api_secret: Some("/secret".to_string()),
+                    passphrase: Some("/pass".to_string()),
+                },
+            }],
+            strategies: vec![StrategyEntry {
+                kind: kind.to_string(),
+                config: toml::toml! {
+                    strategy_id = "STUB-RUNTIME-001"
+                }
+                .into(),
+            }],
+            raw_capture: RawCaptureConfig::default(),
+            streaming: StreamingCaptureConfig::default(),
+            reference: ReferenceConfig::default(),
+            rulesets: Vec::new(),
+            audit: None,
+        }
+    }
+
+    #[test]
+    fn runtime_strategy_template_preserves_strategy_kind() {
+        let cfg = config_with_runtime_strategy("stub_runtime_strategy");
+
+        let template = runtime_strategy_template(&cfg)
+            .expect("runtime strategy template should build")
+            .expect("runtime strategy template should exist");
+
+        assert_eq!(template.kind, "stub_runtime_strategy");
+        assert_eq!(template.strategy_id, StrategyId::from("STUB-RUNTIME-001"));
+    }
+
+    struct NoopAuditTaskFactory;
+
+    impl PlatformAuditTaskFactory for NoopAuditTaskFactory {
+        fn spawn(
+            &self,
+            _audit_rx: AuditReceiver,
+            _audit_config: AuditSpoolConfig,
+            cancellation: CancellationToken,
+        ) -> JoinHandle<Result<()>> {
+            tokio::spawn(async move {
+                cancellation.cancelled().await;
+                Ok(())
+            })
+        }
+    }
+
+    fn config_with_ruleset_and_zero_templates() -> Config {
+        Config {
+            node: NodeConfig {
+                name: "TEST-NODE".to_string(),
+                trader_id: "BOLT-001".to_string(),
+                environment: "Live".to_string(),
+                load_state: false,
+                save_state: false,
+                timeout_connection_secs: 1,
+                timeout_reconciliation_secs: 1,
+                timeout_portfolio_secs: 1,
+                timeout_disconnection_secs: 1,
+                delay_post_stop_secs: 0,
+                delay_shutdown_secs: 0,
+            },
+            logging: LoggingConfig {
+                stdout_level: "Info".to_string(),
+                file_level: "Debug".to_string(),
+            },
+            data_clients: Vec::new(),
+            exec_clients: Vec::new(),
+            strategies: Vec::new(),
+            raw_capture: RawCaptureConfig::default(),
+            streaming: StreamingCaptureConfig::default(),
+            reference: ReferenceConfig {
+                publish_topic: "platform.reference.test".to_string(),
+                ..Default::default()
+            },
+            rulesets: vec![RulesetConfig {
+                id: "PRIMARY".to_string(),
+                venue: RulesetVenueKind::Polymarket,
+                selector: toml::toml! {
+                    tag_slug = "bitcoin"
+                }
+                .into(),
+                resolution_basis: "binance_btcusdt_1m".to_string(),
+                min_time_to_expiry_secs: 60,
+                max_time_to_expiry_secs: 900,
+                min_liquidity_num: 1_000.0,
+                require_accepting_orders: true,
+                freeze_before_end_secs: 90,
+                selector_poll_interval_ms: 25,
+                candidate_load_timeout_secs: 7,
+            }],
+            audit: Some(AuditConfig {
+                local_dir: "var/audit".to_string(),
+                s3_uri: "s3://bucket/audit".to_string(),
+                ship_interval_secs: 1,
+                upload_attempt_timeout_secs: 1,
+                roll_max_bytes: 1_048_576,
+                roll_max_secs: 300,
+                max_local_backlog_bytes: 4 * 1_048_576,
+            }),
+        }
+    }
+
+    fn build_empty_node() -> LiveNode {
+        LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
+            .expect("builder should construct")
+            .with_name("TEST-NODE")
+            .with_logging(LoggerConfig::default())
+            .with_timeout_connection(1)
+            .with_timeout_disconnection_secs(1)
+            .with_delay_post_stop_secs(0)
+            .with_delay_shutdown_secs(0)
+            .build()
+            .expect("node should build")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn zero_template_ruleset_runtime_omits_strategy_shutdown_guard() {
+        let cfg = config_with_ruleset_and_zero_templates();
+        let services = PlatformRuntimeServices {
+            candidate_loader: Arc::new(|_ruleset: RulesetConfig| async move { Ok(Vec::new()) }),
+            audit_task_factory: Arc::new(NoopAuditTaskFactory),
+            now_ms: Arc::new(|| 1_000),
+            runtime_strategy_factory: Arc::new(|_trader, kind, _raw_config| {
+                panic!("runtime strategy factory should not be called without a template: {kind}")
+            }),
+        };
+
+        let mut node = build_empty_node();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services)
+            .expect("zero-template ruleset runtime should wire");
+
+        assert!(
+            guards.runtime_strategy_shutdown.is_none(),
+            "zero-template ruleset runtime should not install a shutdown guard"
+        );
+        assert!(
+            guards.runtime_strategy_applier_failure.is_some(),
+            "zero-template ruleset runtime still tracks applier failures for a consistent guard shape"
+        );
+
+        guards.shutdown().await.expect("shutdown should succeed");
     }
 }

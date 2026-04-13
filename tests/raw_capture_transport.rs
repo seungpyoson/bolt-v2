@@ -7,6 +7,7 @@ use nautilus_polymarket::http::{
     models::GammaMarket,
     parse::{create_instrument_from_def, parse_gamma_market},
 };
+use serde_json::json;
 
 #[test]
 fn builds_market_ws_config_with_nt_polymarket_defaults() {
@@ -45,45 +46,19 @@ fn builds_market_subscribe_payload_for_multiple_assets() {
 
 #[test]
 fn extracts_token_ids_from_bootstrapped_instruments() {
-    let market = GammaMarket {
-        id: "market-1".to_string(),
-        condition_id: "0xcond1".to_string(),
-        question_id: None,
-        clob_token_ids: "[\"111\",\"222\"]".to_string(),
-        outcomes: "[\"Yes\",\"No\"]".to_string(),
-        question: "Q1".to_string(),
-        description: None,
-        start_date: None,
-        end_date: None,
-        active: Some(true),
-        closed: Some(false),
-        accepting_orders: Some(true),
-        enable_order_book: None,
-        order_price_min_tick_size: None,
-        order_min_size: None,
-        maker_base_fee: None,
-        taker_base_fee: None,
-        market_slug: Some("btc-updown-5m".to_string()),
-        neg_risk: Some(false),
-        liquidity_num: None,
-        volume_num: None,
-        volume_24hr: None,
-        outcome_prices: None,
-        best_bid: None,
-        best_ask: None,
-        spread: None,
-        last_trade_price: None,
-        one_day_price_change: None,
-        one_week_price_change: None,
-        volume_1wk: None,
-        volume_1mo: None,
-        volume_1yr: None,
-        rewards_min_size: None,
-        rewards_max_spread: None,
-        competitive: None,
-        category: None,
-        neg_risk_market_id: None,
-    };
+    let market: GammaMarket = serde_json::from_value(json!({
+        "id": "market-1",
+        "conditionId": "0xcond1",
+        "clobTokenIds": "[\"111\",\"222\"]",
+        "outcomes": "[\"Yes\",\"No\"]",
+        "question": "Q1",
+        "acceptingOrders": true,
+        "active": true,
+        "closed": false,
+        "slug": "btc-updown-5m",
+        "negRisk": false
+    }))
+    .expect("gamma market fixture should deserialize");
 
     let defs = parse_gamma_market(&market).unwrap();
     let instruments = defs

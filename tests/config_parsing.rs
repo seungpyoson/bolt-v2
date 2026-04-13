@@ -48,17 +48,6 @@ fn parses_runtime_config_with_optional_streaming_section() {
         api_secret = "/secret"
         passphrase = "/pass"
 
-        [[strategies]]
-        type = "exec_tester"
-        [strategies.config]
-        strategy_id = "EXEC-001"
-        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-        client_id = "POLYMARKET"
-        order_qty = "1"
-        log_data = true
-        tob_offset_ticks = 1
-        use_post_only = true
-
         [raw_capture]
         output_dir = "var/raw"
 
@@ -77,6 +66,104 @@ fn parses_runtime_config_with_optional_streaming_section() {
     assert_eq!(
         cfg.streaming.contract_path.as_deref(),
         Some("/opt/bolt-v2/contracts/polymarket.toml")
+    );
+}
+
+#[test]
+fn runtime_config_parses_ruleset_selector_table() {
+    let toml = r#"
+        [node]
+        name = "bolt-v2"
+        trader_id = "TRADER-001"
+        environment = "Live"
+        load_state = true
+        save_state = true
+        timeout_connection_secs = 60
+        timeout_reconciliation_secs = 30
+        timeout_portfolio_secs = 10
+        timeout_disconnection_secs = 10
+        delay_post_stop_secs = 10
+        delay_shutdown_secs = 5
+
+        [logging]
+        stdout_level = "Info"
+        file_level = "Off"
+
+        [[data_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [data_clients.config]
+        subscribe_new_markets = false
+        update_instruments_interval_mins = 60
+        ws_max_subscriptions = 200
+        event_slugs = ["btc-updown-5m"]
+
+        [[exec_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [exec_clients.config]
+        account_id = "POLYMARKET-001"
+        signature_type = 2
+        funder = "0xdeadbeef"
+        [exec_clients.secrets]
+        region = "us-east-1"
+        pk = "/pk"
+        api_key = "/key"
+        api_secret = "/secret"
+        passphrase = "/pass"
+
+        [raw_capture]
+        output_dir = "var/raw"
+
+        [reference]
+        publish_topic = "platform.reference.default"
+        min_publish_interval_ms = 100
+
+        [[reference.venues]]
+        name = "BINANCE-BTC"
+        type = "binance"
+        instrument_id = "BTCUSDT.BINANCE"
+        base_weight = 0.35
+        stale_after_ms = 1500
+        disable_after_ms = 5000
+
+        [[rulesets]]
+        id = "PRIMARY"
+        venue = "polymarket"
+        resolution_basis = "binance_btcusdt_1m"
+        min_time_to_expiry_secs = 60
+        max_time_to_expiry_secs = 900
+        min_liquidity_num = 1000
+        require_accepting_orders = true
+        freeze_before_end_secs = 90
+        selector_poll_interval_ms = 1000
+        candidate_load_timeout_secs = 30
+
+        [rulesets.selector]
+        tag_slug = "bitcoin"
+        event_slug_prefix = "btc-updown"
+
+        [audit]
+        local_dir = "var/audit"
+        s3_uri = "s3://bolt-runtime-history/phase1"
+        ship_interval_secs = 30
+        upload_attempt_timeout_secs = 30
+        roll_max_bytes = 1048576
+        roll_max_secs = 300
+        max_local_backlog_bytes = 10485760
+    "#;
+
+    let cfg: Config = toml::from_str(toml).unwrap();
+
+    assert!(cfg.strategies.is_empty());
+    assert_eq!(cfg.rulesets[0].id, "PRIMARY");
+    assert_eq!(
+        cfg.rulesets[0].selector["tag_slug"].as_str(),
+        Some("bitcoin")
+    );
+    assert_eq!(
+        cfg.rulesets[0].selector["event_slug_prefix"].as_str(),
+        Some("btc-updown")
     );
 }
 
@@ -119,26 +206,15 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
     "#;
 
     fs::write(&input_path, toml).unwrap();
-    materialize_live_config(&input_path, &output_path).unwrap();
-    let rendered = fs::read_to_string(&output_path).unwrap();
-    let cfg: Config = toml::from_str(&rendered).unwrap();
+    let error = materialize_live_config(&input_path, &output_path)
+        .expect_err("non-phase1 operator config should fail closed")
+        .to_string();
 
-    assert!(rendered.contains("[streaming]"));
-    assert!(rendered.contains("[raw_capture]"));
-    assert_eq!(cfg.node.timeout_connection_secs, 60);
-    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
-    assert_eq!(cfg.streaming.catalog_path, "var/catalog");
-    assert_eq!(cfg.streaming.flush_interval_ms, 250);
-    let expected_root = std::fs::canonicalize(tempdir.path()).unwrap();
-    assert_eq!(
-        cfg.streaming.contract_path.as_deref(),
-        Some(
-            expected_root
-                .join("contracts/polymarket.toml")
-                .to_str()
-                .unwrap()
-        )
+    assert!(
+        error.contains("at least one ruleset or strategy"),
+        "expected fail-closed runtime-shape error, got: {error}"
     );
+    assert!(!output_path.exists());
 }
 
 #[test]
@@ -152,15 +228,10 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         trader_id = "BOLT-001"
 
         [polymarket]
-        event_slug = "what-price-will-bitcoin-hit-before-2027"
         instrument_id = "0xabc-123.POLYMARKET"
         account_id = "POLYMARKET-001"
         funder = "0xabc"
         signature_type = 2
-
-        [strategy]
-        strategy_id = "EXEC_TESTER-001"
-        order_qty = "5"
 
         [secrets]
         region = "eu-west-1"
@@ -184,7 +255,6 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         [[rulesets]]
         id = "PRIMARY"
         venue = "polymarket"
-        tag_slug = "bitcoin"
         resolution_basis = "binance_btcusdt_1m"
         min_time_to_expiry_secs = 60
         max_time_to_expiry_secs = 900
@@ -193,6 +263,9 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 250
 candidate_load_timeout_secs = 12
+
+        [rulesets.selector]
+        tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"
@@ -209,6 +282,14 @@ max_local_backlog_bytes = 10485760
     let rendered = fs::read_to_string(&output_path).unwrap();
     let value: Value = toml::from_str(&rendered).unwrap();
 
+    assert!(
+        !rendered.contains("event_slugs"),
+        "ruleset-backed runtime config should not emit event slugs: {rendered}"
+    );
+    assert!(
+        value.get("strategies").is_none(),
+        "ruleset-backed runtime config should omit runtime strategy templates: {rendered}"
+    );
     assert_eq!(
         value["reference"]["venues"][0]["type"].as_str(),
         Some("binance")
@@ -396,4 +477,29 @@ price_scale = 8"#,
 
     assert!(error.contains("reference.chainlink"));
     assert!(error.contains("reference.venues[0].chainlink"));
+}
+
+#[test]
+fn runtime_config_rejects_unknown_ruleset_field_at_parse_time() {
+    let toml = runtime_toml_with_reference_venue(
+        "",
+        r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 1.0
+stale_after_ms = 1500
+disable_after_ms = 5000"#,
+        "binance_btcusdt_1m",
+    )
+    .replace(
+        "candidate_load_timeout_secs = 12",
+        "candidate_load_timeout_secs = 12\nselector_poll_intrvl_ms = 250",
+    );
+
+    let error = toml::from_str::<Config>(&toml)
+        .expect_err("unknown ruleset field should fail to parse")
+        .to_string();
+
+    assert!(error.contains("selector_poll_intrvl_ms"));
 }

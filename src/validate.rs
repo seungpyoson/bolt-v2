@@ -1,9 +1,10 @@
 use crate::clients::chainlink::parse_chainlink_ws_origins;
-use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
-use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
+use crate::config::{Config, ReferenceConfig, ReferenceVenueKind, RulesetVenueKind};
+use crate::live_config::{LiveLocalConfig, LiveReferenceInput, LiveStrategyInput};
 use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
+use crate::strategies::{production_strategy_registry, registry::StrategyRegistry};
 use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
 use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
@@ -23,7 +24,12 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-fn push_error(errors: &mut Vec<ValidationError>, field: &str, code: &'static str, message: String) {
+pub(crate) fn push_error(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    code: &'static str,
+    message: String,
+) {
     errors.push(ValidationError {
         field: field.to_string(),
         code,
@@ -36,7 +42,7 @@ fn push_error(errors: &mut Vec<ValidationError>, field: &str, code: &'static str
 // ═══════════════════════════════════════════════════════════════════
 
 /// Mirrors NT's `check_valid_string_ascii`: non-empty, non-whitespace-only, ASCII-only.
-fn check_nt_ascii(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+pub(crate) fn check_nt_ascii(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     if value.is_empty() {
         push_error(
             errors,
@@ -158,7 +164,7 @@ fn check_non_empty_no_whitespace(errors: &mut Vec<ValidationError>, field: &str,
 
 /// NT `InstrumentId::from` uses `rsplit_once('.')` -> (symbol, venue).
 /// We enforce venue == "POLYMARKET" and symbol non-empty.
-fn check_instrument_id(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+pub(crate) fn check_instrument_id(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
     if value.is_empty() {
         push_error(
             errors,
@@ -217,7 +223,11 @@ fn check_hex_prefixed(errors: &mut Vec<ValidationError>, field: &str, value: &st
 
 /// Bolt policy: quantities must be strictly positive even though NT accepts zero.
 /// Parsing delegates entirely to NT's `Quantity::from_str`.
-fn check_strictly_positive_qty(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+pub(crate) fn check_strictly_positive_qty(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    value: &str,
+) {
     match Quantity::from_str(value) {
         Ok(qty) if qty.raw == 0 => push_error(
             errors,
@@ -528,6 +538,87 @@ fn get_required_array<'a>(
     }
 }
 
+fn get_required_table<'a>(
+    errors: &mut Vec<ValidationError>,
+    value: &'a Value,
+    field: &str,
+    code: &'static str,
+) -> Option<&'a toml::map::Map<String, Value>> {
+    match value.as_table() {
+        Some(value) => Some(value),
+        None => {
+            push_error(
+                errors,
+                field,
+                code,
+                format!("must be a table, got {} value", value.type_str()),
+            );
+            None
+        }
+    }
+}
+
+fn check_ruleset_selector(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    venue: &RulesetVenueKind,
+    selector: &Value,
+) {
+    match venue {
+        RulesetVenueKind::Polymarket => check_polymarket_ruleset_selector(errors, field, selector),
+    }
+}
+
+fn check_polymarket_ruleset_selector(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    selector: &Value,
+) {
+    let Some(table) = get_required_table(errors, selector, field, "missing_selector_table") else {
+        return;
+    };
+    for key in table.keys() {
+        if key != "tag_slug" && key != "event_slug_prefix" {
+            push_error(
+                errors,
+                &format!("{field}.{key}"),
+                "unknown_field",
+                format!("unknown selector field \"{key}\""),
+            );
+        }
+    }
+    let selector_value = Value::Table(table.clone());
+
+    let tag_slug_field = format!("{field}.tag_slug");
+    if let Some(tag_slug) = get_required_str(
+        errors,
+        &selector_value,
+        "tag_slug",
+        &tag_slug_field,
+        "missing_tag_slug",
+    ) {
+        check_non_empty_no_whitespace(errors, &tag_slug_field, tag_slug);
+    }
+
+    let event_slug_prefix_field = format!("{field}.event_slug_prefix");
+    if let Some(event_slug_prefix) = table.get("event_slug_prefix") {
+        match event_slug_prefix.as_str() {
+            Some(event_slug_prefix) => {
+                check_non_empty_no_whitespace(errors, &event_slug_prefix_field, event_slug_prefix)
+            }
+            None => push_error(
+                errors,
+                &event_slug_prefix_field,
+                "wrong_type",
+                format!(
+                    "must be a string, got {} value",
+                    event_slug_prefix.type_str()
+                ),
+            ),
+        }
+    }
+}
+
 fn check_required_ssm_path_opt(
     errors: &mut Vec<ValidationError>,
     field: &str,
@@ -665,7 +756,6 @@ const VALID_ENVIRONMENTS: &[&str] = &["Live", "Sandbox"];
 const VALID_LOG_LEVELS: &[&str] = &["Trace", "Debug", "Info", "Warn", "Error", "Off"];
 const VALID_DATA_CLIENT_TYPES: &[&str] = &["polymarket"];
 const VALID_EXEC_CLIENT_TYPES: &[&str] = &["polymarket"];
-const VALID_STRATEGY_TYPES: &[&str] = &["exec_tester"];
 
 /// Validate a human-edited live local config before rendering.
 /// Returns all validation errors found, sorted by field path for deterministic output.
@@ -739,11 +829,21 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.client_name",
         &config.polymarket.client_name,
     );
-    check_non_empty_no_whitespace(
-        &mut errors,
-        "polymarket.event_slug",
-        &config.polymarket.event_slug,
-    );
+    if config.rulesets.is_empty() {
+        check_non_empty_no_whitespace(
+            &mut errors,
+            "polymarket.event_slug",
+            &config.polymarket.event_slug,
+        );
+    } else if !config.polymarket.event_slug.is_empty() {
+        push_error(
+            &mut errors,
+            "polymarket.event_slug",
+            "forbidden_in_ruleset_mode",
+            "must be omitted when rulesets are enabled; rulesets[*].selector is the source of truth"
+                .to_string(),
+        );
+    }
     check_instrument_id(
         &mut errors,
         "polymarket.instrument_id",
@@ -762,6 +862,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.signature_type",
         i64::from(config.polymarket.signature_type),
     );
+    check_positive_u64(
+        &mut errors,
+        "polymarket.gamma_refresh_interval_secs",
+        config.polymarket.gamma_refresh_interval_secs,
+    );
 
     if config.strategy.strategy_id != "EXTERNAL" {
         check_nt_hyphenated(
@@ -777,6 +882,14 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "strategy.order_qty",
         &config.strategy.order_qty,
     );
+    if !config.rulesets.is_empty() && config.strategy != LiveStrategyInput::default() {
+        push_error(
+            &mut errors,
+            "strategy",
+            "forbidden_in_ruleset_mode",
+            "must not be customized when rulesets are enabled; live.local [strategy] is not materialized in ruleset mode".to_string(),
+        );
+    }
 
     check_non_empty(&mut errors, "secrets.region", &config.secrets.region);
     check_ssm_path(&mut errors, "secrets.pk", &config.secrets.pk);
@@ -857,8 +970,12 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         let field = format!("rulesets[{i}].id");
         check_non_empty(&mut errors, &field, &ruleset.id);
 
-        let tag_slug_field = format!("rulesets[{i}].tag_slug");
-        check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
+        check_ruleset_selector(
+            &mut errors,
+            &format!("rulesets[{i}].selector"),
+            &ruleset.venue,
+            &ruleset.selector,
+        );
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
         check_non_empty(
@@ -1029,7 +1146,17 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
 /// Checks cross-section consistency and re-applies the same domain validation
 /// that the local live config uses.
 pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
+    let registry =
+        production_strategy_registry().expect("production strategy registry should register");
+    validate_runtime_with_registry(config, &registry)
+}
+
+fn validate_runtime_with_registry(
+    config: &Config,
+    registry: &StrategyRegistry,
+) -> Vec<ValidationError> {
     let mut errors = Vec::new();
+    let valid_strategy_types = registry.kinds();
 
     check_non_empty(&mut errors, "node.name", &config.node.name);
     check_nt_hyphenated(
@@ -1128,36 +1255,66 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             );
         }
 
-        let event_slugs_field = format!("data_clients[{i}].config.event_slugs");
-        if let Some(event_slugs) = get_required_array(
-            &mut errors,
-            &client.config,
-            "event_slugs",
-            &event_slugs_field,
-            "missing_event_slugs",
-        ) {
-            for (j, event_slug) in event_slugs.iter().enumerate() {
-                let field = format!("data_clients[{i}].config.event_slugs[{j}]");
-                match event_slug.as_str() {
-                    Some(event_slug) => {
-                        check_non_empty_no_whitespace(&mut errors, &field, event_slug)
+        if config.rulesets.is_empty() {
+            let event_slugs_field = format!("data_clients[{i}].config.event_slugs");
+            if let Some(event_slugs) = get_required_array(
+                &mut errors,
+                &client.config,
+                "event_slugs",
+                &event_slugs_field,
+                "missing_event_slugs",
+            ) {
+                for (j, event_slug) in event_slugs.iter().enumerate() {
+                    let field = format!("data_clients[{i}].config.event_slugs[{j}]");
+                    match event_slug.as_str() {
+                        Some(event_slug) => {
+                            check_non_empty_no_whitespace(&mut errors, &field, event_slug)
+                        }
+                        None => push_error(
+                            &mut errors,
+                            &field,
+                            "invalid_type",
+                            "must be a string".to_string(),
+                        ),
                     }
-                    None => push_error(
+                }
+                if event_slugs.is_empty() {
+                    push_error(
                         &mut errors,
-                        &field,
-                        "invalid_type",
-                        "must be a string".to_string(),
-                    ),
+                        &event_slugs_field,
+                        "empty",
+                        "must not be empty, got []".to_string(),
+                    );
                 }
             }
-            if event_slugs.is_empty() {
+        } else if client.config.get("event_slugs").is_some() {
+            push_error(
+                &mut errors,
+                &format!("data_clients[{i}].config.event_slugs"),
+                "forbidden_in_ruleset_mode",
+                "must be omitted when rulesets are enabled; rulesets[*].selector is the source of truth".to_string(),
+            );
+        }
+        if let Some(gamma_refresh_interval_secs) = client
+            .config
+            .get("gamma_refresh_interval_secs")
+            .and_then(Value::as_integer)
+        {
+            if gamma_refresh_interval_secs <= 0 {
                 push_error(
                     &mut errors,
-                    &event_slugs_field,
-                    "empty",
-                    "must not be empty, got []".to_string(),
+                    &format!("data_clients[{i}].config.gamma_refresh_interval_secs"),
+                    "not_positive",
+                    format!("must be > 0, got {gamma_refresh_interval_secs}"),
                 );
             }
+        } else if client.config.get("gamma_refresh_interval_secs").is_some() {
+            push_error(
+                &mut errors,
+                &format!("data_clients[{i}].config.gamma_refresh_interval_secs"),
+                "wrong_type",
+                "must be an integer".to_string(),
+            );
         }
     }
 
@@ -1260,40 +1417,9 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             &mut errors,
             &strategy_type_field,
             &strategy.kind,
-            VALID_STRATEGY_TYPES,
+            valid_strategy_types.as_slice(),
             "unsupported_type",
         );
-        match strategy.config.get("client_id") {
-            None => push_error(
-                &mut errors,
-                &format!("strategies[{i}].config.client_id"),
-                "missing_client_id",
-                "is missing required string field".to_string(),
-            ),
-            Some(value) => {
-                let field = format!("strategies[{i}].config.client_id");
-                if let Some(client_id) = value.as_str() {
-                    check_nt_ascii(&mut errors, &field, client_id);
-                    if !exec_name_indices.contains_key(client_id) {
-                        push_error(
-                            &mut errors,
-                            "strategies",
-                            "unknown_client_id",
-                            format!(
-                                "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
-                            ),
-                        );
-                    }
-                } else {
-                    push_error(
-                        &mut errors,
-                        &field,
-                        "wrong_type",
-                        format!("must be a string, got {} value", value.type_str()),
-                    );
-                }
-            }
-        }
 
         match strategy.config.get("strategy_id") {
             None => push_error(
@@ -1338,48 +1464,25 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
             }
         }
 
-        match strategy.config.get("instrument_id") {
-            None => push_error(
-                &mut errors,
-                &format!("strategies[{i}].config.instrument_id"),
-                "missing_instrument_id",
-                "is missing required string field".to_string(),
-            ),
-            Some(value) => {
-                let field = format!("strategies[{i}].config.instrument_id");
-                if let Some(instrument_id) = value.as_str() {
-                    check_instrument_id(&mut errors, &field, instrument_id);
-                } else {
-                    push_error(
-                        &mut errors,
-                        &field,
-                        "wrong_type",
-                        format!("must be a string, got {} value", value.type_str()),
-                    );
-                }
-            }
-        }
+        registry.validate(
+            &strategy.kind,
+            &strategy.config,
+            &format!("strategies[{i}].config"),
+            &mut errors,
+        );
 
-        match strategy.config.get("order_qty") {
-            None => push_error(
+        if let Some(value) = strategy.config.get("client_id")
+            && let Some(client_id) = value.as_str()
+            && !exec_name_indices.contains_key(client_id)
+        {
+            push_error(
                 &mut errors,
-                &format!("strategies[{i}].config.order_qty"),
-                "missing_order_qty",
-                "is missing required string field".to_string(),
-            ),
-            Some(value) => {
-                let field = format!("strategies[{i}].config.order_qty");
-                if let Some(order_qty) = value.as_str() {
-                    check_strictly_positive_qty(&mut errors, &field, order_qty);
-                } else {
-                    push_error(
-                        &mut errors,
-                        &field,
-                        "wrong_type",
-                        format!("must be a string, got {} value", value.type_str()),
-                    );
-                }
-            }
+                "strategies",
+                "unknown_client_id",
+                format!(
+                    "strategies[{i}] references client_id \"{client_id}\" which does not match any exec_client name"
+                ),
+            );
         }
     }
 
@@ -1443,15 +1546,15 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         let runtime_strategy_templates = config
             .strategies
             .iter()
-            .filter(|strategy| strategy.kind == "exec_tester")
+            .filter(|strategy| registry.get(&strategy.kind).is_some())
             .count();
-        if runtime_strategy_templates != 1 {
+        if runtime_strategy_templates > 1 {
             push_error(
                 &mut errors,
                 "strategies",
                 "phase1_runtime_strategy_template_count",
                 format!(
-                    "ruleset mode requires exactly one exec_tester strategy template, got {runtime_strategy_templates}"
+                    "ruleset mode supports at most one runtime strategy template, got {runtime_strategy_templates}"
                 ),
             );
         }
@@ -1601,8 +1704,12 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         let id_field = format!("rulesets[{i}].id");
         check_non_empty(&mut errors, &id_field, &ruleset.id);
 
-        let tag_slug_field = format!("rulesets[{i}].tag_slug");
-        check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
+        check_ruleset_selector(
+            &mut errors,
+            &format!("rulesets[{i}].selector"),
+            &ruleset.venue,
+            &ruleset.selector,
+        );
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
         check_non_empty(

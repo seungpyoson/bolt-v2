@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use toml::Value;
 
 use crate::config::default_raw_capture_output_dir;
 
@@ -56,12 +57,16 @@ fn default_update_instruments_interval_mins() -> u64 {
     60
 }
 
+fn default_gamma_refresh_interval_secs() -> u64 {
+    60
+}
+
 fn default_ws_max_subscriptions() -> usize {
     200
 }
 
 fn default_strategy_id() -> String {
-    "EXEC_TESTER-001".to_string()
+    "STRATEGY-001".to_string()
 }
 
 fn default_order_qty() -> String {
@@ -211,6 +216,8 @@ pub struct LivePolymarketInput {
     pub subscribe_new_markets: bool,
     #[serde(default = "default_update_instruments_interval_mins")]
     pub update_instruments_interval_mins: u64,
+    #[serde(default = "default_gamma_refresh_interval_secs")]
+    pub gamma_refresh_interval_secs: u64,
     #[serde(default = "default_ws_max_subscriptions")]
     pub ws_max_subscriptions: usize,
 }
@@ -226,12 +233,13 @@ impl Default for LivePolymarketInput {
             signature_type: default_signature_type(),
             subscribe_new_markets: false,
             update_instruments_interval_mins: default_update_instruments_interval_mins(),
+            gamma_refresh_interval_secs: default_gamma_refresh_interval_secs(),
             ws_max_subscriptions: default_ws_max_subscriptions(),
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveStrategyInput {
     #[serde(default = "default_strategy_id")]
@@ -358,10 +366,11 @@ pub struct LiveReferenceVenueInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveRulesetInput {
     pub id: String,
     pub venue: crate::config::RulesetVenueKind,
-    pub tag_slug: String,
+    pub selector: Value,
     pub resolution_basis: String,
     pub min_time_to_expiry_secs: u64,
     pub max_time_to_expiry_secs: u64,
@@ -390,6 +399,7 @@ struct RenderedConfig {
     raw_capture: RenderedRawCaptureConfig,
     data_clients: Vec<RenderedDataClientEntry>,
     exec_clients: Vec<RenderedExecClientEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     strategies: Vec<RenderedStrategyEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     streaming: Option<RenderedStreamingConfig>,
@@ -439,8 +449,10 @@ struct RenderedDataClientEntry {
 struct RenderedDataClientConfig {
     subscribe_new_markets: bool,
     update_instruments_interval_mins: u64,
+    gamma_refresh_interval_secs: u64,
     ws_max_subscriptions: usize,
-    event_slugs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_slugs: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -523,7 +535,7 @@ struct RenderedReferenceVenueEntry {
 struct RenderedRulesetConfig {
     id: String,
     venue: crate::config::RulesetVenueKind,
-    tag_slug: String,
+    selector: Value,
     resolution_basis: String,
     min_time_to_expiry_secs: u64,
     max_time_to_expiry_secs: u64,
@@ -598,25 +610,27 @@ fn validate_rendered_runtime_config(rendered: &str) -> Result<(), Box<dyn std::e
         .map_err(|e| format!("Failed to parse rendered runtime config: {e}"))?;
 
     let validation_errors = crate::validate::validate_runtime(&config);
-    if validation_errors.is_empty() {
-        return Ok(());
+    if !validation_errors.is_empty() {
+        let details: Vec<String> = validation_errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect();
+        return Err(format!(
+            "Runtime config validation failed ({} error{}):\n{}",
+            validation_errors.len(),
+            if validation_errors.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            details.join("\n"),
+        )
+        .into());
     }
 
-    let details: Vec<String> = validation_errors
-        .iter()
-        .map(|e| format!("  - {e}"))
-        .collect();
-    Err(format!(
-        "Runtime config validation failed ({} error{}):\n{}",
-        validation_errors.len(),
-        if validation_errors.len() == 1 {
-            ""
-        } else {
-            "s"
-        },
-        details.join("\n"),
-    )
-    .into())
+    crate::config::ensure_runtime_has_active_path(&config)?;
+
+    Ok(())
 }
 
 fn render_runtime_config(
@@ -651,8 +665,13 @@ fn render_runtime_config(
             config: RenderedDataClientConfig {
                 subscribe_new_markets: input.polymarket.subscribe_new_markets,
                 update_instruments_interval_mins: input.polymarket.update_instruments_interval_mins,
+                gamma_refresh_interval_secs: input.polymarket.gamma_refresh_interval_secs,
                 ws_max_subscriptions: input.polymarket.ws_max_subscriptions,
-                event_slugs: vec![input.polymarket.event_slug.clone()],
+                event_slugs: if platform_enabled {
+                    None
+                } else {
+                    Some(vec![input.polymarket.event_slug.clone()])
+                },
             },
         }],
         exec_clients: vec![RenderedExecClientEntry {
@@ -671,21 +690,7 @@ fn render_runtime_config(
                 passphrase: input.secrets.passphrase.clone(),
             },
         }],
-        strategies: vec![RenderedStrategyEntry {
-            kind: "exec_tester".to_string(),
-            config: RenderedStrategyConfig {
-                strategy_id: input.strategy.strategy_id.clone(),
-                instrument_id: input.polymarket.instrument_id.clone(),
-                client_id: input.polymarket.client_name.clone(),
-                order_qty: input.strategy.order_qty.clone(),
-                log_data: input.strategy.log_data,
-                tob_offset_ticks: input.strategy.tob_offset_ticks,
-                use_post_only: input.strategy.use_post_only,
-                enable_limit_sells: input.strategy.enable_limit_sells,
-                enable_stop_buys: input.strategy.enable_stop_buys,
-                enable_stop_sells: input.strategy.enable_stop_sells,
-            },
-        }],
+        strategies: Vec::new(),
         streaming: if input.streaming.catalog_path.trim().is_empty() {
             None
         } else {
@@ -727,7 +732,7 @@ fn render_runtime_config(
                 .map(|ruleset| RenderedRulesetConfig {
                     id: ruleset.id.clone(),
                     venue: ruleset.venue.clone(),
-                    tag_slug: ruleset.tag_slug.clone(),
+                    selector: ruleset.selector.clone(),
                     resolution_basis: ruleset.resolution_basis.clone(),
                     min_time_to_expiry_secs: ruleset.min_time_to_expiry_secs,
                     max_time_to_expiry_secs: ruleset.max_time_to_expiry_secs,
@@ -1084,29 +1089,28 @@ mod tests {
         let client_name = input.polymarket.client_name.as_str();
         assert_eq!(cfg.data_clients.len(), 1);
         assert_eq!(cfg.exec_clients.len(), 1);
-        assert_eq!(cfg.strategies.len(), 1);
+        assert_eq!(cfg.strategies.len(), 0);
         assert_eq!(cfg.data_clients[0].name, client_name);
         assert_eq!(cfg.data_clients[0].kind, "polymarket");
         assert_eq!(cfg.exec_clients[0].name, client_name);
         assert_eq!(cfg.exec_clients[0].kind, "polymarket");
-        assert_eq!(cfg.strategies[0].kind, "exec_tester");
+        assert!(!rendered.contains("[[strategies]]"));
         assert_eq!(
-            cfg.strategies[0].config["client_id"]
-                .as_str()
-                .expect("strategy client_id should exist"),
-            client_name
+            cfg.data_clients[0].config.get("event_slugs"),
+            None,
+            "ruleset mode should not materialize legacy event_slugs"
         );
         assert_eq!(
-            cfg.data_clients[0].config["event_slugs"]
-                .as_array()
-                .expect("event slugs should exist"),
-            &vec![toml::Value::String(input.polymarket.event_slug.clone())]
+            cfg.rulesets[0].selector["tag_slug"]
+                .as_str()
+                .expect("ruleset selector tag_slug should exist"),
+            "bitcoin"
         );
         assert_eq!(
-            cfg.strategies[0].config["instrument_id"]
-                .as_str()
-                .expect("instrument_id should exist"),
-            input.polymarket.instrument_id
+            cfg.data_clients[0].config["gamma_refresh_interval_secs"]
+                .as_integer()
+                .expect("gamma_refresh_interval_secs should exist"),
+            input.polymarket.gamma_refresh_interval_secs as i64
         );
         assert_eq!(
             cfg.exec_clients[0].config["signature_type"]
@@ -1140,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn minimal_operator_input_uses_defaults_and_renders_valid_runtime_config() {
+    fn minimal_operator_input_without_phase1_sections_fails_closed() {
         let raw = r#"
 [node]
 name = "BOLT-V2-TEST"
@@ -1176,12 +1180,14 @@ passphrase = "/bolt/poly/passphrase"
         assert_eq!(cfg.node.delay_shutdown_secs, 5);
         assert_eq!(cfg.data_clients[0].name, "POLYMARKET");
         assert_eq!(cfg.exec_clients[0].name, "POLYMARKET");
-        assert_eq!(cfg.strategies[0].kind, "exec_tester");
-        assert_eq!(
-            cfg.strategies[0].config["strategy_id"]
-                .as_str()
-                .expect("strategy_id should exist"),
-            "EXEC_TESTER-001"
+        assert!(cfg.strategies.is_empty());
+        assert!(!rendered.contains("[[strategies]]"));
+        let error = validate_rendered_runtime_config(&rendered)
+            .expect_err("non-phase1 operator config should fail closed")
+            .to_string();
+        assert!(
+            error.contains("at least one ruleset or strategy"),
+            "expected fail-closed runtime-shape error, got: {error}"
         );
         assert_eq!(
             cfg.exec_clients[0].config["signature_type"]

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub(crate) mod stub_runtime_strategy;
+
 use std::{
     any::Any,
     cell::RefCell,
@@ -116,17 +118,6 @@ api_key = "/key"
 api_secret = "/secret"
 passphrase = "/pass"
 
-[[strategies]]
-type = "exec_tester"
-[strategies.config]
-strategy_id = "EXEC-001"
-instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-client_id = "POLYMARKET"
-order_qty = "1"
-log_data = true
-tob_offset_ticks = 1
-use_post_only = true
-
 [reference]
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
@@ -138,7 +129,6 @@ min_publish_interval_ms = 100
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin"
 resolution_basis = "{resolution_basis}"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -147,6 +137,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 250
 candidate_load_timeout_secs = 12
+[rulesets.selector]
+tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"
@@ -167,7 +159,6 @@ name = "BOLT-V2-TEST"
 trader_id = "BOLT-TEST"
 
 [polymarket]
-event_slug = "btc-updown-5m"
 instrument_id = "0xabc-12345678901234567890.POLYMARKET"
 account_id = "POLYMARKET-001"
 funder = "0xabc"
@@ -203,7 +194,6 @@ price_scale = 8
 [[rulesets]]
 id = "PRIMARY"
 venue = "polymarket"
-tag_slug = "bitcoin"
 resolution_basis = "chainlink_btcusd"
 min_time_to_expiry_secs = 60
 max_time_to_expiry_secs = 900
@@ -212,6 +202,8 @@ require_accepting_orders = true
 freeze_before_end_secs = 90
 selector_poll_interval_ms = 1000
 candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin"
 
 [audit]
 local_dir = "var/audit"

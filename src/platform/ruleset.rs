@@ -8,7 +8,10 @@ use std::cmp::Ordering;
 pub struct CandidateMarket {
     pub market_id: String,
     pub instrument_id: String,
-    pub tag_slug: String,
+    pub condition_id: String,
+    pub up_token_id: String,
+    pub down_token_id: String,
+    pub start_ts_ms: u64,
     pub declared_resolution_basis: ResolutionBasis,
     pub accepting_orders: bool,
     pub liquidity_num: f64,
@@ -37,7 +40,6 @@ pub struct SelectionDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EligibilityRejectReason {
-    TagMismatch,
     ResolutionBasisMismatch,
     OrdersClosed,
     LowLiquidity,
@@ -48,7 +50,6 @@ pub enum EligibilityRejectReason {
 impl EligibilityRejectReason {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::TagMismatch => "tag_mismatch",
             Self::ResolutionBasisMismatch => "resolution_basis_mismatch",
             Self::OrdersClosed => "orders_closed",
             Self::LowLiquidity => "low_liquidity",
@@ -67,8 +68,17 @@ pub struct RejectedCandidate {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionEvaluation {
     pub decision: SelectionDecision,
+    pub eligible_candidates: Vec<CandidateMarket>,
     /// Rejected candidates preserve the original candidate iteration order.
     pub rejected_candidates: Vec<RejectedCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeSelectionSnapshot {
+    pub ruleset_id: String,
+    pub decision: SelectionDecision,
+    pub eligible_candidates: Vec<CandidateMarket>,
+    pub published_at_ms: u64,
 }
 
 pub fn evaluate_market_selection(
@@ -96,7 +106,9 @@ pub fn evaluate_market_selection(
             .then_with(|| lhs.market_id.cmp(&rhs.market_id))
     });
 
-    let state = match eligible.into_iter().next() {
+    let eligible_candidates: Vec<CandidateMarket> = eligible.into_iter().cloned().collect();
+
+    let state = match eligible_candidates.first() {
         None => SelectionState::Idle {
             reason: "no eligible market".to_string(),
         },
@@ -116,6 +128,7 @@ pub fn evaluate_market_selection(
             ruleset_id: ruleset.id.clone(),
             state,
         },
+        eligible_candidates,
         rejected_candidates,
     }
 }
@@ -129,9 +142,6 @@ fn reject_reason(
     ruleset: &RulesetConfig,
     market: &CandidateMarket,
 ) -> Option<EligibilityRejectReason> {
-    if market.tag_slug != ruleset.tag_slug {
-        return Some(EligibilityRejectReason::TagMismatch);
-    }
     if market.declared_resolution_basis != *ruleset_basis {
         return Some(EligibilityRejectReason::ResolutionBasisMismatch);
     }

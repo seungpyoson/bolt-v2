@@ -10,12 +10,29 @@ use bolt_v2::{
         },
     },
 };
+use toml::Value;
+
+fn polymarket_selector(tag_slug: &str) -> Value {
+    let mut selector = toml::map::Map::new();
+    selector.insert("tag_slug".to_string(), Value::String(tag_slug.to_string()));
+    Value::Table(selector)
+}
+
+fn polymarket_selector_with_prefix(tag_slug: &str, prefix: &str) -> Value {
+    let mut selector = toml::map::Map::new();
+    selector.insert("tag_slug".to_string(), Value::String(tag_slug.to_string()));
+    selector.insert(
+        "event_slug_prefix".to_string(),
+        Value::String(prefix.to_string()),
+    );
+    Value::Table(selector)
+}
 
 fn ruleset() -> RulesetConfig {
     RulesetConfig {
         id: "btc-5m".to_string(),
         venue: RulesetVenueKind::Polymarket,
-        tag_slug: "bitcoin".to_string(),
+        selector: polymarket_selector("bitcoin"),
         resolution_basis: "binance_btcusdt_1m".to_string(),
         min_time_to_expiry_secs: 120,
         max_time_to_expiry_secs: 1_800,
@@ -33,10 +50,14 @@ fn candidate(
     liquidity_num: f64,
     seconds_to_end: u64,
 ) -> CandidateMarket {
+    let base = market_id.replace('-', "");
     CandidateMarket {
         market_id: market_id.to_string(),
         instrument_id: format!("{market_id}-yes"),
-        tag_slug: "bitcoin".to_string(),
+        condition_id: format!("0x{base}"),
+        up_token_id: format!("{base}01"),
+        down_token_id: format!("{base}02"),
+        start_ts_ms: 1_700_000_000_000,
         declared_resolution_basis: parse_ruleset_resolution_basis(declared_resolution_basis)
             .expect("test fixture basis should be canonical"),
         accepting_orders: true,
@@ -84,34 +105,26 @@ fn rejects_market_when_resolution_basis_mismatches() {
 }
 
 #[test]
-fn exposes_tag_mismatch_rejection() {
-    let ruleset = ruleset();
-    let candidates = vec![CandidateMarket {
-        market_id: "market-wrong-tag".to_string(),
-        instrument_id: "market-wrong-tag-yes".to_string(),
-        tag_slug: "ethereum".to_string(),
-        declared_resolution_basis: binance_btcusdt_1m(),
-        accepting_orders: true,
-        liquidity_num: 9_000.0,
-        seconds_to_end: 1_200,
-    }];
+fn selector_contents_do_not_affect_platform_side_eligibility() {
+    let mut ruleset = ruleset();
+    ruleset.selector = polymarket_selector_with_prefix("bitcoin", "btc-updown");
+    let candidates = vec![candidate(
+        "market-best",
+        "binance_btcusdt_1m",
+        9_000.0,
+        1_200,
+    )];
 
-    let evaluation = evaluate_market_selection(&ruleset, &candidates);
+    let decision = select_market(&ruleset, &candidates);
 
     assert_eq!(
-        evaluation.rejected_candidates,
-        vec![RejectedCandidate {
-            market: CandidateMarket {
-                market_id: "market-wrong-tag".to_string(),
-                instrument_id: "market-wrong-tag-yes".to_string(),
-                tag_slug: "ethereum".to_string(),
-                declared_resolution_basis: binance_btcusdt_1m(),
-                accepting_orders: true,
-                liquidity_num: 9_000.0,
-                seconds_to_end: 1_200,
+        decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Active {
+                market: candidate("market-best", "binance_btcusdt_1m", 9_000.0, 1_200),
             },
-            reason: EligibilityRejectReason::TagMismatch,
-        }]
+        }
     );
 }
 
@@ -121,15 +134,7 @@ fn selects_best_eligible_market_within_ruleset_window() {
     let candidates = vec![
         candidate("market-lower-liq", "binance_btcusdt_1m", 2_500.0, 900),
         candidate("market-best", "binance_btcusdt_1m", 7_500.0, 1_200),
-        CandidateMarket {
-            market_id: "market-wrong-tag".to_string(),
-            instrument_id: "market-wrong-tag-yes".to_string(),
-            tag_slug: "ethereum".to_string(),
-            declared_resolution_basis: binance_btcusdt_1m(),
-            accepting_orders: true,
-            liquidity_num: 9_000.0,
-            seconds_to_end: 1_200,
-        },
+        candidate("market-bad-basis", "chainlink_btcusd", 9_000.0, 1_200),
     ];
 
     let decision = select_market(&ruleset, &candidates);
@@ -194,7 +199,10 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
     let candidates = vec![CandidateMarket {
         market_id: "market-many-failures".to_string(),
         instrument_id: "market-many-failures-yes".to_string(),
-        tag_slug: "bitcoin".to_string(),
+        condition_id: "0xmarketmanyfailures".to_string(),
+        up_token_id: "marketmanyfailures01".to_string(),
+        down_token_id: "marketmanyfailures02".to_string(),
+        start_ts_ms: 1_700_000_000_000,
         declared_resolution_basis: chainlink_btcusd(),
         accepting_orders: false,
         liquidity_num: 500.0,
@@ -209,7 +217,10 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
             market: CandidateMarket {
                 market_id: "market-many-failures".to_string(),
                 instrument_id: "market-many-failures-yes".to_string(),
-                tag_slug: "bitcoin".to_string(),
+                condition_id: "0xmarketmanyfailures".to_string(),
+                up_token_id: "marketmanyfailures01".to_string(),
+                down_token_id: "marketmanyfailures02".to_string(),
+                start_ts_ms: 1_700_000_000_000,
                 declared_resolution_basis: chainlink_btcusd(),
                 accepting_orders: false,
                 liquidity_num: 500.0,
@@ -236,7 +247,10 @@ fn returns_idle_when_no_market_is_eligible() {
         CandidateMarket {
             market_id: "market-orders-closed".to_string(),
             instrument_id: "market-orders-closed-yes".to_string(),
-            tag_slug: "bitcoin".to_string(),
+            condition_id: "0xmarketordersclosed".to_string(),
+            up_token_id: "marketordersclosed01".to_string(),
+            down_token_id: "marketordersclosed02".to_string(),
+            start_ts_ms: 1_700_000_000_000,
             declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
             liquidity_num: 5_000.0,
@@ -286,7 +300,6 @@ fn rejects_nan_liquidity_candidate_from_selection() {
     assert_eq!(rejected.reason, EligibilityRejectReason::LowLiquidity);
     assert_eq!(rejected.market.market_id, "market-nan-liquidity");
     assert_eq!(rejected.market.instrument_id, "market-nan-liquidity-yes");
-    assert_eq!(rejected.market.tag_slug, "bitcoin");
     assert_eq!(
         rejected.market.declared_resolution_basis,
         binance_btcusdt_1m()
@@ -325,7 +338,6 @@ fn selects_valid_market_when_nan_liquidity_candidate_is_present() {
     assert_eq!(rejected.reason, EligibilityRejectReason::LowLiquidity);
     assert_eq!(rejected.market.market_id, "market-nan-liquidity");
     assert_eq!(rejected.market.instrument_id, "market-nan-liquidity-yes");
-    assert_eq!(rejected.market.tag_slug, "bitcoin");
     assert_eq!(
         rejected.market.declared_resolution_basis,
         binance_btcusdt_1m()
@@ -418,7 +430,10 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
         CandidateMarket {
             market_id: "market-orders-closed".to_string(),
             instrument_id: "market-orders-closed-yes".to_string(),
-            tag_slug: "bitcoin".to_string(),
+            condition_id: "0xmarketordersclosed".to_string(),
+            up_token_id: "marketordersclosed01".to_string(),
+            down_token_id: "marketordersclosed02".to_string(),
+            start_ts_ms: 1_700_000_000_000,
             declared_resolution_basis: binance_btcusdt_1m(),
             accepting_orders: false,
             liquidity_num: 5_000.0,
@@ -452,7 +467,10 @@ fn exposes_rejected_candidates_with_explicit_eligibility_reasons() {
                 market: CandidateMarket {
                     market_id: "market-orders-closed".to_string(),
                     instrument_id: "market-orders-closed-yes".to_string(),
-                    tag_slug: "bitcoin".to_string(),
+                    condition_id: "0xmarketordersclosed".to_string(),
+                    up_token_id: "marketordersclosed01".to_string(),
+                    down_token_id: "marketordersclosed02".to_string(),
+                    start_ts_ms: 1_700_000_000_000,
                     declared_resolution_basis: binance_btcusdt_1m(),
                     accepting_orders: false,
                     liquidity_num: 5_000.0,
@@ -492,10 +510,6 @@ fn select_market_matches_evaluation_decision() {
 
 #[test]
 fn eligibility_reject_reason_exposes_canonical_labels() {
-    assert_eq!(
-        EligibilityRejectReason::TagMismatch.as_str(),
-        "tag_mismatch"
-    );
     assert_eq!(
         EligibilityRejectReason::ResolutionBasisMismatch.as_str(),
         "resolution_basis_mismatch"

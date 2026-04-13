@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -10,7 +11,9 @@ use std::{
 use bolt_v2::{
     config::{RulesetConfig, RulesetVenueKind},
     platform::{
-        polymarket_catalog::load_candidate_markets_for_ruleset_with_gamma_client,
+        polymarket_catalog::{
+            load_candidate_markets_for_ruleset_with_gamma_client, polymarket_instrument_id,
+        },
         resolution_basis::{
             CandleInterval, ResolutionBasis, ResolutionSourceKind, parse_declared_resolution_basis,
             parse_ruleset_resolution_basis,
@@ -18,12 +21,36 @@ use bolt_v2::{
     },
 };
 use chrono::{Duration as ChronoDuration, Utc};
+use nautilus_model::identifiers::InstrumentId;
 use nautilus_polymarket::http::gamma::PolymarketGammaRawHttpClient;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+use toml::Value as TomlValue;
+
+fn polymarket_selector(tag_slug: &str) -> TomlValue {
+    let mut selector = toml::map::Map::new();
+    selector.insert(
+        "tag_slug".to_string(),
+        TomlValue::String(tag_slug.to_string()),
+    );
+    TomlValue::Table(selector)
+}
+
+fn polymarket_selector_with_prefix(tag_slug: &str, prefix: &str) -> TomlValue {
+    let mut selector = toml::map::Map::new();
+    selector.insert(
+        "tag_slug".to_string(),
+        TomlValue::String(tag_slug.to_string()),
+    );
+    selector.insert(
+        "event_slug_prefix".to_string(),
+        TomlValue::String(prefix.to_string()),
+    );
+    TomlValue::Table(selector)
+}
 
 fn exchange_candle(
     source: ResolutionSourceKind,
@@ -54,7 +81,7 @@ fn ruleset() -> RulesetConfig {
     RulesetConfig {
         id: "btc-5m".to_string(),
         venue: RulesetVenueKind::Polymarket,
-        tag_slug: "bitcoin".to_string(),
+        selector: polymarket_selector("bitcoin"),
         resolution_basis: "binance_btcusdt_1m".to_string(),
         min_time_to_expiry_secs: 120,
         max_time_to_expiry_secs: 1_800,
@@ -63,6 +90,13 @@ fn ruleset() -> RulesetConfig {
         freeze_before_end_secs: 300,
         selector_poll_interval_ms: 1_000,
         candidate_load_timeout_secs: 30,
+    }
+}
+
+fn ruleset_with_prefix(prefix: &str) -> RulesetConfig {
+    RulesetConfig {
+        selector: polymarket_selector_with_prefix("bitcoin", prefix),
+        ..ruleset()
     }
 }
 
@@ -113,20 +147,32 @@ async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<Atom
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(0);
                 let page_index = offset / limit.max(1);
-                let (status_line, body) = if path == "/events"
-                    && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
-                {
-                    let body = state
-                        .response_bodies
-                        .get(page_index)
-                        .cloned()
-                        .unwrap_or_else(|| json!([]));
-                    ("HTTP/1.1 200 OK", body.to_string())
+                let (status_line, body) = if path == "/events" {
+                    if params.get("tag_slug").map(String::as_str) == Some("bitcoin") {
+                        let body = state
+                            .response_bodies
+                            .get(page_index)
+                            .cloned()
+                            .unwrap_or_else(|| json!([]));
+                        ("HTTP/1.1 200 OK", body.to_string())
+                    } else if let Some(slug) = params.get("slug") {
+                        let matching_events: Vec<Value> = state
+                            .response_bodies
+                            .iter()
+                            .flat_map(|body| body.as_array().cloned().unwrap_or_default())
+                            .filter(|event| {
+                                event.get("slug").and_then(Value::as_str) == Some(slug.as_str())
+                            })
+                            .collect();
+                        ("HTTP/1.1 200 OK", Value::Array(matching_events).to_string())
+                    } else {
+                        (
+                            "HTTP/1.1 400 Bad Request",
+                            "expected /events?tag_slug=bitcoin or /events?slug=<event>".to_string(),
+                        )
+                    }
                 } else {
-                    (
-                        "HTTP/1.1 400 Bad Request",
-                        "expected /events?tag_slug=bitcoin".to_string(),
-                    )
+                    ("HTTP/1.1 400 Bad Request", "expected /events".to_string())
                 };
                 let response = format!(
                     "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -176,6 +222,23 @@ async fn load_markets_from_event_pages(
     (markets, request_count)
 }
 
+async fn load_markets_from_ruleset_and_event_pages(
+    ruleset: RulesetConfig,
+    event_pages: Vec<Vec<Value>>,
+) -> (
+    Vec<bolt_v2::platform::ruleset::CandidateMarket>,
+    Arc<AtomicUsize>,
+) {
+    let response_bodies = event_pages.into_iter().map(Value::Array).collect();
+    let (addr, request_count) = spawn_test_server(response_bodies).await;
+    let client = test_gamma_client(addr);
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset, &client)
+        .await
+        .unwrap();
+
+    (markets, request_count)
+}
+
 fn event_with_markets(id: &str, markets: Vec<Value>) -> Value {
     json!({
         "id": id,
@@ -185,8 +248,21 @@ fn event_with_markets(id: &str, markets: Vec<Value>) -> Value {
     })
 }
 
+fn event_with_slug_and_markets(id: &str, slug: &str, title: &str, markets: Vec<Value>) -> Value {
+    json!({
+        "id": id,
+        "slug": slug,
+        "title": title,
+        "markets": markets
+    })
+}
+
 fn valid_market(end_date: String) -> Value {
     valid_market_with("market-good", "[\"111\",\"222\"]", end_date)
+}
+
+fn fixture_start_date() -> String {
+    (Utc::now() - ChronoDuration::minutes(5)).to_rfc3339()
 }
 
 fn valid_market_with(id: &str, clob_token_ids: &str, end_date: String) -> Value {
@@ -195,9 +271,10 @@ fn valid_market_with(id: &str, clob_token_ids: &str, end_date: String) -> Value 
         "questionID": "0xquestion1",
         "conditionId": "0xcondition1",
         "clobTokenIds": clob_token_ids,
-        "outcomes": "[\"Yes\",\"No\"]",
+        "outcomes": "[\"Up\",\"Down\"]",
         "question": "Will BTC finish green?",
         "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTCUSDT has a final close above the opening price. The resolution source for this market is Binance, specifically the BTCUSDT \"Close\" prices available with \"1m\" and \"Candles\" selected on the top bar.",
+        "startDate": fixture_start_date(),
         "acceptingOrders": true,
         "liquidityNum": 4567.0,
         "endDate": end_date,
@@ -312,9 +389,10 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
             "questionID": "0xquestion2",
             "conditionId": "0xcondition2",
             "clobTokenIds": "[\"333\",\"444\"]",
-            "outcomes": "[\"Yes\",\"No\"]",
+            "outcomes": "[\"Up\",\"Down\"]",
             "question": "Will BTC finish red?",
             "description": "No known basis here.",
+            "startDate": fixture_start_date(),
             "acceptingOrders": true,
             "liquidityNum": 9999.0,
             "endDate": end_date,
@@ -326,8 +404,11 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert_eq!(request_count.load(Ordering::Relaxed), 1);
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-good");
-    assert_eq!(markets[0].instrument_id, "111");
-    assert_eq!(markets[0].tag_slug, "bitcoin");
+    assert_eq!(markets[0].instrument_id, "0xcondition1-111.POLYMARKET");
+    assert_eq!(markets[0].condition_id, "0xcondition1");
+    assert_eq!(markets[0].up_token_id, "111");
+    assert_eq!(markets[0].down_token_id, "222");
+    assert!(markets[0].start_ts_ms > 0);
     assert_eq!(
         markets[0].declared_resolution_basis,
         exchange_candle(
@@ -339,6 +420,10 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     assert!(markets[0].accepting_orders);
     assert_eq!(markets[0].liquidity_num, 4567.0);
     assert!((1190..=1200).contains(&markets[0].seconds_to_end));
+    assert_eq!(
+        polymarket_instrument_id("0xcondition1", "111"),
+        InstrumentId::from_str("0xcondition1-111.POLYMARKET").unwrap()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -386,9 +471,43 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
             .iter()
             .map(|market| market.instrument_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["111", "333"]
+        vec!["0xcondition1-111.POLYMARKET", "0xcondition1-333.POLYMARKET"]
     );
-    assert!(markets.iter().all(|market| market.tag_slug == "bitcoin"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_ruleset_and_event_pages(
+        ruleset_with_prefix("bitcoin-5m"),
+        vec![vec![
+            event_with_slug_and_markets(
+                "event-1",
+                "bitcoin-5m-alpha",
+                "Bitcoin 5m",
+                vec![valid_market_with(
+                    "market-prefix-match",
+                    "[\"111\",\"222\"]",
+                    end_date.clone(),
+                )],
+            ),
+            event_with_slug_and_markets(
+                "event-2",
+                "bitcoin-15m-beta",
+                "Bitcoin 15m",
+                vec![valid_market_with(
+                    "market-prefix-miss",
+                    "[\"333\",\"444\"]",
+                    end_date,
+                )],
+            ),
+        ]],
+    )
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(markets.len(), 1);
+    assert_eq!(markets[0].market_id, "market-prefix-match");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -398,9 +517,10 @@ async fn rejects_catalog_row_with_invalid_end_date() {
             "questionID": "0xquestion3",
             "conditionId": "0xcondition3",
             "clobTokenIds": "[\"111\",\"222\"]",
-            "outcomes": "[\"Yes\",\"No\"]",
+            "outcomes": "[\"Up\",\"Down\"]",
             "question": "Will BTC finish green?",
             "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "startDate": fixture_start_date(),
             "acceptingOrders": true,
             "liquidityNum": 4567.0,
             "endDate": "not-a-date",
@@ -420,9 +540,10 @@ async fn rejects_catalog_row_with_missing_accepting_orders() {
             "questionID": "0xquestion4",
             "conditionId": "0xcondition4",
             "clobTokenIds": "[\"111\",\"222\"]",
-            "outcomes": "[\"Yes\",\"No\"]",
+            "outcomes": "[\"Up\",\"Down\"]",
             "question": "Will BTC finish green?",
             "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "startDate": fixture_start_date(),
             "liquidityNum": 4567.0,
             "endDate": end_date,
             "slug": "market-missing-accepting-orders"
@@ -441,9 +562,10 @@ async fn rejects_catalog_row_with_missing_liquidity_num() {
             "questionID": "0xquestion5",
             "conditionId": "0xcondition5",
             "clobTokenIds": "[\"111\",\"222\"]",
-            "outcomes": "[\"Yes\",\"No\"]",
+            "outcomes": "[\"Up\",\"Down\"]",
             "question": "Will BTC finish green?",
             "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "startDate": fixture_start_date(),
             "acceptingOrders": true,
             "endDate": end_date,
             "slug": "market-missing-liquidity"
@@ -462,9 +584,10 @@ async fn rejects_catalog_row_with_malformed_clob_token_ids() {
             "questionID": "0xquestion6",
             "conditionId": "0xcondition6",
             "clobTokenIds": "not-json",
-            "outcomes": "[\"Yes\",\"No\"]",
+            "outcomes": "[\"Up\",\"Down\"]",
             "question": "Will BTC finish green?",
             "description": "The resolution source for this market is Binance spot BTC/USDT one-minute candles.",
+            "startDate": fixture_start_date(),
             "acceptingOrders": true,
             "liquidityNum": 4567.0,
             "endDate": end_date,
@@ -484,9 +607,10 @@ async fn rejects_catalog_row_with_unknown_basis() {
         "questionID": "0xquestion7",
         "conditionId": "0xcondition7",
         "clobTokenIds": "[\"111\",\"222\"]",
-        "outcomes": "[\"Yes\",\"No\"]",
+        "outcomes": "[\"Up\",\"Down\"]",
         "question": "Will BTC finish green?",
         "description": "No known basis here.",
+        "startDate": fixture_start_date(),
         "acceptingOrders": true,
         "liquidityNum": 4567.0,
         "endDate": end_date,
@@ -506,9 +630,10 @@ async fn rejects_catalog_row_with_exchange_candle_description_missing_interval()
         "questionID": "0xquestion8",
         "conditionId": "0xcondition8",
         "clobTokenIds": "[\"111\",\"222\"]",
-        "outcomes": "[\"Yes\",\"No\"]",
+        "outcomes": "[\"Up\",\"Down\"]",
         "question": "Will BTC finish green?",
         "description": "Resolution source: Binance spot BTC/USDT candles.",
+        "startDate": fixture_start_date(),
         "acceptingOrders": true,
         "liquidityNum": 4567.0,
         "endDate": end_date,

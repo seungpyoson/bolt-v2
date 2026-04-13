@@ -1381,9 +1381,9 @@ dependencies = [
  "nautilus-persistence",
  "nautilus-polymarket",
  "nautilus-system",
- "nautilus-testkit",
  "nautilus-trading",
  "parquet",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
@@ -1873,15 +1873,6 @@ name = "crc-catalog"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
-
-[[package]]
-name = "crc32fast"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
-dependencies = [
- "cfg-if",
-]
 
 [[package]]
 name = "criterion"
@@ -3085,7 +3076,6 @@ version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
- "crc32fast",
  "miniz_oxide",
  "zlib-rs",
 ]
@@ -3733,19 +3723,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
-name = "itchy"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7402e686f465ea27bb8bac6a6b88fbf97c7702cf01162f2f491e6b5054d45d16"
-dependencies = [
- "arrayvec",
- "flate2",
- "nom",
- "rust_decimal",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4029,12 +4006,6 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
-
-[[package]]
-name = "minimal-lexical"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "miniz_oxide"
@@ -4694,35 +4665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nautilus-testkit"
-version = "0.55.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=af2aefc24451ed5c51b94e64459421f1dd540bfb#af2aefc24451ed5c51b94e64459421f1dd540bfb"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "aws-lc-rs",
- "bon",
- "chrono",
- "hex",
- "indexmap 2.14.0",
- "itchy",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-model",
- "nautilus-network",
- "nautilus-portfolio",
- "nautilus-serialization",
- "nautilus-trading",
- "parquet",
- "rand 0.10.0",
- "reqwest",
- "rust_decimal",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "nautilus-trading"
 version = "0.55.0"
 source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=af2aefc24451ed5c51b94e64459421f1dd540bfb#af2aefc24451ed5c51b94e64459421f1dd540bfb"
@@ -4745,16 +4687,6 @@ dependencies = [
  "serde_json",
  "strum 0.28.0",
  "ustr",
-]
-
-[[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
 ]
 
 [[package]]

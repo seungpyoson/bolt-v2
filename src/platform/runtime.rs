@@ -279,6 +279,9 @@ impl RuntimeStrategyApplierState {
     }
 
     fn execute(&mut self, _snapshot: RuntimeSelectionSnapshot) -> Result<()> {
+        // Phase 1 keeps the runtime-owned strategy persistent for the full node run.
+        // Selection snapshots are a liveness signal here; strategies that need the
+        // payload must subscribe to the runtime selection topic directly.
         self.ensure_runtime_strategy_persisted()
     }
 
@@ -1081,9 +1084,15 @@ impl PlatformAuditTaskFactory for ProductionAuditTaskFactory {
 mod tests {
     use super::*;
     use crate::config::{
-        Config, ExecClientEntry, ExecClientSecrets, LoggingConfig, NodeConfig, RawCaptureConfig,
-        ReferenceConfig, StrategyEntry, StreamingCaptureConfig,
+        AuditConfig, Config, ExecClientEntry, ExecClientSecrets, LoggingConfig, NodeConfig,
+        RawCaptureConfig, ReferenceConfig, RulesetConfig, RulesetVenueKind, StrategyEntry,
+        StreamingCaptureConfig,
     };
+    use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+    use nautilus_live::node::LiveNode;
+    use nautilus_model::identifiers::TraderId;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
 
     fn config_with_runtime_strategy(kind: &str) -> Config {
         Config {
@@ -1147,5 +1156,118 @@ mod tests {
 
         assert_eq!(template.kind, "stub_runtime_strategy");
         assert_eq!(template.strategy_id, StrategyId::from("STUB-RUNTIME-001"));
+    }
+
+    struct NoopAuditTaskFactory;
+
+    impl PlatformAuditTaskFactory for NoopAuditTaskFactory {
+        fn spawn(
+            &self,
+            _audit_rx: AuditReceiver,
+            _audit_config: AuditSpoolConfig,
+            cancellation: CancellationToken,
+        ) -> JoinHandle<Result<()>> {
+            tokio::spawn(async move {
+                cancellation.cancelled().await;
+                Ok(())
+            })
+        }
+    }
+
+    fn config_with_ruleset_and_zero_templates() -> Config {
+        Config {
+            node: NodeConfig {
+                name: "TEST-NODE".to_string(),
+                trader_id: "BOLT-001".to_string(),
+                environment: "Live".to_string(),
+                load_state: false,
+                save_state: false,
+                timeout_connection_secs: 1,
+                timeout_reconciliation_secs: 1,
+                timeout_portfolio_secs: 1,
+                timeout_disconnection_secs: 1,
+                delay_post_stop_secs: 0,
+                delay_shutdown_secs: 0,
+            },
+            logging: LoggingConfig {
+                stdout_level: "Info".to_string(),
+                file_level: "Debug".to_string(),
+            },
+            data_clients: Vec::new(),
+            exec_clients: Vec::new(),
+            strategies: Vec::new(),
+            raw_capture: RawCaptureConfig::default(),
+            streaming: StreamingCaptureConfig::default(),
+            reference: ReferenceConfig {
+                publish_topic: "platform.reference.test".to_string(),
+                ..Default::default()
+            },
+            rulesets: vec![RulesetConfig {
+                id: "PRIMARY".to_string(),
+                venue: RulesetVenueKind::Polymarket,
+                selector: toml::toml! {
+                    tag_slug = "bitcoin"
+                }
+                .into(),
+                resolution_basis: "binance_btcusdt_1m".to_string(),
+                min_time_to_expiry_secs: 60,
+                max_time_to_expiry_secs: 900,
+                min_liquidity_num: 1_000.0,
+                require_accepting_orders: true,
+                freeze_before_end_secs: 90,
+                selector_poll_interval_ms: 25,
+                candidate_load_timeout_secs: 7,
+            }],
+            audit: Some(AuditConfig {
+                local_dir: "var/audit".to_string(),
+                s3_uri: "s3://bucket/audit".to_string(),
+                ship_interval_secs: 1,
+                upload_attempt_timeout_secs: 1,
+                roll_max_bytes: 1_048_576,
+                roll_max_secs: 300,
+                max_local_backlog_bytes: 4 * 1_048_576,
+            }),
+        }
+    }
+
+    fn build_empty_node() -> LiveNode {
+        LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
+            .expect("builder should construct")
+            .with_name("TEST-NODE")
+            .with_logging(LoggerConfig::default())
+            .with_timeout_connection(1)
+            .with_timeout_disconnection_secs(1)
+            .with_delay_post_stop_secs(0)
+            .with_delay_shutdown_secs(0)
+            .build()
+            .expect("node should build")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn zero_template_ruleset_runtime_omits_strategy_shutdown_guard() {
+        let cfg = config_with_ruleset_and_zero_templates();
+        let services = PlatformRuntimeServices {
+            candidate_loader: Arc::new(|_ruleset: RulesetConfig| async move { Ok(Vec::new()) }),
+            audit_task_factory: Arc::new(NoopAuditTaskFactory),
+            now_ms: Arc::new(|| 1_000),
+            runtime_strategy_factory: Arc::new(|_trader, kind, _raw_config| {
+                panic!("runtime strategy factory should not be called without a template: {kind}")
+            }),
+        };
+
+        let mut node = build_empty_node();
+        let guards = wire_platform_runtime_with_services(&mut node, &cfg, services)
+            .expect("zero-template ruleset runtime should wire");
+
+        assert!(
+            guards.runtime_strategy_shutdown.is_none(),
+            "zero-template ruleset runtime should not install a shutdown guard"
+        );
+        assert!(
+            guards.runtime_strategy_applier_failure.is_some(),
+            "zero-template ruleset runtime still tracks applier failures for a consistent guard shape"
+        );
+
+        guards.shutdown().await.expect("shutdown should succeed");
     }
 }

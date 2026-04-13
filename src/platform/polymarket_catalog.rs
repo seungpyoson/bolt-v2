@@ -67,63 +67,59 @@ async fn load_events_for_selector(
 }
 
 fn translate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<CandidateMarket> {
-    let reason = match translate_market_drop_reason(&market, now) {
-        Some(reason) => reason,
-        None => {
-            return Some(
-                build_candidate_market(market, now)
-                    .expect("drop-reason helper and builder should agree"),
-            );
+    match translate_market_result(market, now) {
+        Ok(candidate_market) => Some(candidate_market),
+        Err((market_id, reason)) => {
+            log::warn!("skipping candidate market {market_id}: {reason}");
+            None
         }
-    };
-
-    log::warn!("skipping candidate market {}: {reason}", market.id);
-    None
+    }
 }
 
-fn translate_market_drop_reason(market: &GammaMarket, now: DateTime<Utc>) -> Option<String> {
-    if parse_declared_resolution_basis(market.description.as_deref()).is_none() {
-        return Some("could not parse declared resolution basis from description".to_string());
-    }
-    if binary_up_down_token_ids(&market.clob_token_ids, &market.outcomes).is_none() {
-        return Some("unsupported outcome labels or malformed token ids".to_string());
-    }
-    match market.start_date.as_deref() {
-        None => return Some("missing startDate".to_string()),
-        Some(value) if parse_timestamp_ms(value).is_none() => {
-            return Some(format!("invalid startDate {:?}", value));
-        }
-        Some(_) => {}
-    }
-    if market.accepting_orders.is_none() {
-        return Some("missing acceptingOrders".to_string());
-    }
-    if market.liquidity_num.is_none() {
-        return Some("missing liquidityNum".to_string());
-    }
-    match market.end_date.as_deref() {
-        None => return Some("missing endDate".to_string()),
-        Some(value) if seconds_to_end(now, value).is_none() => {
-            return Some(format!("invalid endDate {:?}", value));
-        }
-        Some(_) => {}
-    }
-
-    None
-}
-
-fn build_candidate_market(market: GammaMarket, now: DateTime<Utc>) -> Option<CandidateMarket> {
-    let declared_resolution_basis = parse_declared_resolution_basis(market.description.as_deref())?;
+fn translate_market_result(
+    market: GammaMarket,
+    now: DateTime<Utc>,
+) -> Result<CandidateMarket, (String, String)> {
+    let market_id = market.id.clone();
+    let declared_resolution_basis = parse_declared_resolution_basis(market.description.as_deref())
+        .ok_or_else(|| {
+            (
+                market_id.clone(),
+                "could not parse declared resolution basis from description".to_string(),
+            )
+        })?;
     let (up_token_id, down_token_id) =
-        binary_up_down_token_ids(&market.clob_token_ids, &market.outcomes)?;
-    let start_ts_ms = parse_timestamp_ms(market.start_date.as_deref()?)?;
+        binary_up_down_token_ids(&market.clob_token_ids, &market.outcomes).ok_or_else(|| {
+            (
+                market_id.clone(),
+                "unsupported outcome labels or malformed token ids".to_string(),
+            )
+        })?;
+    let start_date = market
+        .start_date
+        .as_deref()
+        .ok_or_else(|| (market_id.clone(), "missing startDate".to_string()))?;
+    let start_ts_ms = parse_timestamp_ms(start_date).ok_or_else(|| {
+        (
+            market_id.clone(),
+            format!("invalid startDate {:?}", start_date),
+        )
+    })?;
     let instrument_id = polymarket_instrument_id(&market.condition_id, &up_token_id).to_string();
-    let accepting_orders = market.accepting_orders?;
-    let liquidity_num = market.liquidity_num?;
-    let end_date = market.end_date?;
-    let seconds_to_end = seconds_to_end(now, &end_date)?;
+    let accepting_orders = market
+        .accepting_orders
+        .ok_or_else(|| (market_id.clone(), "missing acceptingOrders".to_string()))?;
+    let liquidity_num = market
+        .liquidity_num
+        .ok_or_else(|| (market_id.clone(), "missing liquidityNum".to_string()))?;
+    let end_date = market
+        .end_date
+        .as_deref()
+        .ok_or_else(|| (market_id.clone(), "missing endDate".to_string()))?;
+    let seconds_to_end = seconds_to_end(now, end_date)
+        .ok_or_else(|| (market_id.clone(), format!("invalid endDate {:?}", end_date)))?;
 
-    Some(CandidateMarket {
+    Ok(CandidateMarket {
         market_id: market.id,
         instrument_id,
         condition_id: market.condition_id,
@@ -203,11 +199,30 @@ mod tests {
     }
 
     #[test]
+    fn translate_market_result_accepts_valid_market() {
+        let candidate = translate_market_result(parse_market(valid_market_json()), Utc::now())
+            .expect("valid market should translate");
+        assert_eq!(candidate.market_id, "market-good");
+        assert_eq!(candidate.instrument_id, "0xcondition1-111.POLYMARKET");
+    }
+
+    #[test]
     fn translate_market_reports_invalid_outcome_labels() {
         let mut market = valid_market_json();
         market["outcomes"] = json!("[\"Yes\",\"No\"]");
-        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
-            .expect("invalid outcomes should produce a drop reason");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("invalid outcomes should produce a drop reason")
+            .1;
+        assert!(reason.contains("unsupported outcome labels"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_malformed_token_ids() {
+        let mut market = valid_market_json();
+        market["clobTokenIds"] = json!("not-json");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("malformed token ids should produce a drop reason")
+            .1;
         assert!(reason.contains("unsupported outcome labels"), "{reason}");
     }
 
@@ -215,26 +230,59 @@ mod tests {
     fn translate_market_reports_missing_start_date() {
         let mut market = valid_market_json();
         market.as_object_mut().unwrap().remove("startDate");
-        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
-            .expect("missing startDate should produce a drop reason");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("missing startDate should produce a drop reason")
+            .1;
         assert!(reason.contains("missing startDate"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_invalid_start_date() {
+        let mut market = valid_market_json();
+        market["startDate"] = json!("not-a-date");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("invalid startDate should produce a drop reason")
+            .1;
+        assert!(reason.contains("invalid startDate"), "{reason}");
     }
 
     #[test]
     fn translate_market_reports_missing_accepting_orders() {
         let mut market = valid_market_json();
         market.as_object_mut().unwrap().remove("acceptingOrders");
-        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
-            .expect("missing acceptingOrders should produce a drop reason");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("missing acceptingOrders should produce a drop reason")
+            .1;
         assert!(reason.contains("missing acceptingOrders"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_missing_liquidity_num() {
+        let mut market = valid_market_json();
+        market.as_object_mut().unwrap().remove("liquidityNum");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("missing liquidityNum should produce a drop reason")
+            .1;
+        assert!(reason.contains("missing liquidityNum"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_missing_end_date() {
+        let mut market = valid_market_json();
+        market.as_object_mut().unwrap().remove("endDate");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("missing endDate should produce a drop reason")
+            .1;
+        assert!(reason.contains("missing endDate"), "{reason}");
     }
 
     #[test]
     fn translate_market_reports_invalid_end_date() {
         let mut market = valid_market_json();
         market["endDate"] = json!("not-a-date");
-        let reason = translate_market_drop_reason(&parse_market(market), Utc::now())
-            .expect("invalid endDate should produce a drop reason");
+        let reason = translate_market_result(parse_market(market), Utc::now())
+            .expect_err("invalid endDate should produce a drop reason")
+            .1;
         assert!(reason.contains("invalid endDate"), "{reason}");
     }
 }

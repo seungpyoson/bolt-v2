@@ -117,7 +117,6 @@ name = "BOLT-V2-001"
 trader_id = "BOLT-001"
 
 [polymarket]
-event_slug = "what-price-will-bitcoin-hit-before-2027"
 instrument_id = "0xabc-123.POLYMARKET"
 account_id = "POLYMARKET-001"
 funder = "0xabc"

@@ -1047,6 +1047,17 @@ fn phase1_ruleset_selector_unknown_field_rejected() {
 }
 
 #[test]
+fn phase1_event_slug_rejected_when_rulesets_are_enabled() {
+    let toml = replace(
+        &valid_phase1_toml(),
+        "[polymarket]\n",
+        "[polymarket]\nevent_slug = \"btc-updown-5m\"\n",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "polymarket.event_slug", "forbidden_in_ruleset_mode");
+}
+
+#[test]
 fn phase1_ruleset_resolution_basis_must_be_non_empty() {
     let toml = replace(
         &valid_phase1_toml(),
@@ -1322,7 +1333,7 @@ order_qty = "5"
 fn valid_phase1_toml() -> String {
     format!(
         "{}\n{}",
-        valid_toml(),
+        valid_toml().replace("event_slug = \"btc-updown-5m\"\n", ""),
         r#"
 [reference]
 publish_topic = "platform.reference.default"

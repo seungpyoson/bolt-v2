@@ -820,11 +820,19 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.client_name",
         &config.polymarket.client_name,
     );
-    if config.rulesets.is_empty() || !config.polymarket.event_slug.trim().is_empty() {
+    if config.rulesets.is_empty() {
         check_non_empty_no_whitespace(
             &mut errors,
             "polymarket.event_slug",
             &config.polymarket.event_slug,
+        );
+    } else if !config.polymarket.event_slug.is_empty() {
+        push_error(
+            &mut errors,
+            "polymarket.event_slug",
+            "forbidden_in_ruleset_mode",
+            "must be omitted when rulesets are enabled; rulesets[*].selector is the source of truth"
+                .to_string(),
         );
     }
     check_instrument_id(

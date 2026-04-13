@@ -168,7 +168,6 @@ name = "BOLT-V2-TEST"
 trader_id = "BOLT-TEST"
 
 [polymarket]
-event_slug = "btc-updown-5m"
 instrument_id = "0xabc-12345678901234567890.POLYMARKET"
 account_id = "POLYMARKET-001"
 funder = "0xabc"

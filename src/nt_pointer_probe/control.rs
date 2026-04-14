@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -33,7 +33,6 @@ const SHARED_NT_CRATE_PREFIXES: &[&str] = &[
     "crates/trading/",
     "crates/execution/",
 ];
-
 fn default_required_status_check_floor() -> Vec<String> {
     vec![
         "nt-pointer-control-plane".to_string(),
@@ -247,6 +246,8 @@ pub struct ExpectedBranchProtection {
     pub strict_required_status_checks: bool,
     pub required_status_checks: Vec<String>,
     #[serde(default)]
+    pub required_status_check_app_ids: BTreeMap<String, u64>,
+    #[serde(default)]
     pub required_effective_rules: Vec<ExpectedEffectiveRule>,
     #[serde(default)]
     pub required_rulesets: Vec<ExpectedRuleset>,
@@ -276,6 +277,7 @@ struct NormalizedBranchProtection {
     require_code_owner_reviews: bool,
     required_approving_review_count: u64,
     required_status_checks: BTreeSet<String>,
+    required_status_check_app_ids: BTreeMap<String, u64>,
     strict_required_status_checks: bool,
 }
 
@@ -357,7 +359,7 @@ impl LoadedControlPlane {
         self.validate_guard_contract()?;
         self.registry.validate(&self.repo_root)?;
         self.safe_list
-            .validate(self.control.max_safe_list_duration_days)?;
+            .validate(self.control.max_safe_list_duration_days, &self.registry)?;
         self.replay_set.validate(&self.registry)?;
         self.expected_branch_protection
             .validate_against_control(&self.control)?;
@@ -468,7 +470,7 @@ impl LoadedControlPlane {
         let dependabot_ignores = extract_nt_crates_from_dependabot(
             &fs::read_to_string(self.repo_root.join(".github/dependabot.yml"))
                 .context("failed to read .github/dependabot.yml")?,
-        );
+        )?;
         ensure!(
             dependabot_ignores == configured,
             "configured nt_crates {:?} do not match Dependabot NT ignores {:?}",
@@ -807,7 +809,7 @@ impl RegistryFile {
 }
 
 impl SafeListFile {
-    fn validate(&self, max_safe_list_duration_days: i64) -> Result<()> {
+    fn validate(&self, max_safe_list_duration_days: i64, registry: &RegistryFile) -> Result<()> {
         ensure!(
             self.schema_version == CURRENT_SCHEMA_VERSION,
             "unsupported safe_list schema_version {}, expected {CURRENT_SCHEMA_VERSION}",
@@ -815,6 +817,13 @@ impl SafeListFile {
         );
         let today = Utc::now().date_naive();
         let mut seen = BTreeSet::new();
+        let protected_roots = derive_protected_safe_list_roots(registry);
+        let used_upstream_prefixes = registry
+            .seams
+            .iter()
+            .flat_map(|seam| seam.upstream_prefixes.iter())
+            .map(|prefix| normalize_relative(prefix))
+            .collect::<Result<BTreeSet<_>>>()?;
         for entry in &self.entries {
             validate_repo_relative(&entry.path)?;
             ensure!(
@@ -832,8 +841,6 @@ impl SafeListFile {
                 "safe-list entry {} condition.value must not be empty",
                 entry.path
             );
-            validate_safe_list_condition(entry)?;
-
             let approved_at = NaiveDate::parse_from_str(&entry.approved_at, "%Y-%m-%d")
                 .with_context(|| {
                     format!(
@@ -871,11 +878,9 @@ impl SafeListFile {
                 normalized,
                 entry.match_kind
             );
-            let in_shared_crate = SHARED_NT_CRATE_PREFIXES.iter().any(|prefix| {
-                normalized.starts_with(prefix)
-                    || normalized == prefix.trim_end_matches('/')
-                    || prefix.starts_with(&(normalized.clone() + "/"))
-            });
+            let in_shared_crate = protected_roots
+                .iter()
+                .any(|prefix| path_overlaps_prefix(&normalized, prefix));
             if in_shared_crate {
                 ensure!(
                     entry.match_kind == MatchKind::Exact,
@@ -883,6 +888,7 @@ impl SafeListFile {
                     entry.path
                 );
             }
+            validate_safe_list_condition(entry, &normalized, &used_upstream_prefixes)?;
         }
 
         Ok(())
@@ -961,6 +967,10 @@ impl ExpectedBranchProtection {
             "required_status_checks must not be empty"
         );
         ensure!(
+            !self.required_status_check_app_ids.is_empty(),
+            "required_status_check_app_ids must not be empty"
+        );
+        ensure!(
             !self.required_effective_rules.is_empty(),
             "required_effective_rules must not be empty"
         );
@@ -968,6 +978,22 @@ impl ExpectedBranchProtection {
             "expected branch protection status check",
             self.required_status_checks.iter().map(String::as_str),
         )?;
+        let required_status_checks = self
+            .required_status_checks
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let app_id_status_checks = self
+            .required_status_check_app_ids
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            app_id_status_checks == required_status_checks,
+            "required_status_check_app_ids keys {:?} must match required_status_checks {:?}",
+            app_id_status_checks,
+            required_status_checks
+        );
         Ok(())
     }
 
@@ -1016,6 +1042,25 @@ impl ExpectedBranchProtection {
             classic_required_status_checks
         );
 
+        for pull_request_rule in
+            self.required_effective_rules
+                .iter()
+                .filter_map(|rule| match rule {
+                    ExpectedEffectiveRule::PullRequest {
+                        required_approving_review_count,
+                        ..
+                    } => Some(*required_approving_review_count),
+                    _ => None,
+                })
+        {
+            ensure!(
+                pull_request_rule == self.required_approving_review_count,
+                "required_effective_rules pull_request required_approving_review_count {} must match classic required_approving_review_count {}",
+                pull_request_rule,
+                self.required_approving_review_count
+            );
+        }
+
         Ok(())
     }
 }
@@ -1038,6 +1083,7 @@ pub fn compare_branch_protection_response(
         require_code_owner_reviews: expected.require_code_owner_reviews,
         required_approving_review_count: expected.required_approving_review_count,
         required_status_checks: expected.required_status_checks.iter().cloned().collect(),
+        required_status_check_app_ids: expected.required_status_check_app_ids.clone(),
         strict_required_status_checks: expected.strict_required_status_checks,
     };
 
@@ -1114,6 +1160,12 @@ pub fn compare_branch_protection_response(
         "branch protection drift: required status checks differ (expected {:?}, got {:?})",
         expected_normalized.required_status_checks,
         actual.required_status_checks
+    );
+    ensure!(
+        actual.required_status_check_app_ids == expected_normalized.required_status_check_app_ids,
+        "branch protection drift: required status check app ids differ (expected {:?}, got {:?})",
+        expected_normalized.required_status_check_app_ids,
+        actual.required_status_check_app_ids
     );
     ensure!(
         actual.strict_required_status_checks == expected_normalized.strict_required_status_checks,
@@ -1224,13 +1276,18 @@ fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedB
         serde_json::from_str(actual_json).context("failed to parse branch protection JSON")?;
 
     if let Some(message) = value.get("message").and_then(Value::as_str) {
+        let has_branch_protection_fields = value.get("required_status_checks").is_some()
+            || value.get("required_pull_request_reviews").is_some()
+            || value.get("enforce_admins").is_some();
         if message == "Branch not protected" {
             return Err(anyhow!(
                 "branch protection drift: expected protected branch, got unprotected branch"
             ));
         }
 
-        return Err(anyhow!("branch protection API error: {}", message));
+        if !has_branch_protection_fields {
+            return Err(anyhow!("branch protection API error: {}", message));
+        }
     }
 
     let contexts = value
@@ -1248,6 +1305,24 @@ fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedB
                 .ok_or_else(|| anyhow!("branch protection response contains non-string status"))
         })
         .collect::<Result<BTreeSet<_>>>()?;
+    let check_app_ids = value
+        .get("required_status_checks")
+        .and_then(|checks| checks.get("checks"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("branch protection response missing required_status_checks.checks"))?
+        .iter()
+        .map(|entry| {
+            let context = entry
+                .get("context")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("required_status_checks.check entry missing context"))?;
+            let app_id = entry
+                .get("app_id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| anyhow!("required_status_checks.check entry missing app_id"))?;
+            Ok((context.to_string(), app_id))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
 
     let reviews = value.get("required_pull_request_reviews").ok_or_else(|| {
         anyhow!("branch protection response missing required_pull_request_reviews")
@@ -1321,6 +1396,7 @@ fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedB
                 anyhow!("branch protection response missing required_approving_review_count")
             })?,
         required_status_checks: contexts,
+        required_status_check_app_ids: check_app_ids,
         strict_required_status_checks: value
             .get("required_status_checks")
             .and_then(|checks| checks.get("strict"))
@@ -1472,7 +1548,11 @@ fn validate_repo_path_exists(repo_root: &Path, path: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_safe_list_condition(entry: &SafeListEntry) -> Result<()> {
+fn validate_safe_list_condition(
+    entry: &SafeListEntry,
+    normalized_path: &str,
+    used_upstream_prefixes: &BTreeSet<String>,
+) -> Result<()> {
     match entry.condition.kind {
         SafeListConditionKind::UpstreamPathKind => {
             ensure!(
@@ -1483,10 +1563,66 @@ fn validate_safe_list_condition(entry: &SafeListEntry) -> Result<()> {
                 "safe-list entry {} condition.value must be one of docs, examples, tests, unused-adapter for kind upstream-path-kind",
                 entry.path
             );
+            let path_matches = match entry.condition.value.as_str() {
+                "docs" => normalized_path == "docs" || normalized_path.starts_with("docs/"),
+                "examples" => {
+                    normalized_path == "examples" || normalized_path.starts_with("examples/")
+                }
+                "tests" => {
+                    normalized_path == "tests"
+                        || normalized_path.starts_with("tests/")
+                        || normalized_path.contains("/tests/")
+                }
+                "unused-adapter" => {
+                    (normalized_path == "crates/adapters"
+                        || normalized_path.starts_with("crates/adapters/"))
+                        && !used_upstream_prefixes
+                            .iter()
+                            .any(|prefix| path_overlaps_prefix(normalized_path, prefix))
+                }
+                _ => false,
+            };
+            ensure!(
+                path_matches,
+                "safe-list entry {} condition upstream-path-kind={} does not match path semantics",
+                entry.path,
+                entry.condition.value
+            );
         }
     }
 
     Ok(())
+}
+
+fn derive_protected_safe_list_roots(registry: &RegistryFile) -> BTreeSet<String> {
+    let mut roots = SHARED_NT_CRATE_PREFIXES
+        .iter()
+        .map(|prefix| (*prefix).to_string())
+        .collect::<BTreeSet<_>>();
+    roots.extend(
+        registry
+            .seams
+            .iter()
+            .flat_map(|seam| seam.upstream_prefixes.iter())
+            .filter_map(|prefix| protected_safe_list_root(prefix)),
+    );
+    roots
+}
+
+fn protected_safe_list_root(prefix: &str) -> Option<String> {
+    let normalized = normalize_relative(prefix).ok()?;
+    let segments = normalized.split('/').collect::<Vec<_>>();
+    match segments.as_slice() {
+        ["crates", "adapters", adapter, ..] => Some(format!("crates/adapters/{adapter}/")),
+        ["crates", crate_name, ..] => Some(format!("crates/{crate_name}/")),
+        _ => None,
+    }
+}
+
+fn path_overlaps_prefix(path: &str, prefix: &str) -> bool {
+    path.starts_with(prefix)
+        || path == prefix.trim_end_matches('/')
+        || prefix.starts_with(&(path.to_string() + "/"))
 }
 
 fn git_changed_files(repo_root: &Path, base_ref: &str, head_ref: &str) -> Result<Vec<String>> {
@@ -1590,7 +1726,7 @@ fn is_nt_guarded_surface(path: &str) -> bool {
 }
 
 fn is_cargo_config_path(path: &str) -> bool {
-    path == ".cargo/config.toml" || path == ".cargo/config"
+    path == ".cargo/config.toml" || path == ".cargo/config" || path.starts_with(".cargo/config.d/")
 }
 
 fn extract_guarded_cargo_config_state(config: &TomlValue) -> BTreeSet<String> {
@@ -1660,7 +1796,7 @@ fn extract_nt_dependency_records_from_cargo_toml(
     records
 }
 
-fn extract_nt_crates_from_dependabot(contents: &str) -> BTreeSet<String> {
+fn extract_nt_crates_from_dependabot(contents: &str) -> Result<BTreeSet<String>> {
     #[derive(Deserialize)]
     struct DependabotConfig {
         #[serde(default)]
@@ -1683,8 +1819,8 @@ fn extract_nt_crates_from_dependabot(contents: &str) -> BTreeSet<String> {
     }
 
     let parsed: DependabotConfig =
-        serde_yaml::from_str(contents).expect("dependabot.yml should stay valid YAML");
-    parsed
+        serde_yaml::from_str(contents).context("failed to parse .github/dependabot.yml")?;
+    Ok(parsed
         .updates
         .into_iter()
         .find(|update| update.package_ecosystem == "cargo" && update.directory == "/")
@@ -1700,7 +1836,7 @@ fn extract_nt_crates_from_dependabot(contents: &str) -> BTreeSet<String> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 fn regex_escape_literal(value: &str) -> String {
@@ -1841,8 +1977,9 @@ fn collect_nt_data_from_toml_table(
             if let Some(dep_table) = value.as_table() {
                 for (name, dep_value) in dep_table {
                     if dependency_entry_is_nt(name, dep_value, configured) {
+                        let canonical_name = canonical_dependency_name(name).to_string();
                         if let Some(crates) = crates.as_deref_mut() {
-                            crates.insert(name.clone());
+                            crates.insert(canonical_name);
                         }
                         if let Some(records) = records.as_deref_mut() {
                             records.insert(format!(
@@ -1863,8 +2000,32 @@ fn collect_nt_data_from_toml_table(
             if let Some(dep_table) = value.as_table() {
                 for (name, dep_value) in dep_table {
                     if dependency_entry_is_nt(name, dep_value, configured) {
+                        let canonical_name = canonical_dependency_name(name).to_string();
                         if let Some(crates) = crates.as_deref_mut() {
-                            crates.insert(name.clone());
+                            crates.insert(canonical_name);
+                        }
+                        if let Some(records) = records.as_deref_mut() {
+                            records.insert(format!(
+                                "{}::{}={}",
+                                path.join("."),
+                                name,
+                                canonical_toml_value(dep_value)
+                            ));
+                        }
+                    }
+                }
+            }
+            path.pop();
+            continue;
+        }
+
+        if path.len() == 1 && path[0] == "replace" {
+            if let Some(dep_table) = value.as_table() {
+                for (name, dep_value) in dep_table {
+                    if dependency_entry_is_nt(name, dep_value, configured) {
+                        let canonical_name = canonical_dependency_name(name).to_string();
+                        if let Some(crates) = crates.as_deref_mut() {
+                            crates.insert(canonical_name);
                         }
                         if let Some(records) = records.as_deref_mut() {
                             records.insert(format!(
@@ -1895,8 +2056,13 @@ fn collect_nt_data_from_toml_table(
     }
 }
 
+fn canonical_dependency_name(name: &str) -> &str {
+    name.split(':').next().unwrap_or(name)
+}
+
 fn dependency_entry_is_nt(name: &str, value: &TomlValue, configured: &BTreeSet<String>) -> bool {
-    if name.starts_with("nautilus-") || configured.contains(name) {
+    let canonical_name = canonical_dependency_name(name);
+    if canonical_name.starts_with("nautilus-") || configured.contains(canonical_name) {
         return true;
     }
 
@@ -2015,6 +2181,36 @@ nautilus-execution = { git = "https://github.com/nautechsystems/nautilus_trader.
     }
 
     #[test]
+    fn cargo_nt_extractor_scans_replace_section() {
+        let cargo_toml = toml::from_str::<toml::Value>(
+            r#"
+[package]
+name = "fixture"
+version = "0.1.0"
+edition = "2024"
+
+[replace]
+"nautilus-common:0.1.0" = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "abc" }
+"#,
+        )
+        .expect("fixture Cargo.toml should parse");
+
+        let configured = BTreeSet::from(["nautilus-common".to_string()]);
+
+        let extracted = extract_nt_crates_from_cargo_toml(&cargo_toml, &configured);
+
+        assert_eq!(extracted, configured);
+    }
+
+    #[test]
+    fn cargo_config_path_detection_includes_config_d_entries() {
+        assert!(super::is_cargo_config_path(".cargo/config.toml"));
+        assert!(super::is_cargo_config_path(".cargo/config"));
+        assert!(super::is_cargo_config_path(".cargo/config.d/override.toml"));
+        assert!(!super::is_cargo_config_path(".cargo/not-config.toml"));
+    }
+
+    #[test]
     fn dependabot_nt_extractor_is_scoped_to_cargo_block() {
         let contents = r#"
 version: 2
@@ -2030,11 +2226,22 @@ updates:
       - dependency-name: "nautilus-fake"
 "#;
 
-        let extracted = extract_nt_crates_from_dependabot(contents);
+        let extracted =
+            extract_nt_crates_from_dependabot(contents).expect("dependabot fixture should parse");
 
         assert_eq!(
             extracted,
             BTreeSet::from(["nautilus-common".to_string(), "nautilus-core".to_string()])
+        );
+    }
+
+    #[test]
+    fn dependabot_nt_extractor_reports_yaml_errors() {
+        let err = extract_nt_crates_from_dependabot("not: [valid")
+            .expect_err("malformed YAML should fail");
+        assert!(
+            err.to_string()
+                .contains("failed to parse .github/dependabot.yml")
         );
     }
 

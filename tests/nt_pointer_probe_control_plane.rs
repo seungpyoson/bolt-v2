@@ -4,6 +4,7 @@ use bolt_v2::nt_pointer_probe::control::{
     ExpectedBranchProtection, LoadedControlPlane, compare_branch_governance_responses,
     compare_branch_protection_response,
 };
+use serde_yaml::Value as YamlValue;
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -309,6 +310,65 @@ fn nt_mutation_checker_rejects_root_manifest_change() {
 }
 
 #[test]
+fn nt_mutation_checker_rejects_config_d_override_change() {
+    let tempdir = init_temp_git_repo();
+    fs::create_dir_all(tempdir.path().join(".cargo/config.d")).expect("config.d dir should create");
+    fs::write(
+        tempdir.path().join(".cargo/config.d/override.toml"),
+        r#"[paths]
+search = []
+"#,
+    )
+    .expect("base config.d should write");
+
+    let status = std::process::Command::new("git")
+        .args(["add", ".cargo/config.d/override.toml"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+    let status = std::process::Command::new("git")
+        .args(["commit", "--amend", "--no-verify", "--no-edit"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git amend should run");
+    assert!(status.success(), "git amend should succeed");
+
+    fs::write(
+        tempdir.path().join(".cargo/config.d/override.toml"),
+        r#"[source.nautilus]
+git = "https://github.com/evil/nautilus_trader.git"
+"#,
+    )
+    .expect("mutated config.d should write");
+    let status = std::process::Command::new("git")
+        .args(["add", ".cargo/config.d/override.toml"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+    let status = std::process::Command::new("git")
+        .args(["commit", "--no-verify", "-m", "config override"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git commit should run");
+    assert!(status.success(), "git commit should succeed");
+
+    let loaded = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect("temp git repo control plane should load");
+
+    let err = loaded
+        .ensure_no_nt_mutation_from_git_refs("HEAD~1", "HEAD")
+        .expect_err("config.d NT mutation should fail closed");
+
+    assert!(
+        err.to_string()
+            .contains(".cargo/config.d/override.toml changed guarded cargo config state"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn shared_crate_prefix_safe_list_fails_closed() {
     let tempdir = temp_fixture("bad_shared_crate_prefix");
     let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
@@ -363,9 +423,7 @@ value = "shared-nt-crate-parent"
 
     assert!(
         err.to_string()
-            .contains(
-                "safe-list entry crates/ condition.value must be one of docs, examples, tests, unused-adapter for kind upstream-path-kind"
-            ),
+            .contains("shared NT crate safe-list entries must use exact match"),
         "unexpected error: {err}"
     );
 }
@@ -627,6 +685,125 @@ value = "bogus"
 }
 
 #[test]
+fn safe_list_condition_path_mismatch_fails_closed() {
+    let tempdir = temp_fixture("valid_minimal");
+    fs::write(
+        tempdir
+            .path()
+            .join("config/nt_pointer_probe/safe_list.toml"),
+        r#"schema_version = 1
+
+[[entries]]
+path = "src/"
+match = "prefix"
+non_overlap_proof = "Invalid fixture: src is not a docs path."
+approved_by = "fixture"
+approved_at = "2099-01-01"
+revalidate_after = "2099-01-30"
+
+[entries.condition]
+kind = "upstream-path-kind"
+value = "docs"
+"#,
+    )
+    .expect("mismatched safe-list condition fixture should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("path/condition mismatch should fail validation");
+
+    assert!(
+        err.to_string().contains(
+            "safe-list entry src/ condition upstream-path-kind=docs does not match path semantics"
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn effective_review_count_below_classic_floor_fails_closed() {
+    let tempdir = temp_fixture("valid_minimal");
+    fs::write(
+        tempdir
+            .path()
+            .join("config/nt_pointer_probe/expected_branch_protection.toml"),
+        r#"schema_version = 1
+branch = "main"
+enforce_admins = true
+allow_deletions = false
+allow_force_pushes = false
+block_creations = false
+dismiss_stale_reviews = true
+required_linear_history = false
+required_conversation_resolution = false
+lock_branch = false
+require_signed_commits = false
+require_code_owner_reviews = false
+required_approving_review_count = 1
+strict_required_status_checks = false
+required_status_checks = [
+  "gate",
+  "clippy",
+  "test",
+  "build",
+  "nt-pointer-control-plane",
+  "nt-pointer-probe-self-test",
+]
+required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+
+[[required_effective_rules]]
+type = "deletion"
+
+[[required_effective_rules]]
+type = "non_fast_forward"
+
+[[required_effective_rules]]
+type = "pull_request"
+required_approving_review_count = 0
+dismiss_stale_reviews_on_push = false
+require_code_owner_review = false
+require_last_push_approval = false
+required_review_thread_resolution = false
+allowed_merge_methods = ["merge", "squash", "rebase"]
+
+[[required_effective_rules]]
+type = "required_status_checks"
+strict_required_status_checks_policy = false
+required_status_checks = [
+  "gate",
+  "clippy",
+  "test",
+  "build",
+  "nt-pointer-control-plane",
+  "nt-pointer-probe-self-test",
+]
+
+[[required_rulesets]]
+id = 14763241
+name = "Branch governance"
+enforcement = "active"
+allowed_bypass_actors = []
+
+[[required_rulesets]]
+id = 14763242
+name = "CI gates"
+enforcement = "active"
+allowed_bypass_actors = []
+"#,
+    )
+    .expect("mismatched expected branch protection fixture should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("effective review floor mismatch should fail validation");
+
+    assert!(
+        err.to_string().contains(
+            "required_effective_rules pull_request required_approving_review_count 0 must match classic required_approving_review_count 1"
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn branch_protection_comparison_accepts_matching_fixture() {
     let expected =
         ExpectedBranchProtection::load_and_validate(&fixture("branch_protection/expected.toml"))
@@ -775,4 +952,99 @@ fn branch_protection_comparison_rejects_wrong_review_count() {
             .contains("branch protection drift: required_approving_review_count expected 1, got 2"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn branch_protection_comparison_rejects_wrong_required_check_app_id() {
+    let expected =
+        ExpectedBranchProtection::load_and_validate(&fixture("branch_protection/expected.toml"))
+            .expect("expected branch protection fixture should parse");
+    let actual =
+        std::fs::read_to_string(fixture("branch_protection/wrong_check_app_id_actual.json"))
+            .expect("wrong-app-id fixture should load");
+
+    let err = compare_branch_protection_response(&expected, &actual)
+        .expect_err("wrong required-check app id should fail drift comparison");
+
+    assert!(
+        err.to_string()
+            .contains("branch protection drift: required status check app ids differ"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn drift_lane_workflow_exposes_durable_failure_surface() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-control-plane.yml"))
+            .expect("control-plane workflow should load");
+    let yaml: YamlValue =
+        serde_yaml::from_str(&workflow).expect("control-plane workflow should parse as YAML");
+
+    let permissions = yaml
+        .get("permissions")
+        .and_then(YamlValue::as_mapping)
+        .expect("workflow should declare permissions");
+    let issues_permission = permissions
+        .get(YamlValue::String("issues".to_string()))
+        .and_then(YamlValue::as_str)
+        .expect("workflow should declare issues permission");
+    assert_eq!(issues_permission, "write");
+
+    let steps = yaml
+        .get("jobs")
+        .and_then(|jobs| jobs.get("branch_protection_drift"))
+        .and_then(|job| job.get("steps"))
+        .and_then(YamlValue::as_sequence)
+        .expect("branch_protection_drift steps should exist");
+
+    let fetch = steps
+        .iter()
+        .find(|step| {
+            step.get("name").and_then(YamlValue::as_str) == Some("Fetch branch protection state")
+        })
+        .expect("fetch step should exist");
+    assert_eq!(fetch.get("id").and_then(YamlValue::as_str), Some("fetch"));
+    assert_eq!(
+        fetch.get("continue-on-error").and_then(YamlValue::as_bool),
+        Some(true)
+    );
+
+    let compare = steps
+        .iter()
+        .find(|step| {
+            step.get("name").and_then(YamlValue::as_str)
+                == Some("Compare branch governance to expected state")
+        })
+        .expect("compare step should exist");
+    assert_eq!(
+        compare.get("id").and_then(YamlValue::as_str),
+        Some("compare")
+    );
+    assert_eq!(
+        compare.get("if").and_then(YamlValue::as_str),
+        Some("steps.fetch.outcome == 'success'")
+    );
+    assert_eq!(
+        compare
+            .get("continue-on-error")
+            .and_then(YamlValue::as_bool),
+        Some(true)
+    );
+
+    let expected_failure_if =
+        Some("steps.fetch.outcome == 'failure' || steps.compare.outcome == 'failure'");
+    for step_name in [
+        "Update drift issue on failure",
+        "Fail after drift issue update",
+    ] {
+        let step = steps
+            .iter()
+            .find(|step| step.get("name").and_then(YamlValue::as_str) == Some(step_name))
+            .unwrap_or_else(|| panic!("{step_name} should exist"));
+        assert_eq!(
+            step.get("if").and_then(YamlValue::as_str),
+            expected_failure_if
+        );
+    }
 }

@@ -1,6 +1,6 @@
 use std::{
     any::Any,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
     rc::Rc,
 };
@@ -858,6 +858,7 @@ pub struct EthChainlinkTaker {
     pending_exit_market_id: Option<String>,
     open_position_active: bool,
     open_position: Option<OpenPositionState>,
+    last_reported_one_position_occupancy: Cell<Option<OnePositionOccupancy>>,
     pricing: PricingState,
     selection_handler: Option<ShareableMessageHandler>,
     reference_handler: Option<ShareableMessageHandler>,
@@ -892,6 +893,7 @@ impl EthChainlinkTaker {
             pending_exit_market_id: None,
             open_position_active: false,
             open_position: None,
+            last_reported_one_position_occupancy: Cell::new(None),
             pricing,
             selection_handler: None,
             reference_handler: None,
@@ -1169,6 +1171,11 @@ impl EthChainlinkTaker {
     }
 
     fn report_one_position_invariant_violation(&self, occupancy: OnePositionOccupancy) {
+        if self.last_reported_one_position_occupancy.get() == Some(occupancy) {
+            return;
+        }
+        self.last_reported_one_position_occupancy
+            .set(Some(occupancy));
         let message = format!("one-position invariant occupied by {occupancy:?}");
         log::error!("{message}");
     }
@@ -1230,6 +1237,8 @@ impl EthChainlinkTaker {
         if let Some(occupancy) = self.one_position_occupancy() {
             self.report_one_position_invariant_violation(occupancy);
             blocked_by.push(EntryBlockReason::OnePositionInvariant(occupancy));
+        } else {
+            self.last_reported_one_position_occupancy.set(None);
         }
 
         let decision = EntryGateDecision { blocked_by };
@@ -1245,6 +1254,25 @@ impl EthChainlinkTaker {
             now_ms,
             stale_chainlink_after_ms: self.config.forced_flat_stale_chainlink_ms,
             liquidity_available: self.active.books.minimum_liquidity(),
+            min_liquidity_required: self.config.forced_flat_thin_book_min_liquidity,
+            fast_venue_incoherent: self.active.fast_venue_incoherent,
+        })
+        .into_iter()
+        .collect()
+    }
+
+    fn position_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
+        let Some(open_position) = self.open_position.as_ref() else {
+            return self.active_forced_flat_reasons_at(now_ms);
+        };
+
+        evaluate_forced_flat_predicates(&ForcedFlatInputs {
+            phase: self.active.phase,
+            metadata_matches_selection: open_position.book.metadata_matches_selection(),
+            last_chainlink_ts_ms: self.active.last_reference_ts_ms,
+            now_ms,
+            stale_chainlink_after_ms: self.config.forced_flat_stale_chainlink_ms,
+            liquidity_available: open_position.book.liquidity_available,
             min_liquidity_required: self.config.forced_flat_thin_book_min_liquidity,
             fast_venue_incoherent: self.active.fast_venue_incoherent,
         })
@@ -1782,7 +1810,12 @@ impl EthChainlinkTaker {
 
     fn current_exit_value_for_open_position(&self) -> Option<f64> {
         let position_book = &self.open_position.as_ref()?.book;
-        let exit_value = position_book.best_bid?;
+        let open_position = self.open_position.as_ref()?;
+        let exit_value = match open_position.side {
+            PositionSide::Long => position_book.best_bid?,
+            PositionSide::Short => position_book.best_ask?,
+            _ => return None,
+        };
         if !exit_value.is_finite() || exit_value <= 0.0 {
             return None;
         }
@@ -1793,7 +1826,6 @@ impl EthChainlinkTaker {
         self.open_position
             .as_ref()
             .and_then(|position| position.market_id.clone())
-            .or_else(|| self.active.market_id.clone())
     }
 
     fn current_position_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
@@ -1911,7 +1943,7 @@ impl EthChainlinkTaker {
     fn exit_evaluation_at(&self, now_ms: u64) -> ExitEvaluation {
         let mut evaluation = ExitEvaluation {
             position_outcome_side: self.open_position_outcome_side(),
-            forced_flat_reasons: self.active_forced_flat_reasons_at(now_ms),
+            forced_flat_reasons: self.position_forced_flat_reasons_at(now_ms),
             hold_ev_bps: None,
             exit_ev_bps: None,
             exit_decision: None,
@@ -5092,9 +5124,9 @@ mod tests {
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         });
-        strategy.pending_exit_order = Some(exit_client_order_id);
-        strategy.pending_exit_market_id = None;
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy.pending_exit_order = Some(exit_client_order_id);
+        strategy.pending_exit_market_id = strategy.current_position_market_id();
 
         strategy
             .on_order_filled(&order_filled_event(
@@ -5105,6 +5137,46 @@ mod tests {
             .expect("exit fill bookkeeping should succeed");
 
         assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+    }
+
+    #[test]
+    fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let position_instrument = InstrumentId::from("condition-MKT-A-UP.POLYMARKET");
+        let mut tracked_book = OutcomeBookState::from_instrument_id(position_instrument);
+        tracked_book.last_observed_instrument_id = Some(position_instrument);
+        tracked_book.best_bid = Some(0.430);
+        tracked_book.best_ask = Some(0.450);
+        tracked_book.liquidity_available = Some(5.0);
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-A".to_string()),
+            instrument_id: position_instrument,
+            position_id: PositionId::from("P-THIN-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: tracked_book,
+        });
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy.active.books.up.liquidity_available = Some(5_000.0);
+        strategy.active.books.down.liquidity_available = Some(5_000.0);
+
+        let decision = strategy.exit_submission_decision_at(2_000);
+
+        assert!(
+            decision
+                .forced_flat_reasons
+                .contains(&ForcedFlatReason::ThinBook)
+        );
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
+        assert_eq!(decision.instrument_id, Some(position_instrument));
     }
 
     #[test]
@@ -5880,6 +5952,39 @@ mod tests {
     }
 
     #[test]
+    fn entry_gate_reports_one_position_invariant_only_on_occupancy_change() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.pending_exit_order = Some(ClientOrderId::from("EXIT-001"));
+
+        let first = strategy.entry_gate_decision_at(2_000);
+        let second = strategy.entry_gate_decision_at(2_001);
+
+        assert!(
+            first
+                .blocked_by
+                .contains(&EntryBlockReason::OnePositionInvariant(
+                    OnePositionOccupancy::PendingExit
+                ))
+        );
+        assert_eq!(
+            strategy.last_reported_one_position_occupancy.get(),
+            Some(OnePositionOccupancy::PendingExit)
+        );
+        assert_eq!(first.blocked_by, second.blocked_by);
+
+        strategy.pending_exit_order = None;
+        let cleared = strategy.entry_gate_decision_at(2_002);
+        assert!(
+            !cleared
+                .blocked_by
+                .contains(&EntryBlockReason::OnePositionInvariant(
+                    OnePositionOccupancy::PendingExit
+                ))
+        );
+        assert_eq!(strategy.last_reported_one_position_occupancy.get(), None);
+    }
+
+    #[test]
     fn task5_entry_order_plan_uses_fok_and_side_specific_best_price() {
         let up = build_entry_order_plan(&EntryOrderPlanInputs {
             client_order_id: ClientOrderId::from("ENTRY-UP"),
@@ -6201,6 +6306,7 @@ mod tests {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
         let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
+        tracked_book.last_observed_instrument_id = Some(instrument_id);
         tracked_book.best_bid = Some(0.520);
         tracked_book.best_ask = Some(0.530);
         tracked_book.liquidity_available = Some(100.0);
@@ -6239,6 +6345,7 @@ mod tests {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let instrument_id = InstrumentId::from("0xcondition-legacy-222.POLYMARKET");
         let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
+        tracked_book.last_observed_instrument_id = Some(instrument_id);
         tracked_book.best_bid = Some(0.520);
         tracked_book.best_ask = Some(0.530);
         tracked_book.liquidity_available = Some(100.0);

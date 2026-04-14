@@ -210,25 +210,6 @@ impl OutcomeBookState {
             true,
         )
     }
-
-    fn max_sell_execution_within_vwap_slippage_bps(
-        &self,
-        slippage_bps: u64,
-    ) -> Option<ImpactCappedExecution> {
-        let best_bid = self
-            .best_bid
-            .filter(|value| value.is_finite() && *value > 0.0)?;
-        let allowed_vwap = best_bid * (1.0 - slippage_bps as f64 / BPS_DENOMINATOR);
-        max_execution_within_vwap_limit(
-            self.bid_levels
-                .iter()
-                .rev()
-                .map(|(price, size)| (price.as_f64(), *size))
-                .collect(),
-            allowed_vwap,
-            false,
-        )
-    }
 }
 
 fn max_execution_within_vwap_limit(
@@ -546,7 +527,7 @@ struct OpenPositionState {
     market_id: Option<String>,
     instrument_id: InstrumentId,
     position_id: PositionId,
-    outcome_side: OutcomeSide,
+    outcome_side: Option<OutcomeSide>,
     outcome_fees: OutcomeFeeState,
     entry_order_side: OrderSide,
     side: PositionSide,
@@ -1081,8 +1062,7 @@ impl EthChainlinkTaker {
                         position.entry,
                         position.side,
                         position.instrument_id,
-                    )
-                    .unwrap_or(OutcomeSide::Up),
+                    ),
                     outcome_fees: OutcomeFeeState::default(),
                     entry_order_side: position.entry,
                     side: position.side,
@@ -1611,12 +1591,7 @@ impl EthChainlinkTaker {
     fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
         match side {
             OutcomeSide::Up => self.active.books.up.best_ask,
-            OutcomeSide::Down => self
-                .active
-                .books
-                .down
-                .best_bid
-                .map(|best_bid| 1.0 - best_bid),
+            OutcomeSide::Down => self.active.books.down.best_ask,
         }
         .filter(|value| value.is_finite() && *value > 0.0)
     }
@@ -1624,7 +1599,7 @@ impl EthChainlinkTaker {
     fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
         match side {
             OutcomeSide::Up => self.active.books.up.best_ask,
-            OutcomeSide::Down => self.active.books.down.best_bid,
+            OutcomeSide::Down => self.active.books.down.best_ask,
         }
         .filter(|value| value.is_finite() && *value > 0.0)
     }
@@ -1640,12 +1615,12 @@ impl EthChainlinkTaker {
                 .active
                 .books
                 .down
-                .max_sell_execution_within_vwap_slippage_bps(self.config.book_impact_cap_bps),
+                .max_buy_execution_within_vwap_slippage_bps(self.config.book_impact_cap_bps),
         }
         .filter(|execution| execution.quantity.is_finite() && execution.quantity > 0.0)?;
         Some(match side {
             OutcomeSide::Up => capped_execution.quantity * capped_execution.vwap_price,
-            OutcomeSide::Down => capped_execution.quantity * (1.0 - capped_execution.vwap_price),
+            OutcomeSide::Down => capped_execution.quantity * capped_execution.vwap_price,
         })
     }
 
@@ -1674,13 +1649,9 @@ impl EthChainlinkTaker {
     }
 
     fn infer_outcome_side_from_entry_order_side(
-        entry_order_side: OrderSide,
+        _entry_order_side: OrderSide,
     ) -> Option<OutcomeSide> {
-        match entry_order_side {
-            OrderSide::Buy => Some(OutcomeSide::Up),
-            OrderSide::Sell => Some(OutcomeSide::Down),
-            _ => None,
-        }
+        None
     }
 
     fn infer_outcome_side_from_position(
@@ -1689,16 +1660,16 @@ impl EthChainlinkTaker {
         instrument_id: InstrumentId,
     ) -> Option<OutcomeSide> {
         match (entry_order_side, position_side) {
-            (OrderSide::Buy, PositionSide::Long) => Some(OutcomeSide::Up),
-            (OrderSide::Sell, PositionSide::Short) => Some(OutcomeSide::Down),
-            _ => Self::infer_outcome_side_from_instrument_id(instrument_id),
+            (OrderSide::Buy, PositionSide::Long) => {
+                Self::infer_outcome_side_from_instrument_id(instrument_id)
+            }
+            _ => None,
         }
     }
 
     fn infer_position_side(entry_order_side: OrderSide) -> Option<PositionSide> {
         match entry_order_side {
             OrderSide::Buy => Some(PositionSide::Long),
-            OrderSide::Sell => Some(PositionSide::Short),
             _ => None,
         }
     }
@@ -1721,7 +1692,7 @@ impl EthChainlinkTaker {
 
         if self.active.books.up.instrument_id == Some(open_position.instrument_id) {
             open_position.market_id = self.active.market_id.clone();
-            open_position.outcome_side = OutcomeSide::Up;
+            open_position.outcome_side = Some(OutcomeSide::Up);
             open_position.outcome_fees = self.active.outcome_fees.clone();
             open_position.interval_open = self.active.interval_open;
             open_position.selection_published_at_ms = self.active.selection_published_at_ms;
@@ -1730,7 +1701,7 @@ impl EthChainlinkTaker {
             open_position.book = self.active.books.up.clone();
         } else if self.active.books.down.instrument_id == Some(open_position.instrument_id) {
             open_position.market_id = self.active.market_id.clone();
-            open_position.outcome_side = OutcomeSide::Down;
+            open_position.outcome_side = Some(OutcomeSide::Down);
             open_position.outcome_fees = self.active.outcome_fees.clone();
             open_position.interval_open = self.active.interval_open;
             open_position.selection_published_at_ms = self.active.selection_published_at_ms;
@@ -1772,14 +1743,13 @@ impl EthChainlinkTaker {
     fn open_position_outcome_side(&self) -> Option<OutcomeSide> {
         self.open_position
             .as_ref()
-            .map(|position| position.outcome_side)
+            .and_then(|position| position.outcome_side)
     }
 
-    fn open_position_effective_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
+    fn open_position_effective_entry_cost(&self) -> Option<f64> {
         let open_position = self.open_position.as_ref()?;
-        let effective_cost = match (side, open_position.entry_order_side) {
-            (OutcomeSide::Up, OrderSide::Buy) => open_position.avg_px_open,
-            (OutcomeSide::Down, OrderSide::Sell) => 1.0 - open_position.avg_px_open,
+        let effective_cost = match open_position.entry_order_side {
+            OrderSide::Buy => open_position.avg_px_open,
             _ => return None,
         };
         if !effective_cost.is_finite() || effective_cost <= 0.0 {
@@ -1788,28 +1758,68 @@ impl EthChainlinkTaker {
         Some(effective_cost)
     }
 
-    fn current_exit_order_for_side(&self, side: OutcomeSide) -> Option<(OrderSide, f64)> {
+    fn current_exit_order_for_open_position(&self) -> Option<(OrderSide, f64)> {
         let position_book = &self.open_position.as_ref()?.book;
-        let (order_side, price) = match side {
-            OutcomeSide::Up => (OrderSide::Sell, position_book.best_bid?),
-            OutcomeSide::Down => (OrderSide::Buy, position_book.best_ask?),
-        };
+        let order_side = OrderSide::Sell;
+        let price = position_book.best_bid?;
         if !price.is_finite() || price <= 0.0 {
             return None;
         }
         Some((order_side, price))
     }
 
-    fn current_exit_value_for_side(&self, side: OutcomeSide) -> Option<f64> {
+    fn current_exit_value_for_open_position(&self) -> Option<f64> {
         let position_book = &self.open_position.as_ref()?.book;
-        let exit_value = match side {
-            OutcomeSide::Up => position_book.best_bid?,
-            OutcomeSide::Down => 1.0 - position_book.best_ask?,
-        };
+        let exit_value = position_book.best_bid?;
         if !exit_value.is_finite() || exit_value <= 0.0 {
             return None;
         }
         Some(exit_value)
+    }
+
+    fn current_position_market_id(&self) -> Option<String> {
+        self.open_position
+            .as_ref()
+            .and_then(|position| position.market_id.clone())
+            .or_else(|| self.active.market_id.clone())
+    }
+
+    fn current_position_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
+        let open_position = self.open_position.as_ref()?;
+        Self::seconds_to_expiry_from_selection(
+            open_position.selection_published_at_ms,
+            open_position.seconds_to_expiry_at_selection,
+            now_ms,
+        )
+    }
+
+    fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
+        let open_position = self.open_position.as_ref()?;
+        let spot_price = self
+            .pricing
+            .spot_price()
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        let strike_price = open_position
+            .interval_open
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
+        let realized_vol = self
+            .current_realized_vol_at(now_ms)
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        compute_fair_probability_up(&FairProbabilityInputs {
+            spot_price,
+            strike_price,
+            seconds_to_expiry,
+            realized_vol,
+            pricing_kurtosis: self.config.pricing_kurtosis,
+        })
+    }
+
+    fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<f64> {
+        let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
+        let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
+        let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
+        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, up_fee_bps, down_fee_bps)
     }
 
     fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
@@ -1843,7 +1853,7 @@ impl EthChainlinkTaker {
             up_fee_bps,
             down_fee_bps,
         )?;
-        let effective_entry_cost = self.open_position_effective_entry_cost(side)?;
+        let effective_entry_cost = self.open_position_effective_entry_cost()?;
         let fee_bps = match side {
             OutcomeSide::Up => up_fee_bps,
             OutcomeSide::Down => down_fee_bps,
@@ -1861,14 +1871,14 @@ impl EthChainlinkTaker {
     }
 
     fn current_exit_ev_bps_at(&self, side: OutcomeSide) -> Option<f64> {
-        let effective_entry_cost = self.open_position_effective_entry_cost(side)?;
+        let effective_entry_cost = self.open_position_effective_entry_cost()?;
         let fee_bps = self.position_outcome_fee_bps(side)?;
         let total_entry_cost = effective_entry_cost * (1.0 + fee_bps / BPS_DENOMINATOR);
         if !total_entry_cost.is_finite() || total_entry_cost <= 0.0 {
             return None;
         }
 
-        let current_exit_value = self.current_exit_value_for_side(side)?;
+        let current_exit_value = self.current_exit_value_for_open_position()?;
         let net_exit_value = current_exit_value * (1.0 - fee_bps / BPS_DENOMINATOR);
         if !net_exit_value.is_finite() || net_exit_value <= 0.0 {
             return None;
@@ -1888,7 +1898,7 @@ impl EthChainlinkTaker {
 
     fn exit_evaluation_at(&self, now_ms: u64) -> ExitEvaluation {
         let mut evaluation = ExitEvaluation {
-            position_outcome_side: None,
+            position_outcome_side: self.open_position_outcome_side(),
             forced_flat_reasons: self.active_forced_flat_reasons_at(now_ms),
             hold_ev_bps: None,
             exit_ev_bps: None,
@@ -1905,16 +1915,15 @@ impl EthChainlinkTaker {
             return evaluation;
         }
 
-        let Some(position_outcome_side) = self.open_position_outcome_side() else {
-            evaluation.blocked_reason = Some("open_position_side_unrecognized");
-            return evaluation;
-        };
-        evaluation.position_outcome_side = Some(position_outcome_side);
-
         if !evaluation.forced_flat_reasons.is_empty() {
             evaluation.exit_decision = Some(ExitDecision::Exit);
             return evaluation;
         }
+
+        let Some(position_outcome_side) = evaluation.position_outcome_side else {
+            evaluation.blocked_reason = Some("open_position_side_unrecognized");
+            return evaluation;
+        };
 
         evaluation.hold_ev_bps = self.current_hold_ev_bps_at(now_ms, position_outcome_side);
         evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side);
@@ -1952,12 +1961,7 @@ impl EthChainlinkTaker {
             decision.blocked_reason = Some("open_position_missing");
             return decision;
         };
-        let Some(position_outcome_side) = evaluation.position_outcome_side else {
-            decision.blocked_reason = Some("open_position_side_unrecognized");
-            return decision;
-        };
-        let Some((order_side, price)) = self.current_exit_order_for_side(position_outcome_side)
-        else {
+        let Some((order_side, price)) = self.current_exit_order_for_open_position() else {
             decision.blocked_reason = Some("exit_price_missing");
             return decision;
         };
@@ -1981,7 +1985,7 @@ impl EthChainlinkTaker {
     ) -> ExitEvaluationLogFields {
         let open_position = self.open_position.as_ref();
         ExitEvaluationLogFields {
-            market_id: self.active.market_id.clone(),
+            market_id: self.current_position_market_id(),
             phase: self.active.phase,
             position_outcome_side: decision.evaluation.position_outcome_side,
             position_id: open_position.map(|position| position.position_id),
@@ -1996,23 +2000,19 @@ impl EthChainlinkTaker {
                 .as_ref()
                 .map(|spot| spot.venue_name.clone()),
             reference_fair_value: self.pricing.last_reference_fair_value,
-            interval_open: self.active.interval_open,
-            seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
+            interval_open: open_position.and_then(|position| position.interval_open),
+            seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
             pricing_kurtosis: self.config.pricing_kurtosis,
             exit_hysteresis_bps: self.config.exit_hysteresis_bps,
-            fair_probability_up: self.current_fair_probability_up_at(now_ms),
+            fair_probability_up: self.current_position_fair_probability_up_at(now_ms),
             fair_probability_down: self
-                .current_fair_probability_up_at(now_ms)
+                .current_position_fair_probability_up_at(now_ms)
                 .map(|value| 1.0 - value),
             uncertainty_band_probability: self
-                .outcome_fee_bps(OutcomeSide::Up)
-                .zip(self.outcome_fee_bps(OutcomeSide::Down))
-                .and_then(|(up_fee_bps, down_fee_bps)| {
-                    self.current_uncertainty_band_probability_at(now_ms, up_fee_bps, down_fee_bps)
-                }),
-            up_fee_bps: self.outcome_fee_bps(OutcomeSide::Up),
-            down_fee_bps: self.outcome_fee_bps(OutcomeSide::Down),
+                .current_position_uncertainty_band_probability_at(now_ms),
+            up_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Up),
+            down_fee_bps: self.position_outcome_fee_bps(OutcomeSide::Down),
             hold_ev_bps: decision.evaluation.hold_ev_bps,
             exit_ev_bps: decision.evaluation.exit_ev_bps,
             exit_decision: decision.evaluation.exit_decision,
@@ -2257,7 +2257,7 @@ impl EthChainlinkTaker {
 
         let order_side = match selected_side {
             OutcomeSide::Up => OrderSide::Buy,
-            OutcomeSide::Down => OrderSide::Sell,
+            OutcomeSide::Down => OrderSide::Buy,
         };
 
         decision.instrument_id = Some(instrument_id);
@@ -2622,11 +2622,9 @@ impl DataActor for EthChainlinkTaker {
                     market_id: pending_market_id.clone(),
                     instrument_id: event.instrument_id,
                     position_id,
-                    outcome_side: pending_outcome_side
-                        .or_else(|| {
-                            Self::infer_outcome_side_from_entry_order_side(event.order_side)
-                        })
-                        .unwrap_or(OutcomeSide::Up),
+                    outcome_side: pending_outcome_side.or_else(|| {
+                        Self::infer_outcome_side_from_entry_order_side(event.order_side)
+                    }),
                     outcome_fees: pending_outcome_fees,
                     entry_order_side: event.order_side,
                     side: Self::infer_position_side(event.order_side).unwrap_or(PositionSide::Long),
@@ -2645,6 +2643,14 @@ impl DataActor for EthChainlinkTaker {
             }
         } else if exit_fill {
             self.open_position_active = self.open_position.is_some();
+            if let Some(market_id) = self
+                .open_position
+                .as_ref()
+                .and_then(|position| position.market_id.clone())
+                .or_else(|| self.current_market_id().map(str::to_string))
+            {
+                self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
+            }
         } else if let Some(market_id) = self.current_market_id().map(str::to_string) {
             self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
         }
@@ -2703,14 +2709,13 @@ nautilus_strategy!(EthChainlinkTaker, {
             position_id: _event.position_id,
             outcome_side: preserved
                 .as_ref()
-                .map(|position| position.outcome_side)
-                .unwrap_or_else(|| {
+                .and_then(|position| position.outcome_side)
+                .or_else(|| {
                     Self::infer_outcome_side_from_position(
                         _event.entry,
                         _event.side,
                         _event.instrument_id,
                     )
-                    .unwrap_or(OutcomeSide::Up)
                 }),
             outcome_fees: preserved
                 .as_ref()
@@ -2759,14 +2764,13 @@ nautilus_strategy!(EthChainlinkTaker, {
             position_id: _event.position_id,
             outcome_side: preserved
                 .as_ref()
-                .map(|position| position.outcome_side)
-                .unwrap_or_else(|| {
+                .and_then(|position| position.outcome_side)
+                .or_else(|| {
                     Self::infer_outcome_side_from_position(
                         _event.entry,
                         _event.side,
                         _event.instrument_id,
                     )
-                    .unwrap_or(OutcomeSide::Up)
                 }),
             outcome_fees: preserved
                 .as_ref()
@@ -3592,7 +3596,7 @@ struct EntryOrderPlan {
 fn build_entry_order_plan(inputs: &EntryOrderPlanInputs) -> Result<EntryOrderPlan> {
     let (order_side, raw_price) = match inputs.outcome_side {
         OutcomeSide::Up => (OrderSide::Buy, inputs.best_ask),
-        OutcomeSide::Down => (OrderSide::Sell, inputs.best_bid),
+        OutcomeSide::Down => (OrderSide::Buy, inputs.best_ask),
     };
     anyhow::ensure!(
         raw_price.is_finite() && raw_price > 0.0,
@@ -4793,7 +4797,7 @@ mod tests {
                 market_id: Some("MKT-1".to_string()),
                 instrument_id,
                 position_id,
-                outcome_side: OutcomeSide::Up,
+                outcome_side: Some(OutcomeSide::Up),
                 outcome_fees: strategy.active.outcome_fees.clone(),
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Long,
@@ -4828,7 +4832,7 @@ mod tests {
             market_id: Some("MKT-1".to_string()),
             instrument_id,
             position_id,
-            outcome_side: OutcomeSide::Up,
+            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
@@ -4883,32 +4887,32 @@ mod tests {
     }
 
     #[test]
-    fn down_entry_submission_price_uses_best_bid_not_cost() {
+    fn down_entry_submission_price_uses_best_ask_as_long_entry_cost() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.active.books.down.best_bid = Some(0.40);
         strategy.active.books.down.best_ask = Some(0.41);
         assert_eq!(
             strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.40)
+            Some(0.41)
         );
         assert_eq!(
             strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.60)
+            Some(0.41)
         );
     }
 
     #[test]
-    fn numeric_token_position_semantics_infer_outcome_side_without_suffixes() {
+    fn numeric_token_position_semantics_do_not_guess_without_suffixes() {
         let down_instrument = InstrumentId::from("0xcondition-222.POLYMARKET");
         let up_instrument = InstrumentId::from("0xcondition-111.POLYMARKET");
 
         assert_eq!(
             EthChainlinkTaker::infer_outcome_side_from_position(
-                OrderSide::Sell,
-                PositionSide::Short,
+                OrderSide::Buy,
+                PositionSide::Long,
                 down_instrument,
             ),
-            Some(OutcomeSide::Down)
+            None
         );
         assert_eq!(
             EthChainlinkTaker::infer_outcome_side_from_position(
@@ -4916,7 +4920,7 @@ mod tests {
                 PositionSide::Long,
                 up_instrument,
             ),
-            Some(OutcomeSide::Up)
+            None
         );
     }
 
@@ -5006,6 +5010,43 @@ mod tests {
                 position_id,
             ))
             .expect("fill bookkeeping should succeed");
+
+        assert!(strategy.market_in_cooldown("MKT-1", 1_000));
+        assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+    }
+
+    #[test]
+    fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
+        let mut strategy = ready_to_trade_strategy();
+        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let exit_client_order_id = ClientOrderId::from("EXIT-A");
+        let position_id = PositionId::from("P-A");
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: tracked_instrument,
+            position_id,
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        });
+        strategy.pending_exit_order = Some(exit_client_order_id);
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+
+        strategy
+            .on_order_filled(&order_filled_event(
+                exit_client_order_id,
+                tracked_instrument,
+                position_id,
+            ))
+            .expect("exit fill bookkeeping should succeed");
 
         assert!(strategy.market_in_cooldown("MKT-1", 1_000));
         assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
@@ -5107,7 +5148,7 @@ mod tests {
             market_id: Some("MKT-1".to_string()),
             instrument_id: instrument_a,
             position_id: PositionId::from("P-A"),
-            outcome_side: OutcomeSide::Up,
+            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
@@ -5151,7 +5192,7 @@ mod tests {
             market_id: Some("MKT-1".to_string()),
             instrument_id: tracked_instrument,
             position_id: PositionId::from("P-TRACKED"),
-            outcome_side: OutcomeSide::Up,
+            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
@@ -5809,8 +5850,8 @@ mod tests {
         assert_eq!(up.order_side, OrderSide::Buy);
         assert_eq!(up.price, Price::new(0.45, 2));
         assert_eq!(up.time_in_force, TimeInForce::Fok);
-        assert_eq!(down.order_side, OrderSide::Sell);
-        assert_eq!(down.price, Price::new(0.43, 2));
+        assert_eq!(down.order_side, OrderSide::Buy);
+        assert_eq!(down.price, Price::new(0.45, 2));
         assert_eq!(down.time_in_force, TimeInForce::Fok);
     }
 
@@ -6053,6 +6094,54 @@ mod tests {
     }
 
     #[test]
+    fn exit_evaluation_log_fields_use_position_context_after_rotation() {
+        let fee_provider = RecordingFeeProvider::cold();
+        fee_provider.set_fee("MKT-1-UP", Decimal::new(100, 2));
+        fee_provider.set_fee("MKT-1-DOWN", Decimal::new(200, 2));
+        fee_provider.set_fee("MKT-2-UP", Decimal::new(300, 2));
+        fee_provider.set_fee("MKT-2-DOWN", Decimal::new(400, 2));
+
+        let mut strategy = test_strategy_with_fee_provider(fee_provider);
+        strategy.config.warmup_tick_count = 2;
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        strategy.active.interval_open = Some(3_100.0);
+        strategy.active.warmup_count = 2;
+        strategy.active.last_reference_ts_ms = Some(2_000);
+        strategy.refresh_fee_readiness();
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+            position_id: PositionId::from("P-UP-LOG-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        });
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy.active.interval_open = Some(3_200.0);
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 2_000));
+        strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
+        strategy.pricing.realized_vol.last_ready_ts_ms = Some(2_000);
+
+        let decision = strategy.exit_submission_decision_at(2_000);
+        let fields = strategy.exit_evaluation_log_fields_at(2_000, &decision);
+
+        assert_eq!(fields.market_id.as_deref(), Some("MKT-1"));
+        assert_eq!(fields.interval_open, Some(3_100.0));
+        assert_eq!(fields.seconds_to_expiry, Some(299));
+        assert_eq!(fields.up_fee_bps, Some(1.0));
+        assert_eq!(fields.down_fee_bps, Some(2.0));
+    }
+
+    #[test]
     fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.active.phase = SelectionPhase::Freeze;
@@ -6061,7 +6150,7 @@ mod tests {
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             position_id: PositionId::from("P-UP-001"),
-            outcome_side: OutcomeSide::Up,
+            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
@@ -6094,10 +6183,10 @@ mod tests {
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.down.instrument_id.unwrap(),
             position_id: PositionId::from("P-DOWN-001"),
-            outcome_side: OutcomeSide::Down,
+            outcome_side: Some(OutcomeSide::Down),
             outcome_fees: strategy.active.outcome_fees.clone(),
-            entry_order_side: OrderSide::Sell,
-            side: PositionSide::Short,
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
             quantity: Quantity::new(12.0, 2),
             avg_px_open: 0.480,
             interval_open: Some(3_100.0),
@@ -6108,12 +6197,12 @@ mod tests {
 
         let decision = strategy.exit_submission_decision_at(1_200);
 
-        assert_eq!(decision.order_side, Some(OrderSide::Buy));
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
         assert_eq!(
             decision.instrument_id,
             strategy.active.books.down.instrument_id
         );
-        assert_eq!(decision.price, strategy.active.books.down.best_ask);
+        assert_eq!(decision.price, strategy.active.books.down.best_bid);
         assert_eq!(decision.quantity, Some(Quantity::new(12.0, 2)));
         assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
     }
@@ -6126,7 +6215,7 @@ mod tests {
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             position_id: PositionId::from("P-UP-002"),
-            outcome_side: OutcomeSide::Up,
+            outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,

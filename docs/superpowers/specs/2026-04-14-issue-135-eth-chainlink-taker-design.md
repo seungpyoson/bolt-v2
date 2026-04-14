@@ -310,7 +310,7 @@ Entries use:
 - `Limit`
 - `TimeInForce::Fok`
 - best-ask price for Up side entries
-- best-bid price for Down side entries
+- best-ask price for Down side entries
 
 Each order carries a strategy-owned `ClientOrderId`.
 
@@ -341,6 +341,12 @@ Exit when:
 No blind carry-to-resolution behavior is allowed. Any intentional hold is the result of this explicit comparison, not omission.
 
 `modify_order` is not used. Exit updates must cancel and replace if they need to move.
+
+Entry and exit direction are long-only on the selected outcome token:
+
+- `Up` entry = buy the `Up` token
+- `Down` entry = buy the `Down` token
+- exit for an existing position = sell the held token to close the long
 
 ## Forced-Flat Rules
 

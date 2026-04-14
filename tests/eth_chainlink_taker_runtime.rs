@@ -525,7 +525,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
 }
 
 #[test]
-fn eth_chainlink_taker_runtime_submits_down_entry_order_at_down_bid_price_not_ev_cost() {
+fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
@@ -573,16 +573,16 @@ fn eth_chainlink_taker_runtime_submits_down_entry_order_at_down_bid_price_not_ev
             );
             publish_any(
                 "platform.reference.test.chainlink".to_string().into(),
-                &reference_snapshot(start_ts_ms + 200, 3_099.0, 3_099.5),
+                &reference_snapshot(start_ts_ms + 200, 3_095.0, 3_094.0),
             );
 
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
-                &book_deltas(up, 0.600, 0.610),
+                &book_deltas(up, 0.700, 0.720),
             );
             publish_deltas(
                 switchboard::get_book_deltas_topic(down),
-                &book_deltas(down, 0.550, 0.560),
+                &book_deltas(down, 0.280, 0.300),
             );
 
             for _ in 0..50 {
@@ -613,8 +613,8 @@ fn eth_chainlink_taker_runtime_submits_down_entry_order_at_down_bid_price_not_ev
         .order(&submissions[0].client_order_id)
         .cloned()
         .expect("submitted order should be cached");
-    assert_eq!(order.order_side(), OrderSide::Sell);
-    assert_eq!(order.price(), Some(Price::new(0.550, 3)));
+    assert_eq!(order.order_side(), OrderSide::Buy);
+    assert_eq!(order.price(), Some(Price::new(0.300, 3)));
 }
 
 #[test]
@@ -955,7 +955,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
 }
 
 #[test]
-fn eth_chainlink_taker_runtime_bootstraps_numeric_down_position_across_rotation_without_flipping_exit_side()
+fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_held_down_at_best_bid()
  {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
@@ -992,7 +992,7 @@ fn eth_chainlink_taker_runtime_bootstraps_numeric_down_position_across_rotation_
         &node,
         strategy_id,
         market_a_down,
-        OrderSide::Sell,
+        OrderSide::Buy,
         Price::from("0.480"),
         PositionId::from("P-RECOVERY-DOWN-001"),
     );
@@ -1129,6 +1129,6 @@ fn eth_chainlink_taker_runtime_bootstraps_numeric_down_position_across_rotation_
         .order(&submissions[0].client_order_id)
         .cloned()
         .expect("submitted order should be cached");
-    assert_eq!(order.order_side(), OrderSide::Buy);
-    assert_eq!(order.price(), Some(Price::new(0.530, 3)));
+    assert_eq!(order.order_side(), OrderSide::Sell);
+    assert_eq!(order.price(), Some(Price::new(0.520, 3)));
 }

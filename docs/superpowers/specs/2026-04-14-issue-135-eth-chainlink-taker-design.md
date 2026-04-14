@@ -148,24 +148,35 @@ On `on_start` the strategy must:
 3. subscribe to runtime selection snapshots
 4. subscribe to reference snapshots on `context.reference_publish_topic`
 
-It does not subscribe to book deltas until an `Active` selection snapshot identifies the current market and active token.
+It prepares during both `Active` and `Freeze`.
+
+That means:
+
+- runtime selection and reference subscriptions start on `on_start`
+- current-market order-book subscriptions may be established during `Active` or `Freeze`
+- no new entries are allowed during `Freeze`
 
 ## Selection Handling
 
 When a selection snapshot arrives:
 
 - `Idle` means no active trading target
-- `Freeze` means forced-flat and no new entries
+- `Freeze` means prepare but do not open new trades
 - `Active` means one candidate market is now tradable
 
 If the active market identity has changed:
 
-- explicitly `unsubscribe_book_deltas` from the previous instrument
-- compute the new active side/token target
-- `subscribe_book_deltas` for the new instrument
+- explicitly replace current-market book subscriptions
+- keep both outcome books prepared for the selected market until later side-selection logic chooses one side for action
 - clear only active-market state
-- trigger `fee_provider.warm(new_token_id)`
-- set `fees_ready_for_active = false`
+- trigger fee-rate warmup for both outcome tokens
+- reset fee readiness fail-closed for the new market
+
+If the same market changes phase between `Active` and `Freeze`:
+
+- preserve interval-open, warmup, and prepared market state
+- update only phase-local state
+- re-trigger fee-rate refresh when re-entering `Active`
 
 Repeated `Active` snapshots for the same effective market must be idempotent.
 
@@ -180,7 +191,8 @@ The active side is:
 - the higher worst-case-EV side if both clear
 - no entry if neither clears
 
-This side choice also determines the active token subscription target and the order side/price used for entry.
+This side choice determines the order side/price used for entry.
+Pre-math shell preparation remains side-neutral.
 
 ## Data Readiness Gates
 
@@ -197,7 +209,7 @@ An entry attempt is allowed only if all of the following are true:
 - forced-flat conditions are not active
 - there is no open or inflight position/order state violating the one-position invariant
 
-If any gate fails, the strategy does nothing except log the reason at the appropriate level.
+If any gate fails, the strategy does nothing except log the reason in structured operator-facing form.
 
 ## Reference and Lead Model
 
@@ -213,6 +225,13 @@ For each fast venue, maintain rolling state for:
 Lead selection uses a composite score over freshness, jitter, and agreement. There is no hardcoded venue ranking.
 
 If no fast venue clears thresholds, the strategy falls back to Chainlink-only reference handling.
+
+`Freeze` does not stop reference preparation:
+
+- reference freshness should continue updating
+- interval-open capture should still occur if still missing
+- warmup progress should continue updating
+- entries remain blocked because phase is not `Active`
 
 ## Interval-Open Capture
 
@@ -232,10 +251,12 @@ Fees come only from `Arc<dyn FeeProvider>`.
 
 Rules:
 
-- activation and switch trigger `warm(active_token_id)` asynchronously
-- `fees_ready_for_active` stays false until `fee_bps(active_token_id)` is cache-hot
-- a cold miss is fail-closed, not estimated
+- market activation and market switch trigger fee-rate warmup for both outcome tokens asynchronously
+- same-market `Freeze -> Active` reactivation triggers a fee-rate refresh again
+- if cached fee rates already exist for the current market, the strategy may remain fee-ready immediately while refreshing in the background
+- if cached fee rates do not exist, readiness remains fail-closed until both outcome fee rates are available
 - no Gamma fee fields are read or propagated
+- final fee amounts are computed later from fee rate, shares, price, and the venue formula; warmup here is only for fee rates
 
 ## Negative Telemetry
 
@@ -246,6 +267,7 @@ Required omission logging includes:
 - fee-rate unavailable, so entry stays fail-closed
 - maker rebate unavailable on the trusted seam
 - market category unavailable on the strategy-visible seam
+- final fee amount not yet known until price and size are chosen
 - fast-venue lead unavailable, so the strategy falls back to Chainlink-only handling
 - entry blocked by warmup, cooldown, recovery, forced-flat, missing interval-open, or missing fee readiness
 
@@ -350,6 +372,7 @@ On startup:
 - if `cache.positions_open(None, None, Some(&strategy_id), None, None)` is non-empty, set `recovery = true`
 - do not open new positions while recovery is true
 - clear recovery only when the position is flat
+- recovery mode still keeps the shell in full preparation mode: books, fee-rate warmup, reference updates, and readiness tracking continue running
 
 This honors the accepted `external_order_claims: None` boundary without widening into `#132`.
 
@@ -366,6 +389,7 @@ These invariants must remain true throughout implementation:
 7. Book subscription swaps are explicit unsubscribe/subscribe pairs.
 8. The strategy remains additive and does not widen into runtime/config code.
 9. Operator-visible logs must say both what inputs were used and what relevant inputs were unavailable or intentionally excluded.
+10. `Freeze` means prepare fully but never open a new trade.
 
 ## Test Strategy
 

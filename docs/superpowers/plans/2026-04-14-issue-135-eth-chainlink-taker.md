@@ -23,6 +23,16 @@
 
 No other production files are in scope. If implementation needs `src/main.rs`, `src/validate.rs`, `src/platform/*`, `src/clients/*`, or `src/live_config.rs`, stop and report the blocker.
 
+Frozen design decisions from user review:
+
+- `Freeze` is a systematic preparation state, not a passive stop state.
+- During `Freeze`, the strategy continues subscriptions, fee-rate warming, reference updates, and warmup tracking, but opens no new trades.
+- The pre-math shell remains side-neutral and keeps both outcomes prepared until later EV logic chooses one side.
+- Recovery mode blocks new entries but does not stop preparation work.
+- Operator logs must explain blocked action or missing data in a structured, non-spammy way.
+- Fee readiness for a market requires both outcome fee rates.
+- Same-market reactivation should re-refresh fee rates, but cached fee rates may keep the shell ready while refresh happens in the background.
+
 ### Task 1: Register The Concrete Strategy Kind
 
 **Files:**
@@ -288,7 +298,8 @@ Do not review EV math, sizing, entry, exit, cooldown, recovery, or forced-flat l
 Check:
 - selection/reference/book subscription scaffolding
 - active-market reset boundaries
-- fee readiness fail-closed behavior
+- fee readiness behavior under switch, freeze, and same-market reactivation
+- `Freeze` semantics as "prepare yes, trade no"
 - interval-open capture
 - warmup accounting
 - no widened runtime/config edits
@@ -614,5 +625,6 @@ Required omission logging targets:
 - maker rebate unavailable on trusted seam
 - category unavailable on strategy seam
 - fee-rate cold miss causing fail-closed behavior
+- final fee amount unavailable until price/size are chosen
 - Chainlink-only fallback when no fast venue is eligible
 - blocked entry due to warmup, cooldown, recovery, forced-flat, or missing interval-open

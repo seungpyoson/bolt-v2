@@ -1077,8 +1077,12 @@ impl EthChainlinkTaker {
                     market_id: None,
                     instrument_id: position.instrument_id,
                     position_id: position.id,
-                    outcome_side: Self::infer_outcome_side(position.instrument_id)
-                        .unwrap_or(OutcomeSide::Up),
+                    outcome_side: Self::infer_outcome_side_from_position(
+                        position.entry,
+                        position.side,
+                        position.instrument_id,
+                    )
+                    .unwrap_or(OutcomeSide::Up),
                     outcome_fees: OutcomeFeeState::default(),
                     entry_order_side: position.entry,
                     side: position.side,
@@ -1658,7 +1662,7 @@ impl EthChainlinkTaker {
         cache.instrument(&instrument_id).cloned()
     }
 
-    fn infer_outcome_side(instrument_id: InstrumentId) -> Option<OutcomeSide> {
+    fn infer_outcome_side_from_instrument_id(instrument_id: InstrumentId) -> Option<OutcomeSide> {
         let instrument = instrument_id.to_string();
         if instrument.contains("-UP.") {
             Some(OutcomeSide::Up)
@@ -1666,6 +1670,28 @@ impl EthChainlinkTaker {
             Some(OutcomeSide::Down)
         } else {
             None
+        }
+    }
+
+    fn infer_outcome_side_from_entry_order_side(
+        entry_order_side: OrderSide,
+    ) -> Option<OutcomeSide> {
+        match entry_order_side {
+            OrderSide::Buy => Some(OutcomeSide::Up),
+            OrderSide::Sell => Some(OutcomeSide::Down),
+            _ => None,
+        }
+    }
+
+    fn infer_outcome_side_from_position(
+        entry_order_side: OrderSide,
+        position_side: PositionSide,
+        instrument_id: InstrumentId,
+    ) -> Option<OutcomeSide> {
+        match (entry_order_side, position_side) {
+            (OrderSide::Buy, PositionSide::Long) => Some(OutcomeSide::Up),
+            (OrderSide::Sell, PositionSide::Short) => Some(OutcomeSide::Down),
+            _ => Self::infer_outcome_side_from_instrument_id(instrument_id),
         }
     }
 
@@ -2597,7 +2623,9 @@ impl DataActor for EthChainlinkTaker {
                     instrument_id: event.instrument_id,
                     position_id,
                     outcome_side: pending_outcome_side
-                        .or_else(|| Self::infer_outcome_side(event.instrument_id))
+                        .or_else(|| {
+                            Self::infer_outcome_side_from_entry_order_side(event.order_side)
+                        })
                         .unwrap_or(OutcomeSide::Up),
                     outcome_fees: pending_outcome_fees,
                     entry_order_side: event.order_side,
@@ -2677,7 +2705,12 @@ nautilus_strategy!(EthChainlinkTaker, {
                 .as_ref()
                 .map(|position| position.outcome_side)
                 .unwrap_or_else(|| {
-                    Self::infer_outcome_side(_event.instrument_id).unwrap_or(OutcomeSide::Up)
+                    Self::infer_outcome_side_from_position(
+                        _event.entry,
+                        _event.side,
+                        _event.instrument_id,
+                    )
+                    .unwrap_or(OutcomeSide::Up)
                 }),
             outcome_fees: preserved
                 .as_ref()
@@ -2728,7 +2761,12 @@ nautilus_strategy!(EthChainlinkTaker, {
                 .as_ref()
                 .map(|position| position.outcome_side)
                 .unwrap_or_else(|| {
-                    Self::infer_outcome_side(_event.instrument_id).unwrap_or(OutcomeSide::Up)
+                    Self::infer_outcome_side_from_position(
+                        _event.entry,
+                        _event.side,
+                        _event.instrument_id,
+                    )
+                    .unwrap_or(OutcomeSide::Up)
                 }),
             outcome_fees: preserved
                 .as_ref()
@@ -4856,6 +4894,29 @@ mod tests {
         assert_eq!(
             strategy.executable_entry_cost(OutcomeSide::Down),
             Some(0.60)
+        );
+    }
+
+    #[test]
+    fn numeric_token_position_semantics_infer_outcome_side_without_suffixes() {
+        let down_instrument = InstrumentId::from("0xcondition-222.POLYMARKET");
+        let up_instrument = InstrumentId::from("0xcondition-111.POLYMARKET");
+
+        assert_eq!(
+            EthChainlinkTaker::infer_outcome_side_from_position(
+                OrderSide::Sell,
+                PositionSide::Short,
+                down_instrument,
+            ),
+            Some(OutcomeSide::Down)
+        );
+        assert_eq!(
+            EthChainlinkTaker::infer_outcome_side_from_position(
+                OrderSide::Buy,
+                PositionSide::Long,
+                up_instrument,
+            ),
+            Some(OutcomeSide::Up)
         );
     }
 

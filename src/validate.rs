@@ -823,6 +823,13 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "timeouts.shutdown_delay_secs",
         config.timeouts.shutdown_delay_secs,
     );
+    if let Some(position_check_interval_secs) = config.exec_engine.position_check_interval_secs {
+        check_positive_finite_f64(
+            &mut errors,
+            "exec_engine.position_check_interval_secs",
+            position_check_interval_secs,
+        );
+    }
 
     check_nt_ascii(
         &mut errors,
@@ -1217,6 +1224,13 @@ fn validate_runtime_with_registry(
         "node.delay_shutdown_secs",
         config.node.delay_shutdown_secs,
     );
+    if let Some(position_check_interval_secs) = config.exec_engine.position_check_interval_secs {
+        check_positive_finite_f64(
+            &mut errors,
+            "exec_engine.position_check_interval_secs",
+            position_check_interval_secs,
+        );
+    }
     if !config.streaming.catalog_path.trim().is_empty() {
         check_positive_u64(
             &mut errors,

@@ -1370,6 +1370,7 @@ dependencies = [
  "nautilus-bybit",
  "nautilus-common",
  "nautilus-core",
+ "nautilus-data",
  "nautilus-deribit",
  "nautilus-execution",
  "nautilus-hyperliquid",

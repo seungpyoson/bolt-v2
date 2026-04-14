@@ -520,6 +520,7 @@ mod tests {
                     passphrase: Some("/x/pass".to_string()),
                 },
             }],
+            exec_engine: crate::config::ExecEngineConfig::default(),
             strategies: strategy_instrument_ids
                 .into_iter()
                 .map(|instrument_id| StrategyEntry {

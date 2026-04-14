@@ -19,7 +19,8 @@ updates:
         versions: [">=0.13"]
       - dependency-name: "sha2"
         versions: [">=0.11"]
-      # NT pin updates must stay on the dedicated probe path.
+      # Keep this NT crate list aligned with config/nt_pointer_probe/control.toml.
+      # validate-control-plane fails closed if they drift.
       - dependency-name: "nautilus-common"
       - dependency-name: "nautilus-core"
       - dependency-name: "nautilus-binance"

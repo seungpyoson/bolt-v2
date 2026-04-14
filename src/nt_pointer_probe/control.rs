@@ -5,10 +5,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, ensure};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use toml::Value as TomlValue;
 
 const CURRENT_SCHEMA_VERSION: u32 = 1;
 const VALID_COVERAGE_CLASSES: &[&str] = &[
@@ -42,6 +43,7 @@ pub struct ControlConfig {
     pub artifact_retention_days: u32,
     pub max_safe_list_duration_days: i64,
     pub tag_soak_days: u32,
+    pub nt_crates: Vec<String>,
     pub paths: ControlPaths,
     pub status_checks: StatusChecks,
     pub develop_lane: DevelopLane,
@@ -141,7 +143,7 @@ pub struct SafeListEntry {
     pub condition: SafeListCondition,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchKind {
     Exact,
@@ -190,6 +192,8 @@ pub struct ExpectedBranchProtection {
     pub require_code_owner_reviews: bool,
     pub required_approving_review_count: u64,
     pub required_status_checks: Vec<String>,
+    #[serde(default)]
+    pub required_effective_rules: Vec<ExpectedEffectiveRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +213,24 @@ struct NormalizedBranchProtection {
     require_code_owner_reviews: bool,
     required_approving_review_count: u64,
     required_status_checks: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExpectedEffectiveRule {
+    Deletion,
+    NonFastForward,
+    PullRequest {
+        required_approving_review_count: u64,
+        dismiss_stale_reviews_on_push: bool,
+        require_code_owner_review: bool,
+        require_last_push_approval: bool,
+        required_review_thread_resolution: bool,
+    },
+    RequiredStatusChecks {
+        strict_required_status_checks_policy: bool,
+        required_status_checks: Vec<String>,
+    },
 }
 
 impl LoadedControlPlane {
@@ -237,13 +259,6 @@ impl LoadedControlPlane {
     }
 
     pub fn validate(&self) -> Result<()> {
-        validate_repo_relative(&self.control.paths.registry)?;
-        validate_repo_relative(&self.control.paths.safe_list)?;
-        validate_repo_relative(&self.control.paths.replay_set)?;
-        validate_repo_relative(&self.control.paths.expected_branch_protection)?;
-        validate_repo_relative(&self.control.paths.advisory_issue_template)?;
-        validate_repo_relative(&self.control.paths.draft_pr_template)?;
-
         ensure!(
             self.repo_root
                 .join(&self.control.paths.advisory_issue_template)
@@ -259,12 +274,63 @@ impl LoadedControlPlane {
             self.control.paths.draft_pr_template
         );
 
-        self.registry.validate()?;
+        self.validate_nt_crate_inventory()?;
+        self.registry.validate(&self.repo_root)?;
         self.safe_list
             .validate(self.control.max_safe_list_duration_days)?;
         self.replay_set.validate(&self.registry)?;
         self.expected_branch_protection
             .validate_against_control(&self.control)?;
+
+        Ok(())
+    }
+
+    pub fn nt_crate_diff_pattern(&self) -> String {
+        let mut literals: Vec<String> = self
+            .control
+            .nt_crates
+            .iter()
+            .map(|name| regex_escape_literal(name))
+            .collect();
+        literals.push("nautilus_trader\\.git".to_string());
+        format!("^[+-].*({})", literals.join("|"))
+    }
+
+    fn validate_nt_crate_inventory(&self) -> Result<()> {
+        let configured: BTreeSet<String> = self.control.nt_crates.iter().cloned().collect();
+        let cargo_toml: TomlValue = load_toml(&self.repo_root.join("Cargo.toml"))?;
+        let cargo_nt_crates = extract_nt_crates_from_cargo_toml(&cargo_toml);
+
+        ensure!(
+            cargo_nt_crates == configured,
+            "configured nt_crates {:?} do not match Cargo.toml NT crates {:?}",
+            configured,
+            cargo_nt_crates
+        );
+
+        let dependabot_ignores = extract_nt_crates_from_dependabot(
+            &fs::read_to_string(self.repo_root.join(".github/dependabot.yml"))
+                .context("failed to read .github/dependabot.yml")?,
+        );
+        ensure!(
+            dependabot_ignores == configured,
+            "configured nt_crates {:?} do not match Dependabot NT ignores {:?}",
+            configured,
+            dependabot_ignores
+        );
+
+        for workflow in [
+            ".github/workflows/nt-pointer-control-plane.yml",
+            ".github/workflows/dependabot-auto-merge.yml",
+        ] {
+            let contents = fs::read_to_string(self.repo_root.join(workflow))
+                .with_context(|| format!("failed to read {}", workflow))?;
+            ensure!(
+                contents.contains("just nt-pointer-probe-print-nt-crate-diff-pattern"),
+                "{} must derive the NT diff pattern from the control plane",
+                workflow
+            );
+        }
 
         Ok(())
     }
@@ -299,6 +365,22 @@ impl ControlConfig {
             "max_safe_list_duration_days must be positive"
         );
         ensure!(self.tag_soak_days > 0, "tag_soak_days must be positive");
+        ensure!(!self.nt_crates.is_empty(), "nt_crates must not be empty");
+        ensure_unique_non_empty("nt crate", self.nt_crates.iter().map(String::as_str))?;
+        for nt_crate in &self.nt_crates {
+            ensure!(
+                nt_crate.starts_with("nautilus-"),
+                "nt_crate must start with nautilus-: {}",
+                nt_crate
+            );
+        }
+
+        validate_repo_relative(&self.paths.registry)?;
+        validate_repo_relative(&self.paths.safe_list)?;
+        validate_repo_relative(&self.paths.replay_set)?;
+        validate_repo_relative(&self.paths.expected_branch_protection)?;
+        validate_repo_relative(&self.paths.advisory_issue_template)?;
+        validate_repo_relative(&self.paths.draft_pr_template)?;
 
         let statuses = [
             self.status_checks.control_plane.as_str(),
@@ -331,7 +413,7 @@ impl ControlConfig {
 }
 
 impl RegistryFile {
-    fn validate(&self) -> Result<()> {
+    fn validate(&self, repo_root: &Path) -> Result<()> {
         ensure!(
             self.schema_version == CURRENT_SCHEMA_VERSION,
             "unsupported registry schema_version {}, expected {CURRENT_SCHEMA_VERSION}",
@@ -382,6 +464,7 @@ impl RegistryFile {
             );
             for usage in &seam.bolt_usage {
                 validate_repo_relative(usage)?;
+                validate_repo_path_exists(repo_root, usage)?;
             }
             for prefix in &seam.upstream_prefixes {
                 validate_repo_relative(prefix)?;
@@ -419,6 +502,7 @@ impl RegistryFile {
                     seam.name
                 );
                 validate_repo_relative(&canary.path)?;
+                validate_repo_path_exists(repo_root, &canary.path)?;
                 ensure!(
                     !canary.assertion.trim().is_empty(),
                     "canary {} assertion must not be empty",
@@ -442,6 +526,8 @@ impl SafeListFile {
             "unsupported safe_list schema_version {}, expected {CURRENT_SCHEMA_VERSION}",
             self.schema_version
         );
+        let today = Utc::now().date_naive();
+        let mut seen = BTreeSet::new();
         for entry in &self.entries {
             validate_repo_relative(&entry.path)?;
             ensure!(
@@ -489,10 +575,23 @@ impl SafeListFile {
                 "safe-list entry {} exceeds max_safe_list_duration_days",
                 entry.path
             );
+            ensure!(
+                revalidate_after >= today,
+                "safe-list entry {} is expired",
+                entry.path
+            );
 
             let normalized = normalize_relative(&entry.path)?;
+            ensure!(
+                seen.insert((normalized.clone(), entry.match_kind)),
+                "duplicate safe-list entry for {} with match kind {:?}",
+                normalized,
+                entry.match_kind
+            );
             let in_shared_crate = SHARED_NT_CRATE_PREFIXES.iter().any(|prefix| {
-                normalized.starts_with(prefix) || normalized == prefix.trim_end_matches('/')
+                normalized.starts_with(prefix)
+                    || normalized == prefix.trim_end_matches('/')
+                    || prefix.starts_with(&(normalized.clone() + "/"))
             });
             if in_shared_crate {
                 ensure!(
@@ -659,18 +758,42 @@ pub fn compare_branch_protection_response(
     Ok(())
 }
 
+pub fn compare_branch_governance_responses(
+    expected: &ExpectedBranchProtection,
+    actual_branch_protection_json: &str,
+    actual_rules_json: &str,
+) -> Result<()> {
+    compare_branch_protection_response(expected, actual_branch_protection_json)?;
+
+    let actual_rules = normalize_effective_rules_response(actual_rules_json)?;
+    let expected_rules = expected
+        .required_effective_rules
+        .iter()
+        .map(expected_effective_rule_signature)
+        .collect::<BTreeSet<_>>();
+
+    ensure!(
+        actual_rules == expected_rules,
+        "branch governance drift: effective rules differ (expected {:?}, got {:?})",
+        expected_rules,
+        actual_rules
+    );
+
+    Ok(())
+}
+
 fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedBranchProtection> {
     let value: Value =
         serde_json::from_str(actual_json).context("failed to parse branch protection JSON")?;
 
-    if value
-        .get("message")
-        .and_then(Value::as_str)
-        .is_some_and(|message| message == "Branch not protected")
-    {
-        return Err(anyhow!(
-            "branch protection drift: expected protected branch, got unprotected branch"
-        ));
+    if let Some(message) = value.get("message").and_then(Value::as_str) {
+        if message == "Branch not protected" {
+            return Err(anyhow!(
+                "branch protection drift: expected protected branch, got unprotected branch"
+            ));
+        }
+
+        return Err(anyhow!("branch protection API error: {}", message));
     }
 
     let contexts = value
@@ -719,6 +842,88 @@ fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedB
     })
 }
 
+fn normalize_effective_rules_response(actual_json: &str) -> Result<BTreeSet<String>> {
+    let rules: Value =
+        serde_json::from_str(actual_json).context("failed to parse effective rules JSON")?;
+    let rules = rules
+        .as_array()
+        .ok_or_else(|| anyhow!("effective rules response must be an array"))?;
+
+    let mut signatures = BTreeSet::new();
+    for rule in rules {
+        let Some(rule_type) = rule.get("type").and_then(Value::as_str) else {
+            return Err(anyhow!("effective rule is missing type"));
+        };
+        let signature = match rule_type {
+            "deletion" => "deletion".to_string(),
+            "non_fast_forward" => "non_fast_forward".to_string(),
+            "pull_request" => {
+                let parameters = rule
+                    .get("parameters")
+                    .ok_or_else(|| anyhow!("pull_request rule missing parameters"))?;
+                format!(
+                    "pull_request|required_approving_review_count={}|dismiss_stale_reviews_on_push={}|require_code_owner_review={}|require_last_push_approval={}|required_review_thread_resolution={}",
+                    parameters
+                        .get("required_approving_review_count")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| anyhow!("pull_request rule missing required_approving_review_count"))?,
+                    parameters
+                        .get("dismiss_stale_reviews_on_push")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| anyhow!("pull_request rule missing dismiss_stale_reviews_on_push"))?,
+                    parameters
+                        .get("require_code_owner_review")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| anyhow!("pull_request rule missing require_code_owner_review"))?,
+                    parameters
+                        .get("require_last_push_approval")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| anyhow!("pull_request rule missing require_last_push_approval"))?,
+                    parameters
+                        .get("required_review_thread_resolution")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| anyhow!("pull_request rule missing required_review_thread_resolution"))?,
+                )
+            }
+            "required_status_checks" => {
+                let parameters = rule
+                    .get("parameters")
+                    .ok_or_else(|| anyhow!("required_status_checks rule missing parameters"))?;
+                let contexts = parameters
+                    .get("required_status_checks")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        anyhow!("required_status_checks rule missing required_status_checks")
+                    })?
+                    .iter()
+                    .map(|entry| {
+                        entry.get("context")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "required_status_checks rule entry missing context string"
+                                )
+                            })
+                    })
+                    .collect::<Result<BTreeSet<_>>>()?;
+                format!(
+                    "required_status_checks|strict_required_status_checks_policy={}|contexts={}",
+                    parameters
+                        .get("strict_required_status_checks_policy")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| anyhow!("required_status_checks rule missing strict_required_status_checks_policy"))?,
+                    contexts.into_iter().collect::<Vec<_>>().join(",")
+                )
+            }
+            other => return Err(anyhow!("unsupported effective rule type {}", other)),
+        };
+        signatures.insert(signature);
+    }
+
+    Ok(signatures)
+}
+
 fn load_toml<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read control artifact {}", path.display()))?;
@@ -740,6 +945,16 @@ fn ensure_unique_non_empty<'a>(
 
 fn validate_repo_relative(path: &str) -> Result<()> {
     let _ = normalize_relative(path)?;
+    Ok(())
+}
+
+fn validate_repo_path_exists(repo_root: &Path, path: &str) -> Result<()> {
+    let normalized = normalize_relative(path)?;
+    ensure!(
+        repo_root.join(&normalized).exists(),
+        "registry path does not exist in repo: {}",
+        normalized
+    );
     Ok(())
 }
 
@@ -777,4 +992,89 @@ fn normalize_relative(path: &str) -> Result<String> {
         "path must not normalize to an empty value"
     );
     Ok(normalized)
+}
+
+fn extract_nt_crates_from_cargo_toml(cargo_toml: &TomlValue) -> BTreeSet<String> {
+    let mut crates = BTreeSet::new();
+    for section in ["dependencies", "dev-dependencies"] {
+        let Some(table) = cargo_toml.get(section).and_then(TomlValue::as_table) else {
+            continue;
+        };
+        for (name, value) in table {
+            if value
+                .get("git")
+                .and_then(TomlValue::as_str)
+                .is_some_and(|git| git.contains("nautilus_trader.git"))
+            {
+                crates.insert(name.clone());
+            }
+        }
+    }
+    crates
+}
+
+fn extract_nt_crates_from_dependabot(contents: &str) -> BTreeSet<String> {
+    let mut crates = BTreeSet::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let Some(raw_name) = trimmed.strip_prefix("- dependency-name: ") else {
+            continue;
+        };
+        let name = raw_name.trim().trim_matches('"');
+        if name.starts_with("nautilus-") {
+            crates.insert(name.to_string());
+        }
+    }
+    crates
+}
+
+fn regex_escape_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
+    match rule {
+        ExpectedEffectiveRule::Deletion => "deletion".to_string(),
+        ExpectedEffectiveRule::NonFastForward => "non_fast_forward".to_string(),
+        ExpectedEffectiveRule::PullRequest {
+            required_approving_review_count,
+            dismiss_stale_reviews_on_push,
+            require_code_owner_review,
+            require_last_push_approval,
+            required_review_thread_resolution,
+        } => format!(
+            "pull_request|required_approving_review_count={}|dismiss_stale_reviews_on_push={}|require_code_owner_review={}|require_last_push_approval={}|required_review_thread_resolution={}",
+            required_approving_review_count,
+            dismiss_stale_reviews_on_push,
+            require_code_owner_review,
+            require_last_push_approval,
+            required_review_thread_resolution
+        ),
+        ExpectedEffectiveRule::RequiredStatusChecks {
+            strict_required_status_checks_policy,
+            required_status_checks,
+        } => {
+            let contexts = required_status_checks
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "required_status_checks|strict_required_status_checks_policy={}|contexts={}",
+                strict_required_status_checks_policy, contexts
+            )
+        }
+    }
 }

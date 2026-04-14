@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use bolt_v2::nt_pointer_probe::control::{
-    ExpectedBranchProtection, LoadedControlPlane, compare_branch_protection_response,
+    ExpectedBranchProtection, LoadedControlPlane, compare_branch_governance_responses,
+    compare_branch_protection_response,
 };
 use clap::{Parser, Subcommand};
 
@@ -19,11 +20,23 @@ enum Command {
         #[arg(long)]
         repo_root: PathBuf,
     },
+    PrintNtCrateDiffPattern {
+        #[arg(long)]
+        repo_root: PathBuf,
+    },
     CompareBranchProtection {
         #[arg(long)]
         expected: PathBuf,
         #[arg(long)]
         actual_json: PathBuf,
+    },
+    CompareBranchGovernance {
+        #[arg(long)]
+        expected: PathBuf,
+        #[arg(long)]
+        actual_json: PathBuf,
+        #[arg(long)]
+        actual_rules_json: PathBuf,
     },
 }
 
@@ -41,6 +54,10 @@ fn main() -> Result<()> {
                 loaded.replay_set.entries.len()
             );
         }
+        Command::PrintNtCrateDiffPattern { repo_root } => {
+            let loaded = LoadedControlPlane::load_from_repo_root(&repo_root)?;
+            println!("{}", loaded.nt_crate_diff_pattern());
+        }
         Command::CompareBranchProtection {
             expected,
             actual_json,
@@ -50,6 +67,20 @@ fn main() -> Result<()> {
             compare_branch_protection_response(&expected, &actual_json)?;
             println!(
                 "branch protection matches expected state for {}",
+                expected.branch
+            );
+        }
+        Command::CompareBranchGovernance {
+            expected,
+            actual_json,
+            actual_rules_json,
+        } => {
+            let expected = ExpectedBranchProtection::load_and_validate(&expected)?;
+            let actual_json = std::fs::read_to_string(&actual_json)?;
+            let actual_rules_json = std::fs::read_to_string(&actual_rules_json)?;
+            compare_branch_governance_responses(&expected, &actual_json, &actual_rules_json)?;
+            println!(
+                "branch governance matches expected state for {}",
                 expected.branch
             );
         }

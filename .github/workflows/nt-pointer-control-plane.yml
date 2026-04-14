@@ -40,13 +40,14 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
+          pattern="$(just nt-pointer-probe-print-nt-crate-diff-pattern)"
           base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
           head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
           git fetch --no-tags origin \
             "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
             "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
-          diff="$(git diff --unified=0 "${base_ref}...${head_ref}" -- Cargo.toml Cargo.lock)"
-          if printf '%s\n' "$diff" | rg -n '^[+-].*(nautilus-(common|core|binance|bybit|deribit|hyperliquid|kraken|live|model|network|okx|persistence|polymarket|system|trading|execution)|nautilus_trader\\.git)'; then
+          diff="$(git diff --unified=0 "${base_ref}...${head_ref}" -- '**/Cargo.toml' '**/Cargo.lock' '.cargo/config.toml' '.cargo/config')"
+          if printf '%s\n' "$diff" | rg -n "$pattern"; then
             echo "ERROR: NT pin changes are blocked until the probe-generated path is active."
             exit 1
           fi
@@ -83,6 +84,8 @@ jobs:
             cat "$RUNNER_TEMP/branch-protection.stderr" >&2
             exit "$status"
           fi
+          gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "$RUNNER_TEMP/branch-rules.json"
+          cat "$RUNNER_TEMP/branch-protection.stderr" >&2 || true
 
-      - name: Compare branch protection to expected state
-        run: just nt-pointer-probe-compare-branch-protection "$RUNNER_TEMP/branch-protection.json"
+      - name: Compare branch governance to expected state
+        run: just nt-pointer-probe-compare-branch-governance "$RUNNER_TEMP/branch-protection.json" "$RUNNER_TEMP/branch-rules.json"

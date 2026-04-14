@@ -5,6 +5,24 @@ artifact_store_uri = "s3://bolt-deploy-artifacts/artifacts/bolt-v2/nt-pointer-pr
 artifact_retention_days = 90
 max_safe_list_duration_days = 30
 tag_soak_days = 7
+nt_crates = [
+  "nautilus-common",
+  "nautilus-core",
+  "nautilus-binance",
+  "nautilus-bybit",
+  "nautilus-deribit",
+  "nautilus-hyperliquid",
+  "nautilus-kraken",
+  "nautilus-live",
+  "nautilus-model",
+  "nautilus-network",
+  "nautilus-okx",
+  "nautilus-persistence",
+  "nautilus-polymarket",
+  "nautilus-system",
+  "nautilus-trading",
+  "nautilus-execution",
+]
 
 [paths]
 registry = "config/nt_pointer_probe/registry.toml"

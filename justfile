@@ -135,7 +135,7 @@ ci-lint-workflow:
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection)([^[:alnum:]_]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection|nt-pointer-probe-compare-branch-governance|nt-pointer-probe-print-nt-crate-diff-pattern)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_lint_literal='lint-workflow-contract:'
     setup_lint_true_literal='lint-workflow-contract: "true"'
@@ -692,6 +692,12 @@ nt-pointer-probe-self-test: check-workspace require-rust-verification-owner
 
 nt-pointer-probe-compare-branch-protection actual_json: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-protection --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}"
+
+nt-pointer-probe-compare-branch-governance actual_json actual_rules_json: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-governance --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}" --actual-rules-json "{{actual_rules_json}}"
+
+nt-pointer-probe-print-nt-crate-diff-pattern: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- print-nt-crate-diff-pattern --repo-root "{{repo_root}}"
 
 worktree branch:
     #!/usr/bin/env bash

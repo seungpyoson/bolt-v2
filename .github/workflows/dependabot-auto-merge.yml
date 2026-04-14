@@ -1,6 +1,9 @@
 name: Dependabot auto-merge
 on: pull_request
 
+env:
+  JUST_VERSION: "1.49.0"
+
 permissions:
   pull-requests: write
   contents: write
@@ -10,9 +13,17 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+
       - name: Block NT pin auto-merge
         run: |
-          if gh pr diff "$PR_URL" --patch | rg -n '^[+-].*(nautilus-(common|core|binance|bybit|deribit|hyperliquid|kraken|live|model|network|okx|persistence|polymarket|system|trading|execution)|nautilus_trader\.git)'; then
+          pattern="$(just nt-pointer-probe-print-nt-crate-diff-pattern)"
+          if gh pr diff "$PR_URL" --patch | rg -n "$pattern"; then
             echo "NT pin changes must not auto-merge through Dependabot."
             exit 1
           fi

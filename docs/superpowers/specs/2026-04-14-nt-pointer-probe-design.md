@@ -132,6 +132,138 @@ They may not:
 - replace required status checks
 - authorize merge by opinion alone
 
+## Operating Model
+
+This design is written for a **solo-operator-first** repository shape.
+
+That means:
+
+- true internal separation of duties does not exist
+- many governance roles collapse to the same human
+- safety must come primarily from mechanical controls, not role naming
+
+The design therefore distinguishes two modes:
+
+### Solo-Operator Mode
+
+This is the baseline mode for `bolt-v2`.
+
+Properties:
+
+- the operator may be the author, registry owner, and merge actor
+- independence must come from structured external scrutiny and hard technical gates
+- branch protection, required status checks, probe artifacts, and explicit control-plane ownership carry most of the real safety burden
+
+In solo mode, any control that assumes two independent humans must be treated as degraded. The spec must say what replaces that lost independence, rather than pretending the separation exists.
+
+### Small-Team Mode
+
+This is a stronger variant of the same design.
+
+Properties:
+
+- reviewer separation may be real
+- CODEOWNERS and reviewer sets can create actual role distinction
+- external review remains useful, but is not the only source of independence
+
+The spec should never assume small-team guarantees when running in solo mode.
+
+### Explicit Degradations In Solo Mode
+
+The following are acknowledged degradations in solo mode:
+
+- external adversarial review is structured second-opinion, not true independent human review
+- safe-list and registry review may become self-review unless an external reviewer artifact is required
+- security-bypass authority cannot rely on internal role separation and therefore must rely on mechanical predicates and auditability
+
+These degradations are residual risks. They must not be hidden under role names.
+
+## Enforcement Matrix
+
+Every control in this design must map to an enforcement mechanism. If a rule has no enforcement mechanism, it is not a control.
+
+| Control | Enforcement Mechanism | Owner | If Missing |
+| --- | --- | --- | --- |
+| NT pin changes only through probe path | Branch protection plus a required status check on any PR that changes NT pins | Probe owner | Direct pin-bump PRs bypass seam checks |
+| Probe artifact must be valid | Artifact seal and validation logic before PR creation | Probe workflow | Partial or malformed evidence can authorize PRs |
+| Safe-list entries must be valid | Probe-time validation of expiry and machine-checkable condition | Registry owner | Safe-list becomes a silent bypass path |
+| Registry changes must be controlled | CODEOWNERS or equivalent required review on registry files | Registry owner | Seam routing can be weakened silently |
+| Replay-set changes must be controlled | CODEOWNERS or equivalent required review on replay-set files | Replay-set owner | Inference regression checks can be weakened silently |
+| Probe workflow must preserve fail-closed behavior | Workflow self-test against known-good and known-bad fixtures | Probe owner | Workflow can emit trusted but invalid PASS artifacts |
+| Develop lane must stay advisory-only | Merge-blocking status until release-lane confirmation | Probe workflow plus branch protection | Develop PRs become accidental merge path |
+| External review must be substantive | Required review artifact content checks plus required status | Review owner | Token review file satisfies gate |
+| Security exception must be constrained | Mechanical eligibility check plus explicit audit record | Security-bypass owner | Soak is skipped by operator preference |
+| Artifact durability must be real | Designated durable backing store and retention policy | Probe owner | Audit trail disappears after incident window |
+| Dependabot must not bypass NT pin policy | Dependabot ignore rules or blocking status on NT pin changes | Repo admin / dependency owner | Autonomous NT bump merges outside probe |
+| Branch protection must stay aligned with design | Controlled review of branch-protection-affecting config and periodic audit | Repo admin | All other controls become optional in practice |
+
+The matrix above is authoritative for enforcement intent. Future edits to the spec must update the matrix when adding or changing controls.
+
+## Control Plane
+
+The control plane is the set of assets that can weaken or bypass NT-bump safety if changed carelessly.
+
+These assets must be treated as first-class controlled artifacts:
+
+- NT pin lines in `Cargo.toml`
+- NT-related entries in `Cargo.lock`
+- seam registry files
+- safe-list files
+- replay-set files
+- probe workflow files
+- workflow or job definitions that emit probe artifacts or status checks
+- branch-protection or merge-rule configuration
+- reviewer-set configuration
+- security-bypass authority configuration
+- artifact-store configuration
+- Dependabot configuration
+- any auto-merge configuration that could land dependency changes
+
+### Control-Plane Rule
+
+Any change to a control-plane artifact must be review-gated according to its risk tier. No control-plane artifact should be modifiable by a convenience path that is weaker than the path it is supposed to protect.
+
+### Risk Tiers
+
+Tier A: Highest risk
+
+- NT pin mutation path
+- seam registry
+- safe-list
+- replay set
+- probe workflow logic
+- branch protection / merge rules
+
+Tier B: Medium risk
+
+- reviewer-set configuration
+- security-bypass authority configuration
+- artifact-store configuration
+- CI runner / probe-environment identity
+
+Tier C: Supporting infrastructure
+
+- non-gating CI workflow changes
+- documentation of the process
+
+Tier A controls should prefer technical enforcement plus owned review.
+Tier B controls require owned review and periodic audit.
+Tier C controls can use normal repo review.
+
+### Non-Probe Mutation Paths
+
+The design must explicitly account for changes that happen outside the probe workflow.
+
+Examples:
+
+- manual PRs editing NT pins
+- Dependabot or similar dependency automation
+- direct registry or safe-list edits
+- workflow edits that weaken a status check
+- branch-protection drift
+
+The spec must not assume that because the probe path is safe, the repository is safe. The control plane exists precisely to close those side doors.
+
 ## Decision Model
 
 The NT pointer probe must use two layers of classification:

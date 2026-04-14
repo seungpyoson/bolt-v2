@@ -1921,7 +1921,7 @@ impl EthChainlinkTaker {
         }
 
         let Some(position_outcome_side) = evaluation.position_outcome_side else {
-            evaluation.blocked_reason = Some("open_position_side_unrecognized");
+            evaluation.exit_decision = Some(ExitDecision::ExitFailClosed);
             return evaluation;
         };
 
@@ -6139,6 +6139,44 @@ mod tests {
         assert_eq!(fields.seconds_to_expiry, Some(299));
         assert_eq!(fields.up_fee_bps, Some(1.0));
         assert_eq!(fields.down_fee_bps, Some(2.0));
+    }
+
+    #[test]
+    fn unknown_recovered_position_side_exits_fail_closed_using_tracked_book() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
+        let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
+        tracked_book.best_bid = Some(0.520);
+        tracked_book.best_ask = Some(0.530);
+        tracked_book.liquidity_available = Some(100.0);
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: None,
+            instrument_id,
+            position_id: PositionId::from("P-UNKNOWN-001"),
+            outcome_side: None,
+            outcome_fees: OutcomeFeeState::default(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.480,
+            interval_open: None,
+            selection_published_at_ms: None,
+            seconds_to_expiry_at_selection: None,
+            book: tracked_book,
+        });
+
+        let decision = strategy.exit_submission_decision_at(2_000);
+
+        assert_eq!(
+            decision.evaluation.exit_decision,
+            Some(ExitDecision::ExitFailClosed)
+        );
+        assert_eq!(decision.instrument_id, Some(instrument_id));
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
+        assert_eq!(decision.price, Some(0.520));
+        assert_eq!(decision.quantity, Some(Quantity::new(5.0, 2)));
+        assert_eq!(decision.blocked_reason, None);
     }
 
     #[test]

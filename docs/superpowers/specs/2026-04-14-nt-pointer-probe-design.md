@@ -102,6 +102,23 @@ The safe list must stay narrow. It is only for clearly non-overlapping areas suc
 
 Shared NT crates and shared vocabulary paths such as `nautilus-model`, `nautilus-common`, `nautilus-core`, `nautilus-live`, and `nautilus-network` must not be safe-listed broadly.
 
+Safe-list governance must be stricter than ordinary seam edits because the safe list is the highest-leverage bypass path in the system.
+
+Each safe-list entry must include:
+
+- the exact path or prefix being classified
+- the non-overlap proof
+- the Bolt configuration condition that makes it safe
+- the reviewer or owner who approved it
+- an expiry or revalidation deadline
+
+Additional safe-list rules:
+
+- safe-list additions must require the same owner-group review as registry changes, and may require stricter review
+- safe-list changes must not be bundled with unrelated code changes
+- if a safe-list condition no longer holds for the current Bolt codebase, the entry is invalid and the path becomes ambiguous
+- path-prefix safe-list entries inside shared NT crates are forbidden; only exact-path entries may be considered there, and only with heightened review
+
 Fail-closed rules for matching:
 
 - any changed NT path not matched to a seam or safe list is ambiguous
@@ -119,6 +136,12 @@ The following are baseline preconditions, not seams:
 - build verification and repo-owned smoke checks
 
 These are required for every probe run regardless of touched seams.
+
+The required probe environment must also be concrete:
+
+- it must be a named CI-managed runner image, container image, or deploy-equivalent environment
+- it must not be an arbitrary developer laptop
+- its identity must be recorded in the evidence artifact
 
 ## Probe Lanes
 
@@ -152,8 +175,15 @@ Behavior:
 - resolve the release tag to an immutable full SHA before any other step
 - record both the tag name and the resolved SHA in probe output
 - require a tag soak window before draft-PR creation; the default soak window should be 7 days unless the registry owner explicitly tightens it further
+- measure soak as consecutive days where the same tag name resolved to the same SHA in probe observations; any SHA move resets the clock
 - same gating model as `develop`
 - also draft-PR only, never auto-merge
+
+Security exception path:
+
+- an urgent security-tagged NT release may bypass the soak wait for draft-PR creation only
+- it must still satisfy the full evidence contract
+- it must still remain draft-only and subject to the external adversarial review gate before merge
 
 ## Lane Precedence
 
@@ -165,6 +195,8 @@ The two lanes do not have equal merge authority.
 If the two lanes disagree, the tagged-release lane result takes precedence for merge decisions.
 
 If a tagged-release probe supersedes an open `develop`-lane draft PR, the `develop`-lane PR must be marked superseded or closed automatically.
+
+If a `develop`-lane target includes a tagged-release SHA that is still inside its soak window, the `develop`-lane PR must inherit that soak restriction for mergeability.
 
 ## Terminal Action
 
@@ -187,6 +219,7 @@ Bolt must maintain a hand-curated registry of semantic overlap seams. Each seam 
 - why it is semantically risky
 - Bolt-owned NT usage it owns
 - upstream NT path-prefix mappings that force this seam
+- required coverage classes for this seam
 - Bolt-owned canary tests or probes required for proof
 - canary coverage class for each required canary
 - escalation behavior if an NT bump appears to touch the seam ambiguously
@@ -252,17 +285,23 @@ That audit must:
 2. enumerate every Bolt source use of `nautilus_*`
 3. map each dependency and use site to a seam owner
 4. fail if any dependency or use site has no seam owner
+5. verify that each owning seam has an upstream path-prefix mapping that would actually classify changes to the relevant NT crate or path
+6. verify that each registered upstream path-prefix matches at least one existing path in the target NT source tree
+7. inventory canary gaps for every seam and mark the registry incomplete until all required seam canaries are real, not stubs
 
 After activation, every probe run must re-check registry completeness against the current Bolt codebase.
 
 Fail-closed rule:
 
 - if Bolt currently uses any `nautilus_*` symbol, crate, or path with no seam owner, the probe fails as a registry-gap failure
+- if a seam's registered upstream path-prefix no longer matches any existing NT path, the probe fails as a registry-gap failure
+- if a Bolt-owned NT usage is mapped to a seam whose path-prefixes would not classify changes to the corresponding NT crate or path, the probe fails as a registry-gap failure
 
 Registry ownership must also be explicit:
 
 - the seam registry must have a designated owner group
 - that owner group must be mechanically required for registry changes
+- the mechanism must be concrete, for example CODEOWNERS plus required review, not a policy note
 - until such ownership exists, the probe must not be allowed to open draft PRs automatically
 
 ## Evidence Contract
@@ -276,10 +315,14 @@ A probe is only allowed to open a draft PR if **all** of the following are true:
 5. Every changed upstream NT path is classified as seam-owned, safe-listed, or ambiguous.
 6. Every required seam has passing evidence.
 7. Every required canary exists, is executed, and produces assertion results.
-8. Every required canary has an explicit coverage class recorded in the registry and in the probe evidence.
-9. No touched seam is left without a named canary.
-10. No ambiguous upstream change remains unresolved.
-11. A single atomic evidence artifact is produced for the run.
+8. Every touched seam has all of its required coverage classes satisfied by passing canaries.
+9. Every required canary has an explicit coverage class recorded in the registry and in the probe evidence.
+10. The Bolt-side `nautilus_*` usage inventory for the probe run is recorded in the evidence artifact.
+11. The upstream diff identity for the probe run is recorded in the evidence artifact.
+12. A single atomic evidence artifact is produced for the run and stored durably.
+13. The external adversarial review gate is satisfied only by the required reviewer workflow and evidence artifact.
+14. No touched seam is left without a named canary.
+15. No ambiguous upstream change remains unresolved.
 
 If any item above fails, the probe must fail closed.
 
@@ -293,11 +336,13 @@ The workflow must fail closed in all of these cases:
 4. A changed upstream NT path cannot be classified.
 5. A required seam canary is missing.
 6. A required canary is found but does not actually execute.
-7. An upstream change touches a seam but no matching proof is defined.
-8. Bolt currently uses `nautilus_*` code with no seam owner.
-9. Upstream diff classification is ambiguous.
-10. The atomic evidence artifact is missing or incomplete.
-11. The external adversarial review gate has not been satisfied mechanically.
+7. A touched seam does not have all required coverage classes satisfied.
+8. An upstream change touches a seam but no matching proof is defined.
+9. Bolt currently uses `nautilus_*` code with no seam owner.
+10. A seam path-prefix is stale or non-matching.
+11. Upstream diff classification is ambiguous.
+12. The atomic evidence artifact is missing or incomplete.
+13. The external adversarial review gate has not been satisfied mechanically.
 
 Fail closed means:
 
@@ -328,8 +373,11 @@ Inference is advisory only.
 
 It must be treated as code under test:
 
-- a historical replay set of known-dangerous upstream changes must be re-run on a defined cadence against the current inference rules
+- a historical replay set of known-dangerous upstream changes must be versioned alongside the registry
+- the replay set must be owned by the same owner group as the seam registry
+- the replay set must run on every inference-rule change and on a bounded periodic cadence
 - if inference stops escalating known-dangerous patterns, the probe design has regressed
+- a replay regression must block probe automation until fixed
 
 ## Draft PR Rules
 
@@ -364,9 +412,11 @@ At minimum it must contain:
 - lane name
 - resolved NT SHA
 - source ref name
+- upstream diff hash or identity
 - previous NT SHA
 - registry version or hash
 - safe-list version or hash
+- Bolt-side `nautilus_*` usage inventory hash or manifest
 - canary list
 - canary coverage classes
 - canary execution results
@@ -374,6 +424,8 @@ At minimum it must contain:
 - lockfile digest
 - run timestamps
 - supersedes or superseded-by metadata when applicable
+
+The artifact must be stored durably outside the PR itself, with retention long enough to support postmortem and audit use.
 
 No draft PR may be created without this artifact.
 
@@ -408,6 +460,16 @@ Required design rule:
 - every probe PR must carry a required status check named for external adversarial review
 - that status must start failing or pending
 - only designated reviewers may transition it to passing after review is complete
+- designated reviewers must be defined concretely, not implicitly
+- designated reviewers must be a named owner group or explicitly configured reviewer set
+- the PR author or probe initiator must not be allowed to satisfy their own adversarial-review gate
+- for solo-operator workflows, the passing transition must require an external-review artifact, not just a click
+
+The external-review artifact must be concrete and durable:
+
+- it must reference the exact NT SHA and probe artifact
+- it must identify the seams reviewed
+- it must record the review result in a durable location outside ephemeral chat history
 
 Until that status is passing, the PR must not be mergeable.
 
@@ -420,6 +482,7 @@ At minimum:
 - each run updates a durable lane status surface
 - missing probe activity beyond the configured alert threshold must raise an alert
 - silent decay of the probe infrastructure is itself a failure mode
+- the alerting surface must not rely on a single silent channel
 
 ## Decision Flow
 
@@ -428,18 +491,19 @@ Recommended high-level flow:
 1. Resolve the lane target to an immutable full SHA.
 2. Create a fresh isolated probe branch or worktree.
 3. Update the pinned NT revision.
-4. Refresh the lockfile.
-5. Run the mechanical baseline in the required toolchain and environment.
-6. Classify every changed upstream NT path using registry matching and safe-list rules.
-7. Re-check registry completeness against current Bolt `nautilus_*` usage.
-8. Determine required seams from the registry.
-9. Use advisory inference only to add seams or escalate ambiguity.
-10. Run all required seam canaries.
-11. Produce the atomic evidence artifact.
-12. If any requirement fails, emit a failure report and stop.
-13. If all requirements pass, open or update the single draft PR for that lane.
-14. Leave the external adversarial review status pending.
-15. Hand off for human review and external adversarial review.
+4. Update all pinned `nautilus-*` dependencies atomically to the same resolved NT SHA.
+5. Refresh the lockfile.
+6. Run the mechanical baseline in the required toolchain and environment.
+7. Classify every changed upstream NT path using registry matching and safe-list rules.
+8. Re-check registry completeness against current Bolt `nautilus_*` usage and seam path-prefix validity.
+9. Determine required seams from the registry.
+10. Use advisory inference only to add seams or escalate ambiguity.
+11. Run all required seam canaries.
+12. Produce and store the atomic evidence artifact.
+13. If any requirement fails, emit a failure report and stop.
+14. If all requirements pass, open or update the single draft PR for that lane.
+15. Leave the external adversarial review status pending.
+16. Hand off for human review and external adversarial review.
 
 ## Canary Requirements
 
@@ -465,8 +529,11 @@ Each canary entry must define:
 - the coverage class it provides
 - the path it executes
 - the assertion surface it covers
+- any fixture or recorded data dependencies it relies on
 
 A seam is not considered proven by a compile-only check unless its declared coverage class is explicitly compile-time API compatibility.
+
+Each seam entry must define the coverage classes it requires. A touched seam fails unless every required coverage class has at least one passing canary.
 
 ## Maintenance Model
 
@@ -484,7 +551,14 @@ The maintenance model must also include:
 
 - a designated owner for registry changes
 - a bounded response expectation for registry-gap failures
+- a bounded response expectation for ambiguity resolution
 - periodic replay or audit of inference and registry assumptions
+
+Ambiguity may not block indefinitely. If the same ambiguity blocks repeated probe runs beyond the configured threshold, the owner group must resolve it by one of:
+
+- adding or fixing a seam mapping
+- adding a justified safe-list entry
+- recording an explicit operator risk acceptance outside the automated landing path
 
 ## Risks
 

@@ -37,6 +37,8 @@ enum Command {
         actual_json: PathBuf,
         #[arg(long)]
         actual_rules_json: PathBuf,
+        #[arg(long)]
+        actual_ruleset_details_json: PathBuf,
     },
     CheckNtMutation {
         #[arg(long)]
@@ -82,11 +84,19 @@ fn main() -> Result<()> {
             expected,
             actual_json,
             actual_rules_json,
+            actual_ruleset_details_json,
         } => {
             let expected = ExpectedBranchProtection::load_and_validate(&expected)?;
             let actual_json = std::fs::read_to_string(&actual_json)?;
             let actual_rules_json = std::fs::read_to_string(&actual_rules_json)?;
-            compare_branch_governance_responses(&expected, &actual_json, &actual_rules_json)?;
+            let actual_ruleset_details_json =
+                std::fs::read_to_string(&actual_ruleset_details_json)?;
+            compare_branch_governance_responses(
+                &expected,
+                &actual_json,
+                &actual_rules_json,
+                &actual_ruleset_details_json,
+            )?;
             println!(
                 "branch governance matches expected state for {}",
                 expected.branch

@@ -34,6 +34,13 @@ const SHARED_NT_CRATE_PREFIXES: &[&str] = &[
     "crates/execution/",
 ];
 
+fn default_required_status_check_floor() -> Vec<String> {
+    vec![
+        "nt-pointer-control-plane".to_string(),
+        "nt-pointer-probe-self-test".to_string(),
+    ]
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlConfig {
@@ -45,6 +52,8 @@ pub struct ControlConfig {
     pub max_safe_list_duration_days: i64,
     pub tag_soak_days: u32,
     pub nt_crates: Vec<String>,
+    #[serde(default = "default_required_status_check_floor")]
+    pub required_status_check_floor: Vec<String>,
     pub paths: ControlPaths,
     pub status_checks: StatusChecks,
     pub develop_lane: DevelopLane,
@@ -189,12 +198,22 @@ pub struct ExpectedBranchProtection {
     pub schema_version: u32,
     pub branch: String,
     pub enforce_admins: bool,
+    pub allow_deletions: bool,
+    pub allow_force_pushes: bool,
+    pub block_creations: bool,
     pub dismiss_stale_reviews: bool,
+    pub required_linear_history: bool,
+    pub required_conversation_resolution: bool,
+    pub lock_branch: bool,
+    pub require_signed_commits: bool,
     pub require_code_owner_reviews: bool,
     pub required_approving_review_count: u64,
+    pub strict_required_status_checks: bool,
     pub required_status_checks: Vec<String>,
     #[serde(default)]
     pub required_effective_rules: Vec<ExpectedEffectiveRule>,
+    #[serde(default)]
+    pub required_rulesets: Vec<ExpectedRuleset>,
 }
 
 #[derive(Debug, Clone)]
@@ -210,7 +229,14 @@ pub struct LoadedControlPlane {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NormalizedBranchProtection {
     enforce_admins: bool,
+    allow_deletions: bool,
+    allow_force_pushes: bool,
+    block_creations: bool,
     dismiss_stale_reviews: bool,
+    required_linear_history: bool,
+    required_conversation_resolution: bool,
+    lock_branch: bool,
+    require_signed_commits: bool,
     require_code_owner_reviews: bool,
     required_approving_review_count: u64,
     required_status_checks: BTreeSet<String>,
@@ -228,11 +254,26 @@ pub enum ExpectedEffectiveRule {
         require_code_owner_review: bool,
         require_last_push_approval: bool,
         required_review_thread_resolution: bool,
+        allowed_merge_methods: Vec<String>,
+        #[serde(default)]
+        allowed_bypass_actors: Vec<String>,
     },
     RequiredStatusChecks {
         strict_required_status_checks_policy: bool,
         required_status_checks: Vec<String>,
+        #[serde(default)]
+        allowed_bypass_actors: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedRuleset {
+    pub id: u64,
+    pub name: String,
+    pub enforcement: String,
+    #[serde(default)]
+    pub allowed_bypass_actors: Vec<String>,
 }
 
 impl LoadedControlPlane {
@@ -455,6 +496,15 @@ impl ControlConfig {
             );
         }
 
+        ensure!(
+            !self.required_status_check_floor.is_empty(),
+            "required_status_check_floor must not be empty"
+        );
+        ensure_unique_non_empty(
+            "required status check floor entry",
+            self.required_status_check_floor.iter().map(String::as_str),
+        )?;
+
         validate_repo_relative(&self.paths.registry)?;
         validate_repo_relative(&self.paths.safe_list)?;
         validate_repo_relative(&self.paths.replay_set)?;
@@ -470,6 +520,13 @@ impl ControlConfig {
             self.status_checks.external_review.as_str(),
         ];
         ensure_unique_non_empty("status check", statuses)?;
+        for required in &self.required_status_check_floor {
+            ensure!(
+                statuses.contains(&required.as_str()),
+                "required_status_check_floor references unknown status check {}",
+                required
+            );
+        }
 
         ensure!(
             !self.develop_lane.issue_label.trim().is_empty(),
@@ -757,6 +814,10 @@ impl ExpectedBranchProtection {
             !self.required_status_checks.is_empty(),
             "required_status_checks must not be empty"
         );
+        ensure!(
+            !self.required_effective_rules.is_empty(),
+            "required_effective_rules must not be empty"
+        );
         ensure_unique_non_empty(
             "expected branch protection status check",
             self.required_status_checks.iter().map(String::as_str),
@@ -773,10 +834,7 @@ impl ExpectedBranchProtection {
             control.default_branch
         );
 
-        for required in [
-            control.status_checks.control_plane.as_str(),
-            control.status_checks.self_test.as_str(),
-        ] {
+        for required in &control.required_status_check_floor {
             ensure!(
                 self.required_status_checks
                     .iter()
@@ -785,6 +843,32 @@ impl ExpectedBranchProtection {
                 required
             );
         }
+
+        let effective_required_status_checks = self
+            .required_effective_rules
+            .iter()
+            .filter_map(|rule| match rule {
+                ExpectedEffectiveRule::RequiredStatusChecks {
+                    required_status_checks,
+                    ..
+                } => Some(required_status_checks),
+                _ => None,
+            })
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        let classic_required_status_checks = self
+            .required_status_checks
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            effective_required_status_checks == classic_required_status_checks,
+            "required_effective_rules status checks {:?} must match classic required_status_checks {:?}",
+            effective_required_status_checks,
+            classic_required_status_checks
+        );
 
         Ok(())
     }
@@ -797,11 +881,18 @@ pub fn compare_branch_protection_response(
     let actual = normalize_branch_protection_response(actual_json)?;
     let expected_normalized = NormalizedBranchProtection {
         enforce_admins: expected.enforce_admins,
+        allow_deletions: expected.allow_deletions,
+        allow_force_pushes: expected.allow_force_pushes,
+        block_creations: expected.block_creations,
         dismiss_stale_reviews: expected.dismiss_stale_reviews,
+        required_linear_history: expected.required_linear_history,
+        required_conversation_resolution: expected.required_conversation_resolution,
+        lock_branch: expected.lock_branch,
+        require_signed_commits: expected.require_signed_commits,
         require_code_owner_reviews: expected.require_code_owner_reviews,
         required_approving_review_count: expected.required_approving_review_count,
         required_status_checks: expected.required_status_checks.iter().cloned().collect(),
-        strict_required_status_checks: false,
+        strict_required_status_checks: expected.strict_required_status_checks,
     };
 
     ensure!(
@@ -811,10 +902,53 @@ pub fn compare_branch_protection_response(
         actual.enforce_admins
     );
     ensure!(
+        actual.allow_deletions == expected_normalized.allow_deletions,
+        "branch protection drift: allow_deletions expected {}, got {}",
+        expected_normalized.allow_deletions,
+        actual.allow_deletions
+    );
+    ensure!(
+        actual.allow_force_pushes == expected_normalized.allow_force_pushes,
+        "branch protection drift: allow_force_pushes expected {}, got {}",
+        expected_normalized.allow_force_pushes,
+        actual.allow_force_pushes
+    );
+    ensure!(
+        actual.block_creations == expected_normalized.block_creations,
+        "branch protection drift: block_creations expected {}, got {}",
+        expected_normalized.block_creations,
+        actual.block_creations
+    );
+    ensure!(
         actual.dismiss_stale_reviews == expected_normalized.dismiss_stale_reviews,
         "branch protection drift: dismiss_stale_reviews expected {}, got {}",
         expected_normalized.dismiss_stale_reviews,
         actual.dismiss_stale_reviews
+    );
+    ensure!(
+        actual.required_linear_history == expected_normalized.required_linear_history,
+        "branch protection drift: required_linear_history expected {}, got {}",
+        expected_normalized.required_linear_history,
+        actual.required_linear_history
+    );
+    ensure!(
+        actual.required_conversation_resolution
+            == expected_normalized.required_conversation_resolution,
+        "branch protection drift: required_conversation_resolution expected {}, got {}",
+        expected_normalized.required_conversation_resolution,
+        actual.required_conversation_resolution
+    );
+    ensure!(
+        actual.lock_branch == expected_normalized.lock_branch,
+        "branch protection drift: lock_branch expected {}, got {}",
+        expected_normalized.lock_branch,
+        actual.lock_branch
+    );
+    ensure!(
+        actual.require_signed_commits == expected_normalized.require_signed_commits,
+        "branch protection drift: require_signed_commits expected {}, got {}",
+        expected_normalized.require_signed_commits,
+        actual.require_signed_commits
     );
     ensure!(
         actual.require_code_owner_reviews == expected_normalized.require_code_owner_reviews,
@@ -849,6 +983,7 @@ pub fn compare_branch_governance_responses(
     expected: &ExpectedBranchProtection,
     actual_branch_protection_json: &str,
     actual_rules_json: &str,
+    actual_ruleset_details_json: &str,
 ) -> Result<()> {
     compare_branch_protection_response(expected, actual_branch_protection_json)?;
 
@@ -866,7 +1001,76 @@ pub fn compare_branch_governance_responses(
         actual_rules
     );
 
+    let actual_rulesets = normalize_ruleset_details_response(actual_ruleset_details_json)?;
+    let expected_rulesets = expected
+        .required_rulesets
+        .iter()
+        .map(expected_ruleset_signature)
+        .collect::<BTreeSet<_>>();
+
+    ensure!(
+        actual_rulesets == expected_rulesets,
+        "branch governance drift: ruleset details differ (expected {:?}, got {:?})",
+        expected_rulesets,
+        actual_rulesets
+    );
+
     Ok(())
+}
+
+fn normalize_ruleset_details_response(actual_json: &str) -> Result<BTreeSet<String>> {
+    let rulesets: Value =
+        serde_json::from_str(actual_json).context("failed to parse ruleset details JSON")?;
+    let rulesets = rulesets
+        .as_array()
+        .ok_or_else(|| anyhow!("ruleset details response must be an array"))?;
+
+    let mut signatures = BTreeSet::new();
+    for ruleset in rulesets {
+        let id = ruleset
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| anyhow!("ruleset detail missing id"))?;
+        let name = ruleset
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("ruleset detail missing name"))?;
+        let enforcement = ruleset
+            .get("enforcement")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("ruleset detail missing enforcement"))?;
+        let bypass_actors = ruleset
+            .get("bypass_actors")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("ruleset detail missing bypass_actors"))?
+            .iter()
+            .map(|actor| {
+                let actor_id = actor
+                    .get("actor_id")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| anyhow!("bypass actor missing actor_id"))?;
+                let actor_type = actor
+                    .get("actor_type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("bypass actor missing actor_type"))?;
+                let bypass_mode = actor
+                    .get("bypass_mode")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("bypass actor missing bypass_mode"))?;
+                Ok(format!("{}:{}:{}", actor_type, actor_id, bypass_mode))
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+
+        signatures.insert(format!(
+            "ruleset|id={}|name={}|enforcement={}|bypass_actors={}",
+            id,
+            name,
+            enforcement,
+            bypass_actors.into_iter().collect::<Vec<_>>().join(",")
+        ));
+    }
+
+    Ok(signatures)
 }
 
 fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedBranchProtection> {
@@ -909,10 +1113,55 @@ fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedB
             .and_then(|admins| admins.get("enabled"))
             .and_then(Value::as_bool)
             .ok_or_else(|| anyhow!("branch protection response missing enforce_admins.enabled"))?,
+        allow_deletions: value
+            .get("allow_deletions")
+            .and_then(|field| field.get("enabled"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| anyhow!("branch protection response missing allow_deletions.enabled"))?,
+        allow_force_pushes: value
+            .get("allow_force_pushes")
+            .and_then(|field| field.get("enabled"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                anyhow!("branch protection response missing allow_force_pushes.enabled")
+            })?,
+        block_creations: value
+            .get("block_creations")
+            .and_then(|field| field.get("enabled"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| anyhow!("branch protection response missing block_creations.enabled"))?,
         dismiss_stale_reviews: reviews
             .get("dismiss_stale_reviews")
             .and_then(Value::as_bool)
             .ok_or_else(|| anyhow!("branch protection response missing dismiss_stale_reviews"))?,
+        required_linear_history: value
+            .get("required_linear_history")
+            .and_then(|field| field.get("enabled"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                anyhow!("branch protection response missing required_linear_history.enabled")
+            })?,
+        required_conversation_resolution: value
+            .get("required_conversation_resolution")
+            .and_then(|field| field.get("enabled"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                anyhow!(
+                    "branch protection response missing required_conversation_resolution.enabled"
+                )
+            })?,
+        lock_branch: value
+            .get("lock_branch")
+            .and_then(|field| field.get("enabled"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| anyhow!("branch protection response missing lock_branch.enabled"))?,
+        require_signed_commits: value
+            .get("required_signatures")
+            .and_then(|field| field.get("enabled"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                anyhow!("branch protection response missing required_signatures.enabled")
+            })?,
         require_code_owner_reviews: reviews
             .get("require_code_owner_reviews")
             .and_then(Value::as_bool)
@@ -955,8 +1204,20 @@ fn normalize_effective_rules_response(actual_json: &str) -> Result<BTreeSet<Stri
                 let parameters = rule
                     .get("parameters")
                     .ok_or_else(|| anyhow!("pull_request rule missing parameters"))?;
+                let allowed_merge_methods = parameters
+                    .get("allowed_merge_methods")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| anyhow!("pull_request rule missing allowed_merge_methods"))?
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| anyhow!("allowed_merge_methods entry must be a string"))
+                    })
+                    .collect::<Result<BTreeSet<_>>>()?;
                 format!(
-                    "pull_request|required_approving_review_count={}|dismiss_stale_reviews_on_push={}|require_code_owner_review={}|require_last_push_approval={}|required_review_thread_resolution={}",
+                    "pull_request|required_approving_review_count={}|dismiss_stale_reviews_on_push={}|require_code_owner_review={}|require_last_push_approval={}|required_review_thread_resolution={}|allowed_merge_methods={}",
                     parameters
                         .get("required_approving_review_count")
                         .and_then(Value::as_u64)
@@ -987,6 +1248,10 @@ fn normalize_effective_rules_response(actual_json: &str) -> Result<BTreeSet<Stri
                         .ok_or_else(|| anyhow!(
                             "pull_request rule missing required_review_thread_resolution"
                         ))?,
+                    allowed_merge_methods
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join(",")
                 )
             }
             "required_status_checks" => {
@@ -1445,17 +1710,27 @@ fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
             require_code_owner_review,
             require_last_push_approval,
             required_review_thread_resolution,
+            allowed_merge_methods,
+            ..
         } => format!(
-            "pull_request|required_approving_review_count={}|dismiss_stale_reviews_on_push={}|require_code_owner_review={}|require_last_push_approval={}|required_review_thread_resolution={}",
+            "pull_request|required_approving_review_count={}|dismiss_stale_reviews_on_push={}|require_code_owner_review={}|require_last_push_approval={}|required_review_thread_resolution={}|allowed_merge_methods={}",
             required_approving_review_count,
             dismiss_stale_reviews_on_push,
             require_code_owner_review,
             require_last_push_approval,
-            required_review_thread_resolution
+            required_review_thread_resolution,
+            allowed_merge_methods
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(",")
         ),
         ExpectedEffectiveRule::RequiredStatusChecks {
             strict_required_status_checks_policy,
             required_status_checks,
+            ..
         } => {
             let contexts = required_status_checks
                 .iter()
@@ -1470,6 +1745,23 @@ fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
             )
         }
     }
+}
+
+fn expected_ruleset_signature(ruleset: &ExpectedRuleset) -> String {
+    format!(
+        "ruleset|id={}|name={}|enforcement={}|bypass_actors={}",
+        ruleset.id,
+        ruleset.name,
+        ruleset.enforcement,
+        ruleset
+            .allowed_bypass_actors
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
 
 #[cfg(test)]

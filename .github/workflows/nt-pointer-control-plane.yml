@@ -74,8 +74,20 @@ jobs:
             cat "$RUNNER_TEMP/branch-protection.stderr" >&2
             exit "$status"
           fi
-          gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "$RUNNER_TEMP/branch-rules.json"
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "$RUNNER_TEMP/branch-rules.json" 2> "$RUNNER_TEMP/branch-rules.stderr"
+          rules_status=$?
+          set -e
+          if [ "$rules_status" -ne 0 ] && [ ! -s "$RUNNER_TEMP/branch-rules.json" ]; then
+            cat "$RUNNER_TEMP/branch-rules.stderr" >&2
+            exit "$rules_status"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets" > "$RUNNER_TEMP/rulesets-summary.json"
+          jq -r '.[].id' "$RUNNER_TEMP/rulesets-summary.json" | while read -r ruleset_id; do
+            gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}"
+          done | jq -s '.' > "$RUNNER_TEMP/ruleset-details.json"
           cat "$RUNNER_TEMP/branch-protection.stderr" >&2 || true
+          cat "$RUNNER_TEMP/branch-rules.stderr" >&2 || true
 
       - name: Compare branch governance to expected state
-        run: just nt-pointer-probe-compare-branch-governance "$RUNNER_TEMP/branch-protection.json" "$RUNNER_TEMP/branch-rules.json"
+        run: just nt-pointer-probe-compare-branch-governance "$RUNNER_TEMP/branch-protection.json" "$RUNNER_TEMP/branch-rules.json" "$RUNNER_TEMP/ruleset-details.json"

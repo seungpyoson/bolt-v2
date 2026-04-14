@@ -552,9 +552,17 @@ fn branch_governance_comparison_accepts_matching_fixture() {
             .expect("matching branch protection fixture should load");
     let actual_rules = std::fs::read_to_string(fixture("branch_protection/matching_rules.json"))
         .expect("matching rules fixture should load");
+    let actual_rulesets =
+        std::fs::read_to_string(fixture("branch_protection/matching_rulesets.json"))
+            .expect("matching ruleset details fixture should load");
 
-    compare_branch_governance_responses(&expected, &actual_protection, &actual_rules)
-        .expect("matching branch governance fixture should compare cleanly");
+    compare_branch_governance_responses(
+        &expected,
+        &actual_protection,
+        &actual_rules,
+        &actual_rulesets,
+    )
+    .expect("matching branch governance fixture should compare cleanly");
 }
 
 #[test]
@@ -587,13 +595,50 @@ fn branch_governance_comparison_rejects_rules_drift() {
         "branch_protection/missing_required_status_rule.json",
     ))
     .expect("mismatched rules fixture should load");
+    let actual_rulesets =
+        std::fs::read_to_string(fixture("branch_protection/matching_rulesets.json"))
+            .expect("matching ruleset details fixture should load");
 
-    let err = compare_branch_governance_responses(&expected, &actual_protection, &actual_rules)
-        .expect_err("missing ruleset status check should fail drift comparison");
+    let err = compare_branch_governance_responses(
+        &expected,
+        &actual_protection,
+        &actual_rules,
+        &actual_rulesets,
+    )
+    .expect_err("missing ruleset status check should fail drift comparison");
 
     assert!(
         err.to_string()
             .contains("branch governance drift: effective rules differ"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn branch_governance_comparison_rejects_bypass_actor_drift() {
+    let expected =
+        ExpectedBranchProtection::load_and_validate(&fixture("branch_protection/expected.toml"))
+            .expect("expected branch protection fixture should parse");
+    let actual_protection =
+        std::fs::read_to_string(fixture("branch_protection/matching_actual.json"))
+            .expect("matching branch protection fixture should load");
+    let actual_rules = std::fs::read_to_string(fixture("branch_protection/matching_rules.json"))
+        .expect("matching rules fixture should load");
+    let actual_rulesets =
+        std::fs::read_to_string(fixture("branch_protection/bypass_actor_rulesets.json"))
+            .expect("bypass-actor ruleset details fixture should load");
+
+    let err = compare_branch_governance_responses(
+        &expected,
+        &actual_protection,
+        &actual_rules,
+        &actual_rulesets,
+    )
+    .expect_err("ruleset bypass actor drift should fail comparison");
+
+    assert!(
+        err.to_string()
+            .contains("branch governance drift: ruleset details differ"),
         "unexpected error: {err}"
     );
 }

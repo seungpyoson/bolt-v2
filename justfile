@@ -693,8 +693,8 @@ nt-pointer-probe-self-test: check-workspace require-rust-verification-owner
 nt-pointer-probe-compare-branch-protection actual_json: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-protection --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}"
 
-nt-pointer-probe-compare-branch-governance actual_json actual_rules_json: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-governance --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}" --actual-rules-json "{{actual_rules_json}}"
+nt-pointer-probe-compare-branch-governance actual_json actual_rules_json actual_ruleset_details_json: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-governance --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}" --actual-rules-json "{{actual_rules_json}}" --actual-ruleset-details-json "{{actual_ruleset_details_json}}"
 
 nt-pointer-probe-print-nt-crate-diff-pattern: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- print-nt-crate-diff-pattern --repo-root "{{repo_root}}"

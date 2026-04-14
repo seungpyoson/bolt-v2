@@ -23,6 +23,10 @@ nt_crates = [
   "nautilus-trading",
   "nautilus-execution",
 ]
+required_status_check_floor = [
+  "nt-pointer-control-plane",
+  "nt-pointer-probe-self-test",
+]
 
 [paths]
 registry = "config/nt_pointer_probe/registry.toml"

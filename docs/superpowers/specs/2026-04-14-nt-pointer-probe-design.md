@@ -178,13 +178,13 @@ Every control in this design must map to an enforcement mechanism. If a rule has
 | Safe-list entries must be valid | Probe-time validation of expiry and machine-checkable condition | Self-review is acceptable only because the probe re-validates the entry every run | Safe-list becomes a silent bypass path |
 | Registry changes must be controlled | Control-plane protection plus registry validation checks | Safety comes from validation, not peer review theater | Seam routing can be weakened silently |
 | Replay-set changes must be controlled | Control-plane protection plus replay validation checks | Safety comes from replay behavior, not owner names | Inference regression checks can be weakened silently |
-| Probe workflow must preserve fail-closed behavior | Workflow self-test against known-good and known-bad fixtures | The workflow must prove it still fails closed | Workflow can emit trusted but invalid PASS artifacts |
-| Develop lane must stay advisory-only | No mergeable PR output from develop lane | Develop only produces report/issue output | Develop becomes accidental merge path |
+| Probe workflow must preserve fail-closed behavior | A dedicated workflow self-test that runs known-good and known-bad fixtures on every probe-workflow change and on a periodic cadence | The workflow must prove it still fails closed | Workflow can emit trusted but invalid PASS artifacts |
+| Develop lane must stay advisory-only | A single long-lived advisory issue plus a hard ban on develop-lane PR creation | Develop only produces reviewable early-warning output | Develop becomes accidental merge path |
 | External review must be substantive | Required external-review artifact schema plus required status | The operator must attach structured second-opinion evidence and recorded disposition | Token review file satisfies gate |
 | Security exception must be constrained | Mechanical eligibility check plus explicit audit record | No second internal approver exists; only hard predicates and auditability remain | Soak is skipped by operator preference |
 | Artifact durability must be real | Designated durable backing store and retention policy | The audit trail survives operator memory and PR churn | Audit trail disappears after incident window |
 | Any automation must not bypass NT pin policy | PR path blocking on NT-pin changes regardless of actor | Human and bot PRs are treated the same | Autonomous NT bump merges outside probe |
-| Branch protection must stay aligned with design | Drift detection against expected protection state | Admin power is a residual risk, so drift must be surfaced quickly | All other controls become optional in practice |
+| Branch protection must stay aligned with design | A dedicated branch-protection drift check compares current settings to an expected-state artifact on every probe run and on a periodic cadence | Admin power is a residual risk, so drift must be surfaced quickly | All other controls become optional in practice |
 
 The matrix above is authoritative for enforcement intent. Future edits to the spec must update the matrix when adding or changing controls.
 
@@ -302,7 +302,7 @@ Each safe-list entry must include:
 
 Additional safe-list rules:
 
-- safe-list additions must require the same owner-group review as registry changes, and may require stricter review
+- safe-list additions must require the same control-plane protection and validation as registry changes; in solo mode this means machine-checkable conditions, probe-time validation, and external-review artifact coverage rather than peer-review theater
 - safe-list changes must not be bundled with unrelated code changes
 - if a safe-list condition no longer holds for the current Bolt codebase, the entry is invalid and the path becomes ambiguous
 - if a safe-list entry is past its expiry or revalidation deadline, the entry is invalid and the path becomes ambiguous
@@ -355,7 +355,7 @@ Behavior:
 
 - scheduled probe against upstream NT `develop`
 - resolve `develop` to an immutable full SHA before any other step
-- if all required evidence passes, automation may publish a report or issue, but not a mergeable PR
+- if all required evidence passes, automation must update one long-lived advisory status issue and attach the current advisory report artifact
 - if evidence is incomplete or ambiguous, the probe reports failure
 
 The `develop` lane is advisory-only. It exists to reduce surprise, not to create a merge path.
@@ -374,7 +374,7 @@ Behavior:
 - record both the tag name and the resolved SHA in probe output
 - require a tag soak window before draft-PR creation; the default soak window should be 7 days unless the registry owner explicitly tightens it further
 - measure soak as consecutive days where the same tag name resolved to the same SHA in probe observations; any SHA move resets the clock
-- same gating model as `develop`
+- same fail-closed evidence contract as the develop lane, but with merge-candidate PR output
 - also draft-PR only, never auto-merge
 
 Security exception path:
@@ -490,6 +490,7 @@ That audit must:
 5. verify that each owning seam has an upstream path-prefix mapping that would actually classify changes to the relevant NT crate or path
 6. verify that each registered upstream path-prefix matches at least one existing path in the target NT source tree
 7. inventory canary gaps for every seam and mark the registry incomplete until all required seam canaries are real, not stubs
+8. verify that dependency-automation and auto-merge paths cannot modify NT pins outside the probe path
 
 After activation, every probe run must re-check registry completeness against the current Bolt codebase.
 
@@ -589,7 +590,7 @@ If all required evidence passes for the merge-candidate lane, automation may ope
 - the exact resolved NT SHA
 - the new NT revision
 - the previous NT revision
-- lane name (`develop` or tagged release)
+- lane name (`tagged-release`)
 - seam registry version or hash
 - safe-list version or hash
 - a summary of touched seams
@@ -602,8 +603,8 @@ Tagged-release draft PR creation must be strict:
 
 - draft PRs must only be opened for fully passing probe runs
 - failing or ambiguous runs must produce reports, not PRs
-- there must be at most one open probe PR per lane
-- a newer probe run for the same lane must supersede the older PR automatically
+- there must be at most one open merge-candidate probe PR at a time
+- a newer tagged-release probe run must supersede the older merge-candidate PR automatically
 - a stale probe PR must close automatically after the configured staleness window
 
 ## Probe Artifact
@@ -707,7 +708,7 @@ Recommended high-level flow:
 11. Run all required seam canaries.
 12. Produce and store the atomic evidence artifact.
 13. If any requirement fails, emit a failure report and stop.
-14. If the lane is `develop`, publish or update the advisory report only.
+14. If the lane is `develop`, publish or update the single long-lived advisory status issue and attach the advisory report artifact only.
 15. If the lane is tagged-release and all requirements pass, open or update the single merge-candidate draft PR for that lane.
 16. Leave the external adversarial review status pending.
 17. Hand off for human review and external adversarial review.

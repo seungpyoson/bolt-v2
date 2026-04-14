@@ -47,6 +47,10 @@ external_review = "external-adversarial-review"
 issue_label = "nt-pointer-probe-advisory"
 issue_title_prefix = "NT Pointer Probe Advisory"
 
+[drift_lane]
+issue_label = "nt-pointer-probe-drift"
+issue_title_prefix = "NT Pointer Probe Drift"
+
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
 pr_title_prefix = "NT Pointer Probe"

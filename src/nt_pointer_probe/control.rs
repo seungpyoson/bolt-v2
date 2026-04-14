@@ -57,6 +57,7 @@ pub struct ControlConfig {
     pub paths: ControlPaths,
     pub status_checks: StatusChecks,
     pub develop_lane: DevelopLane,
+    pub drift_lane: DriftLane,
     pub tagged_lane: TaggedLane,
 }
 
@@ -84,6 +85,13 @@ pub struct StatusChecks {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DevelopLane {
+    pub issue_label: String,
+    pub issue_title_prefix: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftLane {
     pub issue_label: String,
     pub issue_title_prefix: String,
 }
@@ -163,8 +171,14 @@ pub enum MatchKind {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SafeListCondition {
-    pub kind: String,
+    pub kind: SafeListConditionKind,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SafeListConditionKind {
+    UpstreamPathKind,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -537,6 +551,14 @@ impl ControlConfig {
             "develop lane issue_title_prefix must not be empty"
         );
         ensure!(
+            !self.drift_lane.issue_label.trim().is_empty(),
+            "drift lane issue_label must not be empty"
+        );
+        ensure!(
+            !self.drift_lane.issue_title_prefix.trim().is_empty(),
+            "drift lane issue_title_prefix must not be empty"
+        );
+        ensure!(
             !self.tagged_lane.pr_branch.trim().is_empty(),
             "tagged lane pr_branch must not be empty"
         );
@@ -678,15 +700,11 @@ impl SafeListFile {
                 entry.path
             );
             ensure!(
-                !entry.condition.kind.trim().is_empty(),
-                "safe-list entry {} condition.kind must not be empty",
-                entry.path
-            );
-            ensure!(
                 !entry.condition.value.trim().is_empty(),
                 "safe-list entry {} condition.value must not be empty",
                 entry.path
             );
+            validate_safe_list_condition(entry)?;
 
             let approved_at = NaiveDate::parse_from_str(&entry.approved_at, "%Y-%m-%d")
                 .with_context(|| {
@@ -1323,6 +1341,23 @@ fn validate_repo_path_exists(repo_root: &Path, path: &str) -> Result<()> {
         "registry path does not exist in repo: {}",
         normalized
     );
+    Ok(())
+}
+
+fn validate_safe_list_condition(entry: &SafeListEntry) -> Result<()> {
+    match entry.condition.kind {
+        SafeListConditionKind::UpstreamPathKind => {
+            ensure!(
+                matches!(
+                    entry.condition.value.as_str(),
+                    "docs" | "examples" | "tests" | "unused-adapter"
+                ),
+                "safe-list entry {} condition.value must be one of docs, examples, tests, unused-adapter for kind upstream-path-kind",
+                entry.path
+            );
+        }
+    }
+
     Ok(())
 }
 

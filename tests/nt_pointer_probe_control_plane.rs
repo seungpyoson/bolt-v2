@@ -111,6 +111,10 @@ external_review = "external-adversarial-review"
 issue_label = "nt-pointer-probe-advisory"
 issue_title_prefix = "NT Pointer Probe Advisory"
 
+[drift_lane]
+issue_label = "nt-pointer-probe-drift"
+issue_title_prefix = "NT Pointer Probe Drift"
+
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
 pr_title_prefix = "NT Pointer Probe"
@@ -326,7 +330,9 @@ value = "shared-nt-crate-parent"
 
     assert!(
         err.to_string()
-            .contains("shared NT crate safe-list entries must use exact match"),
+            .contains(
+                "safe-list entry crates/ condition.value must be one of docs, examples, tests, unused-adapter for kind upstream-path-kind"
+            ),
         "unexpected error: {err}"
     );
 }
@@ -413,6 +419,10 @@ external_review = "external-adversarial-review"
 [develop_lane]
 issue_label = "nt-pointer-probe-advisory"
 issue_title_prefix = "NT Pointer Probe Advisory"
+
+[drift_lane]
+issue_label = "nt-pointer-probe-drift"
+issue_title_prefix = "NT Pointer Probe Drift"
 
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
@@ -526,6 +536,41 @@ value = "docs"
     assert!(
         err.to_string()
             .contains("duplicate safe-list entry for docs with match kind Prefix"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn unsupported_safe_list_condition_value_fails_closed() {
+    let tempdir = temp_fixture("valid_minimal");
+    fs::write(
+        tempdir
+            .path()
+            .join("config/nt_pointer_probe/safe_list.toml"),
+        r#"schema_version = 1
+
+[[entries]]
+path = "docs/"
+match = "prefix"
+non_overlap_proof = "Invalid fixture: unsupported upstream-path-kind value."
+approved_by = "fixture"
+approved_at = "2099-01-01"
+revalidate_after = "2099-01-30"
+
+[entries.condition]
+kind = "upstream-path-kind"
+value = "bogus"
+"#,
+    )
+    .expect("invalid safe-list condition fixture should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("unsupported safe-list condition value should fail validation");
+
+    assert!(
+        err.to_string().contains(
+            "safe-list entry docs/ condition.value must be one of docs, examples, tests, unused-adapter for kind upstream-path-kind"
+        ),
         "unexpected error: {err}"
     );
 }

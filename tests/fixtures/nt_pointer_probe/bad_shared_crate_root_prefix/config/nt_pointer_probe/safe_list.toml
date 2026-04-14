@@ -9,5 +9,5 @@ approved_at = "2026-04-14"
 revalidate_after = "2026-04-21"
 
 [entries.condition]
-kind = "path-kind"
-value = "shared-nt-crate-root"
+kind = "upstream-path-kind"
+value = "docs"

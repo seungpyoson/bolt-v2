@@ -90,4 +90,37 @@ jobs:
           cat "$RUNNER_TEMP/branch-rules.stderr" >&2 || true
 
       - name: Compare branch governance to expected state
+        id: compare
+        continue-on-error: true
         run: just nt-pointer-probe-compare-branch-governance "$RUNNER_TEMP/branch-protection.json" "$RUNNER_TEMP/branch-rules.json" "$RUNNER_TEMP/ruleset-details.json"
+
+      - name: Update drift issue on failure
+        if: steps.compare.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          label="nt-pointer-probe-drift"
+          title_prefix="NT Pointer Probe Drift"
+          gh label create "$label" --description "NT pointer probe drift failures" --color "B60205" 2>/dev/null || true
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --label "$label" --state open --json number,title --jq '.[] | select(.title | startswith("'"$title_prefix"'")) | .number' | head -n 1)"
+          body="$(cat <<'EOF'
+          ## Drift Failure
+
+          The scheduled NT pointer branch-governance drift check failed.
+
+          Required follow-up:
+          - inspect the failing `branch_protection_drift` workflow run
+          - determine whether this is governance drift or an auth/config issue
+          - do not ignore repeated failures; the drift lane is part of the control plane
+          EOF
+          )"
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --title "$title_prefix ($(date -u +%Y-%m-%d))" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label "$label" --title "$title_prefix ($(date -u +%Y-%m-%d))" --body "$body"
+          fi
+
+      - name: Fail after drift issue update
+        if: steps.compare.outcome == 'failure'
+        run: exit 1

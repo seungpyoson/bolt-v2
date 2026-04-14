@@ -1,0 +1,88 @@
+name: NT Pointer Control Plane
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 10 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: nt-pointer-control-plane-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  control_plane:
+    name: nt-pointer-control-plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+
+      - name: Validate control-plane artifacts
+        run: just nt-pointer-probe-validate-control-plane
+
+      - name: Block direct NT pin changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          diff="$(git diff --unified=0 "${base_ref}...${head_ref}" -- Cargo.toml Cargo.lock)"
+          if printf '%s\n' "$diff" | rg -n '^[+-].*(nautilus-(common|core|binance|bybit|deribit|hyperliquid|kraken|live|model|network|okx|persistence|polymarket|system|trading|execution)|nautilus_trader\\.git)'; then
+            echo "ERROR: NT pin changes are blocked until the probe-generated path is active."
+            exit 1
+          fi
+
+  branch_protection_drift:
+    name: branch_protection_drift
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+
+      - name: Fetch branch protection state
+        shell: bash
+        env:
+          NT_POINTER_PROBE_GH_ADMIN_TOKEN: ${{ secrets.NT_POINTER_PROBE_GH_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${NT_POINTER_PROBE_GH_ADMIN_TOKEN}" ]; then
+            export GH_TOKEN="${NT_POINTER_PROBE_GH_ADMIN_TOKEN}"
+          fi
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" > "$RUNNER_TEMP/branch-protection.json" 2> "$RUNNER_TEMP/branch-protection.stderr"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ ! -s "$RUNNER_TEMP/branch-protection.json" ]; then
+            cat "$RUNNER_TEMP/branch-protection.stderr" >&2
+            exit "$status"
+          fi
+
+      - name: Compare branch protection to expected state
+        run: just nt-pointer-probe-compare-branch-protection "$RUNNER_TEMP/branch-protection.json"

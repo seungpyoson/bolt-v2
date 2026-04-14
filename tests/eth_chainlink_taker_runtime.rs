@@ -1,6 +1,10 @@
 mod support;
 
-use std::{rc::Rc, sync::Arc, time::Duration};
+use std::{
+    rc::Rc,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 
 use bolt_v2::{
     config::Config,
@@ -32,6 +36,7 @@ use nautilus_model::{
         TraderId, VenueOrderId,
     },
     instruments::{InstrumentAny, binary_option::BinaryOption},
+    orders::{Order, OrderAny},
     position::Position,
     types::{Currency, Money, Price, Quantity},
 };
@@ -44,6 +49,12 @@ use tokio::time::sleep;
 use toml::Value;
 #[derive(Debug, Default)]
 struct StaticFeeProvider;
+
+static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn runtime_test_mutex() -> &'static Mutex<()> {
+    RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
+}
 
 impl bolt_v2::clients::polymarket::FeeProvider for StaticFeeProvider {
     fn fee_bps(&self, _token_id: &str) -> Option<rust_decimal::Decimal> {
@@ -153,13 +164,13 @@ fn strategy_raw_config() -> Value {
     .into()
 }
 
-fn candidate_market(start_ts_ms: u64) -> CandidateMarket {
+fn candidate_market_named(market_id: &str, start_ts_ms: u64) -> CandidateMarket {
     CandidateMarket {
-        market_id: "MKT-ETH-1".to_string(),
-        instrument_id: "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string(),
+        market_id: market_id.to_string(),
+        instrument_id: format!("condition-eth-{market_id}-UP.POLYMARKET"),
         condition_id: "condition-eth".to_string(),
-        up_token_id: "MKT-ETH-1-UP".to_string(),
-        down_token_id: "MKT-ETH-1-DOWN".to_string(),
+        up_token_id: format!("{market_id}-UP"),
+        down_token_id: format!("{market_id}-DOWN"),
         start_ts_ms,
         declared_resolution_basis:
             bolt_v2::platform::resolution_basis::parse_ruleset_resolution_basis("chainlink_ethusd")
@@ -171,30 +182,38 @@ fn candidate_market(start_ts_ms: u64) -> CandidateMarket {
 }
 
 fn selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+    selection_snapshot_for("MKT-ETH-1", start_ts_ms)
+}
+
+fn selection_snapshot_for(market_id: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     RuntimeSelectionSnapshot {
         ruleset_id: "PRIMARY".to_string(),
         decision: SelectionDecision {
             ruleset_id: "PRIMARY".to_string(),
             state: SelectionState::Active {
-                market: candidate_market(start_ts_ms),
+                market: candidate_market_named(market_id, start_ts_ms),
             },
         },
-        eligible_candidates: vec![candidate_market(start_ts_ms)],
+        eligible_candidates: vec![candidate_market_named(market_id, start_ts_ms)],
         published_at_ms: start_ts_ms,
     }
 }
 
 fn freeze_selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+    freeze_selection_snapshot_for("MKT-ETH-1", start_ts_ms)
+}
+
+fn freeze_selection_snapshot_for(market_id: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     RuntimeSelectionSnapshot {
         ruleset_id: "PRIMARY".to_string(),
         decision: SelectionDecision {
             ruleset_id: "PRIMARY".to_string(),
             state: SelectionState::Freeze {
-                market: candidate_market(start_ts_ms),
+                market: candidate_market_named(market_id, start_ts_ms),
                 reason: "freeze window".to_string(),
             },
         },
-        eligible_candidates: vec![candidate_market(start_ts_ms)],
+        eligible_candidates: vec![candidate_market_named(market_id, start_ts_ms)],
         published_at_ms: start_ts_ms,
     }
 }
@@ -373,6 +392,7 @@ async fn wait_for_running(handle: &LiveNodeHandle) {
 
 #[test]
 fn eth_chainlink_taker_runtime_submits_real_entry_order() {
+    let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -471,7 +491,101 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_submits_down_entry_order_at_down_bid_price_not_ev_cost() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_factory = registry_runtime_strategy_factory(
+        production_strategy_registry().unwrap(),
+        make_strategy_build_context(
+            Arc::new(StaticFeeProvider),
+            "platform.reference.test.chainlink".to_string(),
+        ),
+    );
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let cache_handle = node.kernel().cache();
+
+    {
+        let mut cache = cache_handle.borrow_mut();
+        cache.add_instrument(polymarket_binary_option(up)).unwrap();
+        cache
+            .add_instrument(polymarket_binary_option(down))
+            .unwrap();
+    }
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_100.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_099.0, 3_099.5),
+            );
+
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.600, 0.610),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.550, 0.560),
+            );
+
+            for _ in 0..50 {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].strategy_id, strategy_id);
+    assert_eq!(submissions[0].instrument_id, down);
+
+    let order: OrderAny = cache_handle
+        .borrow()
+        .order(&submissions[0].client_order_id)
+        .cloned()
+        .expect("submitted order should be cached");
+    assert_eq!(order.order_side(), OrderSide::Sell);
+    assert_eq!(order.price(), Some(Price::new(0.550, 3)));
+}
+
+#[test]
 fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_freeze() {
+    let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -588,6 +702,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
 
 #[test]
 fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -678,4 +793,129 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotation_to_market_b() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_factory = registry_runtime_strategy_factory(
+        production_strategy_registry().unwrap(),
+        make_strategy_build_context(
+            Arc::new(StaticFeeProvider),
+            "platform.reference.test.chainlink".to_string(),
+        ),
+    );
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let market_a_up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let market_a_down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let market_b_up = InstrumentId::from("condition-eth-MKT-ETH-2-UP.POLYMARKET");
+    let market_b_down = InstrumentId::from("condition-eth-MKT-ETH-2-DOWN.POLYMARKET");
+
+    {
+        let cache_handle = node.kernel().cache();
+        let mut cache = cache_handle.borrow_mut();
+        for instrument_id in [market_a_up, market_a_down, market_b_up, market_b_down] {
+            cache
+                .add_instrument(polymarket_binary_option(instrument_id))
+                .unwrap();
+        }
+    }
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let rotation_ts_ms = start_ts_ms + 1_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot_for("MKT-ETH-1", start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(market_a_up),
+                &book_deltas(market_a_up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(market_a_down),
+                &book_deltas(market_a_down, 0.480, 0.490),
+            );
+            sleep(Duration::from_millis(50)).await;
+
+            if let Some(mut actor) =
+                try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
+            {
+                actor.on_position_opened(position_opened_event(
+                    strategy_id,
+                    market_a_up,
+                    PositionId::from("P-ROTATE-001"),
+                    Quantity::new(5.0, 2),
+                    0.450,
+                ));
+            } else {
+                panic!("runtime strategy actor should be registered");
+            }
+            clear_mock_exec_submissions();
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot_for("MKT-ETH-2", rotation_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(rotation_ts_ms, 3_101.0, 3_104.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(market_b_up),
+                &book_deltas(market_b_up, 0.420, 0.440),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(market_b_down),
+                &book_deltas(market_b_down, 0.500, 0.510),
+            );
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &freeze_selection_snapshot_for("MKT-ETH-2", rotation_ts_ms),
+            );
+
+            for _ in 0..50 {
+                if recorded_mock_exec_submissions().len() == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].strategy_id, strategy_id);
+    assert_eq!(submissions[0].instrument_id, market_a_up);
 }

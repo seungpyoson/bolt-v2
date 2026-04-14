@@ -192,6 +192,106 @@ impl OutcomeBookState {
                 + self.ask_levels.values().copied().sum::<f64>(),
         );
     }
+
+    fn max_buy_execution_within_vwap_slippage_bps(
+        &self,
+        slippage_bps: u64,
+    ) -> Option<ImpactCappedExecution> {
+        let best_ask = self
+            .best_ask
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        let allowed_vwap = best_ask * (1.0 + slippage_bps as f64 / BPS_DENOMINATOR);
+        max_execution_within_vwap_limit(
+            self.ask_levels
+                .iter()
+                .map(|(price, size)| (price.as_f64(), *size))
+                .collect(),
+            allowed_vwap,
+            true,
+        )
+    }
+
+    fn max_sell_execution_within_vwap_slippage_bps(
+        &self,
+        slippage_bps: u64,
+    ) -> Option<ImpactCappedExecution> {
+        let best_bid = self
+            .best_bid
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        let allowed_vwap = best_bid * (1.0 - slippage_bps as f64 / BPS_DENOMINATOR);
+        max_execution_within_vwap_limit(
+            self.bid_levels
+                .iter()
+                .rev()
+                .map(|(price, size)| (price.as_f64(), *size))
+                .collect(),
+            allowed_vwap,
+            false,
+        )
+    }
+}
+
+fn max_execution_within_vwap_limit(
+    levels: Vec<(f64, f64)>,
+    allowed_vwap: f64,
+    is_buy: bool,
+) -> Option<ImpactCappedExecution> {
+    if !allowed_vwap.is_finite() || allowed_vwap <= 0.0 {
+        return None;
+    }
+
+    let mut cumulative_qty = 0.0;
+    let mut cumulative_notional = 0.0;
+
+    for (price, size) in levels {
+        if !price.is_finite() || price <= 0.0 || !size.is_finite() || size <= 0.0 {
+            continue;
+        }
+
+        let next_qty = cumulative_qty + size;
+        let next_notional = cumulative_notional + price * size;
+        let next_vwap = next_notional / next_qty;
+        let within_limit = if is_buy {
+            next_vwap <= allowed_vwap
+        } else {
+            next_vwap >= allowed_vwap
+        };
+        if within_limit {
+            cumulative_qty = next_qty;
+            cumulative_notional = next_notional;
+            continue;
+        }
+
+        let partial_qty = if is_buy {
+            let denominator = price - allowed_vwap;
+            if denominator <= 0.0 {
+                size
+            } else {
+                ((allowed_vwap * cumulative_qty - cumulative_notional) / denominator)
+                    .clamp(0.0, size)
+            }
+        } else {
+            let denominator = allowed_vwap - price;
+            if denominator <= 0.0 {
+                size
+            } else {
+                ((cumulative_notional - allowed_vwap * cumulative_qty) / denominator)
+                    .clamp(0.0, size)
+            }
+        };
+
+        let total_qty = cumulative_qty + partial_qty;
+        let total_notional = cumulative_notional + partial_qty * price;
+        return (total_qty > 0.0).then_some(ImpactCappedExecution {
+            quantity: total_qty,
+            vwap_price: total_notional / total_qty,
+        });
+    }
+
+    (cumulative_qty > 0.0).then_some(ImpactCappedExecution {
+        quantity: cumulative_qty,
+        vwap_price: cumulative_notional / cumulative_qty,
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -278,6 +378,12 @@ struct VenueTimingState {
 struct VolatilitySample {
     ts_ms: u64,
     price: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ImpactCappedExecution {
+    quantity: f64,
+    vwap_price: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -437,12 +543,19 @@ struct PricingState {
 
 #[derive(Debug, Clone, PartialEq)]
 struct OpenPositionState {
+    market_id: Option<String>,
     instrument_id: InstrumentId,
     position_id: PositionId,
+    outcome_side: OutcomeSide,
+    outcome_fees: OutcomeFeeState,
     entry_order_side: OrderSide,
     side: PositionSide,
     quantity: Quantity,
     avg_px_open: f64,
+    interval_open: Option<f64>,
+    selection_published_at_ms: Option<u64>,
+    seconds_to_expiry_at_selection: Option<u64>,
+    book: OutcomeBookState,
 }
 
 impl PricingState {
@@ -592,6 +705,7 @@ impl PricingState {
 struct OutcomeBookSubscriptions {
     up_instrument_id: Option<InstrumentId>,
     down_instrument_id: Option<InstrumentId>,
+    tracked_position_instrument_id: Option<InstrumentId>,
 }
 
 impl OutcomeBookSubscriptions {
@@ -605,12 +719,14 @@ impl OutcomeBookSubscriptions {
                 &market.condition_id,
                 &market.down_token_id,
             )),
+            tracked_position_instrument_id: None,
         }
     }
 
     fn is_same_market(&self, other: &Self) -> bool {
         self.up_instrument_id == other.up_instrument_id
             && self.down_instrument_id == other.down_instrument_id
+            && self.tracked_position_instrument_id == other.tracked_position_instrument_id
     }
 }
 
@@ -749,6 +865,14 @@ pub struct EthChainlinkTaker {
     cooldowns: BTreeMap<String, u64>,
     recovery: bool,
     pending_entry_order: Option<ClientOrderId>,
+    pending_entry_market_id: Option<String>,
+    pending_entry_instrument_id: Option<InstrumentId>,
+    pending_entry_outcome_side: Option<OutcomeSide>,
+    pending_entry_outcome_fees: Option<OutcomeFeeState>,
+    pending_entry_interval_open: Option<f64>,
+    pending_entry_selection_published_at_ms: Option<u64>,
+    pending_entry_seconds_to_expiry_at_selection: Option<u64>,
+    pending_entry_book: Option<OutcomeBookState>,
     pending_exit_order: Option<ClientOrderId>,
     open_position_active: bool,
     open_position: Option<OpenPositionState>,
@@ -774,6 +898,14 @@ impl EthChainlinkTaker {
             cooldowns: BTreeMap::new(),
             recovery: false,
             pending_entry_order: None,
+            pending_entry_market_id: None,
+            pending_entry_instrument_id: None,
+            pending_entry_outcome_side: None,
+            pending_entry_outcome_fees: None,
+            pending_entry_interval_open: None,
+            pending_entry_selection_published_at_ms: None,
+            pending_entry_seconds_to_expiry_at_selection: None,
+            pending_entry_book: None,
             pending_exit_order: None,
             open_position_active: false,
             open_position: None,
@@ -794,17 +926,14 @@ impl EthChainlinkTaker {
         );
         let previous_phase = self.active.phase;
         let previous_fee_tokens = self.active.outcome_fees.token_ids();
-        let next_books = selection_book_subscriptions(&snapshot);
-        let should_replace_books =
-            should_replace_book_subscriptions(&self.book_subscriptions, &next_books);
-        if should_replace_books {
-            self.replace_book_subscriptions(next_books.clone());
-        }
+        let next_selection_books = selection_book_subscriptions(&snapshot);
         apply_selection_snapshot_to_active(
             &mut self.active,
             &snapshot,
             self.config.warmup_tick_count,
         );
+        self.active.books.up.instrument_id = next_selection_books.up_instrument_id;
+        self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
         let market_changed = previous_market_identity
             != (
@@ -824,6 +953,8 @@ impl EthChainlinkTaker {
             self.trigger_fee_warm_for_market();
             self.refresh_fee_readiness();
         }
+        self.sync_open_position_from_active();
+        self.refresh_book_subscriptions_for_current_state();
         if (self.open_position_active || self.open_position.is_some())
             && let Err(error) = self.try_submit_exit_order(now_ms)
         {
@@ -846,6 +977,7 @@ impl EthChainlinkTaker {
         );
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
+        self.sync_open_position_from_active();
         if (self.open_position_active || self.open_position.is_some())
             && let Err(error) = self.try_submit_exit_order(snapshot.ts_ms)
         {
@@ -942,12 +1074,20 @@ impl EthChainlinkTaker {
                 .positions_open(None, None, Some(&strategy_id), None, None)
                 .into_iter()
                 .map(|position| OpenPositionState {
+                    market_id: None,
                     instrument_id: position.instrument_id,
                     position_id: position.id,
+                    outcome_side: Self::infer_outcome_side(position.instrument_id)
+                        .unwrap_or(OutcomeSide::Up),
+                    outcome_fees: OutcomeFeeState::default(),
                     entry_order_side: position.entry,
                     side: position.side,
                     quantity: position.quantity,
                     avg_px_open: position.avg_px_open,
+                    interval_open: None,
+                    selection_published_at_ms: None,
+                    seconds_to_expiry_at_selection: None,
+                    book: OutcomeBookState::from_instrument_id(position.instrument_id),
                 })
                 .collect::<Vec<_>>()
         }));
@@ -1013,6 +1153,18 @@ impl EthChainlinkTaker {
         } else {
             None
         }
+    }
+
+    fn clear_pending_entry_state(&mut self) {
+        self.pending_entry_order = None;
+        self.pending_entry_market_id = None;
+        self.pending_entry_instrument_id = None;
+        self.pending_entry_outcome_side = None;
+        self.pending_entry_outcome_fees = None;
+        self.pending_entry_interval_open = None;
+        self.pending_entry_selection_published_at_ms = None;
+        self.pending_entry_seconds_to_expiry_at_selection = None;
+        self.pending_entry_book = None;
     }
 
     #[cfg(test)]
@@ -1223,6 +1375,15 @@ impl EthChainlinkTaker {
         down_fee_bps: f64,
     ) -> Option<f64> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
+        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, up_fee_bps, down_fee_bps)
+    }
+
+    fn uncertainty_band_probability_for_seconds(
+        &self,
+        seconds_to_expiry: u64,
+        up_fee_bps: f64,
+        down_fee_bps: f64,
+    ) -> Option<f64> {
         let time_uncertainty_probability = if self.config.period_duration_secs == 0 {
             return None;
         } else {
@@ -1456,15 +1617,32 @@ impl EthChainlinkTaker {
         .filter(|value| value.is_finite() && *value > 0.0)
     }
 
-    fn visible_book_notional_cap_usdc(&self, side: OutcomeSide) -> Option<f64> {
-        let liquidity_available = match side {
-            OutcomeSide::Up => self.active.books.up.liquidity_available,
-            OutcomeSide::Down => self.active.books.down.liquidity_available,
+    fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
+        match side {
+            OutcomeSide::Up => self.active.books.up.best_ask,
+            OutcomeSide::Down => self.active.books.down.best_bid,
         }
-        .filter(|value| value.is_finite() && *value > 0.0)?;
+        .filter(|value| value.is_finite() && *value > 0.0)
+    }
 
-        let entry_cost = self.executable_entry_cost(side)?;
-        Some(liquidity_available * entry_cost)
+    fn visible_book_notional_cap_usdc(&self, side: OutcomeSide) -> Option<f64> {
+        let capped_execution = match side {
+            OutcomeSide::Up => self
+                .active
+                .books
+                .up
+                .max_buy_execution_within_vwap_slippage_bps(self.config.book_impact_cap_bps),
+            OutcomeSide::Down => self
+                .active
+                .books
+                .down
+                .max_sell_execution_within_vwap_slippage_bps(self.config.book_impact_cap_bps),
+        }
+        .filter(|execution| execution.quantity.is_finite() && execution.quantity > 0.0)?;
+        Some(match side {
+            OutcomeSide::Up => capped_execution.quantity * capped_execution.vwap_price,
+            OutcomeSide::Down => capped_execution.quantity * (1.0 - capped_execution.vwap_price),
+        })
     }
 
     fn instrument_id_for_side(&self, side: OutcomeSide) -> Option<InstrumentId> {
@@ -1480,15 +1658,95 @@ impl EthChainlinkTaker {
         cache.instrument(&instrument_id).cloned()
     }
 
-    fn open_position_outcome_side(&self) -> Option<OutcomeSide> {
-        let open_position = self.open_position.as_ref()?;
-        if self.active.books.up.instrument_id == Some(open_position.instrument_id) {
+    fn infer_outcome_side(instrument_id: InstrumentId) -> Option<OutcomeSide> {
+        let instrument = instrument_id.to_string();
+        if instrument.contains("-UP.") {
             Some(OutcomeSide::Up)
-        } else if self.active.books.down.instrument_id == Some(open_position.instrument_id) {
+        } else if instrument.contains("-DOWN.") {
             Some(OutcomeSide::Down)
         } else {
             None
         }
+    }
+
+    fn infer_position_side(entry_order_side: OrderSide) -> Option<PositionSide> {
+        match entry_order_side {
+            OrderSide::Buy => Some(PositionSide::Long),
+            OrderSide::Sell => Some(PositionSide::Short),
+            _ => None,
+        }
+    }
+
+    fn seconds_to_expiry_from_selection(
+        selection_published_at_ms: Option<u64>,
+        seconds_to_expiry_at_selection: Option<u64>,
+        now_ms: u64,
+    ) -> Option<u64> {
+        let published_at_ms = selection_published_at_ms?;
+        let seconds_to_expiry_at_selection = seconds_to_expiry_at_selection?;
+        let elapsed_seconds = now_ms.saturating_sub(published_at_ms) / MILLIS_PER_SECOND_U64;
+        Some(seconds_to_expiry_at_selection.saturating_sub(elapsed_seconds))
+    }
+
+    fn sync_open_position_from_active(&mut self) {
+        let Some(open_position) = self.open_position.as_mut() else {
+            return;
+        };
+
+        if self.active.books.up.instrument_id == Some(open_position.instrument_id) {
+            open_position.market_id = self.active.market_id.clone();
+            open_position.outcome_side = OutcomeSide::Up;
+            open_position.outcome_fees = self.active.outcome_fees.clone();
+            open_position.interval_open = self.active.interval_open;
+            open_position.selection_published_at_ms = self.active.selection_published_at_ms;
+            open_position.seconds_to_expiry_at_selection =
+                self.active.seconds_to_expiry_at_selection;
+            open_position.book = self.active.books.up.clone();
+        } else if self.active.books.down.instrument_id == Some(open_position.instrument_id) {
+            open_position.market_id = self.active.market_id.clone();
+            open_position.outcome_side = OutcomeSide::Down;
+            open_position.outcome_fees = self.active.outcome_fees.clone();
+            open_position.interval_open = self.active.interval_open;
+            open_position.selection_published_at_ms = self.active.selection_published_at_ms;
+            open_position.seconds_to_expiry_at_selection =
+                self.active.seconds_to_expiry_at_selection;
+            open_position.book = self.active.books.down.clone();
+        }
+    }
+
+    fn desired_book_subscriptions_for_active(&self) -> OutcomeBookSubscriptions {
+        let mut next = OutcomeBookSubscriptions {
+            up_instrument_id: self.active.books.up.instrument_id,
+            down_instrument_id: self.active.books.down.instrument_id,
+            tracked_position_instrument_id: None,
+        };
+
+        if let Some(open_position) = self.open_position.as_ref()
+            && next.up_instrument_id != Some(open_position.instrument_id)
+            && next.down_instrument_id != Some(open_position.instrument_id)
+        {
+            next.tracked_position_instrument_id = Some(open_position.instrument_id);
+        } else if let Some(pending_entry_instrument_id) = self.pending_entry_instrument_id
+            && next.up_instrument_id != Some(pending_entry_instrument_id)
+            && next.down_instrument_id != Some(pending_entry_instrument_id)
+        {
+            next.tracked_position_instrument_id = Some(pending_entry_instrument_id);
+        }
+
+        next
+    }
+
+    fn refresh_book_subscriptions_for_current_state(&mut self) {
+        let next = self.desired_book_subscriptions_for_active();
+        if should_replace_book_subscriptions(&self.book_subscriptions, &next) {
+            self.replace_book_subscriptions(next);
+        }
+    }
+
+    fn open_position_outcome_side(&self) -> Option<OutcomeSide> {
+        self.open_position
+            .as_ref()
+            .map(|position| position.outcome_side)
     }
 
     fn open_position_effective_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
@@ -1505,9 +1763,10 @@ impl EthChainlinkTaker {
     }
 
     fn current_exit_order_for_side(&self, side: OutcomeSide) -> Option<(OrderSide, f64)> {
+        let position_book = &self.open_position.as_ref()?.book;
         let (order_side, price) = match side {
-            OutcomeSide::Up => (OrderSide::Sell, self.active.books.up.best_bid?),
-            OutcomeSide::Down => (OrderSide::Buy, self.active.books.down.best_ask?),
+            OutcomeSide::Up => (OrderSide::Sell, position_book.best_bid?),
+            OutcomeSide::Down => (OrderSide::Buy, position_book.best_ask?),
         };
         if !price.is_finite() || price <= 0.0 {
             return None;
@@ -1516,9 +1775,10 @@ impl EthChainlinkTaker {
     }
 
     fn current_exit_value_for_side(&self, side: OutcomeSide) -> Option<f64> {
+        let position_book = &self.open_position.as_ref()?.book;
         let exit_value = match side {
-            OutcomeSide::Up => self.active.books.up.best_bid?,
-            OutcomeSide::Down => 1.0 - self.active.books.down.best_ask?,
+            OutcomeSide::Up => position_book.best_bid?,
+            OutcomeSide::Down => 1.0 - position_book.best_ask?,
         };
         if !exit_value.is_finite() || exit_value <= 0.0 {
             return None;
@@ -1527,11 +1787,36 @@ impl EthChainlinkTaker {
     }
 
     fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
-        let fair_probability_up = self.current_fair_probability_up_at(now_ms)?;
-        let up_fee_bps = self.outcome_fee_bps(OutcomeSide::Up)?;
-        let down_fee_bps = self.outcome_fee_bps(OutcomeSide::Down)?;
-        let uncertainty_band_probability =
-            self.current_uncertainty_band_probability_at(now_ms, up_fee_bps, down_fee_bps)?;
+        let open_position = self.open_position.as_ref()?;
+        let spot_price = self
+            .pricing
+            .spot_price()
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        let strike_price = open_position
+            .interval_open
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        let seconds_to_expiry = Self::seconds_to_expiry_from_selection(
+            open_position.selection_published_at_ms,
+            open_position.seconds_to_expiry_at_selection,
+            now_ms,
+        )?;
+        let realized_vol = self
+            .current_realized_vol_at(now_ms)
+            .filter(|value| value.is_finite() && *value > 0.0)?;
+        let fair_probability_up = compute_fair_probability_up(&FairProbabilityInputs {
+            spot_price,
+            strike_price,
+            seconds_to_expiry,
+            realized_vol,
+            pricing_kurtosis: self.config.pricing_kurtosis,
+        })?;
+        let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
+        let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
+        let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
+            seconds_to_expiry,
+            up_fee_bps,
+            down_fee_bps,
+        )?;
         let effective_entry_cost = self.open_position_effective_entry_cost(side)?;
         let fee_bps = match side {
             OutcomeSide::Up => up_fee_bps,
@@ -1551,7 +1836,7 @@ impl EthChainlinkTaker {
 
     fn current_exit_ev_bps_at(&self, side: OutcomeSide) -> Option<f64> {
         let effective_entry_cost = self.open_position_effective_entry_cost(side)?;
-        let fee_bps = self.outcome_fee_bps(side)?;
+        let fee_bps = self.position_outcome_fee_bps(side)?;
         let total_entry_cost = effective_entry_cost * (1.0 + fee_bps / BPS_DENOMINATOR);
         if !total_entry_cost.is_finite() || total_entry_cost <= 0.0 {
             return None;
@@ -1564,6 +1849,15 @@ impl EthChainlinkTaker {
         }
 
         Some(((net_exit_value - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR)
+    }
+
+    fn position_outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
+        let open_position = self.open_position.as_ref()?;
+        let token_id = match side {
+            OutcomeSide::Up => open_position.outcome_fees.up_token_id.as_deref(),
+            OutcomeSide::Down => open_position.outcome_fees.down_token_id.as_deref(),
+        }?;
+        self.context.fee_provider.fee_bps(token_id)?.to_f64()
     }
 
     fn exit_evaluation_at(&self, now_ms: u64) -> ExitEvaluation {
@@ -1916,11 +2210,15 @@ impl EthChainlinkTaker {
             decision.blocked_reason = Some("instrument_missing_from_cache");
             return decision;
         };
-        let Some(price) = self.executable_entry_cost(selected_side) else {
+        let Some(price) = self.submission_entry_price(selected_side) else {
+            decision.blocked_reason = Some("entry_price_missing");
+            return decision;
+        };
+        let Some(entry_cost) = self.executable_entry_cost(selected_side) else {
             decision.blocked_reason = Some("entry_cost_missing");
             return decision;
         };
-        let shares_value = sized_notional_usdc / price;
+        let shares_value = sized_notional_usdc / entry_cost;
         let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
             decision.blocked_reason = Some("quantity_rounding_failed");
             return decision;
@@ -2014,6 +2312,25 @@ impl EthChainlinkTaker {
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         self.pending_entry_order = Some(client_order_id);
+        self.pending_entry_market_id = self.current_market_id().map(str::to_string);
+        self.pending_entry_instrument_id = Some(instrument_id);
+        self.pending_entry_outcome_side = decision.evaluation.selected_side;
+        self.pending_entry_outcome_fees = Some(self.active.outcome_fees.clone());
+        self.pending_entry_interval_open = self.active.interval_open;
+        self.pending_entry_selection_published_at_ms = self.active.selection_published_at_ms;
+        self.pending_entry_seconds_to_expiry_at_selection =
+            self.active.seconds_to_expiry_at_selection;
+        self.pending_entry_book = match decision.evaluation.selected_side {
+            Some(OutcomeSide::Up) if self.active.books.up.instrument_id == Some(instrument_id) => {
+                Some(self.active.books.up.clone())
+            }
+            Some(OutcomeSide::Down)
+                if self.active.books.down.instrument_id == Some(instrument_id) =>
+            {
+                Some(self.active.books.down.clone())
+            }
+            _ => Some(OutcomeBookState::from_instrument_id(instrument_id)),
+        };
         log::info!(
             "eth_chainlink_taker entry submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
             self.config.strategy_id,
@@ -2025,7 +2342,7 @@ impl EthChainlinkTaker {
         );
 
         if let Err(error) = self.submit_order(order, None, Some(client_id)) {
-            self.pending_entry_order = None;
+            self.clear_pending_entry_state();
             return Err(error);
         }
 
@@ -2212,7 +2529,35 @@ impl DataActor for EthChainlinkTaker {
         &mut self,
         deltas: &nautilus_model::data::OrderBookDeltas,
     ) -> anyhow::Result<()> {
-        if !self.active.books.update_from_deltas(deltas) {
+        let mut matched = self.active.books.update_from_deltas(deltas);
+        self.sync_open_position_from_active();
+        if self
+            .open_position
+            .as_ref()
+            .is_some_and(|position| position.instrument_id == deltas.instrument_id)
+            && !(self.active.books.up.instrument_id == Some(deltas.instrument_id)
+                || self.active.books.down.instrument_id == Some(deltas.instrument_id))
+        {
+            if let Some(open_position) = self.open_position.as_mut() {
+                open_position.book.update_from_deltas(deltas);
+            }
+            matched = true;
+        }
+        if self.pending_entry_instrument_id == Some(deltas.instrument_id)
+            && !(self.active.books.up.instrument_id == Some(deltas.instrument_id)
+                || self.active.books.down.instrument_id == Some(deltas.instrument_id))
+        {
+            if let Some(book) = self.pending_entry_book.as_mut() {
+                book.update_from_deltas(deltas);
+            } else {
+                let mut book = OutcomeBookState::from_instrument_id(deltas.instrument_id);
+                book.update_from_deltas(deltas);
+                self.pending_entry_book = Some(book);
+            }
+            matched = true;
+        }
+
+        if !matched {
             return Ok(());
         }
 
@@ -2230,14 +2575,49 @@ impl DataActor for EthChainlinkTaker {
         let exit_fill = self.pending_exit_order.as_ref() == Some(&event.client_order_id);
 
         if entry_fill {
-            self.pending_entry_order = None;
-        }
-        if entry_fill {
+            let pending_market_id = self.pending_entry_market_id.clone();
+            let pending_outcome_side = self.pending_entry_outcome_side;
+            let pending_outcome_fees = self
+                .pending_entry_outcome_fees
+                .clone()
+                .unwrap_or_else(|| self.active.outcome_fees.clone());
+            let pending_interval_open = self.pending_entry_interval_open;
+            let pending_selection_published_at_ms = self.pending_entry_selection_published_at_ms;
+            let pending_seconds_to_expiry_at_selection =
+                self.pending_entry_seconds_to_expiry_at_selection;
+            let pending_book = self
+                .pending_entry_book
+                .take()
+                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(event.instrument_id));
+            self.clear_pending_entry_state();
             self.open_position_active = true;
+            if let Some(position_id) = event.position_id {
+                self.open_position = Some(OpenPositionState {
+                    market_id: pending_market_id.clone(),
+                    instrument_id: event.instrument_id,
+                    position_id,
+                    outcome_side: pending_outcome_side
+                        .or_else(|| Self::infer_outcome_side(event.instrument_id))
+                        .unwrap_or(OutcomeSide::Up),
+                    outcome_fees: pending_outcome_fees,
+                    entry_order_side: event.order_side,
+                    side: Self::infer_position_side(event.order_side).unwrap_or(PositionSide::Long),
+                    quantity: event.last_qty,
+                    avg_px_open: event.last_px.as_f64(),
+                    interval_open: pending_interval_open,
+                    selection_published_at_ms: pending_selection_published_at_ms,
+                    seconds_to_expiry_at_selection: pending_seconds_to_expiry_at_selection,
+                    book: pending_book,
+                });
+                self.sync_open_position_from_active();
+                self.refresh_book_subscriptions_for_current_state();
+            }
+            if let Some(market_id) = pending_market_id {
+                self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
+            }
         } else if exit_fill {
             self.open_position_active = self.open_position.is_some();
-        }
-        if let Some(market_id) = self.current_market_id().map(str::to_string) {
+        } else if let Some(market_id) = self.current_market_id().map(str::to_string) {
             self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
         }
         Ok(())
@@ -2248,7 +2628,7 @@ impl DataActor for EthChainlinkTaker {
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
         if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
-            self.pending_entry_order = None;
+            self.clear_pending_entry_state();
         }
         if self.pending_exit_order.as_ref() == Some(&event.client_order_id) {
             self.pending_exit_order = None;
@@ -2260,7 +2640,7 @@ impl DataActor for EthChainlinkTaker {
 nautilus_strategy!(EthChainlinkTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
         if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
-            self.pending_entry_order = None;
+            self.clear_pending_entry_state();
         }
         if self.pending_exit_order.as_ref() == Some(&event.client_order_id) {
             self.pending_exit_order = None;
@@ -2269,7 +2649,7 @@ nautilus_strategy!(EthChainlinkTaker, {
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
         if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
-            self.pending_entry_order = None;
+            self.clear_pending_entry_state();
         }
         if self.pending_exit_order.as_ref() == Some(&event.client_order_id) {
             self.pending_exit_order = None;
@@ -2277,34 +2657,119 @@ nautilus_strategy!(EthChainlinkTaker, {
     }
 
     fn on_position_opened(&mut self, _event: nautilus_model::events::PositionOpened) {
+        let preserved = self
+            .open_position
+            .as_ref()
+            .filter(|position| {
+                position.position_id == _event.position_id
+                    && position.instrument_id == _event.instrument_id
+            })
+            .cloned();
         self.open_position_active = true;
         self.open_position = Some(OpenPositionState {
+            market_id: preserved
+                .as_ref()
+                .and_then(|position| position.market_id.clone())
+                .or_else(|| self.active.market_id.clone()),
             instrument_id: _event.instrument_id,
             position_id: _event.position_id,
+            outcome_side: preserved
+                .as_ref()
+                .map(|position| position.outcome_side)
+                .unwrap_or_else(|| {
+                    Self::infer_outcome_side(_event.instrument_id).unwrap_or(OutcomeSide::Up)
+                }),
+            outcome_fees: preserved
+                .as_ref()
+                .map(|position| position.outcome_fees.clone())
+                .unwrap_or_else(|| self.active.outcome_fees.clone()),
             entry_order_side: _event.entry,
             side: _event.side,
             quantity: _event.quantity,
             avg_px_open: _event.avg_px_open,
+            interval_open: preserved
+                .as_ref()
+                .and_then(|position| position.interval_open)
+                .or(self.active.interval_open),
+            selection_published_at_ms: preserved
+                .as_ref()
+                .and_then(|position| position.selection_published_at_ms)
+                .or(self.active.selection_published_at_ms),
+            seconds_to_expiry_at_selection: preserved
+                .as_ref()
+                .and_then(|position| position.seconds_to_expiry_at_selection)
+                .or(self.active.seconds_to_expiry_at_selection),
+            book: preserved
+                .map(|position| position.book)
+                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(_event.instrument_id)),
         });
+        self.sync_open_position_from_active();
+        self.refresh_book_subscriptions_for_current_state();
     }
 
     fn on_position_changed(&mut self, _event: nautilus_model::events::PositionChanged) {
+        let preserved = self
+            .open_position
+            .as_ref()
+            .filter(|position| {
+                position.position_id == _event.position_id
+                    && position.instrument_id == _event.instrument_id
+            })
+            .cloned();
         self.open_position_active = true;
         self.open_position = Some(OpenPositionState {
+            market_id: preserved
+                .as_ref()
+                .and_then(|position| position.market_id.clone())
+                .or_else(|| self.active.market_id.clone()),
             instrument_id: _event.instrument_id,
             position_id: _event.position_id,
+            outcome_side: preserved
+                .as_ref()
+                .map(|position| position.outcome_side)
+                .unwrap_or_else(|| {
+                    Self::infer_outcome_side(_event.instrument_id).unwrap_or(OutcomeSide::Up)
+                }),
+            outcome_fees: preserved
+                .as_ref()
+                .map(|position| position.outcome_fees.clone())
+                .unwrap_or_else(|| self.active.outcome_fees.clone()),
             entry_order_side: _event.entry,
             side: _event.side,
             quantity: _event.quantity,
             avg_px_open: _event.avg_px_open,
+            interval_open: preserved
+                .as_ref()
+                .and_then(|position| position.interval_open)
+                .or(self.active.interval_open),
+            selection_published_at_ms: preserved
+                .as_ref()
+                .and_then(|position| position.selection_published_at_ms)
+                .or(self.active.selection_published_at_ms),
+            seconds_to_expiry_at_selection: preserved
+                .as_ref()
+                .and_then(|position| position.seconds_to_expiry_at_selection)
+                .or(self.active.seconds_to_expiry_at_selection),
+            book: preserved
+                .map(|position| position.book)
+                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(_event.instrument_id)),
         });
+        self.sync_open_position_from_active();
+        self.refresh_book_subscriptions_for_current_state();
     }
 
     fn on_position_closed(&mut self, _event: nautilus_model::events::PositionClosed) {
-        self.open_position_active = false;
-        self.open_position = None;
-        self.pending_exit_order = None;
-        self.recovery = false;
+        let tracked_position_closed = self
+            .open_position
+            .as_ref()
+            .is_some_and(|position| position.position_id == _event.position_id);
+        if tracked_position_closed {
+            self.open_position_active = false;
+            self.open_position = None;
+            self.pending_exit_order = None;
+            self.recovery = false;
+        }
+        self.refresh_book_subscriptions_for_current_state();
     }
 });
 
@@ -2476,6 +2941,13 @@ fn unsubscribe_missing_books(
         strategy.unsubscribe_book_deltas(instrument_id, None, None);
         strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
     }
+    if let Some(instrument_id) = current.tracked_position_instrument_id
+        && next.tracked_position_instrument_id != Some(instrument_id)
+    {
+        #[cfg(not(test))]
+        strategy.unsubscribe_book_deltas(instrument_id, None, None);
+        strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
+    }
 }
 
 fn subscribe_new_books(
@@ -2492,6 +2964,13 @@ fn subscribe_new_books(
     }
     if let Some(instrument_id) = next.down_instrument_id
         && current.down_instrument_id != Some(instrument_id)
+    {
+        #[cfg(not(test))]
+        strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
+        strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
+    }
+    if let Some(instrument_id) = next.tracked_position_instrument_id
+        && current.tracked_position_instrument_id != Some(instrument_id)
     {
         #[cfg(not(test))]
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
@@ -3317,11 +3796,35 @@ mod tests {
         strategy.active.outcome_fees.down_ready = true;
         strategy.active.books.up.last_observed_instrument_id =
             strategy.active.books.up.instrument_id;
+        strategy
+            .active
+            .books
+            .up
+            .bid_levels
+            .insert(Price::new(0.43, 2), 500.0);
+        strategy
+            .active
+            .books
+            .up
+            .ask_levels
+            .insert(Price::new(0.45, 2), 500.0);
         strategy.active.books.up.best_bid = Some(0.43);
         strategy.active.books.up.best_ask = Some(0.45);
         strategy.active.books.up.liquidity_available = Some(500.0);
         strategy.active.books.down.last_observed_instrument_id =
             strategy.active.books.down.instrument_id;
+        strategy
+            .active
+            .books
+            .down
+            .bid_levels
+            .insert(Price::new(0.43, 2), 500.0);
+        strategy
+            .active
+            .books
+            .down
+            .ask_levels
+            .insert(Price::new(0.45, 2), 500.0);
         strategy.active.books.down.best_bid = Some(0.43);
         strategy.active.books.down.best_ask = Some(0.45);
         strategy.active.books.down.liquidity_available = Some(500.0);
@@ -3349,11 +3852,35 @@ mod tests {
         strategy.refresh_fee_readiness();
         strategy.active.books.up.last_observed_instrument_id =
             strategy.active.books.up.instrument_id;
+        strategy
+            .active
+            .books
+            .up
+            .bid_levels
+            .insert(Price::new(0.50, 2), 500.0);
+        strategy
+            .active
+            .books
+            .up
+            .ask_levels
+            .insert(Price::new(0.50, 2), 500.0);
         strategy.active.books.up.best_bid = Some(0.50);
         strategy.active.books.up.best_ask = Some(0.50);
         strategy.active.books.up.liquidity_available = Some(500.0);
         strategy.active.books.down.last_observed_instrument_id =
             strategy.active.books.down.instrument_id;
+        strategy
+            .active
+            .books
+            .down
+            .bid_levels
+            .insert(Price::new(0.48, 2), 500.0);
+        strategy
+            .active
+            .books
+            .down
+            .ask_levels
+            .insert(Price::new(0.49, 2), 500.0);
         strategy.active.books.down.best_bid = Some(0.48);
         strategy.active.books.down.best_ask = Some(0.49);
         strategy.active.books.down.liquidity_available = Some(500.0);
@@ -4225,12 +4752,19 @@ mod tests {
         assert_eq!(
             strategy.open_position,
             Some(OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
                 instrument_id,
                 position_id,
+                outcome_side: OutcomeSide::Up,
+                outcome_fees: strategy.active.outcome_fees.clone(),
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Long,
                 quantity: Quantity::new(10.0, 2),
                 avg_px_open: 0.450,
+                interval_open: Some(3_100.0),
+                selection_published_at_ms: Some(1_000),
+                seconds_to_expiry_at_selection: Some(300),
+                book: strategy.active.books.up.clone(),
             })
         );
 
@@ -4253,12 +4787,19 @@ mod tests {
 
         strategy.open_position_active = true;
         strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
             instrument_id,
             position_id,
+            outcome_side: OutcomeSide::Up,
+            outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
             avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
         });
         strategy.pending_exit_order = Some(exit_client_order_id);
 
@@ -4301,6 +4842,277 @@ mod tests {
         expired.pending_exit_order = Some(exit_client_order_id);
         expired.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
         assert!(expired.pending_exit_order.is_none());
+    }
+
+    #[test]
+    fn down_entry_submission_price_uses_best_bid_not_cost() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.active.books.down.best_bid = Some(0.40);
+        strategy.active.books.down.best_ask = Some(0.41);
+        assert_eq!(
+            strategy.submission_entry_price(OutcomeSide::Down),
+            Some(0.40)
+        );
+        assert_eq!(
+            strategy.executable_entry_cost(OutcomeSide::Down),
+            Some(0.60)
+        );
+    }
+
+    #[test]
+    fn book_impact_cap_is_derived_from_vwap_slippage_against_best_touch() {
+        let instrument_id = polymarket_instrument_id("condition-MKT-1", "MKT-1-UP");
+        let mut state = OutcomeBookState::from_instrument_id(instrument_id);
+        state.update_from_deltas(&book_deltas(
+            instrument_id,
+            &[
+                (BookAction::Add, OrderSide::Buy, 0.49, 10.0),
+                (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
+                (BookAction::Add, OrderSide::Sell, 0.60, 10.0),
+            ],
+        ));
+
+        let zero_bps = state
+            .max_buy_execution_within_vwap_slippage_bps(0)
+            .expect("best-touch-only size should exist");
+        let one_hundred_bps = state
+            .max_buy_execution_within_vwap_slippage_bps(100)
+            .expect("partial next-level size should exist");
+        let loose = state
+            .max_buy_execution_within_vwap_slippage_bps(5_000)
+            .expect("full displayed size should exist");
+
+        assert_eq!(zero_bps.quantity, 10.0);
+        assert!(one_hundred_bps.quantity > zero_bps.quantity);
+        assert!(one_hundred_bps.quantity < loose.quantity);
+        assert_eq!(loose.quantity, 20.0);
+        assert!(one_hundred_bps.vwap_price > zero_bps.vwap_price);
+    }
+
+    #[test]
+    fn book_impact_cap_config_changes_sizing_decision() {
+        let instrument_id = polymarket_instrument_id("condition-MKT-1", "MKT-1-UP");
+
+        let mut loose = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        loose.config.book_impact_cap_bps = 5_000;
+        loose.active.books.up.update_from_deltas(&book_deltas(
+            instrument_id,
+            &[
+                (BookAction::Add, OrderSide::Buy, 0.49, 10.0),
+                (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
+                (BookAction::Add, OrderSide::Sell, 0.60, 10.0),
+            ],
+        ));
+
+        let mut tight = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        tight.config.book_impact_cap_bps = 0;
+        tight.active.books.up.update_from_deltas(&book_deltas(
+            instrument_id,
+            &[
+                (BookAction::Add, OrderSide::Buy, 0.49, 10.0),
+                (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
+                (BookAction::Add, OrderSide::Sell, 0.60, 10.0),
+            ],
+        ));
+
+        let loose_cap = loose.visible_book_notional_cap_usdc(OutcomeSide::Up);
+        let tight_cap = tight.visible_book_notional_cap_usdc(OutcomeSide::Up);
+
+        assert!(
+            loose_cap
+                .zip(tight_cap)
+                .is_some_and(|(loose_cap, tight_cap)| tight_cap < loose_cap),
+            "tighter impact cap should reduce the derived notional cap"
+        );
+    }
+
+    #[test]
+    fn fill_arms_cooldown_for_filled_market_not_current_selection() {
+        let mut strategy = ready_to_trade_strategy();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-A");
+        let position_id = PositionId::from("P-A");
+        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
+        strategy.pending_entry_order = Some(entry_client_order_id);
+        strategy.pending_entry_market_id = Some("MKT-1".to_string());
+        strategy.pending_entry_instrument_id = Some(instrument_a);
+        strategy.pending_entry_outcome_side = Some(OutcomeSide::Up);
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy
+            .on_order_filled(&order_filled_event(
+                entry_client_order_id,
+                instrument_a,
+                position_id,
+            ))
+            .expect("fill bookkeeping should succeed");
+
+        assert!(strategy.market_in_cooldown("MKT-1", 1_000));
+        assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+    }
+
+    #[test]
+    fn untracked_position_close_keeps_recovery_fail_closed() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        strategy.recovery = true;
+        strategy.open_position_active = false;
+        strategy.open_position = None;
+
+        strategy.on_position_closed(position_closed_event(
+            instrument_id,
+            PositionId::from("P-X"),
+        ));
+
+        assert!(strategy.recovery);
+    }
+
+    #[test]
+    fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-A");
+        let position_id = PositionId::from("P-A");
+        let original_book = strategy.active.books.up.clone();
+        strategy.pending_entry_order = Some(entry_client_order_id);
+        strategy.pending_entry_market_id = Some("MKT-1".to_string());
+        strategy.pending_entry_instrument_id = Some(instrument_a);
+        strategy.pending_entry_outcome_side = Some(OutcomeSide::Up);
+        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
+        strategy.pending_entry_interval_open = Some(3_100.0);
+        strategy.pending_entry_selection_published_at_ms = Some(1_000);
+        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
+        strategy.pending_entry_book = Some(original_book.clone());
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy
+            .on_order_filled(&order_filled_event(
+                entry_client_order_id,
+                instrument_a,
+                position_id,
+            ))
+            .expect("fill bookkeeping should succeed");
+
+        assert_eq!(
+            strategy
+                .open_position
+                .as_ref()
+                .and_then(|p| p.book.best_bid),
+            original_book.best_bid
+        );
+        assert_eq!(
+            strategy
+                .open_position
+                .as_ref()
+                .and_then(|p| p.interval_open),
+            Some(3_100.0)
+        );
+        assert_eq!(
+            strategy
+                .open_position
+                .as_ref()
+                .and_then(|p| p.selection_published_at_ms),
+            Some(1_000)
+        );
+        assert_eq!(
+            strategy
+                .open_position
+                .as_ref()
+                .and_then(|p| p.seconds_to_expiry_at_selection),
+            Some(300)
+        );
+        assert_eq!(
+            strategy
+                .open_position
+                .as_ref()
+                .and_then(|p| p.outcome_fees.up_token_id.as_deref()),
+            Some("MKT-1-UP")
+        );
+        assert_eq!(
+            strategy.book_subscriptions.tracked_position_instrument_id,
+            Some(instrument_a)
+        );
+        let decision = strategy.exit_submission_decision_at(2_000);
+        assert_eq!(decision.instrument_id, Some(instrument_a));
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
+    }
+
+    #[test]
+    fn position_opened_after_rotation_preserves_existing_position_context() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
+        let preserved_book = strategy.active.books.up.clone();
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: instrument_a,
+            position_id: PositionId::from("P-A"),
+            outcome_side: OutcomeSide::Up,
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: preserved_book.clone(),
+        });
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy.active.interval_open = Some(3_200.0);
+        strategy.on_position_opened(position_opened_event(
+            instrument_a,
+            PositionId::from("P-A"),
+            Quantity::new(10.0, 2),
+            0.450,
+        ));
+
+        let open_position = strategy
+            .open_position
+            .expect("position should remain tracked");
+        assert_eq!(open_position.market_id.as_deref(), Some("MKT-1"));
+        assert_eq!(open_position.interval_open, Some(3_100.0));
+        assert_eq!(open_position.selection_published_at_ms, Some(1_000));
+        assert_eq!(open_position.seconds_to_expiry_at_selection, Some(300));
+        assert_eq!(
+            open_position.outcome_fees.up_token_id.as_deref(),
+            Some("MKT-1-UP")
+        );
+        assert_eq!(open_position.book.best_bid, preserved_book.best_bid);
+    }
+
+    #[test]
+    fn untracked_position_close_does_not_clear_pending_exit() {
+        let mut strategy = ready_to_trade_strategy();
+        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: tracked_instrument,
+            position_id: PositionId::from("P-TRACKED"),
+            outcome_side: OutcomeSide::Up,
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        });
+        strategy.pending_exit_order = Some(ClientOrderId::from("EXIT-001"));
+
+        strategy.on_position_closed(position_closed_event(
+            tracked_instrument,
+            PositionId::from("P-OTHER"),
+        ));
+
+        assert_eq!(
+            strategy.pending_exit_order,
+            Some(ClientOrderId::from("EXIT-001"))
+        );
+        assert!(strategy.open_position.is_some());
     }
 
     #[test]
@@ -5185,12 +5997,19 @@ mod tests {
         strategy.active.phase = SelectionPhase::Freeze;
         strategy.open_position_active = true;
         strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             position_id: PositionId::from("P-UP-001"),
+            outcome_side: OutcomeSide::Up,
+            outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
             avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
         });
 
         let decision = strategy.exit_submission_decision_at(1_200);
@@ -5211,12 +6030,19 @@ mod tests {
         strategy.active.phase = SelectionPhase::Freeze;
         strategy.open_position_active = true;
         strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.down.instrument_id.unwrap(),
             position_id: PositionId::from("P-DOWN-001"),
+            outcome_side: OutcomeSide::Down,
+            outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(12.0, 2),
             avg_px_open: 0.480,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.down.clone(),
         });
 
         let decision = strategy.exit_submission_decision_at(1_200);
@@ -5236,12 +6062,19 @@ mod tests {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.open_position_active = true;
         strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             position_id: PositionId::from("P-UP-002"),
+            outcome_side: OutcomeSide::Up,
+            outcome_fees: strategy.active.outcome_fees.clone(),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
             avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
         });
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(2.5);

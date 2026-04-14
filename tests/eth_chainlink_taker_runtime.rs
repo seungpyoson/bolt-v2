@@ -165,12 +165,28 @@ fn strategy_raw_config() -> Value {
 }
 
 fn candidate_market_named(market_id: &str, start_ts_ms: u64) -> CandidateMarket {
+    candidate_market_with_tokens(
+        market_id,
+        "condition-eth",
+        &format!("{market_id}-UP"),
+        &format!("{market_id}-DOWN"),
+        start_ts_ms,
+    )
+}
+
+fn candidate_market_with_tokens(
+    market_id: &str,
+    condition_id: &str,
+    up_token_id: &str,
+    down_token_id: &str,
+    start_ts_ms: u64,
+) -> CandidateMarket {
     CandidateMarket {
         market_id: market_id.to_string(),
-        instrument_id: format!("condition-eth-{market_id}-UP.POLYMARKET"),
-        condition_id: "condition-eth".to_string(),
-        up_token_id: format!("{market_id}-UP"),
-        down_token_id: format!("{market_id}-DOWN"),
+        instrument_id: format!("{condition_id}-{up_token_id}.POLYMARKET"),
+        condition_id: condition_id.to_string(),
+        up_token_id: up_token_id.to_string(),
+        down_token_id: down_token_id.to_string(),
         start_ts_ms,
         declared_resolution_basis:
             bolt_v2::platform::resolution_basis::parse_ruleset_resolution_basis("chainlink_ethusd")
@@ -326,6 +342,24 @@ fn seed_cached_open_position(
     strategy_id: StrategyId,
     instrument_id: InstrumentId,
 ) {
+    seed_cached_position_with_entry(
+        node,
+        strategy_id,
+        instrument_id,
+        OrderSide::Buy,
+        Price::from("0.450"),
+        PositionId::from("P-RECOVERY-001"),
+    );
+}
+
+fn seed_cached_position_with_entry(
+    node: &LiveNode,
+    strategy_id: StrategyId,
+    instrument_id: InstrumentId,
+    entry_order_side: OrderSide,
+    entry_price: Price,
+    position_id: PositionId,
+) {
     let instrument = polymarket_binary_option(instrument_id);
     let mut fill = OrderFilled::new(
         TraderId::from("BOLT-001"),
@@ -335,10 +369,10 @@ fn seed_cached_open_position(
         VenueOrderId::from("V-RECOVERY-ENTRY-001"),
         AccountId::from("TEST-ACCOUNT"),
         TradeId::from("E-RECOVERY-ENTRY-001"),
-        OrderSide::Buy,
+        entry_order_side,
         OrderType::Market,
         Quantity::from("5"),
-        Price::from("0.450"),
+        entry_price,
         Currency::USDC(),
         LiquiditySide::Taker,
         UUID4::new(),
@@ -348,7 +382,7 @@ fn seed_cached_open_position(
         None,
         Some(Money::from("0.01 USDC")),
     );
-    fill.position_id = Some(PositionId::from("P-RECOVERY-001"));
+    fill.position_id = Some(position_id);
 
     let position = Position::new(&instrument, fill);
     let cache_handle = node.kernel().cache();
@@ -918,4 +952,183 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
     assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, market_a_up);
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_bootstraps_numeric_down_position_across_rotation_without_flipping_exit_side()
+ {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_factory = registry_runtime_strategy_factory(
+        production_strategy_registry().unwrap(),
+        make_strategy_build_context(
+            Arc::new(StaticFeeProvider),
+            "platform.reference.test.chainlink".to_string(),
+        ),
+    );
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let market_a = candidate_market_with_tokens("MKT-ETH-A", "condition-eth-a", "111", "222", 0);
+    let market_b = candidate_market_with_tokens("MKT-ETH-B", "condition-eth-b", "333", "444", 0);
+    let market_a_up = InstrumentId::from("condition-eth-a-111.POLYMARKET");
+    let market_a_down = InstrumentId::from("condition-eth-a-222.POLYMARKET");
+    let market_b_up = InstrumentId::from("condition-eth-b-333.POLYMARKET");
+    let market_b_down = InstrumentId::from("condition-eth-b-444.POLYMARKET");
+    let cache_handle = node.kernel().cache();
+
+    {
+        let mut cache = cache_handle.borrow_mut();
+        for instrument_id in [market_a_up, market_a_down, market_b_up, market_b_down] {
+            cache
+                .add_instrument(polymarket_binary_option(instrument_id))
+                .unwrap();
+        }
+    }
+    seed_cached_position_with_entry(
+        &node,
+        strategy_id,
+        market_a_down,
+        OrderSide::Sell,
+        Price::from("0.480"),
+        PositionId::from("P-RECOVERY-DOWN-001"),
+    );
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let rotation_ts_ms = start_ts_ms + 1_000;
+    let market_a_selection = RuntimeSelectionSnapshot {
+        ruleset_id: "PRIMARY".to_string(),
+        decision: SelectionDecision {
+            ruleset_id: "PRIMARY".to_string(),
+            state: SelectionState::Active {
+                market: CandidateMarket {
+                    start_ts_ms,
+                    ..market_a.clone()
+                },
+            },
+        },
+        eligible_candidates: vec![CandidateMarket {
+            start_ts_ms,
+            ..market_a.clone()
+        }],
+        published_at_ms: start_ts_ms,
+    };
+    let market_b_selection = RuntimeSelectionSnapshot {
+        ruleset_id: "PRIMARY".to_string(),
+        decision: SelectionDecision {
+            ruleset_id: "PRIMARY".to_string(),
+            state: SelectionState::Active {
+                market: CandidateMarket {
+                    start_ts_ms: rotation_ts_ms,
+                    ..market_b.clone()
+                },
+            },
+        },
+        eligible_candidates: vec![CandidateMarket {
+            start_ts_ms: rotation_ts_ms,
+            ..market_b.clone()
+        }],
+        published_at_ms: rotation_ts_ms,
+    };
+    let market_b_freeze = RuntimeSelectionSnapshot {
+        ruleset_id: "PRIMARY".to_string(),
+        decision: SelectionDecision {
+            ruleset_id: "PRIMARY".to_string(),
+            state: SelectionState::Freeze {
+                market: CandidateMarket {
+                    start_ts_ms: rotation_ts_ms,
+                    ..market_b.clone()
+                },
+                reason: "freeze window".to_string(),
+            },
+        },
+        eligible_candidates: vec![CandidateMarket {
+            start_ts_ms: rotation_ts_ms,
+            ..market_b
+        }],
+        published_at_ms: rotation_ts_ms,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &market_a_selection,
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            clear_mock_exec_submissions();
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &market_b_selection,
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(rotation_ts_ms, 3_101.0, 3_104.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(market_b_up),
+                &book_deltas(market_b_up, 0.420, 0.440),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(market_b_down),
+                &book_deltas(market_b_down, 0.500, 0.510),
+            );
+            assert!(
+                recorded_mock_exec_submissions().is_empty(),
+                "{:?}",
+                recorded_mock_exec_submissions()
+            );
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &market_b_freeze,
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(market_a_down),
+                &book_deltas(market_a_down, 0.520, 0.530),
+            );
+
+            for _ in 0..50 {
+                if recorded_mock_exec_submissions().len() == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].strategy_id, strategy_id);
+    assert_eq!(submissions[0].instrument_id, market_a_down);
+
+    let order: OrderAny = cache_handle
+        .borrow()
+        .order(&submissions[0].client_order_id)
+        .cloned()
+        .expect("submitted order should be cached");
+    assert_eq!(order.order_side(), OrderSide::Buy);
+    assert_eq!(order.price(), Some(Price::new(0.530, 3)));
 }

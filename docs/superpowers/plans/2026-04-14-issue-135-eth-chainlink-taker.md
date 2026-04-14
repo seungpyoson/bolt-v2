@@ -13,7 +13,7 @@
 ## File Map
 
 - `src/strategies/eth_chainlink_taker.rs`
-  - New production strategy kind, builder, config, actor shell, pure helpers, and unit tests.
+  - New production strategy kind, builder, config, actor shell, pure helpers, negative-telemetry logging, and unit tests.
 - `src/strategies/mod.rs`
   - Register `EthChainlinkTakerBuilder` in `production_strategy_registry()`.
 - `tests/eth_chainlink_taker_runtime.rs`
@@ -604,3 +604,15 @@ No `#135` spec requirement is intentionally left without a task.
 - Runtime state container is always `ActiveMarketState`.
 - Side-selection output uses `OutcomeSide`.
 - The same strategy file owns both actor shell and pure helpers to avoid cross-file naming drift.
+
+## Additional Logging Requirement
+
+When later tasks implement EV and entry/exit behavior, they must also add explicit omission logging for relevant data that the strategy does not use or cannot access.
+
+Required omission logging targets:
+
+- maker rebate unavailable on trusted seam
+- category unavailable on strategy seam
+- fee-rate cold miss causing fail-closed behavior
+- Chainlink-only fallback when no fast venue is eligible
+- blocked entry due to warmup, cooldown, recovery, forced-flat, or missing interval-open

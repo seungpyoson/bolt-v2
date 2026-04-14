@@ -237,6 +237,20 @@ Rules:
 - a cold miss is fail-closed, not estimated
 - no Gamma fee fields are read or propagated
 
+## Negative Telemetry
+
+The strategy must log not only what it uses, but also what it explicitly does not use and why.
+
+Required omission logging includes:
+
+- fee-rate unavailable, so entry stays fail-closed
+- maker rebate unavailable on the trusted seam
+- market category unavailable on the strategy-visible seam
+- fast-venue lead unavailable, so the strategy falls back to Chainlink-only handling
+- entry blocked by warmup, cooldown, recovery, forced-flat, missing interval-open, or missing fee readiness
+
+This is not optional debug noise. It is part of the operator-facing audit trail for first-live strategy behavior.
+
 ## EV and Band Model
 
 The strategy computes:
@@ -351,6 +365,7 @@ These invariants must remain true throughout implementation:
 6. Every degraded input path fails closed.
 7. Book subscription swaps are explicit unsubscribe/subscribe pairs.
 8. The strategy remains additive and does not widen into runtime/config code.
+9. Operator-visible logs must say both what inputs were used and what relevant inputs were unavailable or intentionally excluded.
 
 ## Test Strategy
 

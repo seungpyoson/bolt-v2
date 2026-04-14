@@ -20,8 +20,10 @@ This design does **not** include:
 
 - automatically merging NT bumps
 - changing Bolt runtime behavior
-- replacing existing CI, Dependabot, or release workflows
+- replacing existing CI, Dependabot, or release workflows for non-NT dependencies
 - outsourcing gating decisions to commit-message heuristics or model inference
+
+NT pin changes are explicitly excluded from automated dependency-update paths as an activation precondition for this design.
 
 ## Problem
 
@@ -356,6 +358,15 @@ Behavior:
 - if all required evidence passes, automation must update one long-lived advisory status issue and attach the current advisory report artifact
 - if evidence is incomplete or ambiguous, the probe reports failure
 
+Advisory issue lifecycle:
+
+- the probe identifies the advisory issue by a fixed label and title prefix
+- if no matching issue exists, the probe creates it
+- if multiple matching issues exist, the probe fails
+- if the matching issue is closed, the probe re-opens it
+- the probe updates the issue body with the latest status summary rather than appending unbounded status comments
+- the current advisory report artifact is linked from the issue
+
 The `develop` lane is advisory-only. It exists to reduce surprise, not to create a merge path.
 
 ### Lane 2: tagged releases
@@ -524,6 +535,8 @@ A tagged-release probe is only allowed to open a merge-candidate draft PR if **a
 12. A single atomic evidence artifact is produced for the run and stored durably.
 13. No touched seam is left without a named canary.
 14. No ambiguous upstream change remains unresolved.
+
+A tagged-release draft PR may be created when the evidence contract above passes. External adversarial review is a later merge/promotion gate, not a PR-creation prerequisite.
 
 If any item above fails, the probe must fail closed.
 

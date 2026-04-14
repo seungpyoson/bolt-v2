@@ -117,7 +117,15 @@ Additional safe-list rules:
 - safe-list additions must require the same owner-group review as registry changes, and may require stricter review
 - safe-list changes must not be bundled with unrelated code changes
 - if a safe-list condition no longer holds for the current Bolt codebase, the entry is invalid and the path becomes ambiguous
+- if a safe-list entry is past its expiry or revalidation deadline, the entry is invalid and the path becomes ambiguous
+- safe-list expiry must have a bounded maximum duration; long-lived blanket safe-listing is forbidden
 - path-prefix safe-list entries inside shared NT crates are forbidden; only exact-path entries may be considered there, and only with heightened review
+
+Heightened review for exact-path entries inside shared NT crates must be concrete:
+
+- it must require stricter review than an ordinary registry edit
+- it must include a written dismissal of the relevant seam overlap candidates
+- it must not be satisfiable by the entry author alone
 
 Fail-closed rules for matching:
 
@@ -162,6 +170,8 @@ Behavior:
 - if all required evidence passes, automation may open a draft PR
 - if evidence is incomplete or ambiguous, the probe reports failure and opens no PR
 
+The `develop` lane is advisory-only. A `develop`-lane draft PR must remain mechanically non-mergeable until the tagged-release lane confirms the same SHA or the same effective NT change set under the stricter merge-candidate path.
+
 ### Lane 2: tagged releases
 
 Purpose:
@@ -184,6 +194,10 @@ Security exception path:
 - an urgent security-tagged NT release may bypass the soak wait for draft-PR creation only
 - it must still satisfy the full evidence contract
 - it must still remain draft-only and subject to the external adversarial review gate before merge
+- the security designation must be evidenced mechanically, not asserted informally
+- the security designation should reference a concrete upstream advisory identifier, CVE, or equivalent durable security record
+- the justification and evidence for invoking the security path must be recorded in the probe artifact
+- bypass authority must be explicit and separate from ordinary registry editing authority
 
 ## Lane Precedence
 
@@ -262,6 +276,8 @@ The initial conservative seam set should include at least:
    - Risk: timer, scheduling, clock, or event-ordering drift breaking Bolt logic that depends on thresholds, quiet periods, or sequencing
    - Likely evidence: timer- and ordering-sensitive canaries for reference and runtime flows
 
+The seam list in this spec is illustrative. The real registry used by the probe must replace "likely evidence" with contractual required canary identifiers or paths before automation is allowed to open draft PRs.
+
 ### Initial Registry Clarification
 
 The prior open concern around NT issue `#3806` (“Polymarket data client auto-subscribe vs. strategy-driven subscriptions”) should **not** remain an unresolved seam by itself.
@@ -303,6 +319,8 @@ Registry ownership must also be explicit:
 - that owner group must be mechanically required for registry changes
 - the mechanism must be concrete, for example CODEOWNERS plus required review, not a policy note
 - until such ownership exists, the probe must not be allowed to open draft PRs automatically
+
+The replay set, safe list, and external-review approver set must also have equally concrete ownership and review mechanisms.
 
 ## Evidence Contract
 
@@ -374,7 +392,7 @@ Inference is advisory only.
 It must be treated as code under test:
 
 - a historical replay set of known-dangerous upstream changes must be versioned alongside the registry
-- the replay set must be owned by the same owner group as the seam registry
+- the replay set must have explicit ownership and change control
 - the replay set must run on every inference-rule change and on a bounded periodic cadence
 - if inference stops escalating known-dangerous patterns, the probe design has regressed
 - a replay regression must block probe automation until fixed
@@ -424,6 +442,7 @@ At minimum it must contain:
 - lockfile digest
 - run timestamps
 - supersedes or superseded-by metadata when applicable
+- path-prefix match counts or equivalent seam-matching diagnostics sufficient to detect narrowing coverage between runs
 
 The artifact must be stored durably outside the PR itself, with retention long enough to support postmortem and audit use.
 
@@ -442,6 +461,7 @@ Rules:
 - interrupted runs are invalid unless they produced a complete evidence artifact
 - probe branches are ephemeral and owned by the workflow
 - a probe PR is stale if its target SHA, registry version, or lane state is no longer current
+- if the atomic dependency update fails partway, the probe branch must be discarded or reset rather than reused
 
 ## External Adversarial Review
 
@@ -470,6 +490,8 @@ The external-review artifact must be concrete and durable:
 - it must reference the exact NT SHA and probe artifact
 - it must identify the seams reviewed
 - it must record the review result in a durable location outside ephemeral chat history
+- it must contain substantive review content, not a token acknowledgment
+- it must record either findings or explicit no-finding statements at seam granularity
 
 Until that status is passing, the PR must not be mergeable.
 
@@ -505,6 +527,13 @@ Recommended high-level flow:
 15. Leave the external adversarial review status pending.
 16. Hand off for human review and external adversarial review.
 
+The resolution mechanism must be single-source and reproducible:
+
+- fetch the upstream ref once into a local immutable ref
+- derive the resolved SHA from that local ref
+- perform checkout, dependency update, lockfile refresh, and test execution against that resolved SHA only
+- if the workflow re-fetches the upstream ref mid-run, the run is invalid
+
 ## Canary Requirements
 
 Canaries must be selected to prove Bolt-owned semantics, not merely NT crate compilation.
@@ -535,6 +564,20 @@ A seam is not considered proven by a compile-only check unless its declared cove
 
 Each seam entry must define the coverage classes it requires. A touched seam fails unless every required coverage class has at least one passing canary.
 
+Coverage classes must come from a closed vocabulary owned by the registry, not from free-form strings.
+
+At minimum, the vocabulary should include classes such as:
+
+- compile-time-api
+- unit-behavior
+- integration-behavior
+- bootstrap-materialization
+- serialization-contract
+- network-transport
+- timing-ordering
+
+If a canary depends on static fixtures or recorded data, the seam review path must also account for fixture compatibility when the touched NT paths affect parsing, decoding, or event-emission semantics.
+
 ## Maintenance Model
 
 The seam registry is expected to evolve. That is acceptable and required.
@@ -558,7 +601,8 @@ Ambiguity may not block indefinitely. If the same ambiguity blocks repeated prob
 
 - adding or fixing a seam mapping
 - adding a justified safe-list entry
-- recording an explicit operator risk acceptance outside the automated landing path
+
+There is no operator-risk-acceptance bypass outside the gated path. An unresolved ambiguity must stay blocked until it is resolved inside the seam registry and review model.
 
 ## Risks
 

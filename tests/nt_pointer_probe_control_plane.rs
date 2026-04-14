@@ -53,7 +53,9 @@ fn temp_fixture(name: &str) -> TempDir {
 
     for relative in [
         "Cargo.toml",
+        "justfile",
         "src",
+        "scripts/nt_pin_block_guard.sh",
         "tests/reference_actor.rs",
         "tests/reference_pipeline.rs",
         ".github/dependabot.yml",
@@ -80,6 +82,7 @@ fn init_temp_git_repo() -> TempDir {
     fs::create_dir_all(tempdir.path().join("tests")).expect("tests dir should create");
     fs::create_dir_all(tempdir.path().join(".github/workflows"))
         .expect("workflow dir should create");
+    fs::create_dir_all(tempdir.path().join("scripts")).expect("scripts dir should create");
 
     fs::write(
         tempdir.path().join("config/nt_pointer_probe/control.toml"),
@@ -118,6 +121,24 @@ issue_title_prefix = "NT Pointer Probe Drift"
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
 pr_title_prefix = "NT Pointer Probe"
+
+[guard_contract]
+script_path = "scripts/nt_pin_block_guard.sh"
+script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
+check_mutation_recipe = "nt-pointer-probe-check-nt-mutation"
+check_mutation_recipe_sha256 = "7dd549c4410e59938eee58967b29fb6b78bafc886ad8dcee54b416a6277c93b2"
+validate_control_plane_recipe = "nt-pointer-probe-validate-control-plane"
+validate_control_plane_recipe_sha256 = "5bba05dd823f5d2196c4b4b2eb996001f21679df96c96e403ebe61b1c6ea6f8b"
+self_test_recipe = "nt-pointer-probe-self-test"
+self_test_recipe_sha256 = "06a2d6cd1a7d82a843b3acb04805465819eca5514aaf89cd1e7181dbd53c33f8"
+control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
+control_plane_job = "control_plane"
+control_plane_step = "Block direct NT pin changes"
+control_plane_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
+dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
+dependabot_job = "dependabot"
+dependabot_step = "Block NT pin auto-merge"
+dependabot_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
 "#,
     )
     .expect("fixture control.toml should write");
@@ -153,8 +174,9 @@ jobs:
   control_plane:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
+      - name: Block direct NT pin changes
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
 "#,
     )
     .expect("fixture control-plane workflow should write");
@@ -167,8 +189,9 @@ jobs:
   dependabot:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
+      - name: Block NT pin auto-merge
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
 "#,
     )
     .expect("fixture dependabot workflow should write");
@@ -192,6 +215,16 @@ jobs:
         "// fixture\n",
     )
     .expect("fixture reference pipeline test should write");
+    fs::copy(
+        repo_root().join("scripts/nt_pin_block_guard.sh"),
+        tempdir.path().join("scripts/nt_pin_block_guard.sh"),
+    )
+    .expect("fixture guard script should copy");
+    fs::copy(
+        repo_root().join("justfile"),
+        tempdir.path().join("justfile"),
+    )
+    .expect("fixture justfile should copy");
 
     for command in [
         ["init"].as_slice(),
@@ -427,6 +460,24 @@ issue_title_prefix = "NT Pointer Probe Drift"
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
 pr_title_prefix = "NT Pointer Probe"
+
+[guard_contract]
+script_path = "scripts/nt_pin_block_guard.sh"
+script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
+check_mutation_recipe = "nt-pointer-probe-check-nt-mutation"
+check_mutation_recipe_sha256 = "7dd549c4410e59938eee58967b29fb6b78bafc886ad8dcee54b416a6277c93b2"
+validate_control_plane_recipe = "nt-pointer-probe-validate-control-plane"
+validate_control_plane_recipe_sha256 = "5bba05dd823f5d2196c4b4b2eb996001f21679df96c96e403ebe61b1c6ea6f8b"
+self_test_recipe = "nt-pointer-probe-self-test"
+self_test_recipe_sha256 = "06a2d6cd1a7d82a843b3acb04805465819eca5514aaf89cd1e7181dbd53c33f8"
+control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
+control_plane_job = "control_plane"
+control_plane_step = "Block direct NT pin changes"
+control_plane_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
+dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
+dependabot_job = "dependabot"
+dependabot_step = "Block NT pin auto-merge"
+dependabot_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
 "#,
     )
     .expect("invalid control fixture should write");
@@ -489,7 +540,7 @@ assertion = "Reference pipeline still compiles and wires shared custom-data sema
 
     assert!(
         err.to_string()
-            .contains("registry path does not exist in repo: src/does_not_exist.rs"),
+            .contains("repo path does not exist: src/does_not_exist.rs"),
         "unexpected error: {err}"
     );
 }

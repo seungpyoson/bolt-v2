@@ -59,6 +59,7 @@ pub struct ControlConfig {
     pub develop_lane: DevelopLane,
     pub drift_lane: DriftLane,
     pub tagged_lane: TaggedLane,
+    pub guard_contract: GuardContract,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,6 +102,27 @@ pub struct DriftLane {
 pub struct TaggedLane {
     pub pr_branch: String,
     pub pr_title_prefix: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardContract {
+    pub script_path: String,
+    pub script_sha256: String,
+    pub check_mutation_recipe: String,
+    pub check_mutation_recipe_sha256: String,
+    pub validate_control_plane_recipe: String,
+    pub validate_control_plane_recipe_sha256: String,
+    pub self_test_recipe: String,
+    pub self_test_recipe_sha256: String,
+    pub control_plane_workflow: String,
+    pub control_plane_job: String,
+    pub control_plane_step: String,
+    pub control_plane_run: String,
+    pub dependabot_workflow: String,
+    pub dependabot_job: String,
+    pub dependabot_step: String,
+    pub dependabot_run: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -332,6 +354,7 @@ impl LoadedControlPlane {
         );
 
         self.validate_nt_crate_inventory()?;
+        self.validate_guard_contract()?;
         self.registry.validate(&self.repo_root)?;
         self.safe_list
             .validate(self.control.max_safe_list_duration_days)?;
@@ -453,19 +476,99 @@ impl LoadedControlPlane {
             dependabot_ignores
         );
 
-        for workflow in [
-            ".github/workflows/nt-pointer-control-plane.yml",
-            ".github/workflows/dependabot-auto-merge.yml",
+        Ok(())
+    }
+
+    fn validate_guard_contract(&self) -> Result<()> {
+        let script_path = self
+            .repo_root
+            .join(&self.control.guard_contract.script_path);
+        validate_repo_path_exists(&self.repo_root, &self.control.guard_contract.script_path)?;
+        let script_hash = sha256_hex(
+            &fs::read(&script_path)
+                .with_context(|| format!("failed to read {}", script_path.display()))?,
+        );
+        ensure!(
+            script_hash == self.control.guard_contract.script_sha256,
+            "guard script hash drift for {}",
+            self.control.guard_contract.script_path
+        );
+
+        let justfile_contents = fs::read_to_string(self.repo_root.join("justfile"))
+            .context("failed to read justfile")?;
+        for (recipe, expected_hash) in [
+            (
+                self.control.guard_contract.check_mutation_recipe.as_str(),
+                self.control
+                    .guard_contract
+                    .check_mutation_recipe_sha256
+                    .as_str(),
+            ),
+            (
+                self.control
+                    .guard_contract
+                    .validate_control_plane_recipe
+                    .as_str(),
+                self.control
+                    .guard_contract
+                    .validate_control_plane_recipe_sha256
+                    .as_str(),
+            ),
+            (
+                self.control.guard_contract.self_test_recipe.as_str(),
+                self.control.guard_contract.self_test_recipe_sha256.as_str(),
+            ),
         ] {
-            let contents = fs::read_to_string(self.repo_root.join(workflow))
-                .with_context(|| format!("failed to read {}", workflow))?;
+            let body = extract_just_recipe_body(&justfile_contents, recipe)?;
+            let actual_hash = sha256_hex(body.as_bytes());
             ensure!(
-                workflow_invokes_nt_pin_guard(&contents)
-                    .with_context(|| format!("failed to parse {}", workflow))?,
-                "{} must invoke scripts/nt_pin_block_guard.sh in a run block",
-                workflow
+                actual_hash == expected_hash,
+                "just recipe hash drift for {}",
+                recipe
             );
         }
+
+        let control_plane_workflow = fs::read_to_string(
+            self.repo_root
+                .join(&self.control.guard_contract.control_plane_workflow),
+        )
+        .with_context(|| {
+            format!(
+                "failed to read {}",
+                self.control.guard_contract.control_plane_workflow
+            )
+        })?;
+        ensure!(
+            workflow_has_exact_step_run(
+                &control_plane_workflow,
+                &self.control.guard_contract.control_plane_job,
+                &self.control.guard_contract.control_plane_step,
+                &self.control.guard_contract.control_plane_run,
+            )?,
+            "{} must keep the exact guard step contract",
+            self.control.guard_contract.control_plane_workflow
+        );
+
+        let dependabot_workflow = fs::read_to_string(
+            self.repo_root
+                .join(&self.control.guard_contract.dependabot_workflow),
+        )
+        .with_context(|| {
+            format!(
+                "failed to read {}",
+                self.control.guard_contract.dependabot_workflow
+            )
+        })?;
+        ensure!(
+            workflow_has_exact_step_run(
+                &dependabot_workflow,
+                &self.control.guard_contract.dependabot_job,
+                &self.control.guard_contract.dependabot_step,
+                &self.control.guard_contract.dependabot_run,
+            )?,
+            "{} must keep the exact guard step contract",
+            self.control.guard_contract.dependabot_workflow
+        );
 
         Ok(())
     }
@@ -525,6 +628,9 @@ impl ControlConfig {
         validate_repo_relative(&self.paths.expected_branch_protection)?;
         validate_repo_relative(&self.paths.advisory_issue_template)?;
         validate_repo_relative(&self.paths.draft_pr_template)?;
+        validate_repo_relative(&self.guard_contract.script_path)?;
+        validate_repo_relative(&self.guard_contract.control_plane_workflow)?;
+        validate_repo_relative(&self.guard_contract.dependabot_workflow)?;
 
         let statuses = [
             self.status_checks.control_plane.as_str(),
@@ -566,6 +672,28 @@ impl ControlConfig {
             !self.tagged_lane.pr_title_prefix.trim().is_empty(),
             "tagged lane pr_title_prefix must not be empty"
         );
+        for field in [
+            self.guard_contract.script_sha256.as_str(),
+            self.guard_contract.check_mutation_recipe.as_str(),
+            self.guard_contract.check_mutation_recipe_sha256.as_str(),
+            self.guard_contract.validate_control_plane_recipe.as_str(),
+            self.guard_contract
+                .validate_control_plane_recipe_sha256
+                .as_str(),
+            self.guard_contract.self_test_recipe.as_str(),
+            self.guard_contract.self_test_recipe_sha256.as_str(),
+            self.guard_contract.control_plane_job.as_str(),
+            self.guard_contract.control_plane_step.as_str(),
+            self.guard_contract.control_plane_run.as_str(),
+            self.guard_contract.dependabot_job.as_str(),
+            self.guard_contract.dependabot_step.as_str(),
+            self.guard_contract.dependabot_run.as_str(),
+        ] {
+            ensure!(
+                !field.trim().is_empty(),
+                "guard contract fields must not be empty"
+            );
+        }
 
         Ok(())
     }
@@ -1338,7 +1466,7 @@ fn validate_repo_path_exists(repo_root: &Path, path: &str) -> Result<()> {
     let normalized = normalize_relative(path)?;
     ensure!(
         repo_root.join(&normalized).exists(),
-        "registry path does not exist in repo: {}",
+        "repo path does not exist: {}",
         normalized
     );
     Ok(())
@@ -1619,36 +1747,79 @@ fn canonical_toml_value(value: &TomlValue) -> String {
     }
 }
 
-fn workflow_invokes_nt_pin_guard(contents: &str) -> Result<bool> {
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn extract_just_recipe_body(contents: &str, recipe_name: &str) -> Result<String> {
+    let lines = contents.lines().collect::<Vec<_>>();
+    let mut start = None;
+    for (index, line) in lines.iter().enumerate() {
+        if let Some(rest) = line.strip_prefix(recipe_name) {
+            if rest.starts_with(':') || rest.starts_with(' ') {
+                if rest.contains(':') {
+                    start = Some(index + 1);
+                    break;
+                }
+            }
+        }
+        if line.starts_with(&format!("{}:", recipe_name)) {
+            start = Some(index + 1);
+            break;
+        }
+    }
+    let Some(start) = start else {
+        return Err(anyhow!("just recipe {} not found", recipe_name));
+    };
+
+    let mut body = Vec::new();
+    for line in &lines[start..] {
+        if line.starts_with("    ") || line.starts_with('\t') || line.is_empty() {
+            body.push(*line);
+        } else {
+            break;
+        }
+    }
+    let normalized = body.join("\n").trim_end().to_string();
+    Ok(format!("{}\n", normalized))
+}
+
+fn workflow_has_exact_step_run(
+    contents: &str,
+    job_name: &str,
+    step_name: &str,
+    expected_run: &str,
+) -> Result<bool> {
     let value: YamlValue =
         serde_yaml::from_str(contents).context("failed to parse workflow YAML")?;
     let Some(jobs) = value.get("jobs").and_then(YamlValue::as_mapping) else {
         return Ok(false);
     };
 
-    for job in jobs.values() {
-        let Some(steps) = job.get("steps").and_then(YamlValue::as_sequence) else {
+    let Some(job) = jobs.get(YamlValue::String(job_name.to_string())) else {
+        return Ok(false);
+    };
+    let Some(steps) = job.get("steps").and_then(YamlValue::as_sequence) else {
+        return Ok(false);
+    };
+
+    for step in steps {
+        let Some(actual_step_name) = step.get("name").and_then(YamlValue::as_str) else {
             continue;
         };
-
-        for step in steps {
-            let Some(run) = step.get("run").and_then(YamlValue::as_str) else {
-                continue;
-            };
-            if run_block_invokes_guard_script(run) {
-                return Ok(true);
-            }
+        if actual_step_name != step_name {
+            continue;
         }
+        let Some(run) = step.get("run").and_then(YamlValue::as_str) else {
+            return Ok(false);
+        };
+        return Ok(run.trim() == expected_run.trim());
     }
 
     Ok(false)
-}
-
-fn run_block_invokes_guard_script(run: &str) -> bool {
-    run.lines().any(|line| {
-        let trimmed = line.trim_start();
-        !trimmed.starts_with('#') && trimmed.contains("scripts/nt_pin_block_guard.sh")
-    })
 }
 
 fn collect_nt_data_from_toml_table(
@@ -1802,8 +1973,8 @@ fn expected_ruleset_signature(ruleset: &ExpectedRuleset) -> String {
 #[cfg(test)]
 mod unit_tests {
     use super::{
-        extract_nt_crates_from_cargo_toml, extract_nt_crates_from_dependabot,
-        run_block_invokes_guard_script, workflow_invokes_nt_pin_guard,
+        extract_just_recipe_body, extract_nt_crates_from_cargo_toml,
+        extract_nt_crates_from_dependabot, sha256_hex, workflow_has_exact_step_run,
     };
     use std::collections::BTreeSet;
 
@@ -1868,31 +2039,48 @@ updates:
     }
 
     #[test]
-    fn guard_script_detection_ignores_comments() {
-        let commented = r#"
-# scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
-echo "noop"
-"#;
-
-        assert!(!run_block_invokes_guard_script(commented));
-    }
-
-    #[test]
-    fn workflow_guard_detection_requires_run_block_invocation() {
+    fn workflow_guard_detection_requires_exact_run_contract() {
         let workflow = r#"
 name: Example
 jobs:
-  check:
+  control_plane:
     runs-on: ubuntu-latest
     steps:
-      - name: Comment only
+      - name: Block direct NT pin changes
         run: |
-          # scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
-          echo "noop"
+          if false; then
+            bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
+          fi
+          exit 0
 "#;
 
-        let detected =
-            workflow_invokes_nt_pin_guard(workflow).expect("workflow fixture should parse");
+        let detected = workflow_has_exact_step_run(
+            workflow,
+            "control_plane",
+            "Block direct NT pin changes",
+            r#"bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}""#,
+        )
+        .expect("workflow fixture should parse");
         assert!(!detected);
+    }
+
+    #[test]
+    fn just_recipe_extraction_hashes_normalized_body() {
+        let justfile = r#"
+recipe-name arg:
+    echo hello
+    echo world
+
+next:
+    echo next
+"#;
+
+        let body =
+            extract_just_recipe_body(justfile, "recipe-name").expect("recipe should extract");
+        assert_eq!(body, "    echo hello\n    echo world\n");
+        assert_eq!(
+            sha256_hex(body.as_bytes()),
+            "833cf9af831eefc559ec13f012c8100286a3916d007f514f9b0e022969f3a156"
+        );
     }
 }

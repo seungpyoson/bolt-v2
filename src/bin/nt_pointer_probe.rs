@@ -38,6 +38,14 @@ enum Command {
         #[arg(long)]
         actual_rules_json: PathBuf,
     },
+    CheckNtMutation {
+        #[arg(long)]
+        repo_root: PathBuf,
+        #[arg(long)]
+        base_ref: String,
+        #[arg(long)]
+        head_ref: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -82,6 +90,18 @@ fn main() -> Result<()> {
             println!(
                 "branch governance matches expected state for {}",
                 expected.branch
+            );
+        }
+        Command::CheckNtMutation {
+            repo_root,
+            base_ref,
+            head_ref,
+        } => {
+            let loaded = LoadedControlPlane::load_from_repo_root(&repo_root)?;
+            loaded.ensure_no_nt_mutation_from_git_refs(&base_ref, &head_ref)?;
+            println!(
+                "no unmanaged NT mutations detected between {} and {}",
+                base_ref, head_ref
             );
         }
     }

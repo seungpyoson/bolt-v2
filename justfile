@@ -135,7 +135,7 @@ ci-lint-workflow:
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection|nt-pointer-probe-compare-branch-governance|nt-pointer-probe-print-nt-crate-diff-pattern)([^[:alnum:]_]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection|nt-pointer-probe-compare-branch-governance|nt-pointer-probe-print-nt-crate-diff-pattern|nt-pointer-probe-check-nt-mutation)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_lint_literal='lint-workflow-contract:'
     setup_lint_true_literal='lint-workflow-contract: "true"'
@@ -698,6 +698,9 @@ nt-pointer-probe-compare-branch-governance actual_json actual_rules_json: check-
 
 nt-pointer-probe-print-nt-crate-diff-pattern: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- print-nt-crate-diff-pattern --repo-root "{{repo_root}}"
+
+nt-pointer-probe-check-nt-mutation base_ref head_ref: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- check-nt-mutation --repo-root "{{repo_root}}" --base-ref "{{base_ref}}" --head-ref "{{head_ref}}"
 
 worktree branch:
     #!/usr/bin/env bash

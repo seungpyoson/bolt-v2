@@ -9,6 +9,7 @@ use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use serde_yaml::Value as YamlValue;
 use toml::Value as TomlValue;
 
 const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -213,6 +214,7 @@ struct NormalizedBranchProtection {
     require_code_owner_reviews: bool,
     required_approving_review_count: u64,
     required_status_checks: BTreeSet<String>,
+    strict_required_status_checks: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -296,10 +298,87 @@ impl LoadedControlPlane {
         format!("^[+-].*({})", literals.join("|"))
     }
 
+    pub fn ensure_no_nt_mutation_from_git_refs(
+        &self,
+        base_ref: &str,
+        head_ref: &str,
+    ) -> Result<()> {
+        let configured: BTreeSet<String> = self.control.nt_crates.iter().cloned().collect();
+        let changed_files = git_changed_files(&self.repo_root, base_ref, head_ref)?;
+        let mut reasons = Vec::new();
+
+        for path in changed_files {
+            if !is_nt_guarded_surface(&path) {
+                continue;
+            }
+
+            if path.ends_with("Cargo.toml") {
+                let before = extract_nt_dependency_records_from_cargo_toml(
+                    &git_show_toml_or_empty(&self.repo_root, base_ref, &path)?,
+                    &configured,
+                );
+                let after = extract_nt_dependency_records_from_cargo_toml(
+                    &git_show_toml_or_empty(&self.repo_root, head_ref, &path)?,
+                    &configured,
+                );
+                if before != after {
+                    reasons.push(format!(
+                        "{} changed NT dependency records (before {:?}, after {:?})",
+                        path, before, after
+                    ));
+                }
+                continue;
+            }
+
+            if path.ends_with("Cargo.lock") {
+                let before = extract_nt_lock_records(
+                    &git_show_text_or_empty(&self.repo_root, base_ref, &path)?,
+                    &configured,
+                )?;
+                let after = extract_nt_lock_records(
+                    &git_show_text_or_empty(&self.repo_root, head_ref, &path)?,
+                    &configured,
+                )?;
+                if before != after {
+                    reasons.push(format!("{} changed NT lock records", path));
+                }
+                continue;
+            }
+
+            if is_cargo_config_path(&path) {
+                let before = extract_guarded_cargo_config_state(&git_show_toml_or_empty(
+                    &self.repo_root,
+                    base_ref,
+                    &path,
+                )?);
+                let after = extract_guarded_cargo_config_state(&git_show_toml_or_empty(
+                    &self.repo_root,
+                    head_ref,
+                    &path,
+                )?);
+                if before != after {
+                    reasons.push(format!("{} changed guarded cargo config state", path));
+                }
+            }
+        }
+
+        ensure!(
+            reasons.is_empty(),
+            "NT pin changes are blocked until the probe-generated path is active:\n{}",
+            reasons
+                .into_iter()
+                .map(|reason| format!("  - {}", reason))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        Ok(())
+    }
+
     fn validate_nt_crate_inventory(&self) -> Result<()> {
         let configured: BTreeSet<String> = self.control.nt_crates.iter().cloned().collect();
         let cargo_toml: TomlValue = load_toml(&self.repo_root.join("Cargo.toml"))?;
-        let cargo_nt_crates = extract_nt_crates_from_cargo_toml(&cargo_toml);
+        let cargo_nt_crates = extract_nt_crates_from_cargo_toml(&cargo_toml, &configured);
 
         ensure!(
             cargo_nt_crates == configured,
@@ -326,8 +405,9 @@ impl LoadedControlPlane {
             let contents = fs::read_to_string(self.repo_root.join(workflow))
                 .with_context(|| format!("failed to read {}", workflow))?;
             ensure!(
-                contents.contains("just nt-pointer-probe-print-nt-crate-diff-pattern"),
-                "{} must derive the NT diff pattern from the control plane",
+                workflow_invokes_nt_pin_guard(&contents)
+                    .with_context(|| format!("failed to parse {}", workflow))?,
+                "{} must invoke scripts/nt_pin_block_guard.sh in a run block",
                 workflow
             );
         }
@@ -721,6 +801,7 @@ pub fn compare_branch_protection_response(
         require_code_owner_reviews: expected.require_code_owner_reviews,
         required_approving_review_count: expected.required_approving_review_count,
         required_status_checks: expected.required_status_checks.iter().cloned().collect(),
+        strict_required_status_checks: false,
     };
 
     ensure!(
@@ -753,6 +834,12 @@ pub fn compare_branch_protection_response(
         "branch protection drift: required status checks differ (expected {:?}, got {:?})",
         expected_normalized.required_status_checks,
         actual.required_status_checks
+    );
+    ensure!(
+        actual.strict_required_status_checks == expected_normalized.strict_required_status_checks,
+        "branch protection drift: strict status-check policy expected {}, got {}",
+        expected_normalized.strict_required_status_checks,
+        actual.strict_required_status_checks
     );
 
     Ok(())
@@ -839,6 +926,13 @@ fn normalize_branch_protection_response(actual_json: &str) -> Result<NormalizedB
                 anyhow!("branch protection response missing required_approving_review_count")
             })?,
         required_status_checks: contexts,
+        strict_required_status_checks: value
+            .get("required_status_checks")
+            .and_then(|checks| checks.get("strict"))
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                anyhow!("branch protection response missing required_status_checks.strict")
+            })?,
     })
 }
 
@@ -866,23 +960,33 @@ fn normalize_effective_rules_response(actual_json: &str) -> Result<BTreeSet<Stri
                     parameters
                         .get("required_approving_review_count")
                         .and_then(Value::as_u64)
-                        .ok_or_else(|| anyhow!("pull_request rule missing required_approving_review_count"))?,
+                        .ok_or_else(|| anyhow!(
+                            "pull_request rule missing required_approving_review_count"
+                        ))?,
                     parameters
                         .get("dismiss_stale_reviews_on_push")
                         .and_then(Value::as_bool)
-                        .ok_or_else(|| anyhow!("pull_request rule missing dismiss_stale_reviews_on_push"))?,
+                        .ok_or_else(|| anyhow!(
+                            "pull_request rule missing dismiss_stale_reviews_on_push"
+                        ))?,
                     parameters
                         .get("require_code_owner_review")
                         .and_then(Value::as_bool)
-                        .ok_or_else(|| anyhow!("pull_request rule missing require_code_owner_review"))?,
+                        .ok_or_else(|| anyhow!(
+                            "pull_request rule missing require_code_owner_review"
+                        ))?,
                     parameters
                         .get("require_last_push_approval")
                         .and_then(Value::as_bool)
-                        .ok_or_else(|| anyhow!("pull_request rule missing require_last_push_approval"))?,
+                        .ok_or_else(|| anyhow!(
+                            "pull_request rule missing require_last_push_approval"
+                        ))?,
                     parameters
                         .get("required_review_thread_resolution")
                         .and_then(Value::as_bool)
-                        .ok_or_else(|| anyhow!("pull_request rule missing required_review_thread_resolution"))?,
+                        .ok_or_else(|| anyhow!(
+                            "pull_request rule missing required_review_thread_resolution"
+                        ))?,
                 )
             }
             "required_status_checks" => {
@@ -897,13 +1001,12 @@ fn normalize_effective_rules_response(actual_json: &str) -> Result<BTreeSet<Stri
                     })?
                     .iter()
                     .map(|entry| {
-                        entry.get("context")
+                        entry
+                            .get("context")
                             .and_then(Value::as_str)
                             .map(str::to_owned)
                             .ok_or_else(|| {
-                                anyhow!(
-                                    "required_status_checks rule entry missing context string"
-                                )
+                                anyhow!("required_status_checks rule entry missing context string")
                             })
                     })
                     .collect::<Result<BTreeSet<_>>>()?;
@@ -958,6 +1061,62 @@ fn validate_repo_path_exists(repo_root: &Path, path: &str) -> Result<()> {
     Ok(())
 }
 
+fn git_changed_files(repo_root: &Path, base_ref: &str, head_ref: &str) -> Result<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", &format!("{base_ref}...{head_ref}")])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to run git diff --name-only")?;
+
+    ensure!(
+        output.status.success(),
+        "git diff --name-only failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn git_show_toml_or_empty(repo_root: &Path, git_ref: &str, path: &str) -> Result<TomlValue> {
+    let text = git_show_text_or_empty(repo_root, git_ref, path)?;
+    if text.trim().is_empty() {
+        return Ok(TomlValue::Table(Default::default()));
+    }
+    toml::from_str(&text).with_context(|| format!("failed to parse {} at {}", path, git_ref))
+}
+
+fn git_show_text_or_empty(repo_root: &Path, git_ref: &str, path: &str) -> Result<String> {
+    let exists = std::process::Command::new("git")
+        .args(["cat-file", "-e", &format!("{git_ref}:{path}")])
+        .current_dir(repo_root)
+        .status()
+        .context("failed to run git cat-file")?;
+    if !exists.success() {
+        return Ok(String::new());
+    }
+
+    let output = std::process::Command::new("git")
+        .args(["show", &format!("{git_ref}:{path}")])
+        .current_dir(repo_root)
+        .output()
+        .with_context(|| format!("failed to read {} at {}", path, git_ref))?;
+
+    ensure!(
+        output.status.success(),
+        "git show {}:{} failed: {}",
+        git_ref,
+        path,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    Ok(String::from_utf8(output.stdout)
+        .with_context(|| format!("{} at {} is not valid UTF-8", path, git_ref))?)
+}
+
 fn normalize_relative(path: &str) -> Result<String> {
     ensure!(!path.trim().is_empty(), "path must not be empty");
     let path = Path::new(path);
@@ -994,38 +1153,126 @@ fn normalize_relative(path: &str) -> Result<String> {
     Ok(normalized)
 }
 
-fn extract_nt_crates_from_cargo_toml(cargo_toml: &TomlValue) -> BTreeSet<String> {
-    let mut crates = BTreeSet::new();
-    for section in ["dependencies", "dev-dependencies"] {
-        let Some(table) = cargo_toml.get(section).and_then(TomlValue::as_table) else {
-            continue;
-        };
-        for (name, value) in table {
-            if value
-                .get("git")
-                .and_then(TomlValue::as_str)
-                .is_some_and(|git| git.contains("nautilus_trader.git"))
-            {
-                crates.insert(name.clone());
-            }
+fn is_nt_guarded_surface(path: &str) -> bool {
+    path == "Cargo.toml"
+        || path == "Cargo.lock"
+        || path.ends_with("/Cargo.toml")
+        || path.ends_with("/Cargo.lock")
+        || is_cargo_config_path(path)
+}
+
+fn is_cargo_config_path(path: &str) -> bool {
+    path == ".cargo/config.toml" || path == ".cargo/config"
+}
+
+fn extract_guarded_cargo_config_state(config: &TomlValue) -> BTreeSet<String> {
+    let mut state = BTreeSet::new();
+    for key in ["patch", "source", "paths"] {
+        if let Some(value) = config.get(key) {
+            state.insert(format!("{}={}", key, canonical_toml_value(value)));
         }
     }
+    state
+}
+
+fn extract_nt_lock_records(
+    lockfile_contents: &str,
+    configured: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    if lockfile_contents.trim().is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let lockfile: TomlValue =
+        toml::from_str(lockfile_contents).context("failed to parse Cargo.lock")?;
+    let mut records = BTreeSet::new();
+    let Some(packages) = lockfile.get("package").and_then(TomlValue::as_array) else {
+        return Ok(records);
+    };
+
+    for package in packages {
+        let Some(name) = package.get("name").and_then(TomlValue::as_str) else {
+            continue;
+        };
+        let source = package
+            .get("source")
+            .and_then(TomlValue::as_str)
+            .unwrap_or("");
+        if configured.contains(name)
+            || name.starts_with("nautilus-")
+            || source.contains("nautilus_trader.git")
+        {
+            records.insert(canonical_toml_value(package));
+        }
+    }
+
+    Ok(records)
+}
+
+fn extract_nt_crates_from_cargo_toml(
+    cargo_toml: &TomlValue,
+    configured: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut crates = BTreeSet::new();
+    let Some(table) = cargo_toml.as_table() else {
+        return crates;
+    };
+    collect_nt_data_from_toml_table(table, &mut Vec::new(), configured, Some(&mut crates), None);
     crates
 }
 
+fn extract_nt_dependency_records_from_cargo_toml(
+    cargo_toml: &TomlValue,
+    configured: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut records = BTreeSet::new();
+    let Some(table) = cargo_toml.as_table() else {
+        return records;
+    };
+    collect_nt_data_from_toml_table(table, &mut Vec::new(), configured, None, Some(&mut records));
+    records
+}
+
 fn extract_nt_crates_from_dependabot(contents: &str) -> BTreeSet<String> {
-    let mut crates = BTreeSet::new();
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        let Some(raw_name) = trimmed.strip_prefix("- dependency-name: ") else {
-            continue;
-        };
-        let name = raw_name.trim().trim_matches('"');
-        if name.starts_with("nautilus-") {
-            crates.insert(name.to_string());
-        }
+    #[derive(Deserialize)]
+    struct DependabotConfig {
+        #[serde(default)]
+        updates: Vec<DependabotUpdate>,
     }
-    crates
+
+    #[derive(Deserialize)]
+    struct DependabotUpdate {
+        #[serde(rename = "package-ecosystem")]
+        package_ecosystem: String,
+        directory: String,
+        #[serde(default)]
+        ignore: Vec<DependabotIgnore>,
+    }
+
+    #[derive(Deserialize)]
+    struct DependabotIgnore {
+        #[serde(rename = "dependency-name")]
+        dependency_name: String,
+    }
+
+    let parsed: DependabotConfig =
+        serde_yaml::from_str(contents).expect("dependabot.yml should stay valid YAML");
+    parsed
+        .updates
+        .into_iter()
+        .find(|update| update.package_ecosystem == "cargo" && update.directory == "/")
+        .map(|update| {
+            update
+                .ignore
+                .into_iter()
+                .filter_map(|ignore| {
+                    ignore
+                        .dependency_name
+                        .starts_with("nautilus-")
+                        .then_some(ignore.dependency_name)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn regex_escape_literal(value: &str) -> String {
@@ -1040,6 +1287,152 @@ fn regex_escape_literal(value: &str) -> String {
         }
     }
     escaped
+}
+
+fn canonical_toml_value(value: &TomlValue) -> String {
+    match value {
+        TomlValue::String(inner) => format!("\"{}\"", inner),
+        TomlValue::Integer(inner) => inner.to_string(),
+        TomlValue::Float(inner) => inner.to_string(),
+        TomlValue::Boolean(inner) => inner.to_string(),
+        TomlValue::Datetime(inner) => inner.to_string(),
+        TomlValue::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_toml_value)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        TomlValue::Table(table) => {
+            let mut entries = table.iter().collect::<Vec<_>>();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            format!(
+                "{{{}}}",
+                entries
+                    .into_iter()
+                    .map(|(key, value)| format!("{}={}", key, canonical_toml_value(value)))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+    }
+}
+
+fn workflow_invokes_nt_pin_guard(contents: &str) -> Result<bool> {
+    let value: YamlValue =
+        serde_yaml::from_str(contents).context("failed to parse workflow YAML")?;
+    let Some(jobs) = value.get("jobs").and_then(YamlValue::as_mapping) else {
+        return Ok(false);
+    };
+
+    for job in jobs.values() {
+        let Some(steps) = job.get("steps").and_then(YamlValue::as_sequence) else {
+            continue;
+        };
+
+        for step in steps {
+            let Some(run) = step.get("run").and_then(YamlValue::as_str) else {
+                continue;
+            };
+            if run_block_invokes_guard_script(run) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn run_block_invokes_guard_script(run: &str) -> bool {
+    run.lines().any(|line| {
+        let trimmed = line.trim_start();
+        !trimmed.starts_with('#') && trimmed.contains("scripts/nt_pin_block_guard.sh")
+    })
+}
+
+fn collect_nt_data_from_toml_table(
+    table: &toml::map::Map<String, TomlValue>,
+    path: &mut Vec<String>,
+    configured: &BTreeSet<String>,
+    mut crates: Option<&mut BTreeSet<String>>,
+    mut records: Option<&mut BTreeSet<String>>,
+) {
+    for (key, value) in table {
+        path.push(key.clone());
+
+        if path.last().is_some_and(|segment| {
+            matches!(
+                segment.as_str(),
+                "dependencies" | "dev-dependencies" | "build-dependencies"
+            )
+        }) {
+            if let Some(dep_table) = value.as_table() {
+                for (name, dep_value) in dep_table {
+                    if dependency_entry_is_nt(name, dep_value, configured) {
+                        if let Some(crates) = crates.as_deref_mut() {
+                            crates.insert(name.clone());
+                        }
+                        if let Some(records) = records.as_deref_mut() {
+                            records.insert(format!(
+                                "{}::{}={}",
+                                path.join("."),
+                                name,
+                                canonical_toml_value(dep_value)
+                            ));
+                        }
+                    }
+                }
+            }
+            path.pop();
+            continue;
+        }
+
+        if path.len() == 2 && path[0] == "patch" {
+            if let Some(dep_table) = value.as_table() {
+                for (name, dep_value) in dep_table {
+                    if dependency_entry_is_nt(name, dep_value, configured) {
+                        if let Some(crates) = crates.as_deref_mut() {
+                            crates.insert(name.clone());
+                        }
+                        if let Some(records) = records.as_deref_mut() {
+                            records.insert(format!(
+                                "{}::{}={}",
+                                path.join("."),
+                                name,
+                                canonical_toml_value(dep_value)
+                            ));
+                        }
+                    }
+                }
+            }
+            path.pop();
+            continue;
+        }
+
+        if let Some(subtable) = value.as_table() {
+            collect_nt_data_from_toml_table(
+                subtable,
+                path,
+                configured,
+                crates.as_deref_mut(),
+                records.as_deref_mut(),
+            );
+        }
+
+        path.pop();
+    }
+}
+
+fn dependency_entry_is_nt(name: &str, value: &TomlValue, configured: &BTreeSet<String>) -> bool {
+    if name.starts_with("nautilus-") || configured.contains(name) {
+        return true;
+    }
+
+    value
+        .get("git")
+        .and_then(TomlValue::as_str)
+        .is_some_and(|git| git.contains("nautilus_trader.git"))
 }
 
 fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
@@ -1076,5 +1469,103 @@ fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
                 strict_required_status_checks_policy, contexts
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::{
+        extract_nt_crates_from_cargo_toml, extract_nt_crates_from_dependabot,
+        run_block_invokes_guard_script, workflow_invokes_nt_pin_guard,
+    };
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn cargo_nt_extractor_scans_workspace_target_build_and_patch_sections() {
+        let cargo_toml = toml::from_str::<toml::Value>(
+            r#"
+[package]
+name = "fixture"
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "abc" }
+
+[build-dependencies]
+nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "def" }
+
+[target.'cfg(unix)'.dependencies]
+nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "ghi" }
+
+[patch."https://github.com/nautechsystems/nautilus_trader.git"]
+nautilus-execution = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "jkl" }
+"#,
+        )
+        .expect("fixture Cargo.toml should parse");
+
+        let configured = BTreeSet::from([
+            "nautilus-common".to_string(),
+            "nautilus-core".to_string(),
+            "nautilus-trading".to_string(),
+            "nautilus-execution".to_string(),
+        ]);
+
+        let extracted = extract_nt_crates_from_cargo_toml(&cargo_toml, &configured);
+
+        assert_eq!(extracted, configured);
+    }
+
+    #[test]
+    fn dependabot_nt_extractor_is_scoped_to_cargo_block() {
+        let contents = r#"
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    ignore:
+      - dependency-name: "nautilus-common"
+      - dependency-name: "nautilus-core"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    ignore:
+      - dependency-name: "nautilus-fake"
+"#;
+
+        let extracted = extract_nt_crates_from_dependabot(contents);
+
+        assert_eq!(
+            extracted,
+            BTreeSet::from(["nautilus-common".to_string(), "nautilus-core".to_string()])
+        );
+    }
+
+    #[test]
+    fn guard_script_detection_ignores_comments() {
+        let commented = r#"
+# scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
+echo "noop"
+"#;
+
+        assert!(!run_block_invokes_guard_script(commented));
+    }
+
+    #[test]
+    fn workflow_guard_detection_requires_run_block_invocation() {
+        let workflow = r#"
+name: Example
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment only
+        run: |
+          # scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
+          echo "noop"
+"#;
+
+        let detected =
+            workflow_invokes_nt_pin_guard(workflow).expect("workflow fixture should parse");
+        assert!(!detected);
     }
 }

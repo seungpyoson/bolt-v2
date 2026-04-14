@@ -71,6 +71,172 @@ fn temp_fixture(name: &str) -> TempDir {
     tempdir
 }
 
+fn init_temp_git_repo() -> TempDir {
+    let tempdir = tempfile::tempdir().expect("temp git repo should create");
+    copy_fixture_tree(&fixture("valid_minimal"), tempdir.path());
+
+    fs::create_dir_all(tempdir.path().join("src/platform")).expect("src/platform should create");
+    fs::create_dir_all(tempdir.path().join("src/clients")).expect("src/clients should create");
+    fs::create_dir_all(tempdir.path().join("tests")).expect("tests dir should create");
+    fs::create_dir_all(tempdir.path().join(".github/workflows"))
+        .expect("workflow dir should create");
+
+    fs::write(
+        tempdir.path().join("config/nt_pointer_probe/control.toml"),
+        r#"schema_version = 1
+repo = "seungpyoson/bolt-v2"
+default_branch = "main"
+artifact_store_uri = "s3://bolt-deploy-artifacts/artifacts/bolt-v2/nt-pointer-probe"
+artifact_retention_days = 90
+max_safe_list_duration_days = 30
+tag_soak_days = 7
+nt_crates = ["nautilus-common"]
+
+[paths]
+registry = "config/nt_pointer_probe/registry.toml"
+safe_list = "config/nt_pointer_probe/safe_list.toml"
+replay_set = "config/nt_pointer_probe/replay_set.toml"
+expected_branch_protection = "config/nt_pointer_probe/expected_branch_protection.toml"
+advisory_issue_template = ".github/nt-pointer-probe/advisory_issue.md"
+draft_pr_template = ".github/nt-pointer-probe/draft_pr.md"
+
+[status_checks]
+control_plane = "nt-pointer-control-plane"
+self_test = "nt-pointer-probe-self-test"
+develop = "nt-pointer-probe-develop"
+tagged = "nt-pointer-probe-tagged"
+external_review = "external-adversarial-review"
+
+[develop_lane]
+issue_label = "nt-pointer-probe-advisory"
+issue_title_prefix = "NT Pointer Probe Advisory"
+
+[tagged_lane]
+pr_branch = "automation/nt-pointer-probe"
+pr_title_prefix = "NT Pointer Probe"
+"#,
+    )
+    .expect("fixture control.toml should write");
+    fs::write(
+        tempdir.path().join("Cargo.toml"),
+        r#"[package]
+name = "fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+"#,
+    )
+    .expect("fixture Cargo.toml should write");
+    fs::write(
+        tempdir.path().join(".github/dependabot.yml"),
+        r#"version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    ignore:
+      - dependency-name: "nautilus-common"
+"#,
+    )
+    .expect("fixture dependabot should write");
+    fs::write(
+        tempdir
+            .path()
+            .join(".github/workflows/nt-pointer-control-plane.yml"),
+        r#"name: NT Pointer Control Plane
+jobs:
+  control_plane:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
+"#,
+    )
+    .expect("fixture control-plane workflow should write");
+    fs::write(
+        tempdir
+            .path()
+            .join(".github/workflows/dependabot-auto-merge.yml"),
+        r#"name: Dependabot auto-merge
+jobs:
+  dependabot:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" main 123
+"#,
+    )
+    .expect("fixture dependabot workflow should write");
+    fs::write(
+        tempdir.path().join("src/platform/reference_actor.rs"),
+        "// fixture\n",
+    )
+    .expect("fixture reference_actor should write");
+    fs::write(
+        tempdir.path().join("src/clients/chainlink.rs"),
+        "// fixture\n",
+    )
+    .expect("fixture chainlink should write");
+    fs::write(
+        tempdir.path().join("tests/reference_actor.rs"),
+        "// fixture\n",
+    )
+    .expect("fixture reference actor test should write");
+    fs::write(
+        tempdir.path().join("tests/reference_pipeline.rs"),
+        "// fixture\n",
+    )
+    .expect("fixture reference pipeline test should write");
+
+    for command in [
+        ["init"].as_slice(),
+        ["config", "user.name", "fixture"].as_slice(),
+        ["config", "user.email", "fixture@example.com"].as_slice(),
+        ["add", "."].as_slice(),
+        ["commit", "--no-verify", "-m", "base"].as_slice(),
+    ] {
+        let status = std::process::Command::new("git")
+            .args(command)
+            .current_dir(tempdir.path())
+            .status()
+            .expect("git command should run");
+        assert!(
+            status.success(),
+            "git command should succeed: {:?}",
+            command
+        );
+    }
+
+    fs::write(
+        tempdir.path().join("Cargo.toml"),
+        r#"[package]
+name = "fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb", features = ["extra-surface"] }
+"#,
+    )
+    .expect("mutated Cargo.toml should write");
+
+    let status = std::process::Command::new("git")
+        .args(["add", "Cargo.toml"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+    let status = std::process::Command::new("git")
+        .args(["commit", "--no-verify", "-m", "head"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git commit should run");
+    assert!(status.success(), "git commit should succeed");
+
+    tempdir
+}
+
 #[test]
 fn repo_control_plane_loads_and_validates() {
     let loaded = LoadedControlPlane::load_from_repo_root(&repo_root())
@@ -85,6 +251,23 @@ fn repo_control_plane_loads_and_validates() {
             .iter()
             .any(|seam| seam.name == "subscription_custom_data_semantics"),
         "expected initial seam registry to include subscription semantics seam"
+    );
+}
+
+#[test]
+fn nt_mutation_checker_rejects_root_manifest_change() {
+    let tempdir = init_temp_git_repo();
+    let loaded = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect("temp git repo control plane should load");
+
+    let err = loaded
+        .ensure_no_nt_mutation_from_git_refs("HEAD~1", "HEAD")
+        .expect_err("root manifest NT mutation should fail closed");
+
+    assert!(
+        err.to_string()
+            .contains("Cargo.toml changed NT dependency records"),
+        "unexpected error: {err}"
     );
 }
 

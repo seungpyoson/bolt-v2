@@ -40,17 +40,7 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
-          pattern="$(just nt-pointer-probe-print-nt-crate-diff-pattern)"
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
-          diff="$(git diff --unified=0 "${base_ref}...${head_ref}" -- '**/Cargo.toml' '**/Cargo.lock' '.cargo/config.toml' '.cargo/config')"
-          if printf '%s\n' "$diff" | rg -n "$pattern"; then
-            echo "ERROR: NT pin changes are blocked until the probe-generated path is active."
-            exit 1
-          fi
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
 
   branch_protection_drift:
     name: branch_protection_drift

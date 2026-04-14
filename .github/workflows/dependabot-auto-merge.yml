@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Setup environment
         id: setup
         uses: ./.github/actions/setup-environment
@@ -21,12 +23,9 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
 
       - name: Block NT pin auto-merge
+        shell: bash
         run: |
-          pattern="$(just nt-pointer-probe-print-nt-crate-diff-pattern)"
-          if gh pr diff "$PR_URL" --patch | rg -n "$pattern"; then
-            echo "NT pin changes must not auto-merge through Dependabot."
-            exit 1
-          fi
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
         env:
           PR_URL: ${{github.event.pull_request.html_url}}
           GH_TOKEN: ${{secrets.GITHUB_TOKEN}}

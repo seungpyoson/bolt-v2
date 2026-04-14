@@ -12,7 +12,7 @@ This design includes:
 
 - a scheduled NT probe workflow for both `develop` and tagged-release lanes
 - a hand-curated seam registry describing where Bolt semantics overlap NT semantics
-- an evidence contract for when an NT bump is considered safe enough to open a draft PR
+- an evidence contract for when an NT bump is considered safe enough to open a merge-candidate draft PR
 - fail-closed behavior for ambiguous or insufficiently-proven bumps
 - an explicit out-of-band external adversarial review step owned by the human operator
 
@@ -45,7 +45,7 @@ Simple “CI went green” is necessary but not sufficient if the bump changes a
 3. Prefer false negatives over false positives.
 4. Make the decision process explicit and reviewable.
 5. Separate authoritative Bolt-owned risk knowledge from advisory heuristics.
-6. Allow automation to open a draft PR when evidence is sufficient.
+6. Allow automation to open a merge-candidate draft PR when evidence is sufficient.
 7. Require explicit human review before any merge.
 
 ## Non-Goals
@@ -67,20 +67,20 @@ This design builds on that baseline. It does not replace it.
 
 ## Control Model
 
-This design separates **scrutiny** from **authority**.
+This design separates **mechanical authority** from **structured second-opinion review**.
 
-- external review systems such as Greptile and Gemini Code Assist provide adversarial scrutiny
-- repository-enforced controls provide authority
+- mechanical authority comes from repository-enforced controls
+- external review systems such as Greptile and Gemini Code Assist provide structured second-opinion review
 
-External review may produce findings, concerns, or approval artifacts. It must not, by itself, make an NT bump mergeable.
+In a solo-operated repo, external review is not independent human authority. It is a required source of structured scrutiny that the operator must confront and record before merge.
 
 ### Trusted Inputs
 
 The probe may trust only these inputs for merge-gating decisions:
 
 - the pinned NT SHA resolved by the probe
-- the seam registry and safe-list under owned review control
-- the replay set under owned review control
+- the seam registry and safe-list under control-plane protection
+- the replay set under control-plane protection
 - the probe evidence artifact
 - the external-review artifact
 - repository branch-protection and required-status configuration
@@ -104,7 +104,7 @@ An NT bump is merge-eligible only when all of the following are true:
 - the probe run passed its full evidence contract
 - the evidence artifact is valid and durable
 - the external adversarial review artifact exists and satisfies the required review gate
-- branch protection requires the relevant status checks and owners
+- branch protection requires the relevant status checks
 
 ### Prohibited Bypasses
 
@@ -132,19 +132,17 @@ They may not:
 - replace required status checks
 - authorize merge by opinion alone
 
+In solo mode, they do not create independence. They create a durable, structured record of external scrutiny.
+
 ## Operating Model
 
-This design is written for a **solo-operator-first** repository shape.
+This design is written for a **solo-operator** repository shape.
 
 That means:
 
 - true internal separation of duties does not exist
-- many governance roles collapse to the same human
-- safety must come primarily from mechanical controls, not role naming
-
-The design therefore distinguishes two modes:
-
-### Solo-Operator Mode
+- most governance roles collapse to the same human
+- safety must therefore come primarily from mechanical controls, not role naming
 
 This is the baseline mode for `bolt-v2`.
 
@@ -154,27 +152,18 @@ Properties:
 - independence must come from structured external scrutiny and hard technical gates
 - branch protection, required status checks, probe artifacts, and explicit control-plane ownership carry most of the real safety burden
 
-In solo mode, any control that assumes two independent humans must be treated as degraded. The spec must say what replaces that lost independence, rather than pretending the separation exists.
+Any control that assumes two independent humans must either:
 
-### Small-Team Mode
-
-This is a stronger variant of the same design.
-
-Properties:
-
-- reviewer separation may be real
-- CODEOWNERS and reviewer sets can create actual role distinction
-- external review remains useful, but is not the only source of independence
-
-The spec should never assume small-team guarantees when running in solo mode.
+- be replaced by a mechanical check, or
+- be downgraded explicitly to residual risk
 
 ### Explicit Degradations In Solo Mode
 
 The following are acknowledged degradations in solo mode:
 
 - external adversarial review is structured second-opinion, not true independent human review
-- safe-list and registry review may become self-review unless an external reviewer artifact is required
-- security-bypass authority cannot rely on internal role separation and therefore must rely on mechanical predicates and auditability
+- registry and safe-list review are self-review plus mechanical validation
+- security bypass cannot rely on internal role separation and therefore must rely on mechanical predicates and auditability
 
 These degradations are residual risks. They must not be hidden under role names.
 
@@ -182,20 +171,20 @@ These degradations are residual risks. They must not be hidden under role names.
 
 Every control in this design must map to an enforcement mechanism. If a rule has no enforcement mechanism, it is not a control.
 
-| Control | Enforcement Mechanism | Owner | If Missing |
+| Control | Enforcement Mechanism | Solo-Mode Meaning | If Missing |
 | --- | --- | --- | --- |
-| NT pin changes only through probe path | Branch protection plus a required status check on any PR that changes NT pins | Probe owner | Direct pin-bump PRs bypass seam checks |
-| Probe artifact must be valid | Artifact seal and validation logic before PR creation | Probe workflow | Partial or malformed evidence can authorize PRs |
-| Safe-list entries must be valid | Probe-time validation of expiry and machine-checkable condition | Registry owner | Safe-list becomes a silent bypass path |
-| Registry changes must be controlled | CODEOWNERS or equivalent required review on registry files | Registry owner | Seam routing can be weakened silently |
-| Replay-set changes must be controlled | CODEOWNERS or equivalent required review on replay-set files | Replay-set owner | Inference regression checks can be weakened silently |
-| Probe workflow must preserve fail-closed behavior | Workflow self-test against known-good and known-bad fixtures | Probe owner | Workflow can emit trusted but invalid PASS artifacts |
-| Develop lane must stay advisory-only | Merge-blocking status until release-lane confirmation | Probe workflow plus branch protection | Develop PRs become accidental merge path |
-| External review must be substantive | Required review artifact content checks plus required status | Review owner | Token review file satisfies gate |
-| Security exception must be constrained | Mechanical eligibility check plus explicit audit record | Security-bypass owner | Soak is skipped by operator preference |
-| Artifact durability must be real | Designated durable backing store and retention policy | Probe owner | Audit trail disappears after incident window |
-| Dependabot must not bypass NT pin policy | Dependabot ignore rules or blocking status on NT pin changes | Repo admin / dependency owner | Autonomous NT bump merges outside probe |
-| Branch protection must stay aligned with design | Controlled review of branch-protection-affecting config and periodic audit | Repo admin | All other controls become optional in practice |
+| NT pin changes only through probe path | Branch protection plus a required status check on any PR that changes NT pins | Any NT-pin PR must prove it came through the probe path | Direct pin-bump PRs bypass seam checks |
+| Probe artifact must be valid | Artifact seal and validation logic before PR creation | Workflow verifies its own evidence output before surfacing it | Partial or malformed evidence can authorize PRs |
+| Safe-list entries must be valid | Probe-time validation of expiry and machine-checkable condition | Self-review is acceptable only because the probe re-validates the entry every run | Safe-list becomes a silent bypass path |
+| Registry changes must be controlled | Control-plane protection plus registry validation checks | Safety comes from validation, not peer review theater | Seam routing can be weakened silently |
+| Replay-set changes must be controlled | Control-plane protection plus replay validation checks | Safety comes from replay behavior, not owner names | Inference regression checks can be weakened silently |
+| Probe workflow must preserve fail-closed behavior | Workflow self-test against known-good and known-bad fixtures | The workflow must prove it still fails closed | Workflow can emit trusted but invalid PASS artifacts |
+| Develop lane must stay advisory-only | No mergeable PR output from develop lane | Develop only produces report/issue output | Develop becomes accidental merge path |
+| External review must be substantive | Required external-review artifact schema plus required status | The operator must attach structured second-opinion evidence and recorded disposition | Token review file satisfies gate |
+| Security exception must be constrained | Mechanical eligibility check plus explicit audit record | No second internal approver exists; only hard predicates and auditability remain | Soak is skipped by operator preference |
+| Artifact durability must be real | Designated durable backing store and retention policy | The audit trail survives operator memory and PR churn | Audit trail disappears after incident window |
+| Any automation must not bypass NT pin policy | PR path blocking on NT-pin changes regardless of actor | Human and bot PRs are treated the same | Autonomous NT bump merges outside probe |
+| Branch protection must stay aligned with design | Drift detection against expected protection state | Admin power is a residual risk, so drift must be surfaced quickly | All other controls become optional in practice |
 
 The matrix above is authoritative for enforcement intent. Future edits to the spec must update the matrix when adding or changing controls.
 
@@ -246,8 +235,8 @@ Tier C: Supporting infrastructure
 - non-gating CI workflow changes
 - documentation of the process
 
-Tier A controls should prefer technical enforcement plus owned review.
-Tier B controls require owned review and periodic audit.
+Tier A controls should prefer technical enforcement over governance ceremony.
+Tier B controls require technical checks plus periodic audit.
 Tier C controls can use normal repo review.
 
 ### Non-Probe Mutation Paths
@@ -322,9 +311,9 @@ Additional safe-list rules:
 
 Heightened review for exact-path entries inside shared NT crates must be concrete:
 
-- it must require stricter review than an ordinary registry edit
+- it must require stricter validation than an ordinary registry edit
 - it must include a written dismissal of the relevant seam overlap candidates
-- it must not be satisfiable by the entry author alone
+- in solo mode, it must rely on machine-checkable non-overlap conditions plus external-review artifact coverage, not on fake second-human approval
 
 Fail-closed rules for matching:
 
@@ -360,16 +349,16 @@ Purpose:
 
 - detect Bolt/NT incompatibility early
 - keep upgrade deltas small
-- surface draft PRs quickly when evidence is strong enough
+- surface early warnings quickly when evidence is strong enough
 
 Behavior:
 
 - scheduled probe against upstream NT `develop`
 - resolve `develop` to an immutable full SHA before any other step
-- if all required evidence passes, automation may open a draft PR
-- if evidence is incomplete or ambiguous, the probe reports failure and opens no PR
+- if all required evidence passes, automation may publish a report or issue, but not a mergeable PR
+- if evidence is incomplete or ambiguous, the probe reports failure
 
-The `develop` lane is advisory-only. A `develop`-lane draft PR must remain mechanically non-mergeable until the tagged-release lane confirms the same SHA or the same effective NT change set under the stricter merge-candidate path.
+The `develop` lane is advisory-only. It exists to reduce surprise, not to create a merge path.
 
 ### Lane 2: tagged releases
 
@@ -396,7 +385,7 @@ Security exception path:
 - the security designation must be evidenced mechanically, not asserted informally
 - the security designation should reference a concrete upstream advisory identifier, CVE, or equivalent durable security record
 - the justification and evidence for invoking the security path must be recorded in the probe artifact
-- bypass authority must be explicit and separate from ordinary registry editing authority
+- bypass relies on mechanical predicates and auditability, not on pretend internal role separation
 
 ## Lane Precedence
 
@@ -407,15 +396,13 @@ The two lanes do not have equal merge authority.
 
 If the two lanes disagree, the tagged-release lane result takes precedence for merge decisions.
 
-If a tagged-release probe supersedes an open `develop`-lane draft PR, the `develop`-lane PR must be marked superseded or closed automatically.
-
-If a `develop`-lane target includes a tagged-release SHA that is still inside its soak window, the `develop`-lane PR must inherit that soak restriction for mergeability.
+If a tagged-release probe supersedes a prior `develop`-lane report, the prior report should be marked superseded or stale.
 
 ## Terminal Action
 
 The maximum automated action is:
 
-- open a **draft PR**
+- open a **tagged-release draft PR**
 
 The system must never:
 
@@ -475,7 +462,7 @@ The initial conservative seam set should include at least:
    - Risk: timer, scheduling, clock, or event-ordering drift breaking Bolt logic that depends on thresholds, quiet periods, or sequencing
    - Likely evidence: timer- and ordering-sensitive canaries for reference and runtime flows
 
-The seam list in this spec is illustrative. The real registry used by the probe must replace "likely evidence" with contractual required canary identifiers or paths before automation is allowed to open draft PRs.
+The seam list in this spec is illustrative. The real registry used by the probe must replace "likely evidence" with contractual required canary identifiers or paths before automation is allowed to open merge-candidate draft PRs.
 
 ### Initial Registry Clarification
 
@@ -514,16 +501,15 @@ Fail-closed rule:
 
 Registry ownership must also be explicit:
 
-- the seam registry must have a designated owner group
-- that owner group must be mechanically required for registry changes
-- the mechanism must be concrete, for example CODEOWNERS plus required review, not a policy note
-- until such ownership exists, the probe must not be allowed to open draft PRs automatically
+- the seam registry must have explicit control-plane ownership
+- registry mutations must be protected by concrete review or validation mechanisms
+- in solo mode, the real control is registry validation plus control-plane protection, not peer-review theater
 
-The replay set, safe list, and external-review approver set must also have equally concrete ownership and review mechanisms.
+The replay set, safe list, and external-review configuration must also have equally concrete control-plane protection.
 
 ## Evidence Contract
 
-A probe is only allowed to open a draft PR if **all** of the following are true:
+A tagged-release probe is only allowed to open a merge-candidate draft PR if **all** of the following are true:
 
 1. The upstream lane target is resolved to an immutable full SHA.
 2. The NT pointer is updated in a fresh isolated probe branch or worktree.
@@ -598,7 +584,7 @@ It must be treated as code under test:
 
 ## Draft PR Rules
 
-If all required evidence passes, automation may open a draft PR that includes:
+If all required evidence passes for the merge-candidate lane, automation may open a tagged-release draft PR that includes:
 
 - the exact resolved NT SHA
 - the new NT revision
@@ -612,7 +598,7 @@ If all required evidence passes, automation may open a draft PR that includes:
 - a link or attachment to the atomic evidence artifact
 - the status of the external adversarial review gate
 
-Draft PR creation must be strict:
+Tagged-release draft PR creation must be strict:
 
 - draft PRs must only be opened for fully passing probe runs
 - failing or ambiguous runs must produce reports, not PRs
@@ -645,7 +631,7 @@ At minimum it must contain:
 
 The artifact must be stored durably outside the PR itself, with retention long enough to support postmortem and audit use.
 
-No draft PR may be created without this artifact.
+No merge-candidate draft PR may be created without this artifact.
 
 Partial runs, interrupted runs, or stale artifacts must never be treated as evidence.
 
@@ -678,11 +664,8 @@ Required design rule:
 
 - every probe PR must carry a required status check named for external adversarial review
 - that status must start failing or pending
-- only designated reviewers may transition it to passing after review is complete
-- designated reviewers must be defined concretely, not implicitly
-- designated reviewers must be a named owner group or explicitly configured reviewer set
-- the PR author or probe initiator must not be allowed to satisfy their own adversarial-review gate
-- for solo-operator workflows, the passing transition must require an external-review artifact, not just a click
+- in solo mode, the passing transition must require a valid external-review artifact, not a second internal human
+- in small-team mode, a designated reviewer set may be used as an additional strengthening layer
 
 The external-review artifact must be concrete and durable:
 
@@ -691,6 +674,8 @@ The external-review artifact must be concrete and durable:
 - it must record the review result in a durable location outside ephemeral chat history
 - it must contain substantive review content, not a token acknowledgment
 - it must record either findings or explicit no-finding statements at seam granularity
+
+In solo mode, this gate guarantees structured second-opinion review, not independent human review. The operator must record a seam-by-seam disposition of the external findings before the gate may pass.
 
 Until that status is passing, the PR must not be mergeable.
 
@@ -722,9 +707,10 @@ Recommended high-level flow:
 11. Run all required seam canaries.
 12. Produce and store the atomic evidence artifact.
 13. If any requirement fails, emit a failure report and stop.
-14. If all requirements pass, open or update the single draft PR for that lane.
-15. Leave the external adversarial review status pending.
-16. Hand off for human review and external adversarial review.
+14. If the lane is `develop`, publish or update the advisory report only.
+15. If the lane is tagged-release and all requirements pass, open or update the single merge-candidate draft PR for that lane.
+16. Leave the external adversarial review status pending.
+17. Hand off for human review and external adversarial review.
 
 The resolution mechanism must be single-source and reproducible:
 
@@ -791,12 +777,14 @@ The registry becoming more conservative over time is a feature, not a bug.
 
 The maintenance model must also include:
 
-- a designated owner for registry changes
+- a designated control owner for registry changes
 - a bounded response expectation for registry-gap failures
 - a bounded response expectation for ambiguity resolution
 - periodic replay or audit of inference and registry assumptions
 
-Ambiguity may not block indefinitely. If the same ambiguity blocks repeated probe runs beyond the configured threshold, the owner group must resolve it by one of:
+In solo mode, the designated control owner is the operator. That does not create independence; it creates accountability.
+
+Ambiguity may not block indefinitely. If the same ambiguity blocks repeated probe runs beyond the configured threshold, the designated control owner must resolve it by one of:
 
 - adding or fixing a seam mapping
 - adding a justified safe-list entry
@@ -835,6 +823,6 @@ This design is successful when:
 
 1. NT drift is probed regularly in both `develop` and tagged-release lanes.
 2. No bump can auto-land.
-3. Draft PRs open only when Bolt-owned seam evidence is complete and recorded in an atomic evidence artifact.
+3. Merge-candidate draft PRs open only when Bolt-owned seam evidence is complete and recorded in an atomic evidence artifact.
 4. Ambiguous or unmapped changes fail closed rather than slipping through.
-5. Human review and external adversarial review are enforced mechanically before merge.
+5. Structured second-opinion review and the required mechanical gates are enforced before merge.

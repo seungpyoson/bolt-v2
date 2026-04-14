@@ -702,6 +702,22 @@ nt-pointer-probe-print-nt-crate-diff-pattern: check-workspace require-rust-verif
 nt-pointer-probe-check-nt-mutation base_ref head_ref: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- check-nt-mutation --repo-root "{{repo_root}}" --base-ref "{{base_ref}}" --head-ref "{{head_ref}}"
 
+nt-pointer-probe-dry-run lane source_ref artifact_out upstream_repo_root='': check-workspace require-rust-verification-owner
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(
+      run --quiet --bin nt_pointer_probe --
+      dry-run
+      --repo-root "{{repo_root}}"
+      --lane "{{lane}}"
+      --source-ref "{{source_ref}}"
+      --artifact-out "{{artifact_out}}"
+    )
+    if [ -n "{{upstream_repo_root}}" ]; then
+      args+=(--upstream-repo-root "{{upstream_repo_root}}")
+    fi
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- "${args[@]}"
+
 worktree branch:
     #!/usr/bin/env bash
     set -euo pipefail

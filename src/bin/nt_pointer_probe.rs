@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
-use bolt_v2::nt_pointer_probe::control::{
-    ExpectedBranchProtection, LoadedControlPlane, compare_branch_governance_responses,
-    compare_branch_protection_response,
+use anyhow::{Result, ensure};
+use bolt_v2::nt_pointer_probe::{
+    control::{
+        ExpectedBranchProtection, LoadedControlPlane, compare_branch_governance_responses,
+        compare_branch_protection_response,
+    },
+    engine::{DryRunRequest, ProbeLane, run_dry_run},
 };
 use clap::{Parser, Subcommand};
 
@@ -47,6 +50,18 @@ enum Command {
         base_ref: String,
         #[arg(long)]
         head_ref: String,
+    },
+    DryRun {
+        #[arg(long)]
+        repo_root: PathBuf,
+        #[arg(long, value_enum)]
+        lane: ProbeLane,
+        #[arg(long)]
+        source_ref: String,
+        #[arg(long)]
+        artifact_out: PathBuf,
+        #[arg(long)]
+        upstream_repo_root: Option<PathBuf>,
     },
 }
 
@@ -112,6 +127,36 @@ fn main() -> Result<()> {
             println!(
                 "no unmanaged NT mutations detected between {} and {}",
                 base_ref, head_ref
+            );
+        }
+        Command::DryRun {
+            repo_root,
+            lane,
+            source_ref,
+            artifact_out,
+            upstream_repo_root,
+        } => {
+            let artifact = run_dry_run(DryRunRequest {
+                repo_root,
+                lane,
+                source_ref,
+                artifact_out: artifact_out.clone(),
+                upstream_repo_root,
+            })?;
+            println!(
+                "dry-run {} for {} -> {} ({})",
+                artifact.result,
+                artifact.requested_ref,
+                artifact
+                    .resolved_nt_sha
+                    .as_deref()
+                    .unwrap_or("<unresolved>"),
+                artifact_out.display()
+            );
+            ensure!(
+                artifact.result == "pass",
+                "dry-run failed with {:?}",
+                artifact.failures
             );
         }
     }

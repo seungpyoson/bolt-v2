@@ -1677,8 +1677,8 @@ fn git_show_text_or_empty(repo_root: &Path, git_ref: &str, path: &str) -> Result
         String::from_utf8_lossy(&output.stderr)
     );
 
-    Ok(String::from_utf8(output.stdout)
-        .with_context(|| format!("{} at {} is not valid UTF-8", path, git_ref))?)
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("{} at {} is not valid UTF-8", path, git_ref))
 }
 
 fn normalize_relative(path: &str) -> Result<String> {
@@ -1894,13 +1894,12 @@ fn extract_just_recipe_body(contents: &str, recipe_name: &str) -> Result<String>
     let lines = contents.lines().collect::<Vec<_>>();
     let mut start = None;
     for (index, line) in lines.iter().enumerate() {
-        if let Some(rest) = line.strip_prefix(recipe_name) {
-            if rest.starts_with(':') || rest.starts_with(' ') {
-                if rest.contains(':') {
-                    start = Some(index + 1);
-                    break;
-                }
-            }
+        if let Some(rest) = line.strip_prefix(recipe_name)
+            && (rest.starts_with(':') || rest.starts_with(' '))
+            && rest.contains(':')
+        {
+            start = Some(index + 1);
+            break;
         }
         if line.starts_with(&format!("{}:", recipe_name)) {
             start = Some(index + 1);

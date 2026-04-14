@@ -183,7 +183,7 @@ Every control in this design must map to an enforcement mechanism. If a rule has
 | External review must be substantive | Required external-review artifact schema plus required status | The operator must attach structured second-opinion evidence and recorded disposition | Token review file satisfies gate |
 | Security exception must be constrained | Mechanical eligibility check plus explicit audit record | No second internal approver exists; only hard predicates and auditability remain | Soak is skipped by operator preference |
 | Artifact durability must be real | Designated durable backing store and retention policy | The audit trail survives operator memory and PR churn | Audit trail disappears after incident window |
-| Any automation must not bypass NT pin policy | PR path blocking on NT-pin changes regardless of actor | Human and bot PRs are treated the same | Autonomous NT bump merges outside probe |
+| Any automation must not bypass NT pin policy | Branch protection requires the probe-passed status on any PR touching NT pin lines, plus explicit Dependabot exclusion for NT pins | Human and bot PRs are treated the same | Autonomous NT bump merges outside probe |
 | Branch protection must stay aligned with design | A dedicated branch-protection drift check compares current settings to an expected-state artifact on every probe run and on a periodic cadence | Admin power is a residual risk, so drift must be surfaced quickly | All other controls become optional in practice |
 
 The matrix above is authoritative for enforcement intent. Future edits to the spec must update the matrix when adding or changing controls.
@@ -202,7 +202,6 @@ These assets must be treated as first-class controlled artifacts:
 - probe workflow files
 - workflow or job definitions that emit probe artifacts or status checks
 - branch-protection or merge-rule configuration
-- reviewer-set configuration
 - security-bypass authority configuration
 - artifact-store configuration
 - Dependabot configuration
@@ -225,7 +224,6 @@ Tier A: Highest risk
 
 Tier B: Medium risk
 
-- reviewer-set configuration
 - security-bypass authority configuration
 - artifact-store configuration
 - CI runner / probe-environment identity
@@ -524,9 +522,8 @@ A tagged-release probe is only allowed to open a merge-candidate draft PR if **a
 10. The Bolt-side `nautilus_*` usage inventory for the probe run is recorded in the evidence artifact.
 11. The upstream diff identity for the probe run is recorded in the evidence artifact.
 12. A single atomic evidence artifact is produced for the run and stored durably.
-13. The external adversarial review gate is satisfied only by the required reviewer workflow and evidence artifact.
-14. No touched seam is left without a named canary.
-15. No ambiguous upstream change remains unresolved.
+13. No touched seam is left without a named canary.
+14. No ambiguous upstream change remains unresolved.
 
 If any item above fails, the probe must fail closed.
 
@@ -546,7 +543,6 @@ The workflow must fail closed in all of these cases:
 10. A seam path-prefix is stale or non-matching.
 11. Upstream diff classification is ambiguous.
 12. The atomic evidence artifact is missing or incomplete.
-13. The external adversarial review gate has not been satisfied mechanically.
 
 Fail closed means:
 
@@ -666,7 +662,6 @@ Required design rule:
 - every probe PR must carry a required status check named for external adversarial review
 - that status must start failing or pending
 - in solo mode, the passing transition must require a valid external-review artifact, not a second internal human
-- in small-team mode, a designated reviewer set may be used as an additional strengthening layer
 
 The external-review artifact must be concrete and durable:
 

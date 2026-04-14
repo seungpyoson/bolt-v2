@@ -72,13 +72,57 @@ The NT pointer probe must use two layers of classification:
 1. **Authoritative seam registry**
 2. **Advisory upstream diff inference**
 
-The seam registry is the true gate. Advisory inference can only make the system stricter. It must never reduce required evidence.
+The seam registry is the true gate. Advisory inference can only make the system stricter. It must never reduce required evidence, classify an unmapped change as safe, or suppress a registry-required canary.
 
 This hierarchy is required because commit messages and file paths are too weak to detect all Bolt/NT semantic overlap. A false negative is the exact failure we are trying to avoid.
 
+## Seam Matching Function
+
+The design must define mechanically what it means for an NT bump to touch a seam.
+
+For every changed upstream NT path in the resolved diff, the probe must classify that path into exactly one of these buckets:
+
+1. one or more registered seams
+2. an explicit safe list entry
+3. ambiguous
+
+That classification must come from the seam registry itself, not from advisory inference.
+
+The seam registry therefore must include:
+
+- upstream NT path-prefix mappings for each seam
+- an explicit safe list for paths proven non-overlapping with Bolt semantics
+
+The safe list must stay narrow. It is only for clearly non-overlapping areas such as:
+
+- upstream docs
+- examples
+- tests
+- unused adapters Bolt does not compile against
+
+Shared NT crates and shared vocabulary paths such as `nautilus-model`, `nautilus-common`, `nautilus-core`, `nautilus-live`, and `nautilus-network` must not be safe-listed broadly.
+
+Fail-closed rules for matching:
+
+- any changed NT path not matched to a seam or safe list is ambiguous
+- any ambiguous path fails the probe
+- advisory inference may add more seams to run or escalate to ambiguous
+- advisory inference may never move a path from seam or ambiguous to safe
+
+## Baseline Preconditions
+
+The following are baseline preconditions, not seams:
+
+- pinned NT revision update
+- lockfile refresh
+- full CI-equivalent mechanical suite
+- build verification and repo-owned smoke checks
+
+These are required for every probe run regardless of touched seams.
+
 ## Probe Lanes
 
-The system should maintain two separate NT probe lanes.
+The system must maintain two separate NT probe lanes.
 
 ### Lane 1: `develop`
 
@@ -91,6 +135,7 @@ Purpose:
 Behavior:
 
 - scheduled probe against upstream NT `develop`
+- resolve `develop` to an immutable full SHA before any other step
 - if all required evidence passes, automation may open a draft PR
 - if evidence is incomplete or ambiguous, the probe reports failure and opens no PR
 
@@ -104,8 +149,22 @@ Purpose:
 Behavior:
 
 - scheduled or manually-triggered probe against the newest NT tagged release
+- resolve the release tag to an immutable full SHA before any other step
+- record both the tag name and the resolved SHA in probe output
+- require a tag soak window before draft-PR creation; the default soak window should be 7 days unless the registry owner explicitly tightens it further
 - same gating model as `develop`
 - also draft-PR only, never auto-merge
+
+## Lane Precedence
+
+The two lanes do not have equal merge authority.
+
+- the `develop` lane is an early-warning lane
+- the tagged-release lane is the merge-candidate lane
+
+If the two lanes disagree, the tagged-release lane result takes precedence for merge decisions.
+
+If a tagged-release probe supersedes an open `develop`-lane draft PR, the `develop`-lane PR must be marked superseded or closed automatically.
 
 ## Terminal Action
 
@@ -126,8 +185,10 @@ Bolt must maintain a hand-curated registry of semantic overlap seams. Each seam 
 
 - seam name
 - why it is semantically risky
-- upstream NT paths or concepts likely to touch it
+- Bolt-owned NT usage it owns
+- upstream NT path-prefix mappings that force this seam
 - Bolt-owned canary tests or probes required for proof
+- canary coverage class for each required canary
 - escalation behavior if an NT bump appears to touch the seam ambiguously
 
 The initial conservative seam set should include at least:
@@ -152,9 +213,21 @@ The initial conservative seam set should include at least:
    - Risk: event shape drift, message semantics, persistence contract drift, lake conversion assumptions
    - Likely evidence: normalized sink tests, lake batch tests, persistence smoke checks
 
-6. **Build and packaging surface**
-   - Risk: lockfile churn, transitive crate conflicts, artifact generation drift
-   - Likely evidence: build verification, CLI help and render-live-config smoke path, full CI build
+6. **Network / TLS / reconnect transport**
+   - Risk: TLS, websocket, retry, reconnect, DNS, and transport-semantic drift in live network paths
+   - Likely evidence: controlled transport probes and reconnect-focused integration canaries
+
+7. **Toolchain / MSRV / platform build contract**
+   - Risk: upstream MSRV or toolchain drift breaking Bolt’s pinned toolchain or deploy/build contract
+   - Likely evidence: build in the repo-pinned toolchain and deploy-equivalent environment
+
+8. **NT shared type contract / cross-crate vocabulary**
+   - Risk: shared `nautilus-model` / `nautilus-common` / `nautilus-core` type or schema drift breaking multiple Bolt seams at once
+   - Likely evidence: compile-time API guards, serialization or schema compatibility checks, cross-version persistence readback
+
+9. **Time / ordering / timer semantics**
+   - Risk: timer, scheduling, clock, or event-ordering drift breaking Bolt logic that depends on thresholds, quiet periods, or sequencing
+   - Likely evidence: timer- and ordering-sensitive canaries for reference and runtime flows
 
 ### Initial Registry Clarification
 
@@ -167,16 +240,46 @@ Current evidence in Bolt suggests:
 
 Therefore this concern should be covered under the broader “subscription and custom-data semantics” seam rather than treated as a separate unresolved blocker.
 
+The seam entry must still define the concrete behavior Bolt relies on and the canary that proves it. This clarification is not, by itself, sufficient evidence.
+
+## Registry Construction And Completeness
+
+Before this probe can be trusted, the project must perform a one-time registry construction audit.
+
+That audit must:
+
+1. enumerate every direct NT dependency pinned in `Cargo.toml`
+2. enumerate every Bolt source use of `nautilus_*`
+3. map each dependency and use site to a seam owner
+4. fail if any dependency or use site has no seam owner
+
+After activation, every probe run must re-check registry completeness against the current Bolt codebase.
+
+Fail-closed rule:
+
+- if Bolt currently uses any `nautilus_*` symbol, crate, or path with no seam owner, the probe fails as a registry-gap failure
+
+Registry ownership must also be explicit:
+
+- the seam registry must have a designated owner group
+- that owner group must be mechanically required for registry changes
+- until such ownership exists, the probe must not be allowed to open draft PRs automatically
+
 ## Evidence Contract
 
 A probe is only allowed to open a draft PR if **all** of the following are true:
 
-1. The NT pointer is updated in an isolated probe branch.
-2. The lockfile refresh succeeds.
-3. The full repo CI-equivalent suite passes.
-4. Every seam whose proof is required by the registry has passing evidence.
-5. No touched seam is left without a named canary.
-6. No ambiguous upstream change remains unclassified without escalation.
+1. The upstream lane target is resolved to an immutable full SHA.
+2. The NT pointer is updated in a fresh isolated probe branch or worktree.
+3. The lockfile refresh succeeds and the resulting lockfile is tied to that exact NT SHA.
+4. The full repo CI-equivalent suite passes in the pinned toolchain and required probe environment.
+5. Every changed upstream NT path is classified as seam-owned, safe-listed, or ambiguous.
+6. Every required seam has passing evidence.
+7. Every required canary exists, is executed, and produces assertion results.
+8. Every required canary has an explicit coverage class recorded in the registry and in the probe evidence.
+9. No touched seam is left without a named canary.
+10. No ambiguous upstream change remains unresolved.
+11. A single atomic evidence artifact is produced for the run.
 
 If any item above fails, the probe must fail closed.
 
@@ -184,20 +287,23 @@ If any item above fails, the probe must fail closed.
 
 The workflow must fail closed in all of these cases:
 
-1. Upstream NT revision cannot be resolved cleanly.
-2. Lockfile refresh fails.
+1. Upstream NT revision cannot be resolved cleanly to an immutable SHA.
+2. Lockfile refresh fails or is inconsistent with the resolved NT SHA.
 3. Build or test suite fails.
-4. A required seam canary is missing.
-5. An upstream change appears to touch a sensitive seam but no matching proof is defined.
-6. Upstream diff inference is ambiguous.
-7. The seam registry has no entry for a newly-touched semantic overlap area.
-8. External adversarial review is required by policy but has not yet happened.
+4. A changed upstream NT path cannot be classified.
+5. A required seam canary is missing.
+6. A required canary is found but does not actually execute.
+7. An upstream change touches a seam but no matching proof is defined.
+8. Bolt currently uses `nautilus_*` code with no seam owner.
+9. Upstream diff classification is ambiguous.
+10. The atomic evidence artifact is missing or incomplete.
+11. The external adversarial review gate has not been satisfied mechanically.
 
 Fail closed means:
 
 - no automatic merge
 - no non-draft PR
-- optionally no draft PR at all if the ambiguity is severe enough
+- no draft PR for failing or ambiguous runs
 - clear report of why the probe stopped
 
 ## Upstream Diff Inference
@@ -215,23 +321,75 @@ Forbidden uses:
 
 - skipping a registry-required seam
 - declaring a bump safe when named seam proof is absent
+- classifying an unmapped upstream path as safe
 - overriding human review requirements
 
 Inference is advisory only.
+
+It must be treated as code under test:
+
+- a historical replay set of known-dangerous upstream changes must be re-run on a defined cadence against the current inference rules
+- if inference stops escalating known-dangerous patterns, the probe design has regressed
 
 ## Draft PR Rules
 
 If all required evidence passes, automation may open a draft PR that includes:
 
+- the exact resolved NT SHA
 - the new NT revision
 - the previous NT revision
 - lane name (`develop` or tagged release)
+- seam registry version or hash
+- safe-list version or hash
 - a summary of touched seams
-- a summary of which canaries passed
+- a summary of which canaries passed and their coverage classes
 - any advisory flags from upstream diff inference
-- an explicit note that external adversarial review is still required before implementation approval or merge
+- a link or attachment to the atomic evidence artifact
+- the status of the external adversarial review gate
 
-If evidence is incomplete, automation should prefer a machine-readable report over a PR. It should not create noisy draft PRs for obviously failing or ambiguous bumps unless the team explicitly chooses that behavior later.
+Draft PR creation must be strict:
+
+- draft PRs must only be opened for fully passing probe runs
+- failing or ambiguous runs must produce reports, not PRs
+- there must be at most one open probe PR per lane
+- a newer probe run for the same lane must supersede the older PR automatically
+- a stale probe PR must close automatically after the configured staleness window
+
+## Probe Artifact
+
+Each successful probe run must emit one atomic machine-readable evidence artifact.
+
+At minimum it must contain:
+
+- lane name
+- resolved NT SHA
+- source ref name
+- previous NT SHA
+- registry version or hash
+- safe-list version or hash
+- canary list
+- canary coverage classes
+- canary execution results
+- toolchain and environment identifiers
+- lockfile digest
+- run timestamps
+- supersedes or superseded-by metadata when applicable
+
+No draft PR may be created without this artifact.
+
+Partial runs, interrupted runs, or stale artifacts must never be treated as evidence.
+
+## Probe Lifecycle
+
+Probe runs must be reproducible and isolated.
+
+Rules:
+
+- every run starts from a fresh probe branch or worktree
+- partial artifacts from a previous run must not be reused
+- interrupted runs are invalid unless they produced a complete evidence artifact
+- probe branches are ephemeral and owned by the workflow
+- a probe PR is stale if its target SHA, registry version, or lane state is no longer current
 
 ## External Adversarial Review
 
@@ -239,29 +397,51 @@ External adversarial review is explicitly part of the decision flow, but it is o
 
 Responsibilities:
 
-- the automated system prepares the design summary and evidence
+- the automated system prepares the evidence artifact and reviewer summary
 - the human operator runs external model adversarial reviews
 - the automated system does **not** perform those reviews itself
 
-This design therefore requires a handoff point where the probe output is stable enough for external review, but before any merge decision.
+This review must be a real mechanical gate, not a note in the PR body.
+
+Required design rule:
+
+- every probe PR must carry a required status check named for external adversarial review
+- that status must start failing or pending
+- only designated reviewers may transition it to passing after review is complete
+
+Until that status is passing, the PR must not be mergeable.
+
+## Run Reporting
+
+Every probe run, whether pass or fail, must leave an auditable status record.
+
+At minimum:
+
+- each run updates a durable lane status surface
+- missing probe activity beyond the configured alert threshold must raise an alert
+- silent decay of the probe infrastructure is itself a failure mode
 
 ## Decision Flow
 
 Recommended high-level flow:
 
-1. Resolve upstream NT target for the lane.
-2. Create isolated probe branch/worktree.
-3. Update pinned NT revision.
-4. Refresh lockfile.
-5. Run compile/build/test baseline.
-6. Determine required seams from the authoritative registry.
-7. Use upstream diff inference to add extra scrutiny if needed.
-8. Run required seam canaries.
-9. If any requirement is missing or ambiguous, fail closed.
-10. If all evidence passes, open a draft PR with evidence summary.
-11. Hand off for human review and external adversarial review.
+1. Resolve the lane target to an immutable full SHA.
+2. Create a fresh isolated probe branch or worktree.
+3. Update the pinned NT revision.
+4. Refresh the lockfile.
+5. Run the mechanical baseline in the required toolchain and environment.
+6. Classify every changed upstream NT path using registry matching and safe-list rules.
+7. Re-check registry completeness against current Bolt `nautilus_*` usage.
+8. Determine required seams from the registry.
+9. Use advisory inference only to add seams or escalate ambiguity.
+10. Run all required seam canaries.
+11. Produce the atomic evidence artifact.
+12. If any requirement fails, emit a failure report and stop.
+13. If all requirements pass, open or update the single draft PR for that lane.
+14. Leave the external adversarial review status pending.
+15. Hand off for human review and external adversarial review.
 
-## Canary Philosophy
+## Canary Requirements
 
 Canaries must be selected to prove Bolt-owned semantics, not merely NT crate compilation.
 
@@ -279,6 +459,15 @@ Bad canaries:
 - heuristics with no direct relation to the touched seam
 - pure upstream metadata scans without Bolt execution evidence
 
+Each canary entry must define:
+
+- the seam it proves
+- the coverage class it provides
+- the path it executes
+- the assertion surface it covers
+
+A seam is not considered proven by a compile-only check unless its declared coverage class is explicitly compile-time API compatibility.
+
 ## Maintenance Model
 
 The seam registry is expected to evolve. That is acceptable and required.
@@ -290,6 +479,12 @@ Whenever an NT bump exposes a previously-unmapped Bolt/NT overlap seam, the corr
 3. keep the workflow fail-closed until the seam is represented explicitly
 
 The registry becoming more conservative over time is a feature, not a bug.
+
+The maintenance model must also include:
+
+- a designated owner for registry changes
+- a bounded response expectation for registry-gap failures
+- periodic replay or audit of inference and registry assumptions
 
 ## Risks
 
@@ -303,13 +498,19 @@ This is acceptable. The user requirement is to avoid auto-landing bad bumps even
 
 If the seam registry is not maintained, it will stop reflecting real Bolt/NT overlap.
 
-This is why the workflow must fail closed on unmapped ambiguity rather than silently trusting old registry entries.
+This is why the workflow must fail closed on unmapped ambiguity and unmapped Bolt-side NT usage rather than silently trusting old registry entries.
 
 ### Canary Coverage Risk
 
 A named canary may pass without actually proving the seam strongly enough.
 
-That is why canaries should be treated as explicit contracts and reviewed as first-class design artifacts, not incidental tests.
+That is why canaries should be treated as explicit contracts with declared coverage classes and reviewed as first-class design artifacts, not incidental tests.
+
+### Residual Runtime Risk
+
+Some regressions will only manifest under real network conditions, real venue behavior, or long-lived runtime conditions.
+
+This design reduces that risk but does not eliminate it.
 
 ## Success Criteria
 
@@ -317,7 +518,6 @@ This design is successful when:
 
 1. NT drift is probed regularly in both `develop` and tagged-release lanes.
 2. No bump can auto-land.
-3. Draft PRs open only when Bolt-owned seam evidence is complete.
-4. Ambiguous bumps fail closed rather than slipping through.
-5. Human review and external adversarial review remain explicit mandatory steps before merge.
-
+3. Draft PRs open only when Bolt-owned seam evidence is complete and recorded in an atomic evidence artifact.
+4. Ambiguous or unmapped changes fail closed rather than slipping through.
+5. Human review and external adversarial review are enforced mechanically before merge.

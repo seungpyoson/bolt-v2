@@ -65,6 +65,73 @@ The repository already has strong mechanical checks:
 
 This design builds on that baseline. It does not replace it.
 
+## Control Model
+
+This design separates **scrutiny** from **authority**.
+
+- external review systems such as Greptile and Gemini Code Assist provide adversarial scrutiny
+- repository-enforced controls provide authority
+
+External review may produce findings, concerns, or approval artifacts. It must not, by itself, make an NT bump mergeable.
+
+### Trusted Inputs
+
+The probe may trust only these inputs for merge-gating decisions:
+
+- the pinned NT SHA resolved by the probe
+- the seam registry and safe-list under owned review control
+- the replay set under owned review control
+- the probe evidence artifact
+- the external-review artifact
+- repository branch-protection and required-status configuration
+
+### Allowed Mutation Channels
+
+The following changes must be treated as controlled mutations:
+
+- `Cargo.toml` or lockfile changes affecting NT-pinned dependencies
+- seam registry changes
+- safe-list changes
+- replay-set changes
+- workflow or status-check changes that affect probe enforcement
+
+These mutation channels must be owned and mechanically review-gated. No uncontrolled automation or convenience tool should be able to modify them silently.
+
+### Required Gates
+
+An NT bump is merge-eligible only when all of the following are true:
+
+- the probe run passed its full evidence contract
+- the evidence artifact is valid and durable
+- the external adversarial review artifact exists and satisfies the required review gate
+- branch protection requires the relevant status checks and owners
+
+### Prohibited Bypasses
+
+The system must reject or fail closed on these bypass attempts:
+
+- dependency automation changing NT pins outside the probe path
+- manual PRs changing NT pins without a matching probe artifact
+- registry, safe-list, or replay-set edits without owned review
+- workflow or branch-protection edits that weaken required NT-bump gates
+
+### External Review Role
+
+Greptile and Gemini Code Assist are external scrutiny inputs.
+
+They may:
+
+- identify design flaws
+- challenge seam mappings
+- challenge canary adequacy
+- provide review artifacts used by the external-review gate
+
+They may not:
+
+- waive the evidence contract
+- replace required status checks
+- authorize merge by opinion alone
+
 ## Decision Model
 
 The NT pointer probe must use two layers of classification:

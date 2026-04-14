@@ -1,0 +1,25 @@
+schema_version = 1
+
+[[entries]]
+path = "docs/"
+match = "prefix"
+non_overlap_proof = "Documentation paths are not compiled into Bolt or the NT Rust crates."
+approved_by = "seungpyoson"
+approved_at = "2026-04-14"
+revalidate_after = "2026-05-14"
+
+[entries.condition]
+kind = "upstream-path-kind"
+value = "docs"
+
+[[entries]]
+path = "examples/"
+match = "prefix"
+non_overlap_proof = "Example paths are not compiled into Bolt and do not define shared runtime semantics."
+approved_by = "seungpyoson"
+approved_at = "2026-04-14"
+revalidate_after = "2026-05-14"
+
+[entries.condition]
+kind = "upstream-path-kind"
+value = "examples"

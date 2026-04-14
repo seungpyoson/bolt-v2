@@ -7,6 +7,7 @@ nextest_version := "0.9.132"
 deny_version := "0.19.0"
 zigbuild_version := "0.22.1"
 zig_version := "0.15.2"
+nt_pointer_probe_expected_branch_protection := "config/nt_pointer_probe/expected_branch_protection.toml"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
@@ -120,6 +121,8 @@ ci-lint-workflow:
 
     [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
     [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
+    [ -f .github/workflows/nt-pointer-control-plane.yml ] && workflow_files+=(.github/workflows/nt-pointer-control-plane.yml)
+    [ -f .github/workflows/nt-pointer-probe-self-test.yml ] && workflow_files+=(.github/workflows/nt-pointer-probe-self-test.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
@@ -132,7 +135,7 @@ ci-lint-workflow:
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64)([^[:alnum:]_]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_lint_literal='lint-workflow-contract:'
     setup_lint_true_literal='lint-workflow-contract: "true"'
@@ -680,6 +683,15 @@ ci-lint-workflow:
     else
         echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
     fi
+
+nt-pointer-probe-validate-control-plane: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- validate-control-plane --repo-root "{{repo_root}}"
+
+nt-pointer-probe-self-test: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test nt_pointer_probe_control_plane -- --nocapture
+
+nt-pointer-probe-compare-branch-protection actual_json: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-protection --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}"
 
 worktree branch:
     #!/usr/bin/env bash

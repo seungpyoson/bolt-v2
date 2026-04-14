@@ -491,9 +491,9 @@ impl SafeListFile {
             );
 
             let normalized = normalize_relative(&entry.path)?;
-            let in_shared_crate = SHARED_NT_CRATE_PREFIXES
-                .iter()
-                .any(|prefix| normalized.starts_with(prefix));
+            let in_shared_crate = SHARED_NT_CRATE_PREFIXES.iter().any(|prefix| {
+                normalized.starts_with(prefix) || normalized == prefix.trim_end_matches('/')
+            });
             if in_shared_crate {
                 ensure!(
                     entry.match_kind == MatchKind::Exact,

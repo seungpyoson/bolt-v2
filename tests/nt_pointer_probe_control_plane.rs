@@ -44,6 +44,18 @@ fn shared_crate_prefix_safe_list_fails_closed() {
 }
 
 #[test]
+fn shared_crate_root_prefix_safe_list_fails_closed() {
+    let err = LoadedControlPlane::load_from_repo_root(&fixture("bad_shared_crate_root_prefix"))
+        .expect_err("shared NT crate root safe-list should fail validation");
+
+    assert!(
+        err.to_string()
+            .contains("shared NT crate safe-list entries must use exact match"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn branch_protection_comparison_accepts_matching_fixture() {
     let expected =
         ExpectedBranchProtection::load_and_validate(&fixture("branch_protection/expected.toml"))

@@ -540,13 +540,10 @@ struct OpenPositionState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct QuarantinedPositionState {
-    observed: OpenPositionState,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PendingEntryContextSnapshot {
+struct PendingEntryState {
+    client_order_id: ClientOrderId,
     market_id: Option<String>,
+    instrument_id: InstrumentId,
     outcome_side: Option<OutcomeSide>,
     outcome_fees: OutcomeFeeState,
     interval_open: Option<f64>,
@@ -569,93 +566,245 @@ struct PositionMaterializationSpec {
 struct PendingExitState {
     client_order_id: ClientOrderId,
     market_id: Option<String>,
+    position_id: Option<PositionId>,
     fill_received: bool,
+    close_received: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StrategyExecutionPolicy {
-    LongOnly,
+enum ManagedPositionOrigin {
+    StrategyEntry,
+    RecoveryBootstrap,
 }
 
-impl StrategyExecutionPolicy {
-    fn supports_tradable_position(self, entry_order_side: OrderSide, side: PositionSide) -> bool {
-        matches!(
-            (self, entry_order_side, side),
-            (Self::LongOnly, OrderSide::Buy, PositionSide::Long)
-        )
-    }
+#[derive(Debug, Clone, PartialEq)]
+struct ManagedPositionState {
+    position: OpenPositionState,
+    origin: ManagedPositionOrigin,
+}
 
-    fn is_observed_open_side(self, side: PositionSide) -> bool {
-        match self {
-            Self::LongOnly => matches!(side, PositionSide::Long | PositionSide::Short),
-        }
-    }
+#[derive(Debug, Clone, PartialEq)]
+struct ExitPendingState {
+    position: Option<ManagedPositionState>,
+    pending_exit: PendingExitState,
+}
 
-    fn infer_position_side_from_entry_fill(
-        self,
+impl ExitPendingState {
+    fn is_terminal(&self) -> bool {
+        self.pending_exit.fill_received && self.pending_exit.close_received
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryReconcileReason {
+    AwaitingPositionMaterialization,
+    UnsupportedEntryFillSide { order_side: OrderSide },
+    InvalidObservedPosition {
         entry_order_side: OrderSide,
-    ) -> Option<PositionSide> {
-        match self {
-            Self::LongOnly => match entry_order_side {
-                OrderSide::Buy => Some(PositionSide::Long),
-                _ => None,
-            },
-        }
-    }
+        side: PositionSide,
+    },
+}
 
-    fn infer_outcome_side(
-        self,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnsupportedObservedReason {
+    BootstrappedUnsupportedContract,
+    LiveUnsupportedContract,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlindRecoveryReason {
+    CacheProbeFailed,
+    MultipleOpenPositions { count: usize },
+    InvalidBootstrappedPosition {
         entry_order_side: OrderSide,
-        position_side: PositionSide,
-        instrument_id: InstrumentId,
-    ) -> Option<OutcomeSide> {
+        side: PositionSide,
+    },
+    InvalidLivePosition {
+        entry_order_side: OrderSide,
+        side: PositionSide,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct UnsupportedObservedState {
+    observed: OpenPositionState,
+    reason: UnsupportedObservedReason,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BlindRecoveryState {
+    reason: BlindRecoveryReason,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ExposureState {
+    Flat,
+    PendingEntry(PendingEntryState),
+    EntryReconcilePending {
+        pending: PendingEntryState,
+        reason: EntryReconcileReason,
+    },
+    Managed(ManagedPositionState),
+    ExitPending(ExitPendingState),
+    UnsupportedObserved(UnsupportedObservedState),
+    BlindRecovery(BlindRecoveryState),
+}
+
+impl ExposureState {
+    fn pending_entry(&self) -> Option<&PendingEntryState> {
         match self {
-            Self::LongOnly => match (entry_order_side, position_side) {
-                (OrderSide::Buy, PositionSide::Long) => {
-                    EthChainlinkTaker::infer_outcome_side_from_instrument_id(instrument_id)
-                }
-                _ => None,
-            },
+            Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
+                Some(pending)
+            }
+            _ => None,
         }
     }
 
-    fn entry_order_side(self, selected_side: OutcomeSide) -> OrderSide {
+    fn pending_entry_mut(&mut self) -> Option<&mut PendingEntryState> {
         match self {
-            Self::LongOnly => match selected_side {
-                OutcomeSide::Up | OutcomeSide::Down => OrderSide::Buy,
-            },
+            Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
+                Some(pending)
+            }
+            _ => None,
         }
     }
 
-    fn effective_entry_cost(self, position: &OpenPositionState) -> Option<f64> {
+    fn managed_position(&self) -> Option<&ManagedPositionState> {
         match self {
-            Self::LongOnly => match (position.entry_order_side, position.side) {
-                (OrderSide::Buy, PositionSide::Long) => Some(position.avg_px_open),
-                _ => None,
-            },
+            Self::Managed(position) => Some(position),
+            Self::ExitPending(exit) => exit.position.as_ref(),
+            _ => None,
         }
-        .filter(|effective_cost| effective_cost.is_finite() && *effective_cost > 0.0)
     }
 
-    fn exit_order(self, position: &OpenPositionState) -> Option<(OrderSide, f64)> {
+    fn observed_position(&self) -> Option<&OpenPositionState> {
         match self {
-            Self::LongOnly => match position.side {
-                PositionSide::Long => Some((OrderSide::Sell, position.book.best_bid?)),
-                _ => None,
-            },
+            Self::Managed(position) => Some(&position.position),
+            Self::ExitPending(exit) => exit.position.as_ref().map(|position| &position.position),
+            Self::UnsupportedObserved(observed) => Some(&observed.observed),
+            _ => None,
         }
-        .filter(|(_, price)| price.is_finite() && *price > 0.0)
     }
 
-    fn exit_value(self, position: &OpenPositionState) -> Option<f64> {
+    fn observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
         match self {
-            Self::LongOnly => match position.side {
-                PositionSide::Long => position.book.best_bid,
-                _ => None,
-            },
+            Self::Managed(position) => Some(&mut position.position),
+            Self::ExitPending(exit) => exit.position.as_mut().map(|position| &mut position.position),
+            Self::UnsupportedObserved(observed) => Some(&mut observed.observed),
+            _ => None,
         }
-        .filter(|value| value.is_finite() && *value > 0.0)
     }
+
+    fn exit_pending(&self) -> Option<&ExitPendingState> {
+        match self {
+            Self::ExitPending(exit) => Some(exit),
+            _ => None,
+        }
+    }
+
+    fn exit_pending_mut(&mut self) -> Option<&mut ExitPendingState> {
+        match self {
+            Self::ExitPending(exit) => Some(exit),
+            _ => None,
+        }
+    }
+
+    fn occupancy(&self) -> Option<ExposureOccupancy> {
+        match self {
+            Self::Flat => None,
+            Self::PendingEntry(_) => Some(ExposureOccupancy::PendingEntry),
+            Self::EntryReconcilePending { .. } => {
+                Some(ExposureOccupancy::EntryReconcilePending)
+            }
+            Self::Managed(_) => Some(ExposureOccupancy::ManagedPosition),
+            Self::ExitPending(_) => Some(ExposureOccupancy::ExitPending),
+            Self::UnsupportedObserved(_) => Some(ExposureOccupancy::UnsupportedObserved),
+            Self::BlindRecovery(_) => Some(ExposureOccupancy::BlindRecovery),
+        }
+    }
+
+    #[cfg(test)]
+    fn blocks_new_entries(&self) -> bool {
+        !matches!(self, Self::Flat)
+    }
+
+    fn is_recovering(&self) -> bool {
+        match self {
+            Self::Managed(position) => position.origin == ManagedPositionOrigin::RecoveryBootstrap,
+            Self::ExitPending(exit) => exit
+                .position
+                .as_ref()
+                .is_some_and(|position| position.origin == ManagedPositionOrigin::RecoveryBootstrap),
+            Self::EntryReconcilePending { .. }
+            | Self::UnsupportedObserved(_)
+            | Self::BlindRecovery(_) => true,
+            Self::Flat | Self::PendingEntry(_) => false,
+        }
+    }
+
+    fn current_position_market_id(&self) -> Option<String> {
+        self.managed_position()
+            .and_then(|position| position.position.market_id.clone())
+            .or_else(|| {
+                self.exit_pending()
+                    .and_then(|exit| exit.pending_exit.market_id.clone())
+            })
+    }
+}
+
+fn supports_strategy_managed_position(entry_order_side: OrderSide, side: PositionSide) -> bool {
+    matches!((entry_order_side, side), (OrderSide::Buy, PositionSide::Long))
+}
+
+fn is_observed_open_side(side: PositionSide) -> bool {
+    matches!(side, PositionSide::Long | PositionSide::Short)
+}
+
+fn infer_strategy_position_side_from_entry_fill(entry_order_side: OrderSide) -> Option<PositionSide> {
+    match entry_order_side {
+        OrderSide::Buy => Some(PositionSide::Long),
+        _ => None,
+    }
+}
+
+fn infer_strategy_outcome_side(
+    entry_order_side: OrderSide,
+    position_side: PositionSide,
+    instrument_id: InstrumentId,
+) -> Option<OutcomeSide> {
+    if supports_strategy_managed_position(entry_order_side, position_side) {
+        EthChainlinkTaker::infer_outcome_side_from_instrument_id(instrument_id)
+    } else {
+        None
+    }
+}
+
+fn strategy_entry_order_side(_selected_side: OutcomeSide) -> OrderSide {
+    OrderSide::Buy
+}
+
+fn managed_position_effective_entry_cost(position: &OpenPositionState) -> Option<f64> {
+    match (position.entry_order_side, position.side) {
+        (OrderSide::Buy, PositionSide::Long) => Some(position.avg_px_open),
+        _ => None,
+    }
+    .filter(|effective_cost| effective_cost.is_finite() && *effective_cost > 0.0)
+}
+
+fn managed_position_exit_order(position: &OpenPositionState) -> Option<(OrderSide, f64)> {
+    match position.side {
+        PositionSide::Long => Some((OrderSide::Sell, position.book.best_bid?)),
+        _ => None,
+    }
+    .filter(|(_, price)| price.is_finite() && *price > 0.0)
+}
+
+fn managed_position_exit_value(position: &OpenPositionState) -> Option<f64> {
+    match position.side {
+        PositionSide::Long => position.book.best_bid,
+        _ => None,
+    }
+    .filter(|value| value.is_finite() && *value > 0.0)
 }
 
 impl PricingState {
@@ -963,21 +1112,8 @@ pub struct EthChainlinkTaker {
     active: ActiveMarketState,
     book_subscriptions: OutcomeBookSubscriptions,
     cooldowns: BTreeMap<String, u64>,
-    recovery: bool,
-    pending_entry_order: Option<ClientOrderId>,
-    pending_entry_market_id: Option<String>,
-    pending_entry_instrument_id: Option<InstrumentId>,
-    pending_entry_outcome_side: Option<OutcomeSide>,
-    pending_entry_outcome_fees: Option<OutcomeFeeState>,
-    pending_entry_interval_open: Option<f64>,
-    pending_entry_selection_published_at_ms: Option<u64>,
-    pending_entry_seconds_to_expiry_at_selection: Option<u64>,
-    pending_entry_book: Option<OutcomeBookState>,
-    pending_exit: Option<PendingExitState>,
-    open_position_active: bool,
-    open_position: Option<OpenPositionState>,
-    quarantined_position: Option<QuarantinedPositionState>,
-    last_reported_one_position_occupancy: Cell<Option<OnePositionOccupancy>>,
+    exposure: ExposureState,
+    last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
     selection_handler: Option<ShareableMessageHandler>,
     reference_handler: Option<ShareableMessageHandler>,
@@ -998,21 +1134,8 @@ impl EthChainlinkTaker {
             active: ActiveMarketState::default(),
             book_subscriptions: OutcomeBookSubscriptions::default(),
             cooldowns: BTreeMap::new(),
-            recovery: false,
-            pending_entry_order: None,
-            pending_entry_market_id: None,
-            pending_entry_instrument_id: None,
-            pending_entry_outcome_side: None,
-            pending_entry_outcome_fees: None,
-            pending_entry_interval_open: None,
-            pending_entry_selection_published_at_ms: None,
-            pending_entry_seconds_to_expiry_at_selection: None,
-            pending_entry_book: None,
-            pending_exit: None,
-            open_position_active: false,
-            open_position: None,
-            quarantined_position: None,
-            last_reported_one_position_occupancy: Cell::new(None),
+            exposure: ExposureState::Flat,
+            last_reported_exposure_occupancy: Cell::new(None),
             pricing,
             selection_handler: None,
             reference_handler: None,
@@ -1043,9 +1166,9 @@ impl EthChainlinkTaker {
             self.trigger_fee_warm_for_market();
             self.refresh_fee_readiness();
         }
-        self.sync_open_position_from_active();
+        self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
-        if (self.open_position_active || self.open_position.is_some())
+        if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order(now_ms)
         {
             log::error!(
@@ -1067,8 +1190,8 @@ impl EthChainlinkTaker {
         );
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
-        self.sync_open_position_from_active();
-        if (self.open_position_active || self.open_position.is_some())
+        self.sync_exposure_context_from_active();
+        if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order(snapshot.ts_ms)
         {
             log::error!(
@@ -1156,33 +1279,35 @@ impl EthChainlinkTaker {
         self.active.market_id.as_deref()
     }
 
-    fn execution_policy(&self) -> StrategyExecutionPolicy {
-        StrategyExecutionPolicy::LongOnly
-    }
-
     fn tracked_observed_position(&self) -> Option<&OpenPositionState> {
-        self.open_position.as_ref().or_else(|| {
-            self.quarantined_position
-                .as_ref()
-                .map(|position| &position.observed)
-        })
+        self.exposure.observed_position()
     }
 
     fn tracked_observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
-        if self.open_position.is_some() {
-            self.open_position.as_mut()
-        } else {
-            self.quarantined_position
-                .as_mut()
-                .map(|position| &mut position.observed)
-        }
+        self.exposure.observed_position_mut()
     }
 
-    fn quarantine_observed_position(&mut self, observed: OpenPositionState) {
-        self.recovery = true;
-        self.open_position_active = false;
-        self.open_position = None;
-        self.quarantined_position = Some(QuarantinedPositionState { observed });
+    fn managed_position(&self) -> Option<&ManagedPositionState> {
+        self.exposure.managed_position()
+    }
+
+    fn pending_entry(&self) -> Option<&PendingEntryState> {
+        self.exposure.pending_entry()
+    }
+
+    fn pending_entry_mut(&mut self) -> Option<&mut PendingEntryState> {
+        self.exposure.pending_entry_mut()
+    }
+
+    fn set_unsupported_observed_exposure(
+        &mut self,
+        observed: OpenPositionState,
+        reason: UnsupportedObservedReason,
+    ) {
+        self.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
+            observed,
+            reason,
+        });
         self.refresh_book_subscriptions_for_current_state();
     }
 
@@ -1197,7 +1322,7 @@ impl EthChainlinkTaker {
                     market_id: None,
                     instrument_id: position.instrument_id,
                     position_id: position.id,
-                    outcome_side: self.execution_policy().infer_outcome_side(
+                    outcome_side: infer_strategy_outcome_side(
                         position.entry,
                         position.side,
                         position.instrument_id,
@@ -1218,10 +1343,9 @@ impl EthChainlinkTaker {
         let cached_positions = match cached_positions {
             Ok(cached_positions) => cached_positions,
             Err(_) => {
-                self.recovery = true;
-                self.open_position_active = false;
-                self.open_position = None;
-                self.quarantined_position = None;
+                self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::CacheProbeFailed,
+                });
                 log::warn!(
                     "eth_chainlink_taker recovery probe could not access cache: strategy_id={} entering fail-closed recovery mode",
                     self.config.strategy_id
@@ -1231,18 +1355,16 @@ impl EthChainlinkTaker {
         };
 
         if cached_positions.is_empty() {
-            self.recovery = false;
-            self.open_position_active = false;
-            self.open_position = None;
-            self.quarantined_position = None;
+            self.exposure = ExposureState::Flat;
             return;
         }
 
-        self.recovery = true;
         if cached_positions.len() > 1 {
-            self.open_position_active = false;
-            self.open_position = None;
-            self.quarantined_position = None;
+            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::MultipleOpenPositions {
+                    count: cached_positions.len(),
+                },
+            });
             log::error!(
                 "eth_chainlink_taker recovery bootstrap found multiple open positions: strategy_id={} position_count={} leaving recovery mode blind to position bootstrap",
                 self.config.strategy_id,
@@ -1255,13 +1377,11 @@ impl EthChainlinkTaker {
             .into_iter()
             .next()
             .expect("checked non-empty recovery position set");
-        if self
-            .execution_policy()
-            .supports_tradable_position(open_position.entry_order_side, open_position.side)
-        {
-            self.open_position_active = true;
-            self.open_position = Some(open_position.clone());
-            self.quarantined_position = None;
+        if supports_strategy_managed_position(open_position.entry_order_side, open_position.side) {
+            self.exposure = ExposureState::Managed(ManagedPositionState {
+                position: open_position.clone(),
+                origin: ManagedPositionOrigin::RecoveryBootstrap,
+            });
             log::warn!(
                 "eth_chainlink_taker recovery bootstrap loaded cached open position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
                 self.config.strategy_id,
@@ -1272,15 +1392,11 @@ impl EthChainlinkTaker {
                 open_position.quantity,
                 open_position.avg_px_open,
             );
-        } else if self
-            .execution_policy()
-            .is_observed_open_side(open_position.side)
-        {
-            self.quarantined_position = Some(QuarantinedPositionState {
+        } else if is_observed_open_side(open_position.side) {
+            self.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
                 observed: open_position.clone(),
+                reason: UnsupportedObservedReason::BootstrappedUnsupportedContract,
             });
-            self.open_position_active = false;
-            self.open_position = None;
             log::error!(
                 "eth_chainlink_taker recovery bootstrap quarantined unsupported cached position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
                 self.config.strategy_id,
@@ -1292,9 +1408,12 @@ impl EthChainlinkTaker {
                 open_position.avg_px_open,
             );
         } else {
-            self.open_position_active = false;
-            self.open_position = None;
-            self.quarantined_position = None;
+            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::InvalidBootstrappedPosition {
+                    entry_order_side: open_position.entry_order_side,
+                    side: open_position.side,
+                },
+            });
             log::error!(
                 "eth_chainlink_taker recovery bootstrap received invalid cached position side: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -1306,36 +1425,19 @@ impl EthChainlinkTaker {
         }
     }
 
-    fn one_position_occupancy(&self) -> Option<OnePositionOccupancy> {
-        if self.pending_entry_order.is_some() {
-            Some(OnePositionOccupancy::PendingEntry)
-        } else if self.pending_exit.is_some() {
-            Some(OnePositionOccupancy::PendingExit)
-        } else if self.open_position_active
-            || self.open_position.is_some()
-            || self.quarantined_position.is_some()
-        {
-            Some(OnePositionOccupancy::OpenPosition)
-        } else {
-            None
-        }
+    fn exposure_occupancy(&self) -> Option<ExposureOccupancy> {
+        self.exposure.occupancy()
     }
 
     fn clear_pending_entry_state(&mut self) {
-        self.pending_entry_order = None;
-        self.pending_entry_market_id = None;
-        self.pending_entry_instrument_id = None;
-        self.pending_entry_outcome_side = None;
-        self.pending_entry_outcome_fees = None;
-        self.pending_entry_interval_open = None;
-        self.pending_entry_selection_published_at_ms = None;
-        self.pending_entry_seconds_to_expiry_at_selection = None;
-        self.pending_entry_book = None;
+        if matches!(self.exposure, ExposureState::PendingEntry(_)) {
+            self.exposure = ExposureState::Flat;
+        }
     }
 
     #[cfg(test)]
     fn enforce_one_position_invariant(&self) -> Result<()> {
-        let Some(occupancy) = self.one_position_occupancy() else {
+        let Some(occupancy) = self.exposure_occupancy() else {
             return Ok(());
         };
 
@@ -1348,12 +1450,11 @@ impl EthChainlinkTaker {
         anyhow::bail!("{message}");
     }
 
-    fn report_one_position_invariant_violation(&self, occupancy: OnePositionOccupancy) {
-        if self.last_reported_one_position_occupancy.get() == Some(occupancy) {
+    fn report_one_position_invariant_violation(&self, occupancy: ExposureOccupancy) {
+        if self.last_reported_exposure_occupancy.get() == Some(occupancy) {
             return;
         }
-        self.last_reported_one_position_occupancy
-            .set(Some(occupancy));
+        self.last_reported_exposure_occupancy.set(Some(occupancy));
         let message = format!("one-position invariant occupied by {occupancy:?}");
         log::error!("{message}");
     }
@@ -1396,7 +1497,7 @@ impl EthChainlinkTaker {
         if !self.active.outcome_fees.market_ready() {
             blocked_by.push(EntryBlockReason::FeesNotReady);
         }
-        if self.recovery {
+        if self.exposure.is_recovering() {
             blocked_by.push(EntryBlockReason::RecoveryMode);
         }
         if self
@@ -1412,11 +1513,11 @@ impl EthChainlinkTaker {
         {
             blocked_by.push(EntryBlockReason::ForcedFlat(reason));
         }
-        if let Some(occupancy) = self.one_position_occupancy() {
+        if let Some(occupancy) = self.exposure_occupancy() {
             self.report_one_position_invariant_violation(occupancy);
             blocked_by.push(EntryBlockReason::OnePositionInvariant(occupancy));
         } else {
-            self.last_reported_one_position_occupancy.set(None);
+            self.last_reported_exposure_occupancy.set(None);
         }
 
         let decision = EntryGateDecision { blocked_by };
@@ -1440,7 +1541,7 @@ impl EthChainlinkTaker {
     }
 
     fn position_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
-        let Some(open_position) = self.open_position.as_ref() else {
+        let Some(open_position) = self.managed_position().map(|managed| &managed.position) else {
             return self.active_forced_flat_reasons_at(now_ms);
         };
 
@@ -1865,32 +1966,19 @@ impl EthChainlinkTaker {
     fn pending_entry_context_for(
         &self,
         instrument_id: InstrumentId,
-    ) -> Option<PendingEntryContextSnapshot> {
-        if self.pending_entry_instrument_id != Some(instrument_id) {
+    ) -> Option<PendingEntryState> {
+        let pending = self.pending_entry()?.clone();
+        if pending.instrument_id != instrument_id {
             return None;
         }
 
-        Some(PendingEntryContextSnapshot {
-            market_id: self.pending_entry_market_id.clone(),
-            outcome_side: self.pending_entry_outcome_side,
-            outcome_fees: self
-                .pending_entry_outcome_fees
-                .clone()
-                .unwrap_or_else(|| self.active.outcome_fees.clone()),
-            interval_open: self.pending_entry_interval_open,
-            selection_published_at_ms: self.pending_entry_selection_published_at_ms,
-            seconds_to_expiry_at_selection: self.pending_entry_seconds_to_expiry_at_selection,
-            book: self
-                .pending_entry_book
-                .clone()
-                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(instrument_id)),
-        })
+        Some(pending)
     }
 
     fn build_open_position_state(
         &self,
         preserved: Option<&OpenPositionState>,
-        pending_context: Option<&PendingEntryContextSnapshot>,
+        pending_context: Option<&PendingEntryState>,
         spec: PositionMaterializationSpec,
         trust_pending_outcome_side: bool,
     ) -> OpenPositionState {
@@ -1910,13 +1998,7 @@ impl EthChainlinkTaker {
                         None
                     }
                 })
-                .or_else(|| {
-                    self.execution_policy().infer_outcome_side(
-                        spec.entry_order_side,
-                        spec.side,
-                        spec.instrument_id,
-                    )
-                }),
+                .or_else(|| infer_strategy_outcome_side(spec.entry_order_side, spec.side, spec.instrument_id)),
             outcome_fees: preserved
                 .map(|position| position.outcome_fees.clone())
                 .or_else(|| pending_context.map(|pending| pending.outcome_fees.clone()))
@@ -1956,24 +2038,34 @@ impl EthChainlinkTaker {
         avg_px_open: f64,
     ) {
         let preserved = self
-            .open_position
-            .as_ref()
-            .filter(|position| {
-                position.position_id == position_id && position.instrument_id == instrument_id
+            .managed_position()
+            .filter(|managed| {
+                managed.position.position_id == position_id
+                    && managed.position.instrument_id == instrument_id
             })
-            .cloned();
+            .map(|managed| managed.position.clone());
         let pending_context = self.pending_entry_context_for(instrument_id);
         let pending_matches = pending_context.is_some();
-        let observed_open_side = self.execution_policy().is_observed_open_side(side);
-        let tradable_position_supported = self
-            .execution_policy()
-            .supports_tradable_position(entry_order_side, side);
+        let observed_open_side = is_observed_open_side(side);
+        let tradable_position_supported = supports_strategy_managed_position(entry_order_side, side);
 
         if !observed_open_side {
-            self.recovery = true;
-            self.open_position_active = false;
-            self.open_position = None;
-            self.quarantined_position = None;
+            self.exposure = if let Some(pending) = pending_context {
+                ExposureState::EntryReconcilePending {
+                    pending,
+                    reason: EntryReconcileReason::InvalidObservedPosition {
+                        entry_order_side,
+                        side,
+                    },
+                }
+            } else {
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::InvalidLivePosition {
+                        entry_order_side,
+                        side,
+                    },
+                })
+            };
             log::error!(
                 "eth_chainlink_taker position event carried unsupported position side: strategy_id={} instrument_id={} position_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -1987,9 +2079,6 @@ impl EthChainlinkTaker {
         }
 
         if !tradable_position_supported {
-            if pending_matches {
-                self.recovery = true;
-            }
             log::error!(
                 "eth_chainlink_taker quarantining unsupported observed position contract: strategy_id={} instrument_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -1997,7 +2086,7 @@ impl EthChainlinkTaker {
                 entry_order_side,
                 side,
             );
-            self.quarantine_observed_position(self.build_open_position_state(
+            self.set_unsupported_observed_exposure(self.build_open_position_state(
                 preserved.as_ref(),
                 pending_context.as_ref(),
                 PositionMaterializationSpec {
@@ -2009,28 +2098,35 @@ impl EthChainlinkTaker {
                     avg_px_open,
                 },
                 false,
-            ));
+            ), UnsupportedObservedReason::LiveUnsupportedContract);
             return;
         }
 
-        self.open_position_active = true;
-        self.open_position = Some(self.build_open_position_state(
-            preserved.as_ref(),
-            pending_context.as_ref(),
-            PositionMaterializationSpec {
-                instrument_id,
-                position_id,
-                entry_order_side,
-                side,
-                quantity,
-                avg_px_open,
-            },
-            pending_matches,
-        ));
-        if pending_matches {
-            self.clear_pending_entry_state();
-        }
-        self.sync_open_position_from_active();
+        let origin = self
+            .managed_position()
+            .filter(|managed| {
+                managed.position.position_id == position_id
+                    && managed.position.instrument_id == instrument_id
+            })
+            .map(|managed| managed.origin)
+            .unwrap_or(ManagedPositionOrigin::StrategyEntry);
+        self.exposure = ExposureState::Managed(ManagedPositionState {
+            position: self.build_open_position_state(
+                preserved.as_ref(),
+                pending_context.as_ref(),
+                PositionMaterializationSpec {
+                    instrument_id,
+                    position_id,
+                    entry_order_side,
+                    side,
+                    quantity,
+                    avg_px_open,
+                },
+                pending_matches,
+            ),
+            origin,
+        });
+        self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
     }
 
@@ -2045,7 +2141,7 @@ impl EthChainlinkTaker {
         Some(seconds_to_expiry_at_selection.saturating_sub(elapsed_seconds))
     }
 
-    fn sync_open_position_from_active(&mut self) {
+    fn sync_exposure_context_from_active(&mut self) {
         let active_market_id = self.active.market_id.clone();
         let active_outcome_fees = self.active.outcome_fees.clone();
         let active_interval_open = self.active.interval_open;
@@ -2090,7 +2186,7 @@ impl EthChainlinkTaker {
             && next.down_instrument_id != Some(open_position.instrument_id)
         {
             next.tracked_position_instrument_id = Some(open_position.instrument_id);
-        } else if let Some(pending_entry_instrument_id) = self.pending_entry_instrument_id
+        } else if let Some(pending_entry_instrument_id) = self.pending_entry().map(|pending| pending.instrument_id)
             && next.up_instrument_id != Some(pending_entry_instrument_id)
             && next.down_instrument_id != Some(pending_entry_instrument_id)
         {
@@ -2108,34 +2204,31 @@ impl EthChainlinkTaker {
     }
 
     fn open_position_outcome_side(&self) -> Option<OutcomeSide> {
-        self.open_position
-            .as_ref()
-            .and_then(|position| position.outcome_side)
+        self.managed_position()
+            .and_then(|position| position.position.outcome_side)
     }
 
     fn open_position_effective_entry_cost(&self) -> Option<f64> {
-        let open_position = self.open_position.as_ref()?;
-        self.execution_policy().effective_entry_cost(open_position)
+        let open_position = &self.managed_position()?.position;
+        managed_position_effective_entry_cost(open_position)
     }
 
     fn current_exit_order_for_open_position(&self) -> Option<(OrderSide, f64)> {
-        let open_position = self.open_position.as_ref()?;
-        self.execution_policy().exit_order(open_position)
+        let open_position = &self.managed_position()?.position;
+        managed_position_exit_order(open_position)
     }
 
     fn current_exit_value_for_open_position(&self) -> Option<f64> {
-        let open_position = self.open_position.as_ref()?;
-        self.execution_policy().exit_value(open_position)
+        let open_position = &self.managed_position()?.position;
+        managed_position_exit_value(open_position)
     }
 
     fn current_position_market_id(&self) -> Option<String> {
-        self.open_position
-            .as_ref()
-            .and_then(|position| position.market_id.clone())
+        self.exposure.current_position_market_id()
     }
 
     fn current_position_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
-        let open_position = self.open_position.as_ref()?;
+        let open_position = &self.managed_position()?.position;
         Self::seconds_to_expiry_from_selection(
             open_position.selection_published_at_ms,
             open_position.seconds_to_expiry_at_selection,
@@ -2144,7 +2237,7 @@ impl EthChainlinkTaker {
     }
 
     fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
-        let open_position = self.open_position.as_ref()?;
+        let open_position = &self.managed_position()?.position;
         let spot_price = self
             .pricing
             .spot_price()
@@ -2173,7 +2266,7 @@ impl EthChainlinkTaker {
     }
 
     fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
-        let open_position = self.open_position.as_ref()?;
+        let open_position = &self.managed_position()?.position;
         let spot_price = self
             .pricing
             .spot_price()
@@ -2238,7 +2331,7 @@ impl EthChainlinkTaker {
     }
 
     fn position_outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
-        let open_position = self.open_position.as_ref()?;
+        let open_position = &self.managed_position()?.position;
         let token_id = match side {
             OutcomeSide::Up => open_position.outcome_fees.up_token_id.as_deref(),
             OutcomeSide::Down => open_position.outcome_fees.down_token_id.as_deref(),
@@ -2256,11 +2349,11 @@ impl EthChainlinkTaker {
             blocked_reason: None,
         };
 
-        if self.open_position.is_none() || !self.open_position_active {
+        if self.managed_position().is_none() {
             evaluation.blocked_reason = Some("no_open_position");
             return evaluation;
         }
-        if self.pending_exit.is_some() {
+        if self.exposure.exit_pending().is_some() {
             evaluation.blocked_reason = Some("exit_already_pending");
             return evaluation;
         }
@@ -2307,7 +2400,7 @@ impl EthChainlinkTaker {
             return decision;
         }
 
-        let Some(open_position) = self.open_position.as_ref() else {
+        let Some(open_position) = self.managed_position().map(|managed| &managed.position) else {
             decision.blocked_reason = Some("open_position_missing");
             return decision;
         };
@@ -2333,7 +2426,7 @@ impl EthChainlinkTaker {
         now_ms: u64,
         decision: &ExitSubmissionDecision,
     ) -> ExitEvaluationLogFields {
-        let open_position = self.open_position.as_ref();
+        let open_position = self.managed_position().map(|managed| &managed.position);
         ExitEvaluationLogFields {
             market_id: self.current_position_market_id(),
             phase: self.active.phase,
@@ -2521,10 +2614,18 @@ impl EthChainlinkTaker {
         );
 
         let client_id = ClientId::from(self.config.client_id.as_str());
-        self.pending_exit = Some(PendingExitState {
-            client_order_id,
-            market_id: self.current_position_market_id(),
-            fill_received: false,
+        let Some(managed_position) = self.managed_position().cloned() else {
+            anyhow::bail!("exit submit requires managed position state");
+        };
+        self.exposure = ExposureState::ExitPending(ExitPendingState {
+            position: Some(managed_position.clone()),
+            pending_exit: PendingExitState {
+                client_order_id,
+                market_id: managed_position.position.market_id.clone(),
+                position_id: Some(managed_position.position.position_id),
+                fill_received: false,
+                close_received: false,
+            },
         });
         log::info!(
             "eth_chainlink_taker exit submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
@@ -2537,7 +2638,7 @@ impl EthChainlinkTaker {
         );
 
         if let Err(error) = self.submit_order(order, None, Some(client_id)) {
-            self.pending_exit = None;
+            self.exposure = ExposureState::Managed(managed_position);
             return Err(error);
         }
 
@@ -2609,7 +2710,7 @@ impl EthChainlinkTaker {
             return decision;
         }
 
-        let order_side = self.execution_policy().entry_order_side(selected_side);
+        let order_side = strategy_entry_order_side(selected_side);
 
         decision.instrument_id = Some(instrument_id);
         decision.order_side = Some(order_side);
@@ -2688,26 +2789,29 @@ impl EthChainlinkTaker {
         );
 
         let client_id = ClientId::from(self.config.client_id.as_str());
-        self.pending_entry_order = Some(client_order_id);
-        self.pending_entry_market_id = self.current_market_id().map(str::to_string);
-        self.pending_entry_instrument_id = Some(instrument_id);
-        self.pending_entry_outcome_side = decision.evaluation.selected_side;
-        self.pending_entry_outcome_fees = Some(self.active.outcome_fees.clone());
-        self.pending_entry_interval_open = self.active.interval_open;
-        self.pending_entry_selection_published_at_ms = self.active.selection_published_at_ms;
-        self.pending_entry_seconds_to_expiry_at_selection =
-            self.active.seconds_to_expiry_at_selection;
-        self.pending_entry_book = match decision.evaluation.selected_side {
-            Some(OutcomeSide::Up) if self.active.books.up.instrument_id == Some(instrument_id) => {
-                Some(self.active.books.up.clone())
-            }
-            Some(OutcomeSide::Down)
-                if self.active.books.down.instrument_id == Some(instrument_id) =>
-            {
-                Some(self.active.books.down.clone())
-            }
-            _ => Some(OutcomeBookState::from_instrument_id(instrument_id)),
-        };
+        self.exposure = ExposureState::PendingEntry(PendingEntryState {
+            client_order_id,
+            market_id: self.current_market_id().map(str::to_string),
+            instrument_id,
+            outcome_side: decision.evaluation.selected_side,
+            outcome_fees: self.active.outcome_fees.clone(),
+            interval_open: self.active.interval_open,
+            selection_published_at_ms: self.active.selection_published_at_ms,
+            seconds_to_expiry_at_selection: self.active.seconds_to_expiry_at_selection,
+            book: match decision.evaluation.selected_side {
+                Some(OutcomeSide::Up)
+                    if self.active.books.up.instrument_id == Some(instrument_id) =>
+                {
+                    self.active.books.up.clone()
+                }
+                Some(OutcomeSide::Down)
+                    if self.active.books.down.instrument_id == Some(instrument_id) =>
+                {
+                    self.active.books.down.clone()
+                }
+                _ => OutcomeBookState::from_instrument_id(instrument_id),
+            },
+        });
         log::info!(
             "eth_chainlink_taker entry submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
             self.config.strategy_id,
@@ -2907,7 +3011,7 @@ impl DataActor for EthChainlinkTaker {
         deltas: &nautilus_model::data::OrderBookDeltas,
     ) -> anyhow::Result<()> {
         let mut matched = self.active.books.update_from_deltas(deltas);
-        self.sync_open_position_from_active();
+        self.sync_exposure_context_from_active();
         if self
             .tracked_observed_position()
             .is_some_and(|position| position.instrument_id == deltas.instrument_id)
@@ -2919,16 +3023,14 @@ impl DataActor for EthChainlinkTaker {
             }
             matched = true;
         }
-        if self.pending_entry_instrument_id == Some(deltas.instrument_id)
+        if self
+            .pending_entry()
+            .is_some_and(|pending| pending.instrument_id == deltas.instrument_id)
             && !(self.active.books.up.instrument_id == Some(deltas.instrument_id)
                 || self.active.books.down.instrument_id == Some(deltas.instrument_id))
         {
-            if let Some(book) = self.pending_entry_book.as_mut() {
-                book.update_from_deltas(deltas);
-            } else {
-                let mut book = OutcomeBookState::from_instrument_id(deltas.instrument_id);
-                book.update_from_deltas(deltas);
-                self.pending_entry_book = Some(book);
+            if let Some(pending) = self.pending_entry_mut() {
+                pending.book.update_from_deltas(deltas);
             }
             matched = true;
         }
@@ -2947,39 +3049,54 @@ impl DataActor for EthChainlinkTaker {
         &mut self,
         event: &nautilus_model::events::OrderFilled,
     ) -> anyhow::Result<()> {
-        let entry_fill = self.pending_entry_order.as_ref() == Some(&event.client_order_id);
-        let exit_fill = self
-            .pending_exit
-            .as_ref()
+        let entry_fill = self
+            .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id);
+        let exit_fill = self
+            .exposure
+            .exit_pending()
+            .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
 
         if entry_fill {
             let pending_context = self.pending_entry_context_for(event.instrument_id);
-            let position_side = self
-                .execution_policy()
-                .infer_position_side_from_entry_fill(event.order_side);
+            let position_side = infer_strategy_position_side_from_entry_fill(event.order_side);
             if let (Some(position_id), Some(position_side)) = (event.position_id, position_side) {
-                self.clear_pending_entry_state();
-                self.open_position_active = true;
-                self.open_position = Some(self.build_open_position_state(
-                    None,
-                    pending_context.as_ref(),
-                    PositionMaterializationSpec {
-                        instrument_id: event.instrument_id,
-                        position_id,
-                        entry_order_side: event.order_side,
-                        side: position_side,
-                        quantity: event.last_qty,
-                        avg_px_open: event.last_px.as_f64(),
-                    },
-                    true,
-                ));
-                self.sync_open_position_from_active();
+                self.exposure = ExposureState::Managed(ManagedPositionState {
+                    position: self.build_open_position_state(
+                        None,
+                        pending_context.as_ref(),
+                        PositionMaterializationSpec {
+                            instrument_id: event.instrument_id,
+                            position_id,
+                            entry_order_side: event.order_side,
+                            side: position_side,
+                            quantity: event.last_qty,
+                            avg_px_open: event.last_px.as_f64(),
+                        },
+                        true,
+                    ),
+                    origin: ManagedPositionOrigin::StrategyEntry,
+                });
+                self.sync_exposure_context_from_active();
                 self.refresh_book_subscriptions_for_current_state();
             } else {
-                self.open_position_active = false;
-                self.open_position = None;
-                self.recovery = true;
+                if let Some(pending) = pending_context.clone() {
+                    let reason = if event.position_id.is_none() {
+                        EntryReconcileReason::AwaitingPositionMaterialization
+                    } else {
+                        EntryReconcileReason::UnsupportedEntryFillSide {
+                            order_side: event.order_side,
+                        }
+                    };
+                    self.exposure = ExposureState::EntryReconcilePending { pending, reason };
+                } else {
+                    self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                        reason: BlindRecoveryReason::InvalidLivePosition {
+                            entry_order_side: event.order_side,
+                            side: position_side.unwrap_or(PositionSide::Flat),
+                        },
+                    });
+                }
                 log::error!(
                     "eth_chainlink_taker entry fill could not materialize supported long position: strategy_id={} client_order_id={} instrument_id={} order_side={:?} position_id_present={} position_side_inferable={}",
                     self.config.strategy_id,
@@ -2990,28 +3107,23 @@ impl DataActor for EthChainlinkTaker {
                     position_side.is_some(),
                 );
             }
-            if let Some(market_id) = pending_context.and_then(|pending| pending.market_id) {
+            if let Some(market_id) = pending_context.and_then(|pending| pending.market_id.clone()) {
                 self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
         } else if exit_fill {
-            self.open_position_active = self.open_position.is_some();
             if let Some(market_id) = self
-                .pending_exit
-                .as_ref()
-                .and_then(|pending| pending.market_id.clone())
-                .or_else(|| {
-                    self.open_position
-                        .as_ref()
-                        .and_then(|position| position.market_id.clone())
-                })
+                .exposure
+                .exit_pending()
+                .and_then(|exit| exit.pending_exit.market_id.clone())
+                .or_else(|| self.current_position_market_id())
             {
                 self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
-            if let Some(pending_exit) = self.pending_exit.as_mut() {
-                pending_exit.fill_received = true;
-            }
-            if self.open_position.is_none() {
-                self.pending_exit = None;
+            if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+                exit_pending.pending_exit.fill_received = true;
+                if exit_pending.pending_exit.close_received {
+                    self.exposure = ExposureState::Flat;
+                }
             }
         }
         Ok(())
@@ -3021,15 +3133,20 @@ impl DataActor for EthChainlinkTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
-        if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
-            self.clear_pending_entry_state();
-        }
         if self
-            .pending_exit
-            .as_ref()
+            .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id)
         {
-            self.pending_exit = None;
+            self.clear_pending_entry_state();
+        }
+        if let Some(exit_pending) = self.exposure.exit_pending().cloned()
+            && exit_pending.pending_exit.client_order_id == event.client_order_id
+            && !exit_pending.pending_exit.fill_received
+        {
+            self.exposure = match exit_pending.position {
+                Some(position) => ExposureState::Managed(position),
+                None => ExposureState::Flat,
+            };
         }
         Ok(())
     }
@@ -3037,28 +3154,38 @@ impl DataActor for EthChainlinkTaker {
 
 nautilus_strategy!(EthChainlinkTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
-        if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
-            self.clear_pending_entry_state();
-        }
         if self
-            .pending_exit
-            .as_ref()
+            .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id)
         {
-            self.pending_exit = None;
+            self.clear_pending_entry_state();
+        }
+        if let Some(exit_pending) = self.exposure.exit_pending().cloned()
+            && exit_pending.pending_exit.client_order_id == event.client_order_id
+            && !exit_pending.pending_exit.fill_received
+        {
+            self.exposure = match exit_pending.position {
+                Some(position) => ExposureState::Managed(position),
+                None => ExposureState::Flat,
+            };
         }
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
-        if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
-            self.clear_pending_entry_state();
-        }
         if self
-            .pending_exit
-            .as_ref()
+            .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id)
         {
-            self.pending_exit = None;
+            self.clear_pending_entry_state();
+        }
+        if let Some(exit_pending) = self.exposure.exit_pending().cloned()
+            && exit_pending.pending_exit.client_order_id == event.client_order_id
+            && !exit_pending.pending_exit.fill_received
+        {
+            self.exposure = match exit_pending.position {
+                Some(position) => ExposureState::Managed(position),
+                None => ExposureState::Flat,
+            };
         }
     }
 
@@ -3085,31 +3212,27 @@ nautilus_strategy!(EthChainlinkTaker, {
     }
 
     fn on_position_closed(&mut self, _event: nautilus_model::events::PositionClosed) {
-        let tracked_position_closed = self
-            .open_position
-            .as_ref()
-            .is_some_and(|position| position.position_id == _event.position_id);
-        let quarantined_position_closed = self
-            .quarantined_position
-            .as_ref()
-            .is_some_and(|position| position.observed.position_id == _event.position_id);
-        if tracked_position_closed {
-            self.open_position_active = false;
-            self.open_position = None;
-        }
-        if (tracked_position_closed || quarantined_position_closed)
-            && self
-                .pending_exit
-                .as_ref()
-                .is_some_and(|pending| pending.fill_received)
-        {
-            self.pending_exit = None;
-        }
-        if quarantined_position_closed {
-            self.quarantined_position = None;
-        }
-        if tracked_position_closed || quarantined_position_closed {
-            self.recovery = false;
+        match &mut self.exposure {
+            ExposureState::Managed(position)
+                if position.position.position_id == _event.position_id =>
+            {
+                self.exposure = ExposureState::Flat;
+            }
+            ExposureState::ExitPending(exit_pending)
+                if exit_pending.pending_exit.position_id == Some(_event.position_id) =>
+            {
+                exit_pending.pending_exit.close_received = true;
+                exit_pending.position = None;
+                if exit_pending.is_terminal() {
+                    self.exposure = ExposureState::Flat;
+                }
+            }
+            ExposureState::UnsupportedObserved(observed)
+                if observed.observed.position_id == _event.position_id =>
+            {
+                self.exposure = ExposureState::Flat;
+            }
+            _ => {}
         }
         self.refresh_book_subscriptions_for_current_state();
     }
@@ -3668,10 +3791,13 @@ fn sanitize_non_negative(value: f64) -> f64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OnePositionOccupancy {
+enum ExposureOccupancy {
     PendingEntry,
-    PendingExit,
-    OpenPosition,
+    EntryReconcilePending,
+    ManagedPosition,
+    ExitPending,
+    UnsupportedObserved,
+    BlindRecovery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3694,7 +3820,7 @@ enum EntryBlockReason {
     RecoveryMode,
     MarketCoolingDown,
     ForcedFlat(ForcedFlatReason),
-    OnePositionInvariant(OnePositionOccupancy),
+    OnePositionInvariant(ExposureOccupancy),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4231,6 +4357,92 @@ mod tests {
         strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
         strategy
+    }
+
+    fn pending_entry_state(
+        strategy: &EthChainlinkTaker,
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        outcome_side: OutcomeSide,
+        book: OutcomeBookState,
+    ) -> PendingEntryState {
+        PendingEntryState {
+            client_order_id,
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            outcome_side: Some(outcome_side),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book,
+        }
+    }
+
+    fn set_pending_entry(strategy: &mut EthChainlinkTaker, pending: PendingEntryState) {
+        strategy.exposure = ExposureState::PendingEntry(pending);
+    }
+
+    fn set_entry_reconcile_pending(
+        strategy: &mut EthChainlinkTaker,
+        pending: PendingEntryState,
+        reason: EntryReconcileReason,
+    ) {
+        strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+    }
+
+    fn set_managed_position(
+        strategy: &mut EthChainlinkTaker,
+        position: OpenPositionState,
+        origin: ManagedPositionOrigin,
+    ) {
+        strategy.exposure = ExposureState::Managed(ManagedPositionState { position, origin });
+    }
+
+    fn set_exit_pending(
+        strategy: &mut EthChainlinkTaker,
+        position: OpenPositionState,
+        client_order_id: ClientOrderId,
+        fill_received: bool,
+        close_received: bool,
+        origin: ManagedPositionOrigin,
+    ) {
+        strategy.exposure = ExposureState::ExitPending(ExitPendingState {
+            pending_exit: PendingExitState {
+                client_order_id,
+                market_id: position.market_id.clone(),
+                position_id: Some(position.position_id),
+                fill_received,
+                close_received,
+            },
+            position: Some(ManagedPositionState { position, origin }),
+        });
+    }
+
+    fn set_blind_recovery(strategy: &mut EthChainlinkTaker, reason: BlindRecoveryReason) {
+        strategy.exposure = ExposureState::BlindRecovery(BlindRecoveryState { reason });
+    }
+
+    fn set_unsupported_observed(
+        strategy: &mut EthChainlinkTaker,
+        observed: OpenPositionState,
+        reason: UnsupportedObservedReason,
+    ) {
+        strategy.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
+            observed,
+            reason,
+        });
+    }
+
+    fn managed_position_ref(strategy: &EthChainlinkTaker) -> Option<&OpenPositionState> {
+        strategy.managed_position().map(|managed| &managed.position)
+    }
+
+    fn pending_exit_ref(strategy: &EthChainlinkTaker) -> Option<&PendingExitState> {
+        strategy
+            .exposure
+            .exit_pending()
+            .map(|exit_pending| &exit_pending.pending_exit)
     }
 
     fn active_snapshot(market_id: &str) -> RuntimeSelectionSnapshot {
@@ -5075,7 +5287,7 @@ mod tests {
     fn switch_resets_only_active_market_state() {
         let mut strategy = test_strategy();
         strategy.cooldowns.insert("A".to_string(), 123);
-        strategy.recovery = true;
+        set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
@@ -5088,7 +5300,7 @@ mod tests {
         strategy.apply_selection_snapshot(active_snapshot("B"));
 
         assert_eq!(strategy.cooldowns.get("A"), Some(&123));
-        assert!(strategy.recovery);
+        assert!(strategy.exposure.is_recovering());
         let active = &strategy.active;
         assert_eq!(active.market_id.as_deref(), Some("B"));
         assert!(active.interval_open.is_none());
@@ -5131,9 +5343,9 @@ mod tests {
             0.450,
         ));
 
-        assert!(strategy.open_position_active);
+        assert!(strategy.managed_position().is_some());
         assert_eq!(
-            strategy.open_position,
+            managed_position_ref(&strategy).cloned(),
             Some(OpenPositionState {
                 market_id: Some("MKT-1".to_string()),
                 instrument_id,
@@ -5151,31 +5363,33 @@ mod tests {
             })
         );
 
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: ClientOrderId::from("EXIT-001"),
-            market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
-        strategy.recovery = true;
+        let recovered_position = managed_position_ref(&strategy)
+            .cloned()
+            .expect("position should be managed before exit pending");
+        set_exit_pending(
+            &mut strategy,
+            recovered_position,
+            ClientOrderId::from("EXIT-001"),
+            false,
+            false,
+            ManagedPositionOrigin::RecoveryBootstrap,
+        );
         strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
-        assert!(!strategy.open_position_active);
-        assert!(strategy.open_position.is_none());
+        assert!(strategy.managed_position().is_none());
         assert_eq!(
-            strategy
-                .pending_exit
-                .as_ref()
-                .map(|pending| pending.client_order_id),
+            pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
             Some(ClientOrderId::from("EXIT-001"))
         );
         assert_eq!(
-            strategy
-                .pending_exit
-                .as_ref()
-                .map(|pending| pending.fill_received),
+            pending_exit_ref(&strategy).map(|pending| pending.fill_received),
             Some(false)
         );
-        assert!(!strategy.recovery);
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.close_received),
+            Some(true)
+        );
+        assert!(!strategy.exposure.is_recovering());
     }
 
     #[test]
@@ -5185,8 +5399,7 @@ mod tests {
         let position_id = PositionId::from("P-EXIT-001");
         let exit_client_order_id = ClientOrderId::from("EXIT-001");
 
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id,
             position_id,
@@ -5200,12 +5413,15 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
-        });
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: exit_client_order_id,
-            market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+        };
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         strategy
             .on_order_filled(&order_filled_event(
@@ -5216,26 +5432,107 @@ mod tests {
             .expect("exit fill bookkeeping should succeed");
 
         assert_eq!(
-            strategy
-                .pending_exit
-                .as_ref()
-                .map(|pending| pending.client_order_id),
+            pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
             Some(exit_client_order_id)
         );
         assert_eq!(
-            strategy
-                .pending_exit
-                .as_ref()
-                .map(|pending| pending.fill_received),
+            pending_exit_ref(&strategy).map(|pending| pending.fill_received),
             Some(true)
         );
-        assert!(strategy.open_position_active);
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.close_received),
+            Some(false)
+        );
+        assert!(strategy.managed_position().is_some());
 
         strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
-        assert!(!strategy.open_position_active);
-        assert!(strategy.open_position.is_none());
-        assert!(strategy.pending_exit.is_none());
+        assert!(strategy.managed_position().is_none());
+        assert!(pending_exit_ref(&strategy).is_none());
+    }
+
+    #[test]
+    fn unrelated_position_close_does_not_clear_pending_exit_before_fill() {
+        let mut strategy = ready_to_trade_strategy();
+        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let open_position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: tracked_instrument,
+            position_id: PositionId::from("P-TRACKED"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            ClientOrderId::from("EXIT-001"),
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        strategy.on_position_closed(position_closed_event(
+            tracked_instrument,
+            PositionId::from("P-OTHER"),
+        ));
+
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+            Some(ClientOrderId::from("EXIT-001"))
+        );
+        assert!(strategy.managed_position().is_some());
+    }
+
+    #[test]
+    fn unrelated_position_close_does_not_clear_filled_pending_exit() {
+        let mut strategy = ready_to_trade_strategy();
+        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let open_position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: tracked_instrument,
+            position_id: PositionId::from("P-TRACKED"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            ClientOrderId::from("EXIT-001"),
+            true,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        strategy.on_position_closed(position_closed_event(
+            tracked_instrument,
+            PositionId::from("P-OTHER"),
+        ));
+
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+            Some(ClientOrderId::from("EXIT-001"))
+        );
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+            Some(true)
+        );
+        assert!(strategy.managed_position().is_some());
     }
 
     #[test]
@@ -5244,33 +5541,90 @@ mod tests {
         let exit_client_order_id = ClientOrderId::from("EXIT-001");
 
         let mut canceled = ready_to_trade_strategy();
-        canceled.pending_exit = Some(PendingExitState {
-            client_order_id: exit_client_order_id,
+        let canceled_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+            instrument_id,
+            position_id: PositionId::from("P-CANCEL"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: canceled.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: canceled.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut canceled,
+            canceled_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         canceled
             .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
             .expect("exit cancel bookkeeping should succeed");
-        assert!(canceled.pending_exit.is_none());
+        assert!(pending_exit_ref(&canceled).is_none());
+        assert!(canceled.managed_position().is_some());
 
         let mut rejected = ready_to_trade_strategy();
-        rejected.pending_exit = Some(PendingExitState {
-            client_order_id: exit_client_order_id,
+        let rejected_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+            instrument_id,
+            position_id: PositionId::from("P-REJECT"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: rejected.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: rejected.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut rejected,
+            rejected_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         rejected.on_order_rejected(order_rejected_event(exit_client_order_id, instrument_id));
-        assert!(rejected.pending_exit.is_none());
+        assert!(pending_exit_ref(&rejected).is_none());
+        assert!(rejected.managed_position().is_some());
 
         let mut expired = ready_to_trade_strategy();
-        expired.pending_exit = Some(PendingExitState {
-            client_order_id: exit_client_order_id,
+        let expired_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+            instrument_id,
+            position_id: PositionId::from("P-EXPIRE"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: expired.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: expired.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut expired,
+            expired_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         expired.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
-        assert!(expired.pending_exit.is_none());
+        assert!(pending_exit_ref(&expired).is_none());
+        assert!(expired.managed_position().is_some());
     }
 
     #[test]
@@ -5292,14 +5646,13 @@ mod tests {
     fn numeric_token_position_semantics_do_not_guess_without_suffixes() {
         let down_instrument = InstrumentId::from("0xcondition-222.POLYMARKET");
         let up_instrument = InstrumentId::from("0xcondition-111.POLYMARKET");
-        let policy = StrategyExecutionPolicy::LongOnly;
 
         assert_eq!(
-            policy.infer_outcome_side(OrderSide::Buy, PositionSide::Long, down_instrument),
+            infer_strategy_outcome_side(OrderSide::Buy, PositionSide::Long, down_instrument),
             None
         );
         assert_eq!(
-            policy.infer_outcome_side(OrderSide::Buy, PositionSide::Long, up_instrument),
+            infer_strategy_outcome_side(OrderSide::Buy, PositionSide::Long, up_instrument),
             None
         );
     }
@@ -5377,10 +5730,17 @@ mod tests {
         let entry_client_order_id = ClientOrderId::from("ENTRY-A");
         let position_id = PositionId::from("P-A");
         let instrument_a = strategy.active.books.up.instrument_id.unwrap();
-        strategy.pending_entry_order = Some(entry_client_order_id);
-        strategy.pending_entry_market_id = Some("MKT-1".to_string());
-        strategy.pending_entry_instrument_id = Some(instrument_a);
-        strategy.pending_entry_outcome_side = Some(OutcomeSide::Up);
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_a,
+            OutcomeSide::Up,
+            strategy.active.books.up.clone(),
+        );
+        set_pending_entry(
+            &mut strategy,
+            pending,
+        );
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy
@@ -5401,8 +5761,7 @@ mod tests {
         let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
         let exit_client_order_id = ClientOrderId::from("EXIT-A");
         let position_id = PositionId::from("P-A");
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id: tracked_instrument,
             position_id,
@@ -5416,12 +5775,15 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
-        });
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: exit_client_order_id,
-            market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+        };
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
         strategy
@@ -5442,8 +5804,7 @@ mod tests {
         let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
         let exit_client_order_id = ClientOrderId::from("EXIT-UNKNOWN");
         let position_id = PositionId::from("P-UNKNOWN");
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: None,
             instrument_id: tracked_instrument,
             position_id,
@@ -5457,13 +5818,16 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
-        });
+        };
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: exit_client_order_id,
-            market_id: strategy.current_position_market_id(),
-            fill_received: false,
-        });
 
         strategy
             .on_order_filled(&order_filled_event(
@@ -5482,8 +5846,7 @@ mod tests {
         let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
         let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
         let position_id = PositionId::from("P-DELAYED");
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id: tracked_instrument,
             position_id,
@@ -5497,12 +5860,15 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
-        });
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: exit_client_order_id,
-            market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+        };
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
 
@@ -5516,7 +5882,7 @@ mod tests {
 
         assert!(strategy.market_in_cooldown("MKT-1", 1_000));
         assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
-        assert!(strategy.pending_exit.is_none());
+        assert!(pending_exit_ref(&strategy).is_none());
     }
 
     #[test]
@@ -5528,8 +5894,7 @@ mod tests {
         tracked_book.best_bid = Some(0.430);
         tracked_book.best_ask = Some(0.450);
         tracked_book.liquidity_available = Some(5.0);
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-A".to_string()),
             instrument_id: position_instrument,
             position_id: PositionId::from("P-THIN-001"),
@@ -5543,7 +5908,12 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: tracked_book,
-        });
+        };
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy.active.books.up.liquidity_available = Some(5_000.0);
         strategy.active.books.down.liquidity_available = Some(5_000.0);
@@ -5563,16 +5933,14 @@ mod tests {
     fn untracked_position_close_keeps_recovery_fail_closed() {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        strategy.recovery = true;
-        strategy.open_position_active = false;
-        strategy.open_position = None;
+        set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
 
         strategy.on_position_closed(position_closed_event(
             instrument_id,
             PositionId::from("P-X"),
         ));
 
-        assert!(strategy.recovery);
+        assert!(strategy.exposure.is_recovering());
     }
 
     #[test]
@@ -5582,15 +5950,17 @@ mod tests {
         let entry_client_order_id = ClientOrderId::from("ENTRY-A");
         let position_id = PositionId::from("P-A");
         let original_book = strategy.active.books.up.clone();
-        strategy.pending_entry_order = Some(entry_client_order_id);
-        strategy.pending_entry_market_id = Some("MKT-1".to_string());
-        strategy.pending_entry_instrument_id = Some(instrument_a);
-        strategy.pending_entry_outcome_side = Some(OutcomeSide::Up);
-        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
-        strategy.pending_entry_interval_open = Some(3_100.0);
-        strategy.pending_entry_selection_published_at_ms = Some(1_000);
-        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
-        strategy.pending_entry_book = Some(original_book.clone());
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_a,
+            OutcomeSide::Up,
+            original_book.clone(),
+        );
+        set_pending_entry(
+            &mut strategy,
+            pending,
+        );
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy
@@ -5602,37 +5972,23 @@ mod tests {
             .expect("fill bookkeeping should succeed");
 
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
-                .and_then(|p| p.book.best_bid),
+            managed_position_ref(&strategy).and_then(|p| p.book.best_bid),
             original_book.best_bid
         );
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
-                .and_then(|p| p.interval_open),
+            managed_position_ref(&strategy).and_then(|p| p.interval_open),
             Some(3_100.0)
         );
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
-                .and_then(|p| p.selection_published_at_ms),
+            managed_position_ref(&strategy).and_then(|p| p.selection_published_at_ms),
             Some(1_000)
         );
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
-                .and_then(|p| p.seconds_to_expiry_at_selection),
+            managed_position_ref(&strategy).and_then(|p| p.seconds_to_expiry_at_selection),
             Some(300)
         );
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
+            managed_position_ref(&strategy)
                 .and_then(|p| p.outcome_fees.up_token_id.as_deref()),
             Some("MKT-1-UP")
         );
@@ -5651,15 +6007,17 @@ mod tests {
         let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-NO-POS");
         let original_book = strategy.active.books.up.clone();
-        strategy.pending_entry_order = Some(entry_client_order_id);
-        strategy.pending_entry_market_id = Some("MKT-1".to_string());
-        strategy.pending_entry_instrument_id = Some(instrument_id);
-        strategy.pending_entry_outcome_side = Some(OutcomeSide::Up);
-        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
-        strategy.pending_entry_interval_open = Some(3_100.0);
-        strategy.pending_entry_selection_published_at_ms = Some(1_000);
-        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
-        strategy.pending_entry_book = Some(original_book.clone());
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            original_book.clone(),
+        );
+        set_pending_entry(
+            &mut strategy,
+            pending,
+        );
 
         strategy
             .on_order_filled(&order_filled_event_with_details(
@@ -5670,10 +6028,12 @@ mod tests {
             ))
             .expect("fill without position id should not wedge");
 
-        assert!(strategy.recovery);
-        assert!(!strategy.open_position_active);
-        assert!(strategy.open_position.is_none());
-        assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
+        assert!(strategy.exposure.is_recovering());
+        assert!(strategy.managed_position().is_none());
+        assert_eq!(
+            strategy.pending_entry().map(|pending| pending.client_order_id),
+            Some(entry_client_order_id)
+        );
         assert!(strategy.market_in_cooldown("MKT-1", 1_000));
 
         strategy.on_position_opened(position_opened_event(
@@ -5683,29 +6043,85 @@ mod tests {
             0.450,
         ));
 
-        assert!(strategy.open_position_active);
+        assert!(strategy.managed_position().is_some());
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
-                .map(|position| position.position_id),
+            managed_position_ref(&strategy).map(|position| position.position_id),
             Some(PositionId::from("P-LATE"))
         );
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
-                .and_then(|position| position.market_id.as_deref()),
+            managed_position_ref(&strategy).and_then(|position| position.market_id.as_deref()),
             Some("MKT-1")
         );
         assert_eq!(
-            strategy
-                .open_position
-                .as_ref()
-                .map(|position| position.book.clone()),
+            managed_position_ref(&strategy).map(|position| position.book.clone()),
             Some(original_book)
         );
-        assert!(strategy.pending_entry_order.is_none());
+        assert!(strategy.pending_entry().is_none());
+    }
+
+    #[test]
+    fn late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state() {
+        let entry_client_order_id = ClientOrderId::from("ENTRY-LATE-TERM");
+        let instrument_id = polymarket_instrument_id("condition-MKT-1", "MKT-1-UP");
+
+        let mut canceled = ready_to_trade_strategy();
+        let canceled_pending = pending_entry_state(
+            &canceled,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            canceled.active.books.up.clone(),
+        );
+        set_entry_reconcile_pending(
+            &mut canceled,
+            canceled_pending,
+            EntryReconcileReason::AwaitingPositionMaterialization,
+        );
+        canceled
+            .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
+            .expect("late cancel should preserve fail-closed reconcile state");
+        assert!(matches!(
+            canceled.exposure,
+            ExposureState::EntryReconcilePending { .. }
+        ));
+
+        let mut rejected = ready_to_trade_strategy();
+        let rejected_pending = pending_entry_state(
+            &rejected,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            rejected.active.books.up.clone(),
+        );
+        set_entry_reconcile_pending(
+            &mut rejected,
+            rejected_pending,
+            EntryReconcileReason::AwaitingPositionMaterialization,
+        );
+        rejected.on_order_rejected(order_rejected_event(entry_client_order_id, instrument_id));
+        assert!(matches!(
+            rejected.exposure,
+            ExposureState::EntryReconcilePending { .. }
+        ));
+
+        let mut expired = ready_to_trade_strategy();
+        let expired_pending = pending_entry_state(
+            &expired,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            expired.active.books.up.clone(),
+        );
+        set_entry_reconcile_pending(
+            &mut expired,
+            expired_pending,
+            EntryReconcileReason::AwaitingPositionMaterialization,
+        );
+        expired.on_order_expired(order_expired_event(entry_client_order_id, instrument_id));
+        assert!(matches!(
+            expired.exposure,
+            ExposureState::EntryReconcilePending { .. }
+        ));
     }
 
     #[test]
@@ -5713,15 +6129,17 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
-        strategy.pending_entry_order = Some(entry_client_order_id);
-        strategy.pending_entry_market_id = Some("MKT-1".to_string());
-        strategy.pending_entry_instrument_id = Some(instrument_id);
-        strategy.pending_entry_outcome_side = Some(OutcomeSide::Down);
-        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
-        strategy.pending_entry_interval_open = Some(3_100.0);
-        strategy.pending_entry_selection_published_at_ms = Some(1_000);
-        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
-        strategy.pending_entry_book = Some(strategy.active.books.down.clone());
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Down,
+            strategy.active.books.down.clone(),
+        );
+        set_pending_entry(
+            &mut strategy,
+            pending,
+        );
 
         strategy
             .on_order_filled(&order_filled_event_with_details(
@@ -5732,11 +6150,16 @@ mod tests {
             ))
             .expect("sell fill should fail closed into recovery");
 
-        assert!(strategy.recovery);
-        assert!(!strategy.open_position_active);
-        assert!(strategy.open_position.is_none());
-        assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
-        assert_eq!(strategy.pending_entry_instrument_id, Some(instrument_id));
+        assert!(strategy.exposure.is_recovering());
+        assert!(strategy.managed_position().is_none());
+        assert_eq!(
+            strategy.pending_entry().map(|pending| pending.client_order_id),
+            Some(entry_client_order_id)
+        );
+        assert_eq!(
+            strategy.pending_entry().map(|pending| pending.instrument_id),
+            Some(instrument_id)
+        );
     }
 
     #[test]
@@ -5744,15 +6167,17 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
-        strategy.pending_entry_order = Some(entry_client_order_id);
-        strategy.pending_entry_market_id = Some("MKT-1".to_string());
-        strategy.pending_entry_instrument_id = Some(instrument_id);
-        strategy.pending_entry_outcome_side = Some(OutcomeSide::Down);
-        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
-        strategy.pending_entry_interval_open = Some(3_100.0);
-        strategy.pending_entry_selection_published_at_ms = Some(1_000);
-        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
-        strategy.pending_entry_book = Some(strategy.active.books.down.clone());
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Down,
+            strategy.active.books.down.clone(),
+        );
+        set_pending_entry(
+            &mut strategy,
+            pending,
+        );
 
         strategy.on_position_opened(position_opened_event_with_details(
             instrument_id,
@@ -5763,13 +6188,12 @@ mod tests {
             PositionSide::Short,
         ));
 
-        assert!(strategy.recovery);
-        assert!(!strategy.open_position_active);
-        assert!(strategy.open_position.is_none());
-        let quarantined = strategy
-            .quarantined_position
-            .as_ref()
-            .expect("unsupported short should be quarantined truthfully");
+        assert!(strategy.exposure.is_recovering());
+        assert!(strategy.managed_position().is_none());
+        let quarantined = match &strategy.exposure {
+            ExposureState::UnsupportedObserved(state) => state,
+            other => panic!("expected unsupported observed exposure, got {other:?}"),
+        };
         assert_eq!(quarantined.observed.instrument_id, instrument_id);
         assert_eq!(
             quarantined.observed.position_id,
@@ -5777,7 +6201,7 @@ mod tests {
         );
         assert_eq!(quarantined.observed.entry_order_side, OrderSide::Sell);
         assert_eq!(quarantined.observed.side, PositionSide::Short);
-        assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
+        assert!(strategy.pending_entry().is_none());
     }
 
     #[test]
@@ -5785,15 +6209,17 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-BAD-SIDE");
-        strategy.pending_entry_order = Some(entry_client_order_id);
-        strategy.pending_entry_market_id = Some("MKT-1".to_string());
-        strategy.pending_entry_instrument_id = Some(instrument_id);
-        strategy.pending_entry_outcome_side = Some(OutcomeSide::Up);
-        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
-        strategy.pending_entry_interval_open = Some(3_100.0);
-        strategy.pending_entry_selection_published_at_ms = Some(1_000);
-        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
-        strategy.pending_entry_book = Some(strategy.active.books.up.clone());
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            strategy.active.books.up.clone(),
+        );
+        set_pending_entry(
+            &mut strategy,
+            pending,
+        );
 
         strategy.on_position_opened(position_opened_event_with_details(
             instrument_id,
@@ -5804,10 +6230,12 @@ mod tests {
             PositionSide::Flat,
         ));
 
-        assert!(strategy.recovery);
-        assert!(!strategy.open_position_active);
-        assert!(strategy.open_position.is_none());
-        assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
+        assert!(strategy.exposure.is_recovering());
+        assert!(strategy.managed_position().is_none());
+        assert_eq!(
+            strategy.pending_entry().map(|pending| pending.client_order_id),
+            Some(entry_client_order_id)
+        );
     }
 
     #[test]
@@ -5815,8 +6243,7 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         let instrument_a = strategy.active.books.up.instrument_id.unwrap();
         let preserved_book = strategy.active.books.up.clone();
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let preserved_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id: instrument_a,
             position_id: PositionId::from("P-A"),
@@ -5830,7 +6257,12 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: preserved_book.clone(),
-        });
+        };
+        set_managed_position(
+            &mut strategy,
+            preserved_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy.active.interval_open = Some(3_200.0);
@@ -5841,8 +6273,8 @@ mod tests {
             0.450,
         ));
 
-        let open_position = strategy
-            .open_position
+        let open_position = managed_position_ref(&strategy)
+            .cloned()
             .expect("position should remain tracked");
         assert_eq!(open_position.market_id.as_deref(), Some("MKT-1"));
         assert_eq!(open_position.interval_open, Some(3_100.0));
@@ -5853,92 +6285,6 @@ mod tests {
             Some("MKT-1-UP")
         );
         assert_eq!(open_position.book.best_bid, preserved_book.best_bid);
-    }
-
-    #[test]
-    fn untracked_position_close_does_not_clear_pending_exit() {
-        let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
-            position_id: PositionId::from("P-TRACKED"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        });
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: ClientOrderId::from("EXIT-001"),
-            market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
-
-        strategy.on_position_closed(position_closed_event(
-            tracked_instrument,
-            PositionId::from("P-OTHER"),
-        ));
-
-        assert_eq!(
-            strategy
-                .pending_exit
-                .as_ref()
-                .map(|pending| pending.client_order_id),
-            Some(ClientOrderId::from("EXIT-001"))
-        );
-        assert!(strategy.open_position.is_some());
-    }
-
-    #[test]
-    fn unrelated_position_close_does_not_clear_filled_pending_exit() {
-        let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
-            position_id: PositionId::from("P-TRACKED"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        });
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: ClientOrderId::from("EXIT-001"),
-            market_id: Some("MKT-1".to_string()),
-            fill_received: true,
-        });
-
-        strategy.on_position_closed(position_closed_event(
-            tracked_instrument,
-            PositionId::from("P-OTHER"),
-        ));
-
-        assert_eq!(
-            strategy
-                .pending_exit
-                .as_ref()
-                .map(|pending| pending.client_order_id),
-            Some(ClientOrderId::from("EXIT-001"))
-        );
-        assert_eq!(
-            strategy.pending_exit.as_ref().map(|pending| pending.fill_received),
-            Some(true)
-        );
-        assert!(strategy.open_position.is_some());
     }
 
     #[test]
@@ -6509,9 +6855,23 @@ mod tests {
     fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 1_000));
-        strategy.recovery = true;
         strategy.cooldowns.insert("MKT-1".to_string(), 5_000);
-        strategy.pending_entry_order = Some(ClientOrderId::from("ENTRY-001"));
+        let pending = PendingEntryState {
+            client_order_id: ClientOrderId::from("ENTRY-001"),
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            interval_open: None,
+            selection_published_at_ms: None,
+            seconds_to_expiry_at_selection: None,
+            book: strategy.active.books.up.clone(),
+        };
+        set_entry_reconcile_pending(
+            &mut strategy,
+            pending,
+            EntryReconcileReason::AwaitingPositionMaterialization,
+        );
 
         let decision = strategy.entry_gate_decision_at(2_000);
 
@@ -6527,7 +6887,7 @@ mod tests {
                 EntryBlockReason::RecoveryMode,
                 EntryBlockReason::MarketCoolingDown,
                 EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze),
-                EntryBlockReason::OnePositionInvariant(OnePositionOccupancy::PendingEntry),
+                EntryBlockReason::OnePositionInvariant(ExposureOccupancy::EntryReconcilePending),
             ]
         );
     }
@@ -6535,11 +6895,29 @@ mod tests {
     #[test]
     fn task5_one_position_invariant_panics_in_debug_or_rejects_in_release() {
         let mut strategy = ready_to_trade_strategy();
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: ClientOrderId::from("EXIT-001"),
+        let invariant_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+            instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+            position_id: PositionId::from("P-INVARIANT-1"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            invariant_position,
+            ClientOrderId::from("EXIT-001"),
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             strategy.enforce_one_position_invariant()
@@ -6555,11 +6933,29 @@ mod tests {
     #[test]
     fn entry_gate_reports_one_position_invariant_only_on_occupancy_change() {
         let mut strategy = ready_to_trade_strategy();
-        strategy.pending_exit = Some(PendingExitState {
-            client_order_id: ClientOrderId::from("EXIT-001"),
+        let invariant_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
-            fill_received: false,
-        });
+            instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+            position_id: PositionId::from("P-INVARIANT-2"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            invariant_position,
+            ClientOrderId::from("EXIT-001"),
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         let first = strategy.entry_gate_decision_at(2_000);
         let second = strategy.entry_gate_decision_at(2_001);
@@ -6568,25 +6964,25 @@ mod tests {
             first
                 .blocked_by
                 .contains(&EntryBlockReason::OnePositionInvariant(
-                    OnePositionOccupancy::PendingExit
+                    ExposureOccupancy::ExitPending
                 ))
         );
         assert_eq!(
-            strategy.last_reported_one_position_occupancy.get(),
-            Some(OnePositionOccupancy::PendingExit)
+            strategy.last_reported_exposure_occupancy.get(),
+            Some(ExposureOccupancy::ExitPending)
         );
         assert_eq!(first.blocked_by, second.blocked_by);
 
-        strategy.pending_exit = None;
+        strategy.exposure = ExposureState::Flat;
         let cleared = strategy.entry_gate_decision_at(2_002);
         assert!(
             !cleared
                 .blocked_by
                 .contains(&EntryBlockReason::OnePositionInvariant(
-                    OnePositionOccupancy::PendingExit
+                    ExposureOccupancy::ExitPending
                 ))
         );
-        assert_eq!(strategy.last_reported_one_position_occupancy.get(), None);
+        assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
     }
 
     #[test]
@@ -6693,7 +7089,7 @@ mod tests {
         assert!(strategy.market_in_cooldown("MKT-1", 30_999));
         assert!(!strategy.market_in_cooldown("MKT-2", 30_999));
 
-        strategy.recovery = true;
+        set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
         let decision = strategy.entry_gate_decision_at(2_000);
 
         assert!(
@@ -6873,8 +7269,7 @@ mod tests {
         strategy.active.warmup_count = 2;
         strategy.active.last_reference_ts_ms = Some(2_000);
         strategy.refresh_fee_readiness();
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             position_id: PositionId::from("P-UP-LOG-001"),
@@ -6888,7 +7283,12 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
-        });
+        };
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy.active.interval_open = Some(3_200.0);
@@ -6915,22 +7315,25 @@ mod tests {
         tracked_book.best_bid = Some(0.520);
         tracked_book.best_ask = Some(0.530);
         tracked_book.liquidity_available = Some(100.0);
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
-            market_id: None,
-            instrument_id,
-            position_id: PositionId::from("P-UNKNOWN-001"),
-            outcome_side: None,
-            outcome_fees: OutcomeFeeState::default(),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(5.0, 2),
-            avg_px_open: 0.480,
-            interval_open: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
-            book: tracked_book,
-        });
+        set_managed_position(
+            &mut strategy,
+            OpenPositionState {
+                market_id: None,
+                instrument_id,
+                position_id: PositionId::from("P-UNKNOWN-001"),
+                outcome_side: None,
+                outcome_fees: OutcomeFeeState::default(),
+                entry_order_side: OrderSide::Buy,
+                side: PositionSide::Long,
+                quantity: Quantity::new(5.0, 2),
+                avg_px_open: 0.480,
+                interval_open: None,
+                selection_published_at_ms: None,
+                seconds_to_expiry_at_selection: None,
+                book: tracked_book,
+            },
+            ManagedPositionOrigin::RecoveryBootstrap,
+        );
 
         let decision = strategy.exit_submission_decision_at(2_000);
 
@@ -6954,9 +7357,9 @@ mod tests {
         tracked_book.best_bid = Some(0.520);
         tracked_book.best_ask = Some(0.530);
         tracked_book.liquidity_available = Some(100.0);
-        strategy.recovery = true;
-        strategy.quarantined_position = Some(QuarantinedPositionState {
-            observed: OpenPositionState {
+        set_unsupported_observed(
+            &mut strategy,
+            OpenPositionState {
                 market_id: None,
                 instrument_id,
                 position_id: PositionId::from("P-LEGACY-SHORT-001"),
@@ -6971,7 +7374,8 @@ mod tests {
                 seconds_to_expiry_at_selection: None,
                 book: tracked_book,
             },
-        });
+            UnsupportedObservedReason::BootstrappedUnsupportedContract,
+        );
 
         let decision = strategy.exit_submission_decision_at(2_000);
 
@@ -6987,8 +7391,7 @@ mod tests {
     fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.active.phase = SelectionPhase::Freeze;
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             position_id: PositionId::from("P-UP-001"),
@@ -7002,7 +7405,12 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
-        });
+        };
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         let decision = strategy.exit_submission_decision_at(1_200);
 
@@ -7020,8 +7428,7 @@ mod tests {
     fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.active.phase = SelectionPhase::Freeze;
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.down.instrument_id.unwrap(),
             position_id: PositionId::from("P-DOWN-001"),
@@ -7035,7 +7442,12 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.down.clone(),
-        });
+        };
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         let decision = strategy.exit_submission_decision_at(1_200);
 
@@ -7052,8 +7464,7 @@ mod tests {
     #[test]
     fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
+        let open_position = OpenPositionState {
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             position_id: PositionId::from("P-UP-002"),
@@ -7067,7 +7478,12 @@ mod tests {
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
-        });
+        };
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
@@ -7083,5 +7499,110 @@ mod tests {
         assert_eq!(decision.price, strategy.active.books.up.best_bid);
         assert_eq!(decision.quantity, Some(Quantity::new(10.0, 2)));
         assert_eq!(decision.blocked_reason, None);
+    }
+
+    #[test]
+    fn exposure_entry_reconcile_pending_preserves_context_and_blocks_new_entries() {
+        let strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let pending = PendingEntryState {
+            client_order_id: ClientOrderId::from("ENTRY-RECONCILE-001"),
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        let exposure = ExposureState::EntryReconcilePending {
+            pending: pending.clone(),
+            reason: EntryReconcileReason::AwaitingPositionMaterialization,
+        };
+
+        assert_eq!(exposure.pending_entry(), Some(&pending));
+        assert_eq!(
+            exposure.occupancy(),
+            Some(ExposureOccupancy::EntryReconcilePending)
+        );
+        assert!(exposure.blocks_new_entries());
+    }
+
+    #[test]
+    fn exposure_exit_pending_requires_both_fill_and_close_to_become_flat() {
+        let strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let managed = ManagedPositionState {
+            position: OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
+                instrument_id,
+                position_id: PositionId::from("P-EXIT-STATE-001"),
+                outcome_side: Some(OutcomeSide::Up),
+                outcome_fees: strategy.active.outcome_fees.clone(),
+                entry_order_side: OrderSide::Buy,
+                side: PositionSide::Long,
+                quantity: Quantity::new(10.0, 2),
+                avg_px_open: 0.450,
+                interval_open: Some(3_100.0),
+                selection_published_at_ms: Some(1_000),
+                seconds_to_expiry_at_selection: Some(300),
+                book: strategy.active.books.up.clone(),
+            },
+            origin: ManagedPositionOrigin::StrategyEntry,
+        };
+        let mut exit_pending = ExitPendingState {
+            position: Some(managed.clone()),
+            pending_exit: PendingExitState {
+                client_order_id: ClientOrderId::from("EXIT-STATE-001"),
+                market_id: Some("MKT-1".to_string()),
+                position_id: Some(PositionId::from("P-EXIT-STATE-001")),
+                fill_received: false,
+                close_received: false,
+            },
+        };
+
+        assert!(!exit_pending.is_terminal());
+        exit_pending.pending_exit.fill_received = true;
+        assert!(!exit_pending.is_terminal());
+        exit_pending.pending_exit.close_received = true;
+        assert!(exit_pending.is_terminal());
+        assert_eq!(
+            exit_pending.position.as_ref().map(|state| state.position.position_id),
+            Some(PositionId::from("P-EXIT-STATE-001"))
+        );
+    }
+
+    #[test]
+    fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
+        let strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let managed = ExposureState::Managed(ManagedPositionState {
+            position: OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
+                instrument_id,
+                position_id: PositionId::from("P-RECOVERY-001"),
+                outcome_side: Some(OutcomeSide::Up),
+                outcome_fees: strategy.active.outcome_fees.clone(),
+                entry_order_side: OrderSide::Buy,
+                side: PositionSide::Long,
+                quantity: Quantity::new(5.0, 2),
+                avg_px_open: 0.440,
+                interval_open: Some(3_100.0),
+                selection_published_at_ms: Some(1_000),
+                seconds_to_expiry_at_selection: Some(300),
+                book: strategy.active.books.up.clone(),
+            },
+            origin: ManagedPositionOrigin::RecoveryBootstrap,
+        });
+
+        let managed = managed
+            .managed_position()
+            .expect("managed exposure should return managed position");
+        assert_eq!(managed.origin, ManagedPositionOrigin::RecoveryBootstrap);
+        assert_eq!(
+            managed.position.position_id,
+            PositionId::from("P-RECOVERY-001")
+        );
     }
 }

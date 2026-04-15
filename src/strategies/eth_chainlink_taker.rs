@@ -1841,6 +1841,10 @@ impl EthChainlinkTaker {
 
         if pending_matches && !pending_contract_supported {
             self.recovery = true;
+            self.open_position_active = self.open_position.is_some();
+            if !self.open_position_active {
+                self.open_position = None;
+            }
             log::error!(
                 "eth_chainlink_taker pending entry materialized unsupported live position contract: strategy_id={} instrument_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -1848,6 +1852,8 @@ impl EthChainlinkTaker {
                 entry_order_side,
                 side,
             );
+            self.refresh_book_subscriptions_for_current_state();
+            return;
         }
 
         self.open_position_active = true;
@@ -2855,8 +2861,6 @@ impl DataActor for EthChainlinkTaker {
                 self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
             self.pending_exit_market_id = None;
-        } else if let Some(market_id) = self.current_market_id().map(str::to_string) {
-            self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
         }
         Ok(())
     }
@@ -5251,6 +5255,45 @@ mod tests {
     }
 
     #[test]
+    fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection() {
+        let mut strategy = ready_to_trade_strategy();
+        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
+        let position_id = PositionId::from("P-DELAYED");
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: tracked_instrument,
+            position_id,
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        });
+        strategy.pending_exit_order = Some(exit_client_order_id);
+        strategy.pending_exit_market_id = Some("MKT-1".to_string());
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
+
+        strategy
+            .on_order_filled(&order_filled_event(
+                exit_client_order_id,
+                tracked_instrument,
+                position_id,
+            ))
+            .expect("delayed exit fill should not arm the wrong market cooldown");
+
+        assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+        assert!(!strategy.market_in_cooldown("MKT-1", 1_000));
+    }
+
+    #[test]
     fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let position_instrument = InstrumentId::from("condition-MKT-A-UP.POLYMARKET");
@@ -5471,7 +5514,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_entry_short_position_event_is_quarantined_as_recovery_only_position() {
+    fn pending_entry_short_position_event_stays_fail_closed_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
@@ -5494,15 +5537,10 @@ mod tests {
             PositionSide::Short,
         ));
 
-        let open_position = strategy
-            .open_position
-            .as_ref()
-            .expect("position event should materialize a tracked recovery position");
         assert!(strategy.recovery);
-        assert!(strategy.open_position_active);
-        assert_eq!(open_position.side, PositionSide::Short);
-        assert_eq!(open_position.entry_order_side, OrderSide::Sell);
-        assert!(strategy.pending_entry_order.is_none());
+        assert!(!strategy.open_position_active);
+        assert!(strategy.open_position.is_none());
+        assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
     }
 
     #[test]

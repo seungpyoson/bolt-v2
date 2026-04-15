@@ -507,6 +507,19 @@ fn self_test_workflow_is_always_present_but_runtime_gated() {
         "required self-test check must not use trigger-level paths filters"
     );
 
+    let concurrency = yaml
+        .get(YamlValue::String("concurrency".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("self-test workflow should declare concurrency");
+    let cancel_in_progress = concurrency
+        .get(YamlValue::String("cancel-in-progress".to_string()))
+        .expect("self-test workflow should declare cancel-in-progress");
+    assert_eq!(
+        cancel_in_progress,
+        &YamlValue::String("${{ github.event_name == 'pull_request' }}".to_string()),
+        "self-test workflow must only cancel superseded pull_request runs so push attestations on main complete"
+    );
+
     assert!(
         workflow.contains("Determine NT pointer self-test scope"),
         "self-test workflow must determine relevance at runtime"

@@ -5168,7 +5168,10 @@ mod tests {
             Some(ClientOrderId::from("EXIT-001"))
         );
         assert_eq!(
-            strategy.pending_exit.as_ref().map(|pending| pending.fill_received),
+            strategy
+                .pending_exit
+                .as_ref()
+                .map(|pending| pending.fill_received),
             Some(false)
         );
         assert!(!strategy.recovery);
@@ -5219,7 +5222,10 @@ mod tests {
             Some(exit_client_order_id)
         );
         assert_eq!(
-            strategy.pending_exit.as_ref().map(|pending| pending.fill_received),
+            strategy
+                .pending_exit
+                .as_ref()
+                .map(|pending| pending.fill_received),
             Some(true)
         );
         assert!(strategy.open_position_active);
@@ -6506,6 +6512,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-001"),
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
 
         let first = strategy.entry_gate_decision_at(2_000);

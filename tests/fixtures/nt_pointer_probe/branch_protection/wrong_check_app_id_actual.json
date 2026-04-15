@@ -6,6 +6,7 @@
       "clippy",
       "test",
       "build",
+      "nt-pointer-trust-root",
       "nt-pointer-control-plane",
       "nt-pointer-probe-self-test"
     ],
@@ -14,6 +15,7 @@
       { "context": "clippy", "app_id": 15368 },
       { "context": "test", "app_id": 15368 },
       { "context": "build", "app_id": 15368 },
+      { "context": "nt-pointer-trust-root", "app_id": 15368 },
       { "context": "nt-pointer-control-plane", "app_id": 99999 },
       { "context": "nt-pointer-probe-self-test", "app_id": 15368 }
     ]

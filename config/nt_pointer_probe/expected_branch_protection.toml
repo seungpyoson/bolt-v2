@@ -17,10 +17,11 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
+  "nt-pointer-trust-root",
   "nt-pointer-control-plane",
   "nt-pointer-probe-self-test",
 ]
-required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-trust-root = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
 
 [[required_effective_rules]]
 type = "deletion"
@@ -45,6 +46,7 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
+  "nt-pointer-trust-root",
   "nt-pointer-control-plane",
   "nt-pointer-probe-self-test",
 ]

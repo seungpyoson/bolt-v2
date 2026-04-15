@@ -24,6 +24,7 @@ nt_crates = [
   "nautilus-execution",
 ]
 required_status_check_floor = [
+  "nt-pointer-trust-root",
   "nt-pointer-control-plane",
   "nt-pointer-probe-self-test",
 ]
@@ -37,6 +38,7 @@ advisory_issue_template = ".github/nt-pointer-probe/advisory_issue.md"
 draft_pr_template = ".github/nt-pointer-probe/draft_pr.md"
 
 [status_checks]
+trust_root = "nt-pointer-trust-root"
 control_plane = "nt-pointer-control-plane"
 self_test = "nt-pointer-probe-self-test"
 develop = "nt-pointer-probe-develop"
@@ -54,27 +56,3 @@ issue_title_prefix = "NT Pointer Probe Drift"
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
 pr_title_prefix = "NT Pointer Probe"
-
-[guard_contract]
-script_path = "scripts/nt_pin_block_guard.sh"
-script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
-justfile_path = "justfile"
-justfile_sha256 = "658f0704bc279d0e702c68ae4fd9b540bbdfa37bc99121e51e3d1bd6d69ca51f"
-owner_require_script_path = "scripts/require_rust_verification_owner.sh"
-owner_require_script_sha256 = "629dc8f068538400b445f19946e10ddaf0a6550e92c9da7c13c3ad51d0fd7e31"
-owner_install_script_path = "scripts/install_ci_rust_verification_owner.sh"
-owner_install_script_sha256 = "98d2c3f1d3c0eaf1ffcc1b5ae5c1f0f30f89b48ae33c2f308f47d33e68d13a4d"
-setup_environment_action_path = ".github/actions/setup-environment/action.yml"
-setup_environment_action_sha256 = "e5db83cc2ea93cb2c49fa86c64c1089c56da1005db82845b02efa28569039834"
-control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
-control_plane_job = "control_plane"
-control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
-self_test_workflow = ".github/workflows/nt-pointer-probe-self-test.yml"
-self_test_job = "self_test"
-self_test_job_sha256 = "c5769a64de8eaed10ccf7749ea5d7b28121c3a02bda731736c82edd6a3e311cd"
-dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
-dependabot_job = "dependabot"
-dependabot_job_sha256 = "a03cf579aee5e6eab93934a7f2b65fb942afeb90be82b29eb69d8abb982f24c5"
-drift_workflow = ".github/workflows/nt-pointer-branch-governance-drift.yml"
-drift_job = "branch_protection_drift"
-drift_job_sha256 = "6e5da4b1c0849a40048a80371849978f75515bf72bb6f24a5d98608a80501d7f"

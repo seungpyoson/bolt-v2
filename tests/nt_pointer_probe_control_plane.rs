@@ -20,6 +20,20 @@ fn fixture(path: &str) -> PathBuf {
         .join(path)
 }
 
+fn external_claude_config_root() -> Option<PathBuf> {
+    [
+        repo_root().join("../worktrees/claude-config/feat-565-bolt-v2-trust-root-guard"),
+        repo_root().join("../../claude-config"),
+    ]
+    .into_iter()
+    .find(|candidate| {
+        candidate.join("lib/bolt_trust_root_validator.py").exists()
+            && candidate
+                .join("config/bolt-v2-trust-root-policy.json")
+                .exists()
+    })
+}
+
 fn copy_fixture_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).expect("fixture destination should be creatable");
     for entry in fs::read_dir(source).expect("fixture source should exist") {
@@ -64,6 +78,7 @@ fn temp_fixture(name: &str) -> TempDir {
         ".github/dependabot.yml",
         ".github/actions/setup-environment/action.yml",
         ".github/workflows/nt-pointer-control-plane.yml",
+        ".github/workflows/nt-pointer-trust-root.yml",
         ".github/workflows/nt-pointer-probe-self-test.yml",
         ".github/workflows/nt-pointer-branch-governance-drift.yml",
         ".github/workflows/dependabot-auto-merge.yml",
@@ -112,6 +127,7 @@ advisory_issue_template = ".github/nt-pointer-probe/advisory_issue.md"
 draft_pr_template = ".github/nt-pointer-probe/draft_pr.md"
 
 [status_checks]
+trust_root = "nt-pointer-trust-root"
 control_plane = "nt-pointer-control-plane"
 self_test = "nt-pointer-probe-self-test"
 develop = "nt-pointer-probe-develop"
@@ -129,30 +145,6 @@ issue_title_prefix = "NT Pointer Probe Drift"
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
 pr_title_prefix = "NT Pointer Probe"
-
-[guard_contract]
-script_path = "scripts/nt_pin_block_guard.sh"
-script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
-justfile_path = "justfile"
-justfile_sha256 = "658f0704bc279d0e702c68ae4fd9b540bbdfa37bc99121e51e3d1bd6d69ca51f"
-owner_require_script_path = "scripts/require_rust_verification_owner.sh"
-owner_require_script_sha256 = "629dc8f068538400b445f19946e10ddaf0a6550e92c9da7c13c3ad51d0fd7e31"
-owner_install_script_path = "scripts/install_ci_rust_verification_owner.sh"
-owner_install_script_sha256 = "98d2c3f1d3c0eaf1ffcc1b5ae5c1f0f30f89b48ae33c2f308f47d33e68d13a4d"
-setup_environment_action_path = ".github/actions/setup-environment/action.yml"
-setup_environment_action_sha256 = "e5db83cc2ea93cb2c49fa86c64c1089c56da1005db82845b02efa28569039834"
-control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
-control_plane_job = "control_plane"
-control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
-self_test_workflow = ".github/workflows/nt-pointer-probe-self-test.yml"
-self_test_job = "self_test"
-self_test_job_sha256 = "c5769a64de8eaed10ccf7749ea5d7b28121c3a02bda731736c82edd6a3e311cd"
-dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
-dependabot_job = "dependabot"
-dependabot_job_sha256 = "a03cf579aee5e6eab93934a7f2b65fb942afeb90be82b29eb69d8abb982f24c5"
-drift_workflow = ".github/workflows/nt-pointer-branch-governance-drift.yml"
-drift_job = "branch_protection_drift"
-drift_job_sha256 = "6e5da4b1c0849a40048a80371849978f75515bf72bb6f24a5d98608a80501d7f"
 "#,
     )
     .expect("fixture control.toml should write");
@@ -186,6 +178,13 @@ updates:
             .join(".github/workflows/nt-pointer-control-plane.yml"),
     )
     .expect("fixture control-plane workflow should copy");
+    fs::copy(
+        repo_root().join(".github/workflows/nt-pointer-trust-root.yml"),
+        tempdir
+            .path()
+            .join(".github/workflows/nt-pointer-trust-root.yml"),
+    )
+    .expect("fixture trust-root workflow should copy");
     fs::copy(
         repo_root().join(".github/workflows/nt-pointer-probe-self-test.yml"),
         tempdir
@@ -352,152 +351,97 @@ fn control_plane_workflow_is_pull_request_only() {
 }
 
 #[test]
-fn guard_contract_rejects_block_step_gating_fields() {
+fn control_plane_load_no_longer_requires_guard_contract_block() {
     let tempdir = temp_fixture("valid_minimal");
-    let workflow_path = tempdir
-        .path()
-        .join(".github/workflows/nt-pointer-control-plane.yml");
-    fs::remove_file(&workflow_path).expect("workflow symlink should be removable");
-    fs::write(
-        &workflow_path,
-        r#"name: NT Pointer Control Plane
-jobs:
-  control_plane:
-    name: nt-pointer-control-plane
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
-          just-version: ${{ env.JUST_VERSION }}
-          lint-workflow-contract: "true"
-      - name: Validate control-plane artifacts
-        run: just nt-pointer-probe-validate-control-plane
-      - name: Block direct NT pin changes
-        if: github.event_name == 'pull_request' && false
-        shell: bash
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-"#,
-    )
-    .expect("gated workflow fixture should write");
 
-    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
-        .expect_err("guard step gating fields should fail validation");
+    let loaded = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect("semantic control-plane validation should not depend on repo-local guard hashes");
+
+    assert_eq!(loaded.control.repo, "seungpyoson/bolt-v2");
+}
+
+#[test]
+fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-trust-root.yml"))
+            .expect("trust-root workflow should load");
+    let yaml: YamlValue =
+        serde_yaml::from_str(&workflow).expect("trust-root workflow should parse as YAML");
+
+    let triggers = yaml
+        .get(YamlValue::String("on".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("trust-root workflow should declare triggers");
+    assert!(
+        triggers.contains_key(YamlValue::String("pull_request_target".to_string())),
+        "trust-root workflow must run on pull_request_target"
+    );
+    assert!(
+        !triggers.contains_key(YamlValue::String("pull_request".to_string())),
+        "trust-root workflow must not run on pull_request"
+    );
 
     assert!(
-        err.to_string()
-            .contains("must keep the exact guard job contract"),
-        "unexpected error: {err}"
+        workflow.contains("Validate external trust root"),
+        "trust-root workflow must run the external validator"
+    );
+    assert!(
+        !workflow.contains("Validate control-plane artifacts"),
+        "trust-root workflow must not run repo-local semantic validation"
+    );
+
+    let sha_line = workflow
+        .lines()
+        .find(|line| line.contains("TRUST_ROOT_VALIDATOR_SHA:"))
+        .expect("workflow should pin an external validator SHA");
+    assert!(
+        sha_line.contains("${{ vars.NT_POINTER_TRUST_ROOT_VALIDATOR_SHA }}"),
+        "validator SHA must come from a GitHub variable, not a repo-owned literal"
+    );
+    assert!(
+        !workflow.contains("refs/heads/${{ github.event.pull_request.head.ref }}"),
+        "workflow must not interpolate head.ref directly into shell"
+    );
+    assert!(
+        workflow.contains("HEAD_REF: ${{ github.event.pull_request.head.ref }}"),
+        "workflow must pass head.ref through an environment variable"
     );
 }
 
 #[test]
-fn guard_contract_rejects_top_level_justfile_variable_drift() {
-    let tempdir = temp_fixture("valid_minimal");
-    let justfile_path = tempdir.path().join("justfile");
-    fs::remove_file(&justfile_path).expect("justfile symlink should be removable");
-    let contents = fs::read_to_string(repo_root().join("justfile")).expect("justfile should read");
-    fs::write(
-        &justfile_path,
-        contents.replace(
-            "rust_verification_owner := env_var('HOME') + \"/.claude/lib/rust_verification.py\"",
-            "rust_verification_owner := \"./wrapper.py\"",
-        ),
-    )
-    .expect("mutated justfile should write");
-
-    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
-        .expect_err("top-level justfile variable drift should fail validation");
+fn trust_root_workflow_file_is_part_of_external_snapshot_policy() {
+    let Some(root) = external_claude_config_root() else {
+        return;
+    };
+    let policy = fs::read_to_string(root.join("config/bolt-v2-trust-root-policy.json"))
+        .expect("external trust-root policy should read");
 
     assert!(
-        err.to_string().contains("justfile hash drift"),
-        "unexpected error: {err}"
+        policy.contains("\"path\": \".github/workflows/nt-pointer-trust-root.yml\""),
+        "external snapshot policy must protect the trust-root workflow itself"
     );
 }
 
 #[test]
-fn guard_contract_rejects_setup_environment_action_drift() {
-    let tempdir = temp_fixture("valid_minimal");
-    let action_path = tempdir
-        .path()
-        .join(".github/actions/setup-environment/action.yml");
-    fs::remove_file(&action_path).expect("setup action symlink should be removable");
-    fs::write(
-        &action_path,
-        r#"name: Setup Environment
-runs:
-  using: composite
-  steps:
-    - name: noop
-      shell: bash
-      run: |
-        exit 0
-"#,
-    )
-    .expect("mutated setup action should write");
+fn current_external_snapshot_validator_matches_local_checkout() {
+    let Some(root) = external_claude_config_root() else {
+        return;
+    };
 
-    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
-        .expect_err("setup action drift should fail validation");
+    let output = std::process::Command::new("python3")
+        .arg(root.join("lib/bolt_trust_root_validator.py"))
+        .arg("--repo")
+        .arg(repo_root())
+        .arg("--policy")
+        .arg(root.join("config/bolt-v2-trust-root-policy.json"))
+        .output()
+        .expect("external validator should run");
 
     assert!(
-        err.to_string()
-            .contains("setup-environment action hash drift"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn guard_contract_rejects_extra_prep_steps_before_block() {
-    let tempdir = temp_fixture("valid_minimal");
-    let workflow_path = tempdir
-        .path()
-        .join(".github/workflows/nt-pointer-control-plane.yml");
-    fs::remove_file(&workflow_path).expect("workflow symlink should be removable");
-    fs::write(
-        &workflow_path,
-        r#"name: NT Pointer Control Plane
-jobs:
-  control_plane:
-    name: nt-pointer-control-plane
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
-          just-version: ${{ env.JUST_VERSION }}
-          lint-workflow-contract: "true"
-      - name: Validate control-plane artifacts
-        run: just nt-pointer-probe-validate-control-plane
-      - name: Workspace setup
-        shell: bash
-        run: |
-          cat > scripts/nt_pin_block_guard.sh <<'EOF'
-          #!/usr/bin/env bash
-          exit 0
-          EOF
-      - name: Block direct NT pin changes
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-"#,
-    )
-    .expect("prep-step workflow fixture should write");
-
-    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
-        .expect_err("prep-step bypass should fail validation");
-
-    assert!(
-        err.to_string()
-            .contains("must keep the exact guard job contract"),
-        "unexpected error: {err}"
+        output.status.success(),
+        "external validator failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -710,6 +654,7 @@ advisory_issue_template = ".github/nt-pointer-probe/advisory_issue.md"
 draft_pr_template = ".github/nt-pointer-probe/draft_pr.md"
 
 [status_checks]
+trust_root = "nt-pointer-trust-root"
 control_plane = "nt-pointer-control-plane"
 self_test = "nt-pointer-probe-self-test"
 develop = "nt-pointer-probe-develop"
@@ -727,30 +672,6 @@ issue_title_prefix = "NT Pointer Probe Drift"
 [tagged_lane]
 pr_branch = "automation/nt-pointer-probe"
 pr_title_prefix = "NT Pointer Probe"
-
-[guard_contract]
-script_path = "scripts/nt_pin_block_guard.sh"
-script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
-justfile_path = "justfile"
-justfile_sha256 = "658f0704bc279d0e702c68ae4fd9b540bbdfa37bc99121e51e3d1bd6d69ca51f"
-owner_require_script_path = "scripts/require_rust_verification_owner.sh"
-owner_require_script_sha256 = "629dc8f068538400b445f19946e10ddaf0a6550e92c9da7c13c3ad51d0fd7e31"
-owner_install_script_path = "scripts/install_ci_rust_verification_owner.sh"
-owner_install_script_sha256 = "98d2c3f1d3c0eaf1ffcc1b5ae5c1f0f30f89b48ae33c2f308f47d33e68d13a4d"
-setup_environment_action_path = ".github/actions/setup-environment/action.yml"
-setup_environment_action_sha256 = "e5db83cc2ea93cb2c49fa86c64c1089c56da1005db82845b02efa28569039834"
-control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
-control_plane_job = "control_plane"
-control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
-self_test_workflow = ".github/workflows/nt-pointer-probe-self-test.yml"
-self_test_job = "self_test"
-self_test_job_sha256 = "c5769a64de8eaed10ccf7749ea5d7b28121c3a02bda731736c82edd6a3e311cd"
-dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
-dependabot_job = "dependabot"
-dependabot_job_sha256 = "a03cf579aee5e6eab93934a7f2b65fb942afeb90be82b29eb69d8abb982f24c5"
-drift_workflow = ".github/workflows/nt-pointer-branch-governance-drift.yml"
-drift_job = "branch_protection_drift"
-drift_job_sha256 = "6e5da4b1c0849a40048a80371849978f75515bf72bb6f24a5d98608a80501d7f"
 "#,
     )
     .expect("invalid control fixture should write");
@@ -1008,10 +929,11 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
+  "nt-pointer-trust-root",
   "nt-pointer-control-plane",
   "nt-pointer-probe-self-test",
 ]
-required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-trust-root = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
 
 [[required_effective_rules]]
 type = "deletion"
@@ -1036,6 +958,7 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
+  "nt-pointer-trust-root",
   "nt-pointer-control-plane",
   "nt-pointer-probe-self-test",
 ]
@@ -1125,10 +1048,11 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
+  "nt-pointer-trust-root",
   "nt-pointer-control-plane",
   "nt-pointer-probe-self-test",
 ]
-required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-trust-root = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
 
 [[required_effective_rules]]
 type = "deletion"
@@ -1153,10 +1077,11 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
+  "nt-pointer-trust-root",
   "nt-pointer-control-plane",
   "nt-pointer-probe-self-test",
 ]
-required_status_check_integration_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+required_status_check_integration_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-trust-root = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
 
 [[required_rulesets]]
 id = 14763241
@@ -1204,6 +1129,7 @@ allowed_bypass_actors = []
         { "context": "clippy", "integration_id": 15368 },
         { "context": "test", "integration_id": 15368 },
         { "context": "build", "integration_id": 15368 },
+        { "context": "nt-pointer-trust-root", "integration_id": 15368 },
         { "context": "nt-pointer-control-plane", "integration_id": 99999 },
         { "context": "nt-pointer-probe-self-test", "integration_id": 15368 }
       ]

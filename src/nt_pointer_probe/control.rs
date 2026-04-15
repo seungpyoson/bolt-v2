@@ -9,7 +9,6 @@ use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use serde_yaml::Value as YamlValue;
 use toml::Value as TomlValue;
 
 const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -35,6 +34,7 @@ const SHARED_NT_CRATE_PREFIXES: &[&str] = &[
 ];
 fn default_required_status_check_floor() -> Vec<String> {
     vec![
+        "nt-pointer-trust-root".to_string(),
         "nt-pointer-control-plane".to_string(),
         "nt-pointer-probe-self-test".to_string(),
     ]
@@ -58,7 +58,6 @@ pub struct ControlConfig {
     pub develop_lane: DevelopLane,
     pub drift_lane: DriftLane,
     pub tagged_lane: TaggedLane,
-    pub guard_contract: GuardContract,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +74,7 @@ pub struct ControlPaths {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatusChecks {
+    pub trust_root: String,
     pub control_plane: String,
     pub self_test: String,
     pub develop: String,
@@ -101,33 +101,6 @@ pub struct DriftLane {
 pub struct TaggedLane {
     pub pr_branch: String,
     pub pr_title_prefix: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GuardContract {
-    pub script_path: String,
-    pub script_sha256: String,
-    pub justfile_path: String,
-    pub justfile_sha256: String,
-    pub owner_require_script_path: String,
-    pub owner_require_script_sha256: String,
-    pub owner_install_script_path: String,
-    pub owner_install_script_sha256: String,
-    pub setup_environment_action_path: String,
-    pub setup_environment_action_sha256: String,
-    pub control_plane_workflow: String,
-    pub control_plane_job: String,
-    pub control_plane_job_sha256: String,
-    pub self_test_workflow: String,
-    pub self_test_job: String,
-    pub self_test_job_sha256: String,
-    pub dependabot_workflow: String,
-    pub dependabot_job: String,
-    pub dependabot_job_sha256: String,
-    pub drift_workflow: String,
-    pub drift_job: String,
-    pub drift_job_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -360,7 +333,6 @@ impl LoadedControlPlane {
         );
 
         self.validate_nt_crate_inventory()?;
-        self.validate_guard_contract()?;
         self.registry.validate(&self.repo_root)?;
         self.safe_list
             .validate(self.control.max_safe_list_duration_days, &self.registry)?;
@@ -491,157 +463,6 @@ impl LoadedControlPlane {
 
         Ok(())
     }
-
-    fn validate_guard_contract(&self) -> Result<()> {
-        let script_path = self
-            .repo_root
-            .join(&self.control.guard_contract.script_path);
-        validate_repo_path_exists(&self.repo_root, &self.control.guard_contract.script_path)?;
-        let script_hash = sha256_hex(
-            &fs::read(&script_path)
-                .with_context(|| format!("failed to read {}", script_path.display()))?,
-        );
-        ensure!(
-            script_hash == self.control.guard_contract.script_sha256,
-            "guard script hash drift for {}",
-            self.control.guard_contract.script_path
-        );
-
-        for (path, expected_hash, label) in [
-            (
-                self.control.guard_contract.justfile_path.as_str(),
-                self.control.guard_contract.justfile_sha256.as_str(),
-                "justfile",
-            ),
-            (
-                self.control
-                    .guard_contract
-                    .owner_require_script_path
-                    .as_str(),
-                self.control
-                    .guard_contract
-                    .owner_require_script_sha256
-                    .as_str(),
-                "owner require script",
-            ),
-            (
-                self.control
-                    .guard_contract
-                    .owner_install_script_path
-                    .as_str(),
-                self.control
-                    .guard_contract
-                    .owner_install_script_sha256
-                    .as_str(),
-                "owner install script",
-            ),
-            (
-                self.control
-                    .guard_contract
-                    .setup_environment_action_path
-                    .as_str(),
-                self.control
-                    .guard_contract
-                    .setup_environment_action_sha256
-                    .as_str(),
-                "setup-environment action",
-            ),
-        ] {
-            validate_repo_path_exists(&self.repo_root, path)?;
-            let actual_hash = sha256_hex(
-                &fs::read(self.repo_root.join(path))
-                    .with_context(|| format!("failed to read {}", path))?,
-            );
-            ensure!(
-                actual_hash == expected_hash,
-                "{} hash drift for {}",
-                label,
-                path
-            );
-        }
-
-        let control_plane_workflow = fs::read_to_string(
-            self.repo_root
-                .join(&self.control.guard_contract.control_plane_workflow),
-        )
-        .with_context(|| {
-            format!(
-                "failed to read {}",
-                self.control.guard_contract.control_plane_workflow
-            )
-        })?;
-        ensure!(
-            workflow_job_matches_hash(
-                &control_plane_workflow,
-                &self.control.guard_contract.control_plane_job,
-                &self.control.guard_contract.control_plane_job_sha256,
-            )?,
-            "{} must keep the exact guard job contract",
-            self.control.guard_contract.control_plane_workflow
-        );
-
-        let self_test_workflow = fs::read_to_string(
-            self.repo_root
-                .join(&self.control.guard_contract.self_test_workflow),
-        )
-        .with_context(|| {
-            format!(
-                "failed to read {}",
-                self.control.guard_contract.self_test_workflow
-            )
-        })?;
-        ensure!(
-            workflow_job_matches_hash(
-                &self_test_workflow,
-                &self.control.guard_contract.self_test_job,
-                &self.control.guard_contract.self_test_job_sha256,
-            )?,
-            "{} must keep the exact guard job contract",
-            self.control.guard_contract.self_test_workflow
-        );
-
-        let dependabot_workflow = fs::read_to_string(
-            self.repo_root
-                .join(&self.control.guard_contract.dependabot_workflow),
-        )
-        .with_context(|| {
-            format!(
-                "failed to read {}",
-                self.control.guard_contract.dependabot_workflow
-            )
-        })?;
-        ensure!(
-            workflow_job_matches_hash(
-                &dependabot_workflow,
-                &self.control.guard_contract.dependabot_job,
-                &self.control.guard_contract.dependabot_job_sha256,
-            )?,
-            "{} must keep the exact guard job contract",
-            self.control.guard_contract.dependabot_workflow
-        );
-
-        let drift_workflow = fs::read_to_string(
-            self.repo_root
-                .join(&self.control.guard_contract.drift_workflow),
-        )
-        .with_context(|| {
-            format!(
-                "failed to read {}",
-                self.control.guard_contract.drift_workflow
-            )
-        })?;
-        ensure!(
-            workflow_job_matches_hash(
-                &drift_workflow,
-                &self.control.guard_contract.drift_job,
-                &self.control.guard_contract.drift_job_sha256,
-            )?,
-            "{} must keep the exact guard job contract",
-            self.control.guard_contract.drift_workflow
-        );
-
-        Ok(())
-    }
 }
 
 impl ControlConfig {
@@ -698,17 +519,9 @@ impl ControlConfig {
         validate_repo_relative(&self.paths.expected_branch_protection)?;
         validate_repo_relative(&self.paths.advisory_issue_template)?;
         validate_repo_relative(&self.paths.draft_pr_template)?;
-        validate_repo_relative(&self.guard_contract.script_path)?;
-        validate_repo_relative(&self.guard_contract.justfile_path)?;
-        validate_repo_relative(&self.guard_contract.owner_require_script_path)?;
-        validate_repo_relative(&self.guard_contract.owner_install_script_path)?;
-        validate_repo_relative(&self.guard_contract.setup_environment_action_path)?;
-        validate_repo_relative(&self.guard_contract.control_plane_workflow)?;
-        validate_repo_relative(&self.guard_contract.self_test_workflow)?;
-        validate_repo_relative(&self.guard_contract.dependabot_workflow)?;
-        validate_repo_relative(&self.guard_contract.drift_workflow)?;
 
         let statuses = [
+            self.status_checks.trust_root.as_str(),
             self.status_checks.control_plane.as_str(),
             self.status_checks.self_test.as_str(),
             self.status_checks.develop.as_str(),
@@ -748,32 +561,6 @@ impl ControlConfig {
             !self.tagged_lane.pr_title_prefix.trim().is_empty(),
             "tagged lane pr_title_prefix must not be empty"
         );
-        for field in [
-            self.guard_contract.script_sha256.as_str(),
-            self.guard_contract.justfile_path.as_str(),
-            self.guard_contract.justfile_sha256.as_str(),
-            self.guard_contract.owner_require_script_path.as_str(),
-            self.guard_contract.owner_require_script_sha256.as_str(),
-            self.guard_contract.owner_install_script_path.as_str(),
-            self.guard_contract.owner_install_script_sha256.as_str(),
-            self.guard_contract.setup_environment_action_path.as_str(),
-            self.guard_contract.setup_environment_action_sha256.as_str(),
-            self.guard_contract.self_test_workflow.as_str(),
-            self.guard_contract.self_test_job.as_str(),
-            self.guard_contract.self_test_job_sha256.as_str(),
-            self.guard_contract.control_plane_job.as_str(),
-            self.guard_contract.control_plane_job_sha256.as_str(),
-            self.guard_contract.dependabot_job.as_str(),
-            self.guard_contract.dependabot_job_sha256.as_str(),
-            self.guard_contract.drift_workflow.as_str(),
-            self.guard_contract.drift_job.as_str(),
-            self.guard_contract.drift_job_sha256.as_str(),
-        ] {
-            ensure!(
-                !field.trim().is_empty(),
-                "guard contract fields must not be empty"
-            );
-        }
 
         Ok(())
     }
@@ -2012,112 +1799,6 @@ fn canonical_toml_value(value: &TomlValue) -> String {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-#[cfg(test)]
-fn extract_just_recipe_body(contents: &str, recipe_name: &str) -> Result<String> {
-    let lines = contents.lines().collect::<Vec<_>>();
-    let mut header = None;
-    let mut start = None;
-    for (index, line) in lines.iter().enumerate() {
-        if let Some(rest) = line.strip_prefix(recipe_name)
-            && (rest.starts_with(':') || rest.starts_with(' '))
-            && rest.contains(':')
-        {
-            header = Some(*line);
-            start = Some(index + 1);
-            break;
-        }
-        if line.starts_with(&format!("{}:", recipe_name)) {
-            header = Some(*line);
-            start = Some(index + 1);
-            break;
-        }
-    }
-    let Some(start) = start else {
-        return Err(anyhow!("just recipe {} not found", recipe_name));
-    };
-    let header = header.expect("recipe header should exist when start exists");
-
-    let mut body = vec![header];
-    for line in &lines[start..] {
-        if line.starts_with("    ") || line.starts_with('\t') || line.is_empty() {
-            body.push(*line);
-        } else {
-            break;
-        }
-    }
-    let normalized = body.join("\n").trim_end().to_string();
-    Ok(format!("{}\n", normalized))
-}
-
-fn workflow_job_hash(contents: &str, job_name: &str) -> Result<Option<String>> {
-    let value: YamlValue =
-        serde_yaml::from_str(contents).context("failed to parse workflow YAML")?;
-    let Some(jobs) = value.get("jobs").and_then(YamlValue::as_mapping) else {
-        return Ok(None);
-    };
-
-    let Some(job) = jobs.get(YamlValue::String(job_name.to_string())) else {
-        return Ok(None);
-    };
-    let normalized = canonical_yaml_value(job)?;
-    Ok(Some(sha256_hex(normalized.as_bytes())))
-}
-
-fn workflow_job_matches_hash(contents: &str, job_name: &str, expected_hash: &str) -> Result<bool> {
-    Ok(workflow_job_hash(contents, job_name)?.is_some_and(|actual| actual == expected_hash))
-}
-
-fn canonical_yaml_value(value: &YamlValue) -> Result<String> {
-    match value {
-        YamlValue::Null => Ok("null".to_string()),
-        YamlValue::Bool(inner) => Ok(inner.to_string()),
-        YamlValue::Number(inner) => Ok(inner.to_string()),
-        YamlValue::String(inner) => {
-            serde_json::to_string(inner).context("failed to canonicalize YAML string")
-        }
-        YamlValue::Sequence(items) => Ok(format!(
-            "[{}]",
-            items
-                .iter()
-                .map(canonical_yaml_value)
-                .collect::<Result<Vec<_>>>()?
-                .join(",")
-        )),
-        YamlValue::Mapping(map) => {
-            let mut entries = map
-                .iter()
-                .map(|(key, value)| {
-                    let key = key
-                        .as_str()
-                        .ok_or_else(|| anyhow!("workflow contract keys must be strings"))?;
-                    Ok((key.to_string(), canonical_yaml_value(value)?))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            entries.sort_by(|left, right| left.0.cmp(&right.0));
-            Ok(format!(
-                "{{{}}}",
-                entries
-                    .into_iter()
-                    .map(|(key, value)| format!(
-                        "{}:{}",
-                        serde_json::to_string(&key).expect("string keys serialize"),
-                        value
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ))
-        }
-        YamlValue::Tagged(tagged) => canonical_yaml_value(&tagged.value),
-    }
-}
-
 fn collect_nt_data_from_toml_table(
     table: &toml::map::Map<String, TomlValue>,
     path: &mut Vec<String>,
@@ -2304,13 +1985,10 @@ fn expected_ruleset_signature(ruleset: &ExpectedRuleset) -> String {
 #[cfg(test)]
 mod unit_tests {
     use super::{
-        ControlConfig, canonical_yaml_value, extract_guarded_cargo_config_state,
-        extract_just_recipe_body, extract_nt_crates_from_cargo_toml,
-        extract_nt_ignores_from_dependabot_cargo_blocks, load_toml, sha256_hex, workflow_job_hash,
-        workflow_job_matches_hash,
+        extract_guarded_cargo_config_state, extract_nt_crates_from_cargo_toml,
+        extract_nt_ignores_from_dependabot_cargo_blocks,
     };
-    use serde_yaml::Value as YamlValue;
-    use std::{collections::BTreeSet, fs, path::PathBuf};
+    use std::collections::BTreeSet;
 
     #[test]
     fn cargo_nt_extractor_scans_workspace_target_build_and_patch_sections() {
@@ -2450,186 +2128,5 @@ updates:
             err.to_string()
                 .contains("failed to parse .github/dependabot.yml")
         );
-    }
-
-    #[test]
-    fn workflow_guard_detection_requires_exact_job_contract() {
-        let baseline = r#"
-name: Example
-jobs:
-  control_plane:
-    name: nt-pointer-control-plane
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@pinned
-      - name: Block direct NT pin changes
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-"#;
-        let gated = r#"
-name: Example
-jobs:
-  control_plane:
-    name: nt-pointer-control-plane
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@pinned
-      - name: Block direct NT pin changes
-        if: github.event_name == 'pull_request' && false
-        shell: bash
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-"#;
-        let prep_step = r#"
-name: Example
-jobs:
-  control_plane:
-    name: nt-pointer-control-plane
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@pinned
-      - name: Workspace setup
-        shell: bash
-        run: |
-          exit 0
-      - name: Block direct NT pin changes
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-"#;
-
-        let value: YamlValue =
-            serde_yaml::from_str(baseline).expect("baseline workflow should parse");
-        let jobs = value
-            .get("jobs")
-            .and_then(YamlValue::as_mapping)
-            .expect("workflow should include jobs");
-        let job = jobs
-            .get(YamlValue::String("control_plane".to_string()))
-            .expect("workflow should include control_plane");
-        let expected_hash = sha256_hex(
-            canonical_yaml_value(job)
-                .expect("job should canonicalize")
-                .as_bytes(),
-        );
-
-        assert!(
-            workflow_job_matches_hash(baseline, "control_plane", &expected_hash)
-                .expect("baseline workflow should parse"),
-            "baseline workflow should match its contract"
-        );
-        assert!(
-            !workflow_job_matches_hash(gated, "control_plane", &expected_hash)
-                .expect("gated workflow should parse"),
-            "gating fields should drift the job contract"
-        );
-        assert!(
-            !workflow_job_matches_hash(prep_step, "control_plane", &expected_hash)
-                .expect("prep-step workflow should parse"),
-            "extra prep steps should drift the job contract"
-        );
-    }
-
-    #[test]
-    fn just_recipe_extraction_hashes_normalized_body() {
-        let justfile = r#"
-recipe-name arg:
-    echo hello
-    echo world
-
-next:
-    echo next
-"#;
-
-        let body =
-            extract_just_recipe_body(justfile, "recipe-name").expect("recipe should extract");
-        assert_eq!(body, "recipe-name arg:\n    echo hello\n    echo world\n");
-        assert_eq!(
-            sha256_hex(body.as_bytes()),
-            "a2630f081b7424aec0b869d604e864506faaede33f34a5161a3ba681aa52893b"
-        );
-    }
-
-    #[test]
-    fn repo_guard_contract_hashes_match_tracked_files() {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let control: ControlConfig =
-            load_toml(&repo_root.join("config/nt_pointer_probe/control.toml"))
-                .expect("control.toml should parse");
-
-        for (path, expected_hash) in [
-            (
-                control.guard_contract.script_path.as_str(),
-                control.guard_contract.script_sha256.as_str(),
-            ),
-            (
-                control.guard_contract.justfile_path.as_str(),
-                control.guard_contract.justfile_sha256.as_str(),
-            ),
-            (
-                control.guard_contract.owner_require_script_path.as_str(),
-                control.guard_contract.owner_require_script_sha256.as_str(),
-            ),
-            (
-                control.guard_contract.owner_install_script_path.as_str(),
-                control.guard_contract.owner_install_script_sha256.as_str(),
-            ),
-            (
-                control
-                    .guard_contract
-                    .setup_environment_action_path
-                    .as_str(),
-                control
-                    .guard_contract
-                    .setup_environment_action_sha256
-                    .as_str(),
-            ),
-        ] {
-            let actual_hash = sha256_hex(
-                &fs::read(repo_root.join(path)).expect("guard contract file should read"),
-            );
-            assert_eq!(
-                actual_hash, expected_hash,
-                "guard contract hash drift for {}",
-                path
-            );
-        }
-
-        for (workflow_path, job_name, expected_hash) in [
-            (
-                control.guard_contract.control_plane_workflow.as_str(),
-                control.guard_contract.control_plane_job.as_str(),
-                control.guard_contract.control_plane_job_sha256.as_str(),
-            ),
-            (
-                control.guard_contract.self_test_workflow.as_str(),
-                control.guard_contract.self_test_job.as_str(),
-                control.guard_contract.self_test_job_sha256.as_str(),
-            ),
-            (
-                control.guard_contract.dependabot_workflow.as_str(),
-                control.guard_contract.dependabot_job.as_str(),
-                control.guard_contract.dependabot_job_sha256.as_str(),
-            ),
-            (
-                control.guard_contract.drift_workflow.as_str(),
-                control.guard_contract.drift_job.as_str(),
-                control.guard_contract.drift_job_sha256.as_str(),
-            ),
-        ] {
-            let contents =
-                fs::read_to_string(repo_root.join(workflow_path)).expect("workflow should read");
-            let actual_hash = workflow_job_hash(&contents, job_name)
-                .expect("workflow should parse")
-                .expect("workflow should contain guarded job");
-            assert_eq!(
-                actual_hash, expected_hash,
-                "guard contract hash drift for {}",
-                workflow_path
-            );
-        }
     }
 }

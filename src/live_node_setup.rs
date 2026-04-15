@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_data::DataClientAdapter;
 use nautilus_execution::engine::ExecutionEngine;
@@ -21,6 +22,10 @@ pub type ExecClientRegistration = (
     Box<dyn ExecutionClientFactory>,
     Box<dyn ClientConfig>,
 );
+
+fn resolve_client_name(name: &Option<String>, factory_name: &str) -> String {
+    name.clone().unwrap_or_else(|| factory_name.to_string())
+}
 
 pub fn make_strategy_build_context(
     fee_provider: Arc<dyn polymarket::FeeProvider>,
@@ -66,7 +71,7 @@ pub fn register_data_client(
     factory: Box<dyn DataClientFactory>,
     config: Box<dyn ClientConfig>,
 ) -> std::result::Result<(), Box<dyn Error>> {
-    let name = name.unwrap_or_else(|| factory.name().to_string());
+    let name = resolve_client_name(&name, factory.name());
     let kernel = node.kernel();
     let client = factory.create(
         &name,
@@ -93,7 +98,7 @@ pub fn register_exec_client(
     factory: Box<dyn ExecutionClientFactory>,
     config: Box<dyn ClientConfig>,
 ) -> std::result::Result<(), Box<dyn Error>> {
-    let name = name.unwrap_or_else(|| factory.name().to_string());
+    let name = resolve_client_name(&name, factory.name());
     let cache = node.kernel().cache.clone();
     let client = factory.create(&name, config.as_ref(), cache)?;
     let client_id = client.client_id();
@@ -120,26 +125,21 @@ pub fn build_live_node(
             let mut node = LiveNode::build(name, Some(config))?;
             let mut seen_data_client_names = HashSet::new();
             for (client_name, factory, client_config) in data_clients {
-                let resolved_name = client_name
-                    .clone()
-                    .unwrap_or_else(|| factory.name().to_string());
+                let resolved_name = resolve_client_name(&client_name, factory.name());
                 if !seen_data_client_names.insert(resolved_name.clone()) {
-                    return Err(std::io::Error::other(format!(
-                        "Data client '{resolved_name}' is already registered"
-                    ))
-                    .into());
+                    return Err(
+                        anyhow!("Data client '{resolved_name}' is already registered").into(),
+                    );
                 }
                 register_data_client(&mut node, client_name, factory, client_config)?;
             }
             let mut seen_exec_client_names = HashSet::new();
             for (client_name, factory, client_config) in exec_clients {
-                let resolved_name = client_name
-                    .clone()
-                    .unwrap_or_else(|| factory.name().to_string());
+                let resolved_name = resolve_client_name(&client_name, factory.name());
                 if !seen_exec_client_names.insert(resolved_name.clone()) {
-                    return Err(std::io::Error::other(format!(
+                    return Err(anyhow!(
                         "Execution client '{resolved_name}' is already registered"
-                    ))
+                    )
                     .into());
                 }
                 register_exec_client(&mut node, client_name, factory, client_config)?;
@@ -148,8 +148,8 @@ pub fn build_live_node(
         }
         Environment::Sandbox => {
             if config.exec_engine.position_check_interval_secs.is_some() {
-                return Err(std::io::Error::other(
-                    "exec_engine.position_check_interval_secs is unsupported in Sandbox startup mode",
+                return Err(anyhow!(
+                    "exec_engine.position_check_interval_secs is unsupported in Sandbox startup mode"
                 )
                 .into());
             }
@@ -181,7 +181,7 @@ pub fn build_live_node(
             Ok(builder.build()?)
         }
         Environment::Backtest => {
-            Err(std::io::Error::other("LiveNode startup path does not support Backtest").into())
+            Err(anyhow!("LiveNode startup path does not support Backtest").into())
         }
     }
 }

@@ -1597,15 +1597,15 @@ impl EthChainlinkTaker {
             blocked_by.push(EntryBlockReason::ForcedFlat(reason));
         }
         if let Some(occupancy) = self.exposure_occupancy() {
-            self.report_one_position_invariant_violation(occupancy);
+            if should_report_one_position_gate_violation(occupancy) {
+                self.report_one_position_invariant_violation(occupancy);
+            }
             blocked_by.push(EntryBlockReason::OnePositionInvariant(occupancy));
         } else {
             self.last_reported_exposure_occupancy.set(None);
         }
 
-        let decision = EntryGateDecision { blocked_by };
-        self.log_entry_gate_decision(&decision);
-        decision
+        EntryGateDecision { blocked_by }
     }
 
     fn active_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
@@ -1640,27 +1640,6 @@ impl EthChainlinkTaker {
         })
         .into_iter()
         .collect()
-    }
-
-    fn log_entry_gate_decision(&self, decision: &EntryGateDecision) {
-        if decision.blocked_by.is_empty() {
-            return;
-        }
-
-        log::warn!(
-            "eth_chainlink_taker entry blocked: strategy_id={} reasons={:?}",
-            self.config.strategy_id,
-            decision.blocked_by
-        );
-        if decision
-            .blocked_by
-            .contains(&EntryBlockReason::FeesNotReady)
-        {
-            log::warn!(
-                "eth_chainlink_taker fee-rate unavailable: strategy_id={} entry remains fail-closed",
-                self.config.strategy_id
-            );
-        }
     }
 
     fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
@@ -1786,9 +1765,9 @@ impl EthChainlinkTaker {
     fn entry_evaluation_log_fields_at(
         &self,
         now_ms: u64,
-        evaluation: &EntryEvaluation,
+        submission: &EntrySubmissionDecision,
     ) -> EntryEvaluationLogFields {
-        let submission = self.entry_submission_decision_at(now_ms);
+        let evaluation = &submission.evaluation;
         let spot_venue_name = self
             .pricing
             .fast_spot
@@ -1861,11 +1840,25 @@ impl EthChainlinkTaker {
         }
     }
 
-    fn log_entry_evaluation(&self, now_ms: u64, evaluation: &EntryEvaluation) {
-        let fields = self.entry_evaluation_log_fields_at(now_ms, evaluation);
+    fn log_entry_evaluation(&self, now_ms: u64, submission: &EntrySubmissionDecision) {
+        let fields = self.entry_evaluation_log_fields_at(now_ms, submission);
         let blocked = !fields.gate_blocked_by.is_empty() || !fields.pricing_blocked_by.is_empty();
 
         if blocked {
+            log::warn!(
+                "eth_chainlink_taker entry blocked: strategy_id={} reasons={:?}",
+                self.config.strategy_id,
+                fields.gate_blocked_by
+            );
+            if fields
+                .gate_blocked_by
+                .contains(&EntryBlockReason::FeesNotReady)
+            {
+                log::warn!(
+                    "eth_chainlink_taker fee-rate unavailable: strategy_id={} entry remains fail-closed",
+                    self.config.strategy_id
+                );
+            }
             log::warn!(
                 "eth_chainlink_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} expected_ev_per_usdc={:?} max_position_usdc={} risk_lambda={} book_impact_cap_bps={} book_impact_cap_usdc={:?} sized_notional_usdc={:?} selected_side={:?} fast_venue_available={} fast_venue_fallback_to_reference={} lead_quality_policy_applied={} lead_quality_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
@@ -2596,48 +2589,93 @@ impl EthChainlinkTaker {
         let fields = self.exit_evaluation_log_fields_at(now_ms, decision);
         let blocked = fields.submission_blocked_reason.is_some();
         if blocked {
-            log::warn!(
-                "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
-                self.config.strategy_id,
-                fields.market_id,
-                fields.phase,
-                fields.position_outcome_side,
-                fields.position_id,
-                fields.position_instrument_id,
-                fields.position_quantity,
-                fields.position_avg_px_open,
-                fields.forced_flat_reasons,
-                fields.spot_price,
-                fields.spot_venue_name,
-                fields.reference_fair_value,
-                fields.interval_open,
-                fields.seconds_to_expiry,
-                fields.realized_vol,
-                fields.pricing_kurtosis,
-                fields.exit_hysteresis_bps,
-                fields.fair_probability_up,
-                fields.fair_probability_down,
-                fields.uncertainty_band_probability,
-                fields.up_fee_bps,
-                fields.down_fee_bps,
-                fields.hold_ev_bps,
-                fields.exit_ev_bps,
-                fields.exit_decision,
-                fields.historical_entry_fee_rate_known,
-                fields.historical_entry_fee_rate_reason,
-                fields.maker_rebate_available,
-                fields.maker_rebate_reason,
-                fields.category_available,
-                fields.category_reason,
-                fields.final_fee_amount_known,
-                fields.final_fee_amount_reason,
-                fields.submission_instrument_id,
-                fields.submission_order_side,
-                fields.submission_price,
-                fields.submission_quantity,
-                fields.submission_client_order_id,
-                fields.submission_blocked_reason,
-            );
+            if should_warn_on_exit_submission_block(fields.submission_blocked_reason) {
+                log::warn!(
+                    "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                    self.config.strategy_id,
+                    fields.market_id,
+                    fields.phase,
+                    fields.position_outcome_side,
+                    fields.position_id,
+                    fields.position_instrument_id,
+                    fields.position_quantity,
+                    fields.position_avg_px_open,
+                    fields.forced_flat_reasons,
+                    fields.spot_price,
+                    fields.spot_venue_name,
+                    fields.reference_fair_value,
+                    fields.interval_open,
+                    fields.seconds_to_expiry,
+                    fields.realized_vol,
+                    fields.pricing_kurtosis,
+                    fields.exit_hysteresis_bps,
+                    fields.fair_probability_up,
+                    fields.fair_probability_down,
+                    fields.uncertainty_band_probability,
+                    fields.up_fee_bps,
+                    fields.down_fee_bps,
+                    fields.hold_ev_bps,
+                    fields.exit_ev_bps,
+                    fields.exit_decision,
+                    fields.historical_entry_fee_rate_known,
+                    fields.historical_entry_fee_rate_reason,
+                    fields.maker_rebate_available,
+                    fields.maker_rebate_reason,
+                    fields.category_available,
+                    fields.category_reason,
+                    fields.final_fee_amount_known,
+                    fields.final_fee_amount_reason,
+                    fields.submission_instrument_id,
+                    fields.submission_order_side,
+                    fields.submission_price,
+                    fields.submission_quantity,
+                    fields.submission_client_order_id,
+                    fields.submission_blocked_reason,
+                );
+            } else {
+                log::debug!(
+                    "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                    self.config.strategy_id,
+                    fields.market_id,
+                    fields.phase,
+                    fields.position_outcome_side,
+                    fields.position_id,
+                    fields.position_instrument_id,
+                    fields.position_quantity,
+                    fields.position_avg_px_open,
+                    fields.forced_flat_reasons,
+                    fields.spot_price,
+                    fields.spot_venue_name,
+                    fields.reference_fair_value,
+                    fields.interval_open,
+                    fields.seconds_to_expiry,
+                    fields.realized_vol,
+                    fields.pricing_kurtosis,
+                    fields.exit_hysteresis_bps,
+                    fields.fair_probability_up,
+                    fields.fair_probability_down,
+                    fields.uncertainty_band_probability,
+                    fields.up_fee_bps,
+                    fields.down_fee_bps,
+                    fields.hold_ev_bps,
+                    fields.exit_ev_bps,
+                    fields.exit_decision,
+                    fields.historical_entry_fee_rate_known,
+                    fields.historical_entry_fee_rate_reason,
+                    fields.maker_rebate_available,
+                    fields.maker_rebate_reason,
+                    fields.category_available,
+                    fields.category_reason,
+                    fields.final_fee_amount_known,
+                    fields.final_fee_amount_reason,
+                    fields.submission_instrument_id,
+                    fields.submission_order_side,
+                    fields.submission_price,
+                    fields.submission_quantity,
+                    fields.submission_client_order_id,
+                    fields.submission_blocked_reason,
+                );
+            }
         } else {
             log::info!(
                 "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
@@ -2837,7 +2875,7 @@ impl EthChainlinkTaker {
 
     fn try_submit_entry_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         let decision = self.entry_submission_decision_at(now_ms);
-        self.log_entry_evaluation(now_ms, &decision.evaluation);
+        self.log_entry_evaluation(now_ms, &decision);
 
         let Some(instrument_id) = decision.instrument_id else {
             if let Some(reason) = decision.blocked_reason {
@@ -3174,7 +3212,9 @@ impl DataActor for EthChainlinkTaker {
         }
 
         let now_ms = self.clock().timestamp_ns().as_u64() / 1_000_000;
-        let _ = self.try_submit_exit_order(now_ms)?;
+        if matches!(self.exposure, ExposureState::Managed(_)) {
+            let _ = self.try_submit_exit_order(now_ms)?;
+        }
         let _ = self.try_submit_entry_order(now_ms)?;
         Ok(())
     }
@@ -4191,6 +4231,22 @@ enum ExitDecision {
     Hold,
     Exit,
     ExitFailClosed,
+}
+
+fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bool {
+    matches!(
+        occupancy,
+        ExposureOccupancy::EntryReconcilePending
+            | ExposureOccupancy::UnsupportedObserved
+            | ExposureOccupancy::BlindRecovery
+    )
+}
+
+fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
+    !matches!(
+        reason,
+        Some("no_open_position" | "exit_already_pending" | "exit_hold")
+    )
 }
 
 fn evaluate_exit_decision(
@@ -7318,10 +7374,7 @@ mod tests {
                     ExposureOccupancy::ExitPending
                 ))
         );
-        assert_eq!(
-            strategy.last_reported_exposure_occupancy.get(),
-            Some(ExposureOccupancy::ExitPending)
-        );
+        assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
         assert_eq!(first.blocked_by, second.blocked_by);
 
         strategy.exposure = ExposureState::Flat;
@@ -7334,6 +7387,26 @@ mod tests {
                 ))
         );
         assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
+    }
+
+    #[test]
+    fn entry_gate_reports_only_unexpected_occupancies_as_invariant_violations() {
+        let mut strategy = ready_to_trade_strategy();
+        set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+
+        let decision = strategy.entry_gate_decision_at(2_000);
+
+        assert!(
+            decision
+                .blocked_by
+                .contains(&EntryBlockReason::OnePositionInvariant(
+                    ExposureOccupancy::BlindRecovery
+                ))
+        );
+        assert_eq!(
+            strategy.last_reported_exposure_occupancy.get(),
+            Some(ExposureOccupancy::BlindRecovery)
+        );
     }
 
     #[test]
@@ -7385,6 +7458,20 @@ mod tests {
             evaluate_exit_decision(Some(12.0), Some(f64::NAN), 1.0),
             ExitDecision::ExitFailClosed
         );
+    }
+
+    #[test]
+    fn expected_exit_submission_blocks_do_not_warn() {
+        assert!(!should_warn_on_exit_submission_block(Some(
+            "no_open_position"
+        )));
+        assert!(!should_warn_on_exit_submission_block(Some(
+            "exit_already_pending"
+        )));
+        assert!(!should_warn_on_exit_submission_block(Some("exit_hold")));
+        assert!(should_warn_on_exit_submission_block(Some(
+            "exit_price_missing"
+        )));
     }
 
     #[test]
@@ -7617,7 +7704,8 @@ mod tests {
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
 
         let evaluation = strategy.entry_evaluation_at(1_200);
-        let fields = strategy.entry_evaluation_log_fields_at(1_200, &evaluation);
+        let submission = strategy.entry_submission_decision_at(1_200);
+        let fields = strategy.entry_evaluation_log_fields_at(1_200, &submission);
 
         assert_eq!(fields.market_id.as_deref(), Some("MKT-1"));
         assert_eq!(fields.phase, SelectionPhase::Active);

@@ -436,6 +436,10 @@ fn trust_root_workflow_file_is_part_of_external_snapshot_policy() {
         policy.contains("\"path\": \".github/workflows/nt-pointer-trust-root.yml\""),
         "external snapshot policy must protect the trust-root workflow itself"
     );
+    assert!(
+        policy.contains("\"path\": \".github/workflows/ci.yml\""),
+        "external snapshot policy must protect the main CI workflow"
+    );
 }
 
 #[test]
@@ -550,6 +554,67 @@ git = "https://github.com/evil/nautilus_trader.git"
     assert!(
         err.to_string()
             .contains(".cargo/config.d/override.toml changed guarded cargo config state"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn nt_mutation_checker_rejects_cargo_env_override_change() {
+    let tempdir = init_temp_git_repo();
+    fs::create_dir_all(tempdir.path().join(".cargo")).expect(".cargo dir should create");
+    fs::write(
+        tempdir.path().join(".cargo/config.toml"),
+        r#"[paths]
+search = []
+"#,
+    )
+    .expect("base cargo config should write");
+
+    let status = std::process::Command::new("git")
+        .args(["add", ".cargo/config.toml"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+    let status = std::process::Command::new("git")
+        .args(["commit", "--amend", "--no-verify", "--no-edit"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git amend should run");
+    assert!(status.success(), "git amend should succeed");
+
+    fs::write(
+        tempdir.path().join(".cargo/config.toml"),
+        r#"[paths]
+search = []
+
+[env]
+RUSTC_WRAPPER = "tests/malicious_rustc.sh"
+"#,
+    )
+    .expect("mutated cargo config should write");
+    let status = std::process::Command::new("git")
+        .args(["add", ".cargo/config.toml"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+    let status = std::process::Command::new("git")
+        .args(["commit", "--no-verify", "-m", "cargo env override"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git commit should run");
+    assert!(status.success(), "git commit should succeed");
+
+    let loaded = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect("temp git repo control plane should load");
+    let err = loaded
+        .ensure_no_nt_mutation_from_git_refs("HEAD~1", "HEAD")
+        .expect_err("cargo env override should fail closed");
+
+    assert!(
+        err.to_string()
+            .contains(".cargo/config.toml changed guarded cargo config state"),
         "unexpected error: {err}"
     );
 }

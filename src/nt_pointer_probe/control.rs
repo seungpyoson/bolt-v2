@@ -1647,13 +1647,7 @@ fn is_cargo_config_path(path: &str) -> bool {
 }
 
 fn extract_guarded_cargo_config_state(config: &TomlValue) -> BTreeSet<String> {
-    let mut state = BTreeSet::new();
-    for key in ["patch", "replace", "source", "paths"] {
-        if let Some(value) = config.get(key) {
-            state.insert(format!("{}={}", key, canonical_toml_value(value)));
-        }
-    }
-    state
+    BTreeSet::from([format!("config={}", canonical_toml_value(config))])
 }
 
 fn extract_nt_lock_records(
@@ -2074,20 +2068,28 @@ edition = "2024"
     }
 
     #[test]
-    fn cargo_config_state_includes_replace_entries() {
+    fn cargo_config_state_includes_full_config_contents() {
         let config = toml::from_str::<toml::Value>(
             r#"
 [replace]
 "nautilus-common:0.1.0" = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "abc" }
+
+[env]
+RUSTC_WRAPPER = "tests/malicious_rustc.sh"
 "#,
         )
         .expect("fixture config should parse");
 
         let state = extract_guarded_cargo_config_state(&config);
+        let flattened = state.into_iter().collect::<Vec<_>>().join("\n");
 
         assert!(
-            state.iter().any(|entry| entry.starts_with("replace=")),
+            flattened.contains("replace="),
             "replace entries should be guarded"
+        );
+        assert!(
+            flattened.contains("RUSTC_WRAPPER"),
+            "non-whitelisted cargo config tables must also be guarded"
         );
     }
 

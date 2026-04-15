@@ -36,5 +36,8 @@ jobs:
       - name: Block direct NT pin changes
         if: github.event_name == 'pull_request'
         shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "$BASE_REF" "$PR_NUMBER"

@@ -460,6 +460,33 @@ fn ci_lint_workflow_covers_all_nt_pointer_workflows() {
 }
 
 #[test]
+fn nt_pin_guard_workflows_route_base_ref_through_environment() {
+    for workflow_path in [
+        ".github/workflows/nt-pointer-control-plane.yml",
+        ".github/workflows/dependabot-auto-merge.yml",
+    ] {
+        let workflow =
+            fs::read_to_string(repo_root().join(workflow_path)).expect("workflow should load");
+        assert!(
+            !workflow.contains("${{ github.event.pull_request.base.ref }}\""),
+            "{workflow_path} must not interpolate base.ref directly in shell"
+        );
+        assert!(
+            workflow.contains("BASE_REF: ${{ github.event.pull_request.base.ref }}"),
+            "{workflow_path} must pass base.ref through env"
+        );
+        assert!(
+            workflow.contains("PR_NUMBER: ${{ github.event.pull_request.number }}"),
+            "{workflow_path} must pass PR number through env"
+        );
+        assert!(
+            workflow.contains("bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"$BASE_REF\" \"$PR_NUMBER\""),
+            "{workflow_path} must invoke nt_pin_block_guard with environment-routed values"
+        );
+    }
+}
+
+#[test]
 fn self_test_workflow_is_always_present_but_runtime_gated() {
     let workflow =
         fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-probe-self-test.yml"))

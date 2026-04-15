@@ -24,11 +24,13 @@ jobs:
 
       - name: Block NT pin auto-merge
         shell: bash
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
         env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{github.event.pull_request.html_url}}
           GH_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "$BASE_REF" "$PR_NUMBER"
 
       - name: Dependabot metadata
         id: metadata

@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use bolt_v2::nt_pointer_probe::control::{
-    ExpectedBranchProtection, LoadedControlPlane, compare_branch_governance_responses,
-    compare_branch_protection_response,
+    LoadedControlPlane, compare_branch_governance_responses, compare_branch_protection_response,
 };
 use clap::{Parser, Subcommand};
 
@@ -26,13 +25,13 @@ enum Command {
     },
     CompareBranchProtection {
         #[arg(long)]
-        expected: PathBuf,
+        repo_root: PathBuf,
         #[arg(long)]
         actual_json: PathBuf,
     },
     CompareBranchGovernance {
         #[arg(long)]
-        expected: PathBuf,
+        repo_root: PathBuf,
         #[arg(long)]
         actual_json: PathBuf,
         #[arg(long)]
@@ -69,37 +68,37 @@ fn main() -> Result<()> {
             println!("{}", loaded.nt_crate_diff_pattern());
         }
         Command::CompareBranchProtection {
-            expected,
+            repo_root,
             actual_json,
         } => {
-            let expected = ExpectedBranchProtection::load_and_validate(&expected)?;
+            let loaded = LoadedControlPlane::load_from_repo_root(&repo_root)?;
             let actual_json = std::fs::read_to_string(&actual_json)?;
-            compare_branch_protection_response(&expected, &actual_json)?;
+            compare_branch_protection_response(&loaded.expected_branch_protection, &actual_json)?;
             println!(
                 "branch protection matches expected state for {}",
-                expected.branch
+                loaded.expected_branch_protection.branch
             );
         }
         Command::CompareBranchGovernance {
-            expected,
+            repo_root,
             actual_json,
             actual_rules_json,
             actual_ruleset_details_json,
         } => {
-            let expected = ExpectedBranchProtection::load_and_validate(&expected)?;
+            let loaded = LoadedControlPlane::load_from_repo_root(&repo_root)?;
             let actual_json = std::fs::read_to_string(&actual_json)?;
             let actual_rules_json = std::fs::read_to_string(&actual_rules_json)?;
             let actual_ruleset_details_json =
                 std::fs::read_to_string(&actual_ruleset_details_json)?;
             compare_branch_governance_responses(
-                &expected,
+                &loaded.expected_branch_protection,
                 &actual_json,
                 &actual_rules_json,
                 &actual_ruleset_details_json,
             )?;
             println!(
                 "branch governance matches expected state for {}",
-                expected.branch
+                loaded.expected_branch_protection.branch
             );
         }
         Command::CheckNtMutation {

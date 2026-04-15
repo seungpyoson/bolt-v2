@@ -7,7 +7,6 @@ nextest_version := "0.9.132"
 deny_version := "0.19.0"
 zigbuild_version := "0.22.1"
 zig_version := "0.15.2"
-nt_pointer_probe_expected_branch_protection := "config/nt_pointer_probe/expected_branch_protection.toml"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
@@ -693,10 +692,10 @@ nt-pointer-probe-self-test: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test nt_pointer_probe_control_plane -- --nocapture
 
 nt-pointer-probe-compare-branch-protection actual_json: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-protection --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}"
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-protection --repo-root "{{repo_root}}" --actual-json "{{actual_json}}"
 
 nt-pointer-probe-compare-branch-governance actual_json actual_rules_json actual_ruleset_details_json: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-governance --expected "{{nt_pointer_probe_expected_branch_protection}}" --actual-json "{{actual_json}}" --actual-rules-json "{{actual_rules_json}}" --actual-ruleset-details-json "{{actual_ruleset_details_json}}"
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-governance --repo-root "{{repo_root}}" --actual-json "{{actual_json}}" --actual-rules-json "{{actual_rules_json}}" --actual-ruleset-details-json "{{actual_ruleset_details_json}}"
 
 nt-pointer-probe-print-nt-crate-diff-pattern: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- print-nt-crate-diff-pattern --repo-root "{{repo_root}}"

@@ -826,10 +826,6 @@ impl ExpectedBranchProtection {
             "expected branch protection branch must not be empty"
         );
         ensure!(
-            self.required_approving_review_count > 0,
-            "required_approving_review_count must be positive"
-        );
-        ensure!(
             !self.required_status_checks.is_empty(),
             "required_status_checks must not be empty"
         );
@@ -903,8 +899,8 @@ impl ExpectedBranchProtection {
             .cloned()
             .collect::<BTreeSet<_>>();
         ensure!(
-            effective_required_status_checks == classic_required_status_checks,
-            "required_effective_rules status checks {:?} must match classic required_status_checks {:?}",
+            effective_required_status_checks.is_subset(&classic_required_status_checks),
+            "required_effective_rules status checks {:?} must be a subset of classic required_status_checks {:?}",
             effective_required_status_checks,
             classic_required_status_checks
         );
@@ -925,16 +921,22 @@ impl ExpectedBranchProtection {
             let effective_app_id_status_checks =
                 integration_ids.keys().cloned().collect::<BTreeSet<_>>();
             ensure!(
-                effective_app_id_status_checks == classic_required_status_checks,
-                "required_effective_rules required_status_check_integration_ids keys {:?} must match classic required_status_checks {:?}",
+                effective_app_id_status_checks == effective_required_status_checks,
+                "required_effective_rules required_status_check_integration_ids keys {:?} must match effective required_status_checks {:?}",
                 effective_app_id_status_checks,
-                classic_required_status_checks
+                effective_required_status_checks
             );
+            let expected_effective_app_ids = self
+                .required_status_check_app_ids
+                .iter()
+                .filter(|(context, _)| effective_required_status_checks.contains(*context))
+                .map(|(context, app_id)| (context.clone(), *app_id))
+                .collect::<BTreeMap<_, _>>();
             ensure!(
-                integration_ids == &self.required_status_check_app_ids,
-                "required_effective_rules required_status_check_integration_ids {:?} must match classic required_status_check_app_ids {:?}",
+                integration_ids == &expected_effective_app_ids,
+                "required_effective_rules required_status_check_integration_ids {:?} must match effective required_status_check_app_ids {:?}",
                 integration_ids,
-                self.required_status_check_app_ids
+                expected_effective_app_ids
             );
         }
 

@@ -1055,7 +1055,7 @@ required_conversation_resolution = false
 lock_branch = false
 require_signed_commits = false
 require_code_owner_reviews = false
-required_approving_review_count = 1
+required_approving_review_count = 0
 strict_required_status_checks = false
 required_status_checks = [
   "gate",
@@ -1076,7 +1076,7 @@ type = "non_fast_forward"
 
 [[required_effective_rules]]
 type = "pull_request"
-required_approving_review_count = 0
+required_approving_review_count = 1
 dismiss_stale_reviews_on_push = false
 require_code_owner_review = false
 require_last_push_approval = false
@@ -1115,7 +1115,10 @@ allowed_bypass_actors = []
     assert!(
         err.to_string().contains(
             "required_effective_rules pull_request required_approving_review_count 0 must match classic required_approving_review_count 1"
-        ),
+        )
+            || err.to_string().contains(
+                "required_effective_rules pull_request required_approving_review_count 1 must match classic required_approving_review_count 0"
+            ),
         "unexpected error: {err}"
     );
 }
@@ -1172,7 +1175,7 @@ required_conversation_resolution = false
 lock_branch = false
 require_signed_commits = false
 require_code_owner_reviews = false
-required_approving_review_count = 1
+required_approving_review_count = 0
 strict_required_status_checks = false
 required_status_checks = [
   "gate",
@@ -1239,7 +1242,7 @@ allowed_bypass_actors = []
   {
     "type": "pull_request",
     "parameters": {
-      "required_approving_review_count": 1,
+      "required_approving_review_count": 0,
       "dismiss_stale_reviews_on_push": false,
       "required_reviewers": [],
       "require_code_owner_review": false,

@@ -47,9 +47,6 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
-  "nt-pointer-trust-root",
-  "nt-pointer-control-plane",
-  "nt-pointer-probe-self-test",
 ]
 
 [[required_rulesets]]

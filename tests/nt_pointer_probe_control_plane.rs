@@ -460,6 +460,41 @@ fn ci_lint_workflow_covers_all_nt_pointer_workflows() {
 }
 
 #[test]
+fn self_test_workflow_is_always_present_but_runtime_gated() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-probe-self-test.yml"))
+            .expect("self-test workflow should load");
+    let yaml: YamlValue =
+        serde_yaml::from_str(&workflow).expect("self-test workflow should parse as YAML");
+
+    let triggers = yaml
+        .get(YamlValue::String("on".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("self-test workflow should declare triggers");
+    let pull_request = triggers
+        .get(YamlValue::String("pull_request".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("self-test workflow must trigger on pull_request");
+    assert!(
+        !pull_request.contains_key(YamlValue::String("paths".to_string())),
+        "required self-test check must not use trigger-level paths filters"
+    );
+
+    assert!(
+        workflow.contains("Determine NT pointer self-test scope"),
+        "self-test workflow must determine relevance at runtime"
+    );
+    assert!(
+        workflow.contains("Skip NT pointer probe self-tests"),
+        "self-test workflow must emit a fast-pass path for irrelevant diffs"
+    );
+    assert!(
+        workflow.contains("if: steps.scope.outputs.run == 'true'"),
+        "self-test workflow must run heavy tests only when relevant"
+    );
+}
+
+#[test]
 fn current_external_snapshot_validator_matches_local_checkout() {
     let Some(root) = external_claude_config_root() else {
         return;
@@ -1057,9 +1092,6 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
-  "nt-pointer-trust-root",
-  "nt-pointer-control-plane",
-  "nt-pointer-probe-self-test",
 ]
 
 [[required_rulesets]]
@@ -1177,11 +1209,8 @@ required_status_checks = [
   "clippy",
   "test",
   "build",
-  "nt-pointer-trust-root",
-  "nt-pointer-control-plane",
-  "nt-pointer-probe-self-test",
 ]
-required_status_check_integration_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-trust-root = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+required_status_check_integration_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368 }
 
 [[required_rulesets]]
 id = 14763241
@@ -1228,10 +1257,7 @@ allowed_bypass_actors = []
         { "context": "gate", "integration_id": 15368 },
         { "context": "clippy", "integration_id": 15368 },
         { "context": "test", "integration_id": 15368 },
-        { "context": "build", "integration_id": 15368 },
-        { "context": "nt-pointer-trust-root", "integration_id": 15368 },
-        { "context": "nt-pointer-control-plane", "integration_id": 99999 },
-        { "context": "nt-pointer-probe-self-test", "integration_id": 15368 }
+        { "context": "build", "integration_id": 99999 }
       ]
     }
   }

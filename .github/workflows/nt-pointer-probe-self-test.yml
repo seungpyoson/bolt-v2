@@ -35,5 +35,52 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           lint-workflow-contract: "true"
 
+      - name: Determine NT pointer self-test scope
+        id: scope
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base_ref="refs/remotes/origin/pr-base-${PR_NUMBER}"
+          head_ref="refs/remotes/origin/pr-head-${PR_NUMBER}"
+          git fetch --no-tags origin \
+            "+refs/heads/${BASE_REF}:${base_ref}" \
+            "+refs/pull/${PR_NUMBER}/head:${head_ref}"
+
+          run_self_test=false
+          while IFS= read -r path; do
+            case "$path" in
+              .claude/rust-verification.toml|\
+              .github/actions/setup-environment/action.yml|\
+              .github/workflows/nt-pointer-control-plane.yml|\
+              .github/workflows/nt-pointer-probe-self-test.yml|\
+              .github/workflows/nt-pointer-trust-root.yml|\
+              .github/workflows/nt-pointer-branch-governance-drift.yml|\
+              config/nt_pointer_probe/*|\
+              scripts/install_ci_rust_verification_owner.sh|\
+              scripts/nt_pin_block_guard.sh|\
+              scripts/require_rust_verification_owner.sh|\
+              src/bin/nt_pointer_probe.rs|\
+              src/nt_pointer_probe/*|\
+              tests/nt_pointer_probe_control_plane.rs)
+                run_self_test=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "${base_ref}...${head_ref}")
+
+          echo "run=${run_self_test}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip NT pointer probe self-tests
+        if: steps.scope.outputs.run != 'true'
+        run: echo "NT pointer probe self-tests not required for this diff"
+
       - name: Run NT pointer probe self-tests
+        if: steps.scope.outputs.run == 'true'
         run: just nt-pointer-probe-self-test

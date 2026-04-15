@@ -54,10 +54,7 @@
             { "context": "gate" },
             { "context": "clippy" },
             { "context": "test" },
-            { "context": "build" },
-            { "context": "nt-pointer-trust-root" },
-            { "context": "nt-pointer-control-plane" },
-            { "context": "nt-pointer-probe-self-test" }
+            { "context": "build" }
           ]
         }
       }

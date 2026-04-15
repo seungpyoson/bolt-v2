@@ -3097,10 +3097,11 @@ nautilus_strategy!(EthChainlinkTaker, {
             self.open_position_active = false;
             self.open_position = None;
         }
-        if self
-            .pending_exit
-            .as_ref()
-            .is_some_and(|pending| pending.fill_received)
+        if (tracked_position_closed || quarantined_position_closed)
+            && self
+                .pending_exit
+                .as_ref()
+                .is_some_and(|pending| pending.fill_received)
         {
             self.pending_exit = None;
         }
@@ -5891,6 +5892,51 @@ mod tests {
                 .as_ref()
                 .map(|pending| pending.client_order_id),
             Some(ClientOrderId::from("EXIT-001"))
+        );
+        assert!(strategy.open_position.is_some());
+    }
+
+    #[test]
+    fn unrelated_position_close_does_not_clear_filled_pending_exit() {
+        let mut strategy = ready_to_trade_strategy();
+        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        strategy.open_position_active = true;
+        strategy.open_position = Some(OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: tracked_instrument,
+            position_id: PositionId::from("P-TRACKED"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        });
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-001"),
+            market_id: Some("MKT-1".to_string()),
+            fill_received: true,
+        });
+
+        strategy.on_position_closed(position_closed_event(
+            tracked_instrument,
+            PositionId::from("P-OTHER"),
+        ));
+
+        assert_eq!(
+            strategy
+                .pending_exit
+                .as_ref()
+                .map(|pending| pending.client_order_id),
+            Some(ClientOrderId::from("EXIT-001"))
+        );
+        assert_eq!(
+            strategy.pending_exit.as_ref().map(|pending| pending.fill_received),
+            Some(true)
         );
         assert!(strategy.open_position.is_some());
     }

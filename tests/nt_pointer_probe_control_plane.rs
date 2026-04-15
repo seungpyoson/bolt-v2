@@ -64,6 +64,8 @@ fn temp_fixture(name: &str) -> TempDir {
         ".github/dependabot.yml",
         ".github/actions/setup-environment/action.yml",
         ".github/workflows/nt-pointer-control-plane.yml",
+        ".github/workflows/nt-pointer-probe-self-test.yml",
+        ".github/workflows/nt-pointer-branch-governance-drift.yml",
         ".github/workflows/dependabot-auto-merge.yml",
     ] {
         let source = repo_root().join(relative);
@@ -142,9 +144,15 @@ setup_environment_action_sha256 = "e5db83cc2ea93cb2c49fa86c64c1089c56da1005db828
 control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
 control_plane_job = "control_plane"
 control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
+self_test_workflow = ".github/workflows/nt-pointer-probe-self-test.yml"
+self_test_job = "self_test"
+self_test_job_sha256 = "c5769a64de8eaed10ccf7749ea5d7b28121c3a02bda731736c82edd6a3e311cd"
 dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
 dependabot_job = "dependabot"
 dependabot_job_sha256 = "a03cf579aee5e6eab93934a7f2b65fb942afeb90be82b29eb69d8abb982f24c5"
+drift_workflow = ".github/workflows/nt-pointer-branch-governance-drift.yml"
+drift_job = "branch_protection_drift"
+drift_job_sha256 = "6e5da4b1c0849a40048a80371849978f75515bf72bb6f24a5d98608a80501d7f"
 "#,
     )
     .expect("fixture control.toml should write");
@@ -178,6 +186,21 @@ updates:
             .join(".github/workflows/nt-pointer-control-plane.yml"),
     )
     .expect("fixture control-plane workflow should copy");
+    fs::copy(
+        repo_root().join(".github/workflows/nt-pointer-probe-self-test.yml"),
+        tempdir
+            .path()
+            .join(".github/workflows/nt-pointer-probe-self-test.yml"),
+    )
+    .expect("fixture self-test workflow should copy");
+    fs::copy(
+        repo_root()
+            .join(".github/workflows/nt-pointer-branch-governance-drift.yml"),
+        tempdir
+            .path()
+            .join(".github/workflows/nt-pointer-branch-governance-drift.yml"),
+    )
+    .expect("fixture drift workflow should copy");
     fs::copy(
         repo_root().join(".github/workflows/dependabot-auto-merge.yml"),
         tempdir
@@ -720,9 +743,15 @@ setup_environment_action_sha256 = "e5db83cc2ea93cb2c49fa86c64c1089c56da1005db828
 control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
 control_plane_job = "control_plane"
 control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
+self_test_workflow = ".github/workflows/nt-pointer-probe-self-test.yml"
+self_test_job = "self_test"
+self_test_job_sha256 = "c5769a64de8eaed10ccf7749ea5d7b28121c3a02bda731736c82edd6a3e311cd"
 dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
 dependabot_job = "dependabot"
 dependabot_job_sha256 = "a03cf579aee5e6eab93934a7f2b65fb942afeb90be82b29eb69d8abb982f24c5"
+drift_workflow = ".github/workflows/nt-pointer-branch-governance-drift.yml"
+drift_job = "branch_protection_drift"
+drift_job_sha256 = "6e5da4b1c0849a40048a80371849978f75515bf72bb6f24a5d98608a80501d7f"
 "#,
     )
     .expect("invalid control fixture should write");
@@ -1343,6 +1372,19 @@ fn drift_lane_workflow_exposes_durable_failure_surface() {
     .expect("drift workflow should load");
     let yaml: YamlValue =
         serde_yaml::from_str(&workflow).expect("control-plane workflow should parse as YAML");
+
+    let triggers = yaml
+        .get(YamlValue::String("on".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("drift workflow should declare triggers");
+    assert!(
+        triggers.contains_key(YamlValue::String("schedule".to_string())),
+        "drift workflow must remain scheduled"
+    );
+    assert!(
+        !triggers.contains_key(YamlValue::String("workflow_dispatch".to_string())),
+        "drift workflow must not be manually dispatchable"
+    );
 
     let permissions = yaml
         .get(YamlValue::String("permissions".to_string()))

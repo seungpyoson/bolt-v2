@@ -119,9 +119,15 @@ pub struct GuardContract {
     pub control_plane_workflow: String,
     pub control_plane_job: String,
     pub control_plane_job_sha256: String,
+    pub self_test_workflow: String,
+    pub self_test_job: String,
+    pub self_test_job_sha256: String,
     pub dependabot_workflow: String,
     pub dependabot_job: String,
     pub dependabot_job_sha256: String,
+    pub drift_workflow: String,
+    pub drift_job: String,
+    pub drift_job_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -574,6 +580,26 @@ impl LoadedControlPlane {
             self.control.guard_contract.control_plane_workflow
         );
 
+        let self_test_workflow = fs::read_to_string(
+            self.repo_root
+                .join(&self.control.guard_contract.self_test_workflow),
+        )
+        .with_context(|| {
+            format!(
+                "failed to read {}",
+                self.control.guard_contract.self_test_workflow
+            )
+        })?;
+        ensure!(
+            workflow_job_matches_hash(
+                &self_test_workflow,
+                &self.control.guard_contract.self_test_job,
+                &self.control.guard_contract.self_test_job_sha256,
+            )?,
+            "{} must keep the exact guard job contract",
+            self.control.guard_contract.self_test_workflow
+        );
+
         let dependabot_workflow = fs::read_to_string(
             self.repo_root
                 .join(&self.control.guard_contract.dependabot_workflow),
@@ -592,6 +618,21 @@ impl LoadedControlPlane {
             )?,
             "{} must keep the exact guard job contract",
             self.control.guard_contract.dependabot_workflow
+        );
+
+        let drift_workflow =
+            fs::read_to_string(self.repo_root.join(&self.control.guard_contract.drift_workflow))
+                .with_context(|| {
+                    format!("failed to read {}", self.control.guard_contract.drift_workflow)
+                })?;
+        ensure!(
+            workflow_job_matches_hash(
+                &drift_workflow,
+                &self.control.guard_contract.drift_job,
+                &self.control.guard_contract.drift_job_sha256,
+            )?,
+            "{} must keep the exact guard job contract",
+            self.control.guard_contract.drift_workflow
         );
 
         Ok(())
@@ -658,7 +699,9 @@ impl ControlConfig {
         validate_repo_relative(&self.guard_contract.owner_install_script_path)?;
         validate_repo_relative(&self.guard_contract.setup_environment_action_path)?;
         validate_repo_relative(&self.guard_contract.control_plane_workflow)?;
+        validate_repo_relative(&self.guard_contract.self_test_workflow)?;
         validate_repo_relative(&self.guard_contract.dependabot_workflow)?;
+        validate_repo_relative(&self.guard_contract.drift_workflow)?;
 
         let statuses = [
             self.status_checks.control_plane.as_str(),
@@ -710,10 +753,16 @@ impl ControlConfig {
             self.guard_contract.owner_install_script_sha256.as_str(),
             self.guard_contract.setup_environment_action_path.as_str(),
             self.guard_contract.setup_environment_action_sha256.as_str(),
+            self.guard_contract.self_test_workflow.as_str(),
+            self.guard_contract.self_test_job.as_str(),
+            self.guard_contract.self_test_job_sha256.as_str(),
             self.guard_contract.control_plane_job.as_str(),
             self.guard_contract.control_plane_job_sha256.as_str(),
             self.guard_contract.dependabot_job.as_str(),
             self.guard_contract.dependabot_job_sha256.as_str(),
+            self.guard_contract.drift_workflow.as_str(),
+            self.guard_contract.drift_job.as_str(),
+            self.guard_contract.drift_job_sha256.as_str(),
         ] {
             ensure!(
                 !field.trim().is_empty(),
@@ -2551,9 +2600,19 @@ next:
                 control.guard_contract.control_plane_job_sha256.as_str(),
             ),
             (
+                control.guard_contract.self_test_workflow.as_str(),
+                control.guard_contract.self_test_job.as_str(),
+                control.guard_contract.self_test_job_sha256.as_str(),
+            ),
+            (
                 control.guard_contract.dependabot_workflow.as_str(),
                 control.guard_contract.dependabot_job.as_str(),
                 control.guard_contract.dependabot_job_sha256.as_str(),
+            ),
+            (
+                control.guard_contract.drift_workflow.as_str(),
+                control.guard_contract.drift_job.as_str(),
+                control.guard_contract.drift_job_sha256.as_str(),
             ),
         ] {
             let contents =

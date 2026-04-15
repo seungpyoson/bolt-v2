@@ -3,7 +3,6 @@ name: NT Pointer Branch Governance Drift
 on:
   schedule:
     - cron: "0 10 * * 1"
-  workflow_dispatch: {}
 
 permissions:
   contents: read

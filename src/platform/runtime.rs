@@ -12,6 +12,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use nautilus_common::{
     actor::{DataActor, DataActorConfig, DataActorCore},
+    cache::Cache,
     msgbus::{self, ShareableMessageHandler},
     nautilus_actor,
 };
@@ -395,6 +396,9 @@ pub fn wire_platform_runtime_with_services(
         .cloned()
         .context("platform runtime requires one active ruleset")?;
     let runtime_strategy_template = runtime_strategy_template(cfg)?;
+    let runtime_strategy_id = runtime_strategy_template
+        .as_ref()
+        .map(|template| template.strategy_id);
     let runtime_selection_topic = runtime_strategy_template
         .as_ref()
         .map(|template| runtime_selection_topic(&template.strategy_id));
@@ -456,13 +460,15 @@ pub fn wire_platform_runtime_with_services(
         cancellation.clone(),
         node.handle(),
     );
-    let selector_task = if runtime_selection_topic.is_some() {
-        tokio::task::spawn_local(run_selector_task(
+    let selector_task = if let Some(runtime_strategy_id) = runtime_strategy_id {
+        tokio::task::spawn_local(run_selector_task_with_preemption(
             ruleset,
             selector_poll_interval,
             services.candidate_loader,
             services.now_ms,
+            node.kernel().cache(),
             audit_tx,
+            runtime_strategy_id,
             runtime_selection_topic,
             cancellation.clone(),
             node.handle(),
@@ -642,12 +648,40 @@ async fn run_selector_task(
         runtime_selection_topic,
         cancellation,
         node_handle,
+        || false,
     )
     .await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_selector_task_inner(
+async fn run_selector_task_with_preemption(
+    ruleset: RulesetConfig,
+    poll_interval: Duration,
+    selector_loader: Arc<dyn CandidateMarketLoader>,
+    now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    cache: Rc<RefCell<Cache>>,
+    audit_tx: AuditSender,
+    runtime_strategy_id: StrategyId,
+    runtime_selection_topic: Option<String>,
+    cancellation: CancellationToken,
+    node_handle: LiveNodeHandle,
+) -> Result<()> {
+    run_selector_task_inner(
+        ruleset,
+        poll_interval,
+        selector_loader,
+        now_ms,
+        audit_tx,
+        runtime_selection_topic,
+        cancellation,
+        node_handle,
+        move || runtime_strategy_has_open_positions(&cache, &runtime_strategy_id),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_selector_task_inner<P>(
     ruleset: RulesetConfig,
     poll_interval: Duration,
     selector_loader: Arc<dyn CandidateMarketLoader>,
@@ -656,7 +690,11 @@ async fn run_selector_task_inner(
     runtime_selection_topic: Option<String>,
     cancellation: CancellationToken,
     node_handle: LiveNodeHandle,
-) -> Result<()> {
+    preemption_check: P,
+) -> Result<()>
+where
+    P: Fn() -> bool,
+{
     if !wait_for_node_running(&node_handle, &cancellation).await {
         return Ok(());
     }
@@ -679,19 +717,29 @@ async fn run_selector_task_inner(
             return Ok(());
         }
 
-        let load_future = selector_loader.load(ruleset.clone());
-        tokio::pin!(load_future);
-        let candidates = match tokio::select! {
-            _ = cancellation.cancelled() => return Ok(()),
-            result = &mut load_future => result,
-        } {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                return Err(fail_closed(
-                    &node_handle,
-                    &cancellation,
-                    error.context("selector polling failed"),
-                ));
+        let candidates = if preemption_check() {
+            Vec::new()
+        } else {
+            let load_future = selector_loader.load(ruleset.clone());
+            tokio::pin!(load_future);
+            let candidates = match tokio::select! {
+                _ = cancellation.cancelled() => return Ok(()),
+                result = &mut load_future => result,
+            } {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    return Err(fail_closed(
+                        &node_handle,
+                        &cancellation,
+                        error.context("selector polling failed"),
+                    ));
+                }
+            };
+
+            if preemption_check() {
+                Vec::new()
+            } else {
+                candidates
             }
         };
 
@@ -720,6 +768,16 @@ async fn run_selector_task_inner(
             last_runtime_selection_decision = Some(evaluation.decision.clone());
         }
     }
+}
+
+fn runtime_strategy_has_open_positions(
+    cache: &Rc<RefCell<Cache>>,
+    runtime_strategy_id: &StrategyId,
+) -> bool {
+    let cache = cache.borrow();
+    !cache
+        .positions_open(None, None, Some(runtime_strategy_id), None, None)
+        .is_empty()
 }
 
 fn runtime_strategy_template(cfg: &Config) -> Result<Option<RuntimeStrategyTemplate>> {
@@ -1073,7 +1131,6 @@ mod tests {
                     passphrase: Some("/pass".to_string()),
                 },
             }],
-            exec_engine: crate::config::ExecEngineConfig::default(),
             strategies: vec![StrategyEntry {
                 kind: kind.to_string(),
                 config: toml::toml! {
@@ -1138,7 +1195,6 @@ mod tests {
             },
             data_clients: Vec::new(),
             exec_clients: Vec::new(),
-            exec_engine: crate::config::ExecEngineConfig::default(),
             strategies: Vec::new(),
             raw_capture: RawCaptureConfig::default(),
             streaming: StreamingCaptureConfig::default(),

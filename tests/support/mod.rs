@@ -21,26 +21,20 @@ use nautilus_common::{
     clients::{DataClient, ExecutionClient},
     clock::Clock,
     messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
-    messages::execution::SubmitOrder,
 };
 use nautilus_model::{
     accounts::AccountAny,
     enums::OmsType,
-    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
+    identifiers::{AccountId, ClientId, Venue},
     types::{AccountBalance, MarginBalance},
 };
 use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-static MOCK_EXEC_SUBMISSIONS: OnceLock<Mutex<Vec<RecordedSubmitOrder>>> = OnceLock::new();
 
 fn mock_data_subscriptions() -> &'static Mutex<Vec<String>> {
     MOCK_DATA_SUBSCRIPTIONS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn mock_exec_submissions() -> &'static Mutex<Vec<RecordedSubmitOrder>> {
-    MOCK_EXEC_SUBMISSIONS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 pub fn clear_mock_data_subscriptions() {
@@ -49,22 +43,6 @@ pub fn clear_mock_data_subscriptions() {
 
 pub fn recorded_mock_data_subscriptions() -> Vec<String> {
     mock_data_subscriptions().lock().unwrap().clone()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordedSubmitOrder {
-    pub client_id: Option<ClientId>,
-    pub strategy_id: StrategyId,
-    pub instrument_id: InstrumentId,
-    pub client_order_id: ClientOrderId,
-}
-
-pub fn clear_mock_exec_submissions() {
-    mock_exec_submissions().lock().unwrap().clear();
-}
-
-pub fn recorded_mock_exec_submissions() -> Vec<RecordedSubmitOrder> {
-    mock_exec_submissions().lock().unwrap().clone()
 }
 
 pub struct TempCaseDir {
@@ -518,19 +496,6 @@ impl ExecutionClient for MockExecutionClient {
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
         self.connected = false;
-        Ok(())
-    }
-
-    fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
-        mock_exec_submissions()
-            .lock()
-            .unwrap()
-            .push(RecordedSubmitOrder {
-                client_id: cmd.client_id,
-                strategy_id: cmd.strategy_id,
-                instrument_id: cmd.instrument_id,
-                client_order_id: cmd.client_order_id,
-            });
         Ok(())
     }
 }

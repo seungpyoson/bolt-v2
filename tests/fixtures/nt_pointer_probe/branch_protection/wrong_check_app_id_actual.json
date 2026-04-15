@@ -1,0 +1,52 @@
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": [
+      "gate",
+      "clippy",
+      "test",
+      "build",
+      "nt-pointer-trust-root",
+      "nt-pointer-control-plane",
+      "nt-pointer-probe-self-test"
+    ],
+    "checks": [
+      { "context": "gate", "app_id": 15368 },
+      { "context": "clippy", "app_id": 15368 },
+      { "context": "test", "app_id": 15368 },
+      { "context": "build", "app_id": 15368 },
+      { "context": "nt-pointer-trust-root", "app_id": 15368 },
+      { "context": "nt-pointer-control-plane", "app_id": 99999 },
+      { "context": "nt-pointer-probe-self-test", "app_id": 15368 }
+    ]
+  },
+  "enforce_admins": {
+    "enabled": true
+  },
+  "required_signatures": {
+    "enabled": false
+  },
+  "required_linear_history": {
+    "enabled": false
+  },
+  "allow_force_pushes": {
+    "enabled": false
+  },
+  "allow_deletions": {
+    "enabled": false
+  },
+  "block_creations": {
+    "enabled": false
+  },
+  "required_conversation_resolution": {
+    "enabled": false
+  },
+  "lock_branch": {
+    "enabled": false
+  },
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  }
+}

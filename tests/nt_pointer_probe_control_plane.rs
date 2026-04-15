@@ -440,14 +440,20 @@ fn trust_root_workflow_file_is_part_of_external_snapshot_policy() {
     let policy = fs::read_to_string(root.join("config/bolt-v2-trust-root-policy.json"))
         .expect("external trust-root policy should read");
 
-    assert!(
-        policy.contains("\"path\": \".github/workflows/nt-pointer-trust-root.yml\""),
-        "external snapshot policy must protect the trust-root workflow itself"
-    );
-    assert!(
-        policy.contains("\"path\": \".github/workflows/ci.yml\""),
-        "external snapshot policy must protect the main CI workflow"
-    );
+    for required_path in [
+        ".github/workflows/nt-pointer-trust-root.yml",
+        ".github/workflows/ci.yml",
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/lib.rs",
+        "src/nt_pointer_probe/mod.rs",
+        "tests/nt_pointer_probe_control_plane.rs",
+    ] {
+        assert!(
+            policy.contains(&format!("\"path\": \"{required_path}\"")),
+            "external snapshot policy must protect {required_path}"
+        );
+    }
 }
 
 #[test]

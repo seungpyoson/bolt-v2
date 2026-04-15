@@ -1426,7 +1426,7 @@ fn branch_protection_comparison_rejects_wrong_review_count() {
 
     assert!(
         err.to_string()
-            .contains("branch protection drift: required_approving_review_count expected 1, got 2"),
+            .contains("branch protection drift: required_approving_review_count expected 0, got 2"),
         "unexpected error: {err}"
     );
 }

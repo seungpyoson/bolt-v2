@@ -187,6 +187,7 @@ fn candidate_market_with_tokens(
         condition_id: condition_id.to_string(),
         up_token_id: up_token_id.to_string(),
         down_token_id: down_token_id.to_string(),
+        price_to_beat: None,
         start_ts_ms,
         declared_resolution_basis:
             bolt_v2::platform::resolution_basis::parse_ruleset_resolution_basis("chainlink_ethusd")

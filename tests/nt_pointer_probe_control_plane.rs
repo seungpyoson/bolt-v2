@@ -913,6 +913,7 @@ updates:
     ignore:
       - dependency-name: "nautilus-common"
       - dependency-name: "nautilus-core"
+      - dependency-name: "nautilus-data"
       - dependency-name: "nautilus-binance"
       - dependency-name: "nautilus-bybit"
       - dependency-name: "nautilus-deribit"

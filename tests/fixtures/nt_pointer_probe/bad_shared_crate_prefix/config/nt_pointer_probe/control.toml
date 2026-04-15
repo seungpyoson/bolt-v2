@@ -8,6 +8,7 @@ tag_soak_days = 7
 nt_crates = [
   "nautilus-common",
   "nautilus-core",
+  "nautilus-data",
   "nautilus-binance",
   "nautilus-bybit",
   "nautilus-deribit",

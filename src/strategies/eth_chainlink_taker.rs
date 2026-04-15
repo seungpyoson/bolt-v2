@@ -569,6 +569,7 @@ struct PositionMaterializationSpec {
 struct PendingExitState {
     client_order_id: ClientOrderId,
     market_id: Option<String>,
+    fill_received: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2523,6 +2524,7 @@ impl EthChainlinkTaker {
         self.pending_exit = Some(PendingExitState {
             client_order_id,
             market_id: self.current_position_market_id(),
+            fill_received: false,
         });
         log::info!(
             "eth_chainlink_taker exit submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
@@ -3005,7 +3007,12 @@ impl DataActor for EthChainlinkTaker {
             {
                 self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
-            self.pending_exit = None;
+            if let Some(pending_exit) = self.pending_exit.as_mut() {
+                pending_exit.fill_received = true;
+            }
+            if self.open_position.is_none() {
+                self.pending_exit = None;
+            }
         }
         Ok(())
     }
@@ -3089,6 +3096,13 @@ nautilus_strategy!(EthChainlinkTaker, {
         if tracked_position_closed {
             self.open_position_active = false;
             self.open_position = None;
+        }
+        if self
+            .pending_exit
+            .as_ref()
+            .is_some_and(|pending| pending.fill_received)
+        {
+            self.pending_exit = None;
         }
         if quarantined_position_closed {
             self.quarantined_position = None;
@@ -5139,6 +5153,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-001"),
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
         strategy.recovery = true;
         strategy.on_position_closed(position_closed_event(instrument_id, position_id));
@@ -5151,6 +5166,10 @@ mod tests {
                 .as_ref()
                 .map(|pending| pending.client_order_id),
             Some(ClientOrderId::from("EXIT-001"))
+        );
+        assert_eq!(
+            strategy.pending_exit.as_ref().map(|pending| pending.fill_received),
+            Some(false)
         );
         assert!(!strategy.recovery);
     }
@@ -5181,6 +5200,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: exit_client_order_id,
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
 
         strategy
@@ -5191,7 +5211,17 @@ mod tests {
             ))
             .expect("exit fill bookkeeping should succeed");
 
-        assert!(strategy.pending_exit.is_none());
+        assert_eq!(
+            strategy
+                .pending_exit
+                .as_ref()
+                .map(|pending| pending.client_order_id),
+            Some(exit_client_order_id)
+        );
+        assert_eq!(
+            strategy.pending_exit.as_ref().map(|pending| pending.fill_received),
+            Some(true)
+        );
         assert!(strategy.open_position_active);
 
         strategy.on_position_closed(position_closed_event(instrument_id, position_id));
@@ -5210,6 +5240,7 @@ mod tests {
         canceled.pending_exit = Some(PendingExitState {
             client_order_id: exit_client_order_id,
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
         canceled
             .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
@@ -5220,6 +5251,7 @@ mod tests {
         rejected.pending_exit = Some(PendingExitState {
             client_order_id: exit_client_order_id,
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
         rejected.on_order_rejected(order_rejected_event(exit_client_order_id, instrument_id));
         assert!(rejected.pending_exit.is_none());
@@ -5228,6 +5260,7 @@ mod tests {
         expired.pending_exit = Some(PendingExitState {
             client_order_id: exit_client_order_id,
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
         expired.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
         assert!(expired.pending_exit.is_none());
@@ -5380,6 +5413,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: exit_client_order_id,
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
@@ -5421,6 +5455,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: exit_client_order_id,
             market_id: strategy.current_position_market_id(),
+            fill_received: false,
         });
 
         strategy
@@ -5459,6 +5494,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: exit_client_order_id,
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
@@ -5473,6 +5509,7 @@ mod tests {
 
         assert!(strategy.market_in_cooldown("MKT-1", 1_000));
         assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+        assert!(strategy.pending_exit.is_none());
     }
 
     #[test]
@@ -5834,6 +5871,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-001"),
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
 
         strategy.on_position_closed(position_closed_event(
@@ -6448,6 +6486,7 @@ mod tests {
         strategy.pending_exit = Some(PendingExitState {
             client_order_id: ClientOrderId::from("EXIT-001"),
             market_id: Some("MKT-1".to_string()),
+            fill_received: false,
         });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

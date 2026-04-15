@@ -201,6 +201,7 @@ fn test_config(audit_dir: &Path) -> Config {
         },
         data_clients: Vec::new(),
         exec_clients: Vec::new(),
+        exec_engine: bolt_v2::config::ExecEngineConfig::default(),
         strategies: Vec::new(),
         raw_capture: RawCaptureConfig::default(),
         streaming: StreamingCaptureConfig::default(),
@@ -947,15 +948,17 @@ async fn eligible_market_emits_active_decision() {
 }
 
 #[test]
-fn selector_preemption_suppresses_active_decision_while_positions_open() {
-    struct FailingIfCalledLoader {
+fn selector_keeps_loading_and_publishing_active_decision_while_positions_open() {
+    struct CountingLoader {
         calls: Arc<AtomicUsize>,
+        market: CandidateMarket,
     }
 
-    impl CandidateMarketLoader for FailingIfCalledLoader {
+    impl CandidateMarketLoader for CountingLoader {
         fn load(&self, _ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Err(anyhow!("selector loader must stay dormant while preempted")) })
+            let market = self.market.clone();
+            Box::pin(async move { Ok(vec![market]) })
         }
     }
 
@@ -967,10 +970,20 @@ fn selector_preemption_suppresses_active_decision_while_positions_open() {
         let poll_budget = selector_poll_budget(cfg.rulesets[0].selector_poll_interval_ms);
         let builds = Arc::new(Mutex::new(Vec::<String>::new()));
         let calls = Arc::new(AtomicUsize::new(0));
+        let topic = runtime_selection_topic(&StrategyId::from("STUB-RUNTIME-001"));
+        let observed = Rc::new(RefCell::new(Vec::<RuntimeSelectionSnapshot>::new()));
+        let handler_observed = Rc::clone(&observed);
+        let handler = ShareableMessageHandler::from_any(move |message: &dyn Any| {
+            if let Some(snapshot) = message.downcast_ref::<RuntimeSelectionSnapshot>() {
+                handler_observed.borrow_mut().push(snapshot.clone());
+            }
+        });
+        let active_market = candidate_market("mkt-preempted", "ACTIVE.POLYMARKET", 2_000.0, 120);
         let uploader = MockUploader::default();
         let services = stub_runtime_services_with_loader(
-            Arc::new(FailingIfCalledLoader {
+            Arc::new(CountingLoader {
                 calls: Arc::clone(&calls),
+                market: active_market.clone(),
             }),
             Arc::new(RecordingAuditTaskFactory::new(uploader.clone())),
             Arc::clone(&builds),
@@ -981,37 +994,58 @@ fn selector_preemption_suppresses_active_decision_while_positions_open() {
         let handle = node.handle();
         let stop_handle = handle.clone();
         let guards = wire_platform_runtime_with_services(&mut node, &cfg, services).unwrap();
+        subscribe_any(topic.clone().into(), handler.clone(), None);
 
         let control = async {
             wait_for_running(&handle).await;
-            wait_for_selector_state(&spool_dir, "idle", 1, poll_budget).await;
+            wait_for_selector_state(&spool_dir, "active", 1, poll_budget).await;
+            wait_for_condition_or_stop(
+                Duration::from_secs(1),
+                &stop_handle,
+                "runtime selection snapshot while positions remain open",
+                || !observed.borrow().is_empty(),
+            )
+            .await?;
             stop_handle.stop();
             Ok::<(), anyhow::Error>(())
         };
 
         let (run_result, control_result) = tokio::join!(node.run(), control);
+        let shutdown_result = guards.shutdown().await;
+        unsubscribe_any(topic.into(), &handler);
+
         run_result.unwrap();
         control_result.unwrap();
-        guards.shutdown().await.unwrap();
+        shutdown_result.unwrap();
 
         let records = uploaded_records(&uploader);
         assert!(records.iter().any(|record| {
             record["kind"] == "selector_decision"
-                && record["state"] == "idle"
-                && record["reason"] == "no eligible market"
+                && record["state"] == "active"
+                && record["market_id"] == "mkt-preempted"
+                && record["instrument_id"] == "ACTIVE.POLYMARKET"
+                && record["reason"].is_null()
         }));
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "selector should not call the loader while preempted"
+        assert!(
+            calls.load(Ordering::SeqCst) > 0,
+            "selector should keep calling the loader while positions remain open"
         );
         assert!(
-            !records.iter().any(|record| {
-                record["kind"] == "selector_decision"
-                    && record["state"] == "active"
-                    && record["market_id"] == "mkt-preempted"
+            observed.borrow().iter().any(|snapshot| {
+                snapshot
+                    == &RuntimeSelectionSnapshot {
+                        ruleset_id: "PRIMARY".to_string(),
+                        decision: bolt_v2::platform::ruleset::SelectionDecision {
+                            ruleset_id: "PRIMARY".to_string(),
+                            state: SelectionState::Active {
+                                market: active_market.clone(),
+                            },
+                        },
+                        eligible_candidates: vec![active_market.clone()],
+                        published_at_ms: 1_000,
+                    }
             }),
-            "preempted selector should not emit an active decision: {records:?}"
+            "runtime selection snapshot should publish the active decision while positions remain open"
         );
         assert_eq!(builds.lock().unwrap().as_slice(), ["STUB-RUNTIME-001"]);
     });

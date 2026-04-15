@@ -76,6 +76,7 @@ fn tracked_template_materializes_to_parseable_runtime_config() {
     assert_eq!(cfg.data_clients.len(), 1);
     assert_eq!(cfg.exec_clients.len(), 1);
     assert_eq!(cfg.strategies.len(), 0);
+    assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
     assert_eq!(cfg.data_clients[0].kind, "polymarket");
     assert_eq!(cfg.exec_clients[0].kind, "polymarket");
     assert!(
@@ -201,4 +202,79 @@ max_local_backlog_bytes = 10485760
         value["audit"]["max_local_backlog_bytes"].as_integer(),
         Some(10_485_760)
     );
+}
+
+#[test]
+fn rendered_operator_config_passes_through_position_check_interval() {
+    let tempdir = TempCaseDir::new("position-check-config-schema");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+
+[exec_engine]
+position_check_interval_secs = 23
+
+[polymarket]
+instrument_id = "0xabc-123.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+signature_type = 2
+
+[secrets]
+region = "eu-west-1"
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+resolution_basis = "binance_btcusdt_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 250
+candidate_load_timeout_secs = 12
+
+[rulesets.selector]
+tag_slug = "bitcoin"
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+upload_attempt_timeout_secs = 45
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#;
+
+    fs::write(&input_path, input).expect("input config should be written");
+
+    let outcome = materialize_live_config(&input_path, &output_path)
+        .expect("operator config should materialize");
+
+    assert_eq!(outcome, MaterializationOutcome::Created);
+
+    let cfg = Config::load(&output_path).expect("materialized config should parse");
+
+    assert_eq!(cfg.exec_engine.position_check_interval_secs, Some(23.0));
 }

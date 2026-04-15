@@ -107,6 +107,8 @@ pub struct LiveLocalConfig {
     #[serde(default)]
     pub timeouts: LiveTimeoutsInput,
     #[serde(default)]
+    pub exec_engine: LiveExecEngineInput,
+    #[serde(default)]
     pub polymarket: LivePolymarketInput,
     #[serde(default)]
     pub strategy: LiveStrategyInput,
@@ -195,6 +197,13 @@ impl Default for LiveTimeoutsInput {
             shutdown_delay_secs: default_delay_shutdown_secs(),
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveExecEngineInput {
+    #[serde(default)]
+    pub position_check_interval_secs: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -399,6 +408,8 @@ struct RenderedConfig {
     raw_capture: RenderedRawCaptureConfig,
     data_clients: Vec<RenderedDataClientEntry>,
     exec_clients: Vec<RenderedExecClientEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exec_engine: Option<RenderedExecEngineConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     strategies: Vec<RenderedStrategyEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -469,6 +480,12 @@ struct RenderedExecClientConfig {
     account_id: String,
     signature_type: u8,
     funder: String,
+}
+
+#[derive(Serialize)]
+struct RenderedExecEngineConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position_check_interval_secs: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -690,6 +707,11 @@ fn render_runtime_config(
                 passphrase: input.secrets.passphrase.clone(),
             },
         }],
+        exec_engine: input.exec_engine.position_check_interval_secs.map(
+            |position_check_interval_secs| RenderedExecEngineConfig {
+                position_check_interval_secs: Some(position_check_interval_secs),
+            },
+        ),
         strategies: Vec::new(),
         streaming: if input.streaming.catalog_path.trim().is_empty() {
             None

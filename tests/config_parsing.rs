@@ -60,6 +60,7 @@ fn parses_runtime_config_with_optional_streaming_section() {
     let cfg: Config = toml::from_str(toml).unwrap();
 
     assert_eq!(cfg.node.timeout_connection_secs, 60);
+    assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
     assert_eq!(cfg.raw_capture.output_dir, "var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 1000);
@@ -164,6 +165,118 @@ fn runtime_config_parses_ruleset_selector_table() {
     assert_eq!(
         cfg.rulesets[0].selector["event_slug_prefix"].as_str(),
         Some("btc-updown")
+    );
+}
+
+#[test]
+fn runtime_config_parses_optional_exec_engine_position_check_interval() {
+    let toml = r#"
+        [node]
+        name = "bolt-v2"
+        trader_id = "TRADER-001"
+        environment = "Live"
+        load_state = true
+        save_state = true
+        timeout_connection_secs = 60
+        timeout_reconciliation_secs = 30
+        timeout_portfolio_secs = 10
+        timeout_disconnection_secs = 10
+        delay_post_stop_secs = 10
+        delay_shutdown_secs = 5
+
+        [logging]
+        stdout_level = "Info"
+        file_level = "Off"
+
+        [[data_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [data_clients.config]
+        subscribe_new_markets = false
+        update_instruments_interval_mins = 60
+        ws_max_subscriptions = 200
+        event_slugs = ["btc-updown-5m"]
+
+        [exec_engine]
+        position_check_interval_secs = 17
+
+        [[exec_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [exec_clients.config]
+        account_id = "POLYMARKET-001"
+        signature_type = 2
+        funder = "0xdeadbeef"
+        [exec_clients.secrets]
+        region = "us-east-1"
+        pk = "/pk"
+        api_key = "/key"
+        api_secret = "/secret"
+        passphrase = "/pass"
+    "#;
+
+    let cfg: Config = toml::from_str(toml).unwrap();
+
+    assert_eq!(cfg.exec_engine.position_check_interval_secs, Some(17.0));
+}
+
+#[test]
+fn runtime_config_load_rejects_non_positive_exec_engine_position_check_interval() {
+    let tempdir = TempCaseDir::new("exec-engine-position-check-invalid");
+    let path = tempdir.path().join("live.toml");
+    let toml = r#"
+        [node]
+        name = "bolt-v2"
+        trader_id = "TRADER-001"
+        environment = "Live"
+        load_state = true
+        save_state = true
+        timeout_connection_secs = 60
+        timeout_reconciliation_secs = 30
+        timeout_portfolio_secs = 10
+        timeout_disconnection_secs = 10
+        delay_post_stop_secs = 10
+        delay_shutdown_secs = 5
+
+        [logging]
+        stdout_level = "Info"
+        file_level = "Off"
+
+        [exec_engine]
+        position_check_interval_secs = 0
+
+        [[data_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [data_clients.config]
+        subscribe_new_markets = false
+        update_instruments_interval_mins = 60
+        ws_max_subscriptions = 200
+        event_slugs = ["btc-updown-5m"]
+
+        [[exec_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [exec_clients.config]
+        account_id = "POLYMARKET-001"
+        signature_type = 2
+        funder = "0xdeadbeef"
+        [exec_clients.secrets]
+        region = "us-east-1"
+        pk = "/pk"
+        api_key = "/key"
+        api_secret = "/secret"
+        passphrase = "/pass"
+    "#;
+
+    fs::write(&path, toml).expect("runtime config should be written");
+
+    let error = Config::load(&path).expect_err("non-positive position check interval must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("exec_engine.position_check_interval_secs")
     );
 }
 

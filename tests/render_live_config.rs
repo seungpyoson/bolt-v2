@@ -274,6 +274,80 @@ max_local_backlog_bytes = 10485760
 }
 
 #[test]
+fn materialize_live_config_renders_position_check_interval_when_configured() {
+    let tempdir = TempCaseDir::new("position-check-render");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = r#"
+[node]
+name = "BOLT-V2-TEST"
+trader_id = "BOLT-TEST"
+
+[exec_engine]
+position_check_interval_secs = 19
+
+[polymarket]
+instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xabc"
+
+[secrets]
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/key"
+api_secret = "/bolt/poly/secret"
+passphrase = "/bolt/poly/passphrase"
+
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+resolution_basis = "binance_btcusdt_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
+
+[rulesets.selector]
+tag_slug = "bitcoin"
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#;
+
+    fs::write(&input_path, input).expect("input config should be written");
+
+    materialize_live_config(&input_path, &output_path)
+        .expect("materializer should render position check interval");
+
+    let rendered =
+        fs::read_to_string(&output_path).expect("materialized config should be readable");
+    let cfg = Config::load(&output_path).expect("materialized config should parse");
+
+    assert!(rendered.contains("position_check_interval_secs = 19"));
+    assert_eq!(cfg.exec_engine.position_check_interval_secs, Some(19.0));
+}
+
+#[test]
 fn materialize_live_config_rejects_non_default_strategy_input_in_ruleset_mode() {
     let tempdir = TempCaseDir::new("ruleset-strategy-input-rejected");
     let input_path = tempdir.path().join("live.local.toml");

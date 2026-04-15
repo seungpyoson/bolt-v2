@@ -10,6 +10,8 @@ pub struct Config {
     pub data_clients: Vec<DataClientEntry>,
     pub exec_clients: Vec<ExecClientEntry>,
     #[serde(default)]
+    pub exec_engine: ExecEngineConfig,
+    #[serde(default)]
     pub strategies: Vec<StrategyEntry>,
     #[serde(default)]
     pub raw_capture: RawCaptureConfig,
@@ -87,6 +89,12 @@ pub struct ExecClientEntry {
     pub kind: String,
     pub config: Value,
     pub secrets: ExecClientSecrets,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ExecEngineConfig {
+    #[serde(default)]
+    pub position_check_interval_secs: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]

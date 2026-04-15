@@ -20,11 +20,6 @@ jobs:
     name: nt-pointer-trust-root
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
       - name: Fetch external trust-root validator
         shell: bash
         run: |
@@ -33,24 +28,26 @@ jobs:
           curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" "$base_url/config/bolt-v2-trust-root-policy.json"
           chmod +x "$RUNNER_TEMP/bolt_trust_root_validator.py"
 
-      - name: Fetch head branch for trust-root diff
+      - name: Materialize protected files from PR head
         shell: bash
         env:
           HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ "$HEAD_REPO_FULL_NAME" = "${{ github.repository }}" ]; then
-            git fetch --no-tags origin "+refs/heads/${HEAD_REF}:refs/remotes/origin/pr-head-${PR_NUMBER}"
-          else
-            git remote add pr-head "https://github.com/${HEAD_REPO_FULL_NAME}.git"
-            git fetch --no-tags pr-head "+refs/heads/${HEAD_REF}:refs/remotes/pr-head/${PR_NUMBER}"
-          fi
-          git checkout --detach "${{ github.event.pull_request.head.sha }}"
+          repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
+          mkdir -p "$repo_root"
+          jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
+            target_path="$repo_root/$relative_path"
+            mkdir -p "$(dirname "$target_path")"
+            file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}"
+            curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url"
+          done
+          printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path"
 
       - name: Validate external trust root
         shell: bash
         run: |
+          repo_root="$(cat "$RUNNER_TEMP/bolt-v2-trust-root-path")"
           python3 "$RUNNER_TEMP/bolt_trust_root_validator.py" \
-            --repo "$GITHUB_WORKSPACE" \
+            --repo "$repo_root" \
             --policy "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"

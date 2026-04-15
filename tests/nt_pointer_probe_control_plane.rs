@@ -389,6 +389,18 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         !workflow.contains("Validate control-plane artifacts"),
         "trust-root workflow must not run repo-local semantic validation"
     );
+    assert!(
+        !workflow.contains("actions/checkout@"),
+        "trust-root workflow must not checkout PR content"
+    );
+    assert!(
+        !workflow.contains("git checkout --detach"),
+        "trust-root workflow must not checkout the PR head SHA"
+    );
+    assert!(
+        workflow.contains("jq -r '.protected_entries[].path'"),
+        "trust-root workflow must materialize only the protected files from policy"
+    );
 
     let sha_line = workflow
         .lines()
@@ -403,8 +415,12 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must not interpolate head.ref directly into shell"
     );
     assert!(
-        workflow.contains("HEAD_REF: ${{ github.event.pull_request.head.ref }}"),
-        "workflow must pass head.ref through an environment variable"
+        !workflow.contains("github.event.pull_request.head.ref"),
+        "workflow must not reference head.ref at all in the no-checkout design"
+    );
+    assert!(
+        workflow.contains("HEAD_SHA: ${{ github.event.pull_request.head.sha }}"),
+        "workflow must source head.sha through an environment variable"
     );
 }
 
@@ -420,6 +436,23 @@ fn trust_root_workflow_file_is_part_of_external_snapshot_policy() {
         policy.contains("\"path\": \".github/workflows/nt-pointer-trust-root.yml\""),
         "external snapshot policy must protect the trust-root workflow itself"
     );
+}
+
+#[test]
+fn ci_lint_workflow_covers_all_nt_pointer_workflows() {
+    let justfile = fs::read_to_string(repo_root().join("justfile")).expect("justfile should load");
+
+    for workflow in [
+        ".github/workflows/nt-pointer-control-plane.yml",
+        ".github/workflows/nt-pointer-trust-root.yml",
+        ".github/workflows/nt-pointer-probe-self-test.yml",
+        ".github/workflows/nt-pointer-branch-governance-drift.yml",
+    ] {
+        assert!(
+            justfile.contains(workflow),
+            "ci-lint-workflow must include {workflow}"
+        );
+    }
 }
 
 #[test]

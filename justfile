@@ -124,6 +124,7 @@ ci-lint-workflow:
     [ -f .github/workflows/nt-pointer-control-plane.yml ] && workflow_files+=(.github/workflows/nt-pointer-control-plane.yml)
     [ -f .github/workflows/nt-pointer-trust-root.yml ] && workflow_files+=(.github/workflows/nt-pointer-trust-root.yml)
     [ -f .github/workflows/nt-pointer-probe-self-test.yml ] && workflow_files+=(.github/workflows/nt-pointer-probe-self-test.yml)
+    [ -f .github/workflows/nt-pointer-branch-governance-drift.yml ] && workflow_files+=(.github/workflows/nt-pointer-branch-governance-drift.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")

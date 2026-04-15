@@ -275,6 +275,8 @@ pub enum ExpectedEffectiveRule {
     },
     RequiredStatusChecks {
         strict_required_status_checks_policy: bool,
+        #[serde(default)]
+        do_not_enforce_on_create: bool,
         required_status_checks: Vec<String>,
         #[serde(default)]
         required_status_check_integration_ids: BTreeMap<String, u64>,
@@ -1403,11 +1405,15 @@ fn normalize_effective_rules_response(actual_json: &str) -> Result<BTreeSet<Stri
                     .collect::<Vec<_>>()
                     .join(",");
                 format!(
-                    "required_status_checks|strict_required_status_checks_policy={}|contexts={}|integration_ids={}",
+                    "required_status_checks|strict_required_status_checks_policy={}|do_not_enforce_on_create={}|contexts={}|integration_ids={}",
                     parameters
                         .get("strict_required_status_checks_policy")
                         .and_then(Value::as_bool)
                         .ok_or_else(|| anyhow!("required_status_checks rule missing strict_required_status_checks_policy"))?,
+                    parameters
+                        .get("do_not_enforce_on_create")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                     contexts.into_iter().collect::<Vec<_>>().join(","),
                     integrations
                 )
@@ -1942,6 +1948,7 @@ fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
         ),
         ExpectedEffectiveRule::RequiredStatusChecks {
             strict_required_status_checks_policy,
+            do_not_enforce_on_create,
             required_status_checks,
             required_status_check_integration_ids,
         } => {
@@ -1958,8 +1965,11 @@ fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
                 .collect::<Vec<_>>()
                 .join(",");
             format!(
-                "required_status_checks|strict_required_status_checks_policy={}|contexts={}|integration_ids={}",
-                strict_required_status_checks_policy, contexts, integrations
+                "required_status_checks|strict_required_status_checks_policy={}|do_not_enforce_on_create={}|contexts={}|integration_ids={}",
+                strict_required_status_checks_policy,
+                do_not_enforce_on_create,
+                contexts,
+                integrations
             )
         }
     }

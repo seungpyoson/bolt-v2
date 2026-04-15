@@ -953,6 +953,7 @@ allowed_merge_methods = ["merge", "squash", "rebase"]
 [[required_effective_rules]]
 type = "required_status_checks"
 strict_required_status_checks_policy = false
+do_not_enforce_on_create = false
 required_status_checks = [
   "gate",
   "clippy",
@@ -1072,6 +1073,7 @@ allowed_merge_methods = ["merge", "squash", "rebase"]
 [[required_effective_rules]]
 type = "required_status_checks"
 strict_required_status_checks_policy = false
+do_not_enforce_on_create = false
 required_status_checks = [
   "gate",
   "clippy",
@@ -1147,6 +1149,38 @@ allowed_bypass_actors = []
         &actual_rulesets,
     )
     .expect_err("mismatched effective-rule integration ID should fail closed");
+
+    assert!(
+        err.to_string().contains("effective rules differ"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn branch_governance_comparison_rejects_do_not_enforce_on_create_drift() {
+    let expected =
+        ExpectedBranchProtection::load_and_validate(&fixture("branch_protection/expected.toml"))
+            .expect("expected branch protection fixture should parse");
+    let actual_protection =
+        std::fs::read_to_string(fixture("branch_protection/matching_actual.json"))
+            .expect("matching branch protection fixture should load");
+    let actual_rules = std::fs::read_to_string(fixture("branch_protection/matching_rules.json"))
+        .expect("matching rules fixture should load")
+        .replace(
+            "do_not_enforce_on_create\": false",
+            "do_not_enforce_on_create\": true",
+        );
+    let actual_rulesets =
+        std::fs::read_to_string(fixture("branch_protection/matching_rulesets.json"))
+            .expect("matching ruleset details fixture should load");
+
+    let err = compare_branch_governance_responses(
+        &expected,
+        &actual_protection,
+        &actual_rules,
+        &actual_rulesets,
+    )
+    .expect_err("do_not_enforce_on_create drift should fail governance comparison");
 
     assert!(
         err.to_string().contains("effective rules differ"),

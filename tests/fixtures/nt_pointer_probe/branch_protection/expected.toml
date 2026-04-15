@@ -41,6 +41,7 @@ allowed_merge_methods = ["merge", "squash", "rebase"]
 [[required_effective_rules]]
 type = "required_status_checks"
 strict_required_status_checks_policy = false
+do_not_enforce_on_create = false
 required_status_checks = [
   "gate",
   "clippy",

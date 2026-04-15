@@ -401,6 +401,14 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         workflow.contains("jq -r '.protected_entries[].path'"),
         "trust-root workflow must materialize only the protected files from policy"
     );
+    assert!(
+        workflow.contains("Validate trust-root validator SHA pin"),
+        "trust-root workflow must validate the external validator ref shape before fetching it"
+    );
+    assert!(
+        workflow.contains("^[0-9a-f]{40}$"),
+        "trust-root workflow must reject non-commit validator refs"
+    );
 
     let sha_line = workflow
         .lines()
@@ -520,6 +528,19 @@ fn self_test_workflow_is_always_present_but_runtime_gated() {
         "self-test workflow must only cancel superseded pull_request runs so push attestations on main complete"
     );
 
+    for required_path in [
+        "Cargo.toml",
+        "Cargo.lock",
+        ".github/dependabot.yml",
+        ".github/workflows/dependabot-auto-merge.yml",
+        "tests/fixtures/nt_pointer_probe/*",
+    ] {
+        assert!(
+            workflow.contains(required_path),
+            "self-test workflow scope must include {required_path}"
+        );
+    }
+
     assert!(
         workflow.contains("Determine NT pointer self-test scope"),
         "self-test workflow must determine relevance at runtime"
@@ -572,6 +593,87 @@ fn nt_mutation_checker_rejects_root_manifest_change() {
             .contains("Cargo.toml changed NT dependency records"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn nt_mutation_checker_rejects_nt_lockfile_change() {
+    let tempdir = init_temp_git_repo();
+
+    fs::write(
+        tempdir.path().join("Cargo.lock"),
+        r#"version = 3
+
+[[package]]
+name = "nautilus-common"
+version = "0.1.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=deadbeef#deadbeef"
+dependencies = ["serde"]
+"#,
+    )
+    .expect("mutated Cargo.lock should write");
+
+    let status = std::process::Command::new("git")
+        .args(["add", "Cargo.lock"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+    let status = std::process::Command::new("git")
+        .args(["commit", "--no-verify", "-m", "lockfile override"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git commit should run");
+    assert!(status.success(), "git commit should succeed");
+
+    let loaded = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect("temp git repo control plane should load");
+
+    let err = loaded
+        .ensure_no_nt_mutation_from_git_refs("HEAD~1", "HEAD")
+        .expect_err("NT lockfile mutation should fail closed");
+
+    assert!(
+        err.to_string()
+            .contains("Cargo.lock changed NT lock records"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn nt_mutation_checker_ignores_non_nt_lockfile_change() {
+    let tempdir = init_temp_git_repo();
+
+    fs::write(
+        tempdir.path().join("Cargo.lock"),
+        r#"version = 3
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+    )
+    .expect("non-NT Cargo.lock should write");
+
+    let status = std::process::Command::new("git")
+        .args(["add", "Cargo.lock"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+    let status = std::process::Command::new("git")
+        .args(["commit", "--no-verify", "-m", "lockfile metadata"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git commit should run");
+    assert!(status.success(), "git commit should succeed");
+
+    let loaded = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect("temp git repo control plane should load");
+
+    loaded
+        .ensure_no_nt_mutation_from_git_refs("HEAD~1", "HEAD")
+        .expect("non-NT lockfile changes should not trip the guard");
 }
 
 #[test]
@@ -1541,6 +1643,22 @@ fn drift_lane_workflow_exposes_durable_failure_surface() {
     assert_eq!(
         fetch.get("continue-on-error").and_then(YamlValue::as_bool),
         Some(true)
+    );
+    let fetch_run = fetch
+        .get("run")
+        .and_then(YamlValue::as_str)
+        .expect("fetch step should define a shell script");
+    assert!(
+        fetch_run.contains("fetch_json()"),
+        "drift fetch step must centralize API fetch failure handling"
+    );
+    assert!(
+        !fetch_run.contains("&& [ ! -s "),
+        "drift fetch step must fail closed on any gh api failure, not only empty-body failures"
+    );
+    assert!(
+        fetch_run.contains("xargs -r -I{} gh api \"repos/${GITHUB_REPOSITORY}/rulesets/{}\""),
+        "drift fetch step must fail closed if any per-ruleset fetch fails"
     );
 
     let compare = steps

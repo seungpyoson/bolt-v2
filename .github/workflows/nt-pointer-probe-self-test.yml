@@ -57,17 +57,22 @@ jobs:
           while IFS= read -r path; do
             case "$path" in
               .claude/rust-verification.toml|\
+              .github/dependabot.yml|\
               .github/actions/setup-environment/action.yml|\
+              .github/workflows/dependabot-auto-merge.yml|\
               .github/workflows/nt-pointer-control-plane.yml|\
               .github/workflows/nt-pointer-probe-self-test.yml|\
               .github/workflows/nt-pointer-trust-root.yml|\
               .github/workflows/nt-pointer-branch-governance-drift.yml|\
+              Cargo.toml|\
+              Cargo.lock|\
               config/nt_pointer_probe/*|\
               scripts/install_ci_rust_verification_owner.sh|\
               scripts/nt_pin_block_guard.sh|\
               scripts/require_rust_verification_owner.sh|\
               src/bin/nt_pointer_probe.rs|\
               src/nt_pointer_probe/*|\
+              tests/fixtures/nt_pointer_probe/*|\
               tests/nt_pointer_probe_control_plane.rs)
                 run_self_test=true
                 break

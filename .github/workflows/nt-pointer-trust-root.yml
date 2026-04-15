@@ -20,6 +20,14 @@ jobs:
     name: nt-pointer-trust-root
     runs-on: ubuntu-latest
     steps:
+      - name: Validate trust-root validator SHA pin
+        shell: bash
+        run: |
+          if ! [[ "${TRUST_ROOT_VALIDATOR_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "NT_POINTER_TRUST_ROOT_VALIDATOR_SHA must be a 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+
       - name: Fetch external trust-root validator
         shell: bash
         run: |

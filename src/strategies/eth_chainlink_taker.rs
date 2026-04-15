@@ -540,6 +540,11 @@ struct OpenPositionState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct QuarantinedPositionState {
+    observed: OpenPositionState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct PendingEntryContextSnapshot {
     market_id: Option<String>,
     outcome_side: Option<OutcomeSide>,
@@ -558,6 +563,98 @@ struct PositionMaterializationSpec {
     side: PositionSide,
     quantity: Quantity,
     avg_px_open: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingExitState {
+    client_order_id: ClientOrderId,
+    market_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrategyExecutionPolicy {
+    LongOnly,
+}
+
+impl StrategyExecutionPolicy {
+    fn supports_tradable_position(self, entry_order_side: OrderSide, side: PositionSide) -> bool {
+        matches!(
+            (self, entry_order_side, side),
+            (Self::LongOnly, OrderSide::Buy, PositionSide::Long)
+        )
+    }
+
+    fn is_observed_open_side(self, side: PositionSide) -> bool {
+        match self {
+            Self::LongOnly => matches!(side, PositionSide::Long | PositionSide::Short),
+        }
+    }
+
+    fn infer_position_side_from_entry_fill(
+        self,
+        entry_order_side: OrderSide,
+    ) -> Option<PositionSide> {
+        match self {
+            Self::LongOnly => match entry_order_side {
+                OrderSide::Buy => Some(PositionSide::Long),
+                _ => None,
+            },
+        }
+    }
+
+    fn infer_outcome_side(
+        self,
+        entry_order_side: OrderSide,
+        position_side: PositionSide,
+        instrument_id: InstrumentId,
+    ) -> Option<OutcomeSide> {
+        match self {
+            Self::LongOnly => match (entry_order_side, position_side) {
+                (OrderSide::Buy, PositionSide::Long) => {
+                    EthChainlinkTaker::infer_outcome_side_from_instrument_id(instrument_id)
+                }
+                _ => None,
+            },
+        }
+    }
+
+    fn entry_order_side(self, selected_side: OutcomeSide) -> OrderSide {
+        match self {
+            Self::LongOnly => match selected_side {
+                OutcomeSide::Up | OutcomeSide::Down => OrderSide::Buy,
+            },
+        }
+    }
+
+    fn effective_entry_cost(self, position: &OpenPositionState) -> Option<f64> {
+        match self {
+            Self::LongOnly => match (position.entry_order_side, position.side) {
+                (OrderSide::Buy, PositionSide::Long) => Some(position.avg_px_open),
+                _ => None,
+            },
+        }
+        .filter(|effective_cost| effective_cost.is_finite() && *effective_cost > 0.0)
+    }
+
+    fn exit_order(self, position: &OpenPositionState) -> Option<(OrderSide, f64)> {
+        match self {
+            Self::LongOnly => match position.side {
+                PositionSide::Long => Some((OrderSide::Sell, position.book.best_bid?)),
+                _ => None,
+            },
+        }
+        .filter(|(_, price)| price.is_finite() && *price > 0.0)
+    }
+
+    fn exit_value(self, position: &OpenPositionState) -> Option<f64> {
+        match self {
+            Self::LongOnly => match position.side {
+                PositionSide::Long => position.book.best_bid,
+                _ => None,
+            },
+        }
+        .filter(|value| value.is_finite() && *value > 0.0)
+    }
 }
 
 impl PricingState {
@@ -875,10 +972,10 @@ pub struct EthChainlinkTaker {
     pending_entry_selection_published_at_ms: Option<u64>,
     pending_entry_seconds_to_expiry_at_selection: Option<u64>,
     pending_entry_book: Option<OutcomeBookState>,
-    pending_exit_order: Option<ClientOrderId>,
-    pending_exit_market_id: Option<String>,
+    pending_exit: Option<PendingExitState>,
     open_position_active: bool,
     open_position: Option<OpenPositionState>,
+    quarantined_position: Option<QuarantinedPositionState>,
     last_reported_one_position_occupancy: Cell<Option<OnePositionOccupancy>>,
     pricing: PricingState,
     selection_handler: Option<ShareableMessageHandler>,
@@ -910,10 +1007,10 @@ impl EthChainlinkTaker {
             pending_entry_selection_published_at_ms: None,
             pending_entry_seconds_to_expiry_at_selection: None,
             pending_entry_book: None,
-            pending_exit_order: None,
-            pending_exit_market_id: None,
+            pending_exit: None,
             open_position_active: false,
             open_position: None,
+            quarantined_position: None,
             last_reported_one_position_occupancy: Cell::new(None),
             pricing,
             selection_handler: None,
@@ -1058,6 +1155,36 @@ impl EthChainlinkTaker {
         self.active.market_id.as_deref()
     }
 
+    fn execution_policy(&self) -> StrategyExecutionPolicy {
+        StrategyExecutionPolicy::LongOnly
+    }
+
+    fn tracked_observed_position(&self) -> Option<&OpenPositionState> {
+        self.open_position.as_ref().or_else(|| {
+            self.quarantined_position
+                .as_ref()
+                .map(|position| &position.observed)
+        })
+    }
+
+    fn tracked_observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
+        if self.open_position.is_some() {
+            self.open_position.as_mut()
+        } else {
+            self.quarantined_position
+                .as_mut()
+                .map(|position| &mut position.observed)
+        }
+    }
+
+    fn quarantine_observed_position(&mut self, observed: OpenPositionState) {
+        self.recovery = true;
+        self.open_position_active = false;
+        self.open_position = None;
+        self.quarantined_position = Some(QuarantinedPositionState { observed });
+        self.refresh_book_subscriptions_for_current_state();
+    }
+
     fn bootstrap_recovery_from_cache(&mut self) {
         let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
         let cached_positions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1069,7 +1196,7 @@ impl EthChainlinkTaker {
                     market_id: None,
                     instrument_id: position.instrument_id,
                     position_id: position.id,
-                    outcome_side: Self::infer_outcome_side_from_position(
+                    outcome_side: self.execution_policy().infer_outcome_side(
                         position.entry,
                         position.side,
                         position.instrument_id,
@@ -1093,6 +1220,7 @@ impl EthChainlinkTaker {
                 self.recovery = true;
                 self.open_position_active = false;
                 self.open_position = None;
+                self.quarantined_position = None;
                 log::warn!(
                     "eth_chainlink_taker recovery probe could not access cache: strategy_id={} entering fail-closed recovery mode",
                     self.config.strategy_id
@@ -1105,6 +1233,7 @@ impl EthChainlinkTaker {
             self.recovery = false;
             self.open_position_active = false;
             self.open_position = None;
+            self.quarantined_position = None;
             return;
         }
 
@@ -1112,6 +1241,7 @@ impl EthChainlinkTaker {
         if cached_positions.len() > 1 {
             self.open_position_active = false;
             self.open_position = None;
+            self.quarantined_position = None;
             log::error!(
                 "eth_chainlink_taker recovery bootstrap found multiple open positions: strategy_id={} position_count={} leaving recovery mode blind to position bootstrap",
                 self.config.strategy_id,
@@ -1124,26 +1254,66 @@ impl EthChainlinkTaker {
             .into_iter()
             .next()
             .expect("checked non-empty recovery position set");
-        self.open_position_active = true;
-        self.open_position = Some(open_position.clone());
-        log::warn!(
-            "eth_chainlink_taker recovery bootstrap loaded cached open position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
-            self.config.strategy_id,
-            open_position.position_id,
-            open_position.instrument_id,
-            open_position.entry_order_side,
-            open_position.side,
-            open_position.quantity,
-            open_position.avg_px_open,
-        );
+        if self
+            .execution_policy()
+            .supports_tradable_position(open_position.entry_order_side, open_position.side)
+        {
+            self.open_position_active = true;
+            self.open_position = Some(open_position.clone());
+            self.quarantined_position = None;
+            log::warn!(
+                "eth_chainlink_taker recovery bootstrap loaded cached open position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
+                self.config.strategy_id,
+                open_position.position_id,
+                open_position.instrument_id,
+                open_position.entry_order_side,
+                open_position.side,
+                open_position.quantity,
+                open_position.avg_px_open,
+            );
+        } else if self
+            .execution_policy()
+            .is_observed_open_side(open_position.side)
+        {
+            self.quarantined_position = Some(QuarantinedPositionState {
+                observed: open_position.clone(),
+            });
+            self.open_position_active = false;
+            self.open_position = None;
+            log::error!(
+                "eth_chainlink_taker recovery bootstrap quarantined unsupported cached position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
+                self.config.strategy_id,
+                open_position.position_id,
+                open_position.instrument_id,
+                open_position.entry_order_side,
+                open_position.side,
+                open_position.quantity,
+                open_position.avg_px_open,
+            );
+        } else {
+            self.open_position_active = false;
+            self.open_position = None;
+            self.quarantined_position = None;
+            log::error!(
+                "eth_chainlink_taker recovery bootstrap received invalid cached position side: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?}",
+                self.config.strategy_id,
+                open_position.position_id,
+                open_position.instrument_id,
+                open_position.entry_order_side,
+                open_position.side,
+            );
+        }
     }
 
     fn one_position_occupancy(&self) -> Option<OnePositionOccupancy> {
         if self.pending_entry_order.is_some() {
             Some(OnePositionOccupancy::PendingEntry)
-        } else if self.pending_exit_order.is_some() {
+        } else if self.pending_exit.is_some() {
             Some(OnePositionOccupancy::PendingExit)
-        } else if self.open_position_active || self.open_position.is_some() {
+        } else if self.open_position_active
+            || self.open_position.is_some()
+            || self.quarantined_position.is_some()
+        {
             Some(OnePositionOccupancy::OpenPosition)
         } else {
             None
@@ -1691,26 +1861,6 @@ impl EthChainlinkTaker {
         }
     }
 
-    fn infer_outcome_side_from_position(
-        entry_order_side: OrderSide,
-        position_side: PositionSide,
-        instrument_id: InstrumentId,
-    ) -> Option<OutcomeSide> {
-        match (entry_order_side, position_side) {
-            (OrderSide::Buy, PositionSide::Long) => {
-                Self::infer_outcome_side_from_instrument_id(instrument_id)
-            }
-            _ => None,
-        }
-    }
-
-    fn infer_position_side(entry_order_side: OrderSide) -> Option<PositionSide> {
-        match entry_order_side {
-            OrderSide::Buy => Some(PositionSide::Long),
-            _ => None,
-        }
-    }
-
     fn pending_entry_context_for(
         &self,
         instrument_id: InstrumentId,
@@ -1734,10 +1884,6 @@ impl EthChainlinkTaker {
                 .clone()
                 .unwrap_or_else(|| OutcomeBookState::from_instrument_id(instrument_id)),
         })
-    }
-
-    fn pending_entry_contract_supported(entry_order_side: OrderSide, side: PositionSide) -> bool {
-        entry_order_side == OrderSide::Buy && side == PositionSide::Long
     }
 
     fn build_open_position_state(
@@ -1764,7 +1910,7 @@ impl EthChainlinkTaker {
                     }
                 })
                 .or_else(|| {
-                    Self::infer_outcome_side_from_position(
+                    self.execution_policy().infer_outcome_side(
                         spec.entry_order_side,
                         spec.side,
                         spec.instrument_id,
@@ -1817,16 +1963,16 @@ impl EthChainlinkTaker {
             .cloned();
         let pending_context = self.pending_entry_context_for(instrument_id);
         let pending_matches = pending_context.is_some();
-        let pending_contract_supported =
-            !pending_matches || Self::pending_entry_contract_supported(entry_order_side, side);
-        let supported_position_side = matches!(side, PositionSide::Long | PositionSide::Short);
+        let observed_open_side = self.execution_policy().is_observed_open_side(side);
+        let tradable_position_supported = self
+            .execution_policy()
+            .supports_tradable_position(entry_order_side, side);
 
-        if !supported_position_side {
+        if !observed_open_side {
             self.recovery = true;
-            self.open_position_active = self.open_position.is_some();
-            if !self.open_position_active {
-                self.open_position = None;
-            }
+            self.open_position_active = false;
+            self.open_position = None;
+            self.quarantined_position = None;
             log::error!(
                 "eth_chainlink_taker position event carried unsupported position side: strategy_id={} instrument_id={} position_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -1839,20 +1985,30 @@ impl EthChainlinkTaker {
             return;
         }
 
-        if pending_matches && !pending_contract_supported {
-            self.recovery = true;
-            self.open_position_active = self.open_position.is_some();
-            if !self.open_position_active {
-                self.open_position = None;
+        if !tradable_position_supported {
+            if pending_matches {
+                self.recovery = true;
             }
             log::error!(
-                "eth_chainlink_taker pending entry materialized unsupported live position contract: strategy_id={} instrument_id={} entry_order_side={:?} side={:?}",
+                "eth_chainlink_taker quarantining unsupported observed position contract: strategy_id={} instrument_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
                 instrument_id,
                 entry_order_side,
                 side,
             );
-            self.refresh_book_subscriptions_for_current_state();
+            self.quarantine_observed_position(self.build_open_position_state(
+                preserved.as_ref(),
+                pending_context.as_ref(),
+                PositionMaterializationSpec {
+                    instrument_id,
+                    position_id,
+                    entry_order_side,
+                    side,
+                    quantity,
+                    avg_px_open,
+                },
+                false,
+            ));
             return;
         }
 
@@ -1868,7 +2024,7 @@ impl EthChainlinkTaker {
                 quantity,
                 avg_px_open,
             },
-            pending_contract_supported,
+            pending_matches,
         ));
         if pending_matches {
             self.clear_pending_entry_state();
@@ -1889,28 +2045,35 @@ impl EthChainlinkTaker {
     }
 
     fn sync_open_position_from_active(&mut self) {
-        let Some(open_position) = self.open_position.as_mut() else {
+        let active_market_id = self.active.market_id.clone();
+        let active_outcome_fees = self.active.outcome_fees.clone();
+        let active_interval_open = self.active.interval_open;
+        let active_selection_published_at_ms = self.active.selection_published_at_ms;
+        let active_seconds_to_expiry_at_selection = self.active.seconds_to_expiry_at_selection;
+        let active_up_instrument_id = self.active.books.up.instrument_id;
+        let active_down_instrument_id = self.active.books.down.instrument_id;
+        let active_up_book = self.active.books.up.clone();
+        let active_down_book = self.active.books.down.clone();
+        let Some(open_position) = self.tracked_observed_position_mut() else {
             return;
         };
 
-        if self.active.books.up.instrument_id == Some(open_position.instrument_id) {
-            open_position.market_id = self.active.market_id.clone();
+        if active_up_instrument_id == Some(open_position.instrument_id) {
+            open_position.market_id = active_market_id.clone();
             open_position.outcome_side = Some(OutcomeSide::Up);
-            open_position.outcome_fees = self.active.outcome_fees.clone();
-            open_position.interval_open = self.active.interval_open;
-            open_position.selection_published_at_ms = self.active.selection_published_at_ms;
-            open_position.seconds_to_expiry_at_selection =
-                self.active.seconds_to_expiry_at_selection;
-            open_position.book = self.active.books.up.clone();
-        } else if self.active.books.down.instrument_id == Some(open_position.instrument_id) {
-            open_position.market_id = self.active.market_id.clone();
+            open_position.outcome_fees = active_outcome_fees.clone();
+            open_position.interval_open = active_interval_open;
+            open_position.selection_published_at_ms = active_selection_published_at_ms;
+            open_position.seconds_to_expiry_at_selection = active_seconds_to_expiry_at_selection;
+            open_position.book = active_up_book;
+        } else if active_down_instrument_id == Some(open_position.instrument_id) {
+            open_position.market_id = active_market_id;
             open_position.outcome_side = Some(OutcomeSide::Down);
-            open_position.outcome_fees = self.active.outcome_fees.clone();
-            open_position.interval_open = self.active.interval_open;
-            open_position.selection_published_at_ms = self.active.selection_published_at_ms;
-            open_position.seconds_to_expiry_at_selection =
-                self.active.seconds_to_expiry_at_selection;
-            open_position.book = self.active.books.down.clone();
+            open_position.outcome_fees = active_outcome_fees;
+            open_position.interval_open = active_interval_open;
+            open_position.selection_published_at_ms = active_selection_published_at_ms;
+            open_position.seconds_to_expiry_at_selection = active_seconds_to_expiry_at_selection;
+            open_position.book = active_down_book;
         }
     }
 
@@ -1921,7 +2084,7 @@ impl EthChainlinkTaker {
             tracked_position_instrument_id: None,
         };
 
-        if let Some(open_position) = self.open_position.as_ref()
+        if let Some(open_position) = self.tracked_observed_position()
             && next.up_instrument_id != Some(open_position.instrument_id)
             && next.down_instrument_id != Some(open_position.instrument_id)
         {
@@ -1951,42 +2114,17 @@ impl EthChainlinkTaker {
 
     fn open_position_effective_entry_cost(&self) -> Option<f64> {
         let open_position = self.open_position.as_ref()?;
-        let effective_cost = match open_position.entry_order_side {
-            OrderSide::Buy => open_position.avg_px_open,
-            _ => return None,
-        };
-        if !effective_cost.is_finite() || effective_cost <= 0.0 {
-            return None;
-        }
-        Some(effective_cost)
+        self.execution_policy().effective_entry_cost(open_position)
     }
 
     fn current_exit_order_for_open_position(&self) -> Option<(OrderSide, f64)> {
-        let position_book = &self.open_position.as_ref()?.book;
         let open_position = self.open_position.as_ref()?;
-        let (order_side, price) = match open_position.side {
-            PositionSide::Long => (OrderSide::Sell, position_book.best_bid?),
-            PositionSide::Short => (OrderSide::Buy, position_book.best_ask?),
-            _ => return None,
-        };
-        if !price.is_finite() || price <= 0.0 {
-            return None;
-        }
-        Some((order_side, price))
+        self.execution_policy().exit_order(open_position)
     }
 
     fn current_exit_value_for_open_position(&self) -> Option<f64> {
-        let position_book = &self.open_position.as_ref()?.book;
         let open_position = self.open_position.as_ref()?;
-        let exit_value = match open_position.side {
-            PositionSide::Long => position_book.best_bid?,
-            PositionSide::Short => position_book.best_ask?,
-            _ => return None,
-        };
-        if !exit_value.is_finite() || exit_value <= 0.0 {
-            return None;
-        }
-        Some(exit_value)
+        self.execution_policy().exit_value(open_position)
     }
 
     fn current_position_market_id(&self) -> Option<String> {
@@ -2121,7 +2259,7 @@ impl EthChainlinkTaker {
             evaluation.blocked_reason = Some("no_open_position");
             return evaluation;
         }
-        if self.pending_exit_order.is_some() {
+        if self.pending_exit.is_some() {
             evaluation.blocked_reason = Some("exit_already_pending");
             return evaluation;
         }
@@ -2382,8 +2520,10 @@ impl EthChainlinkTaker {
         );
 
         let client_id = ClientId::from(self.config.client_id.as_str());
-        self.pending_exit_order = Some(client_order_id);
-        self.pending_exit_market_id = self.current_position_market_id();
+        self.pending_exit = Some(PendingExitState {
+            client_order_id,
+            market_id: self.current_position_market_id(),
+        });
         log::info!(
             "eth_chainlink_taker exit submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
             self.config.strategy_id,
@@ -2395,8 +2535,7 @@ impl EthChainlinkTaker {
         );
 
         if let Err(error) = self.submit_order(order, None, Some(client_id)) {
-            self.pending_exit_order = None;
-            self.pending_exit_market_id = None;
+            self.pending_exit = None;
             return Err(error);
         }
 
@@ -2468,10 +2607,7 @@ impl EthChainlinkTaker {
             return decision;
         }
 
-        let order_side = match selected_side {
-            OutcomeSide::Up => OrderSide::Buy,
-            OutcomeSide::Down => OrderSide::Buy,
-        };
+        let order_side = self.execution_policy().entry_order_side(selected_side);
 
         decision.instrument_id = Some(instrument_id);
         decision.order_side = Some(order_side);
@@ -2771,13 +2907,12 @@ impl DataActor for EthChainlinkTaker {
         let mut matched = self.active.books.update_from_deltas(deltas);
         self.sync_open_position_from_active();
         if self
-            .open_position
-            .as_ref()
+            .tracked_observed_position()
             .is_some_and(|position| position.instrument_id == deltas.instrument_id)
             && !(self.active.books.up.instrument_id == Some(deltas.instrument_id)
                 || self.active.books.down.instrument_id == Some(deltas.instrument_id))
         {
-            if let Some(open_position) = self.open_position.as_mut() {
+            if let Some(open_position) = self.tracked_observed_position_mut() {
                 open_position.book.update_from_deltas(deltas);
             }
             matched = true;
@@ -2811,11 +2946,16 @@ impl DataActor for EthChainlinkTaker {
         event: &nautilus_model::events::OrderFilled,
     ) -> anyhow::Result<()> {
         let entry_fill = self.pending_entry_order.as_ref() == Some(&event.client_order_id);
-        let exit_fill = self.pending_exit_order.as_ref() == Some(&event.client_order_id);
+        let exit_fill = self
+            .pending_exit
+            .as_ref()
+            .is_some_and(|pending| pending.client_order_id == event.client_order_id);
 
         if entry_fill {
             let pending_context = self.pending_entry_context_for(event.instrument_id);
-            let position_side = Self::infer_position_side(event.order_side);
+            let position_side = self
+                .execution_policy()
+                .infer_position_side_from_entry_fill(event.order_side);
             if let (Some(position_id), Some(position_side)) = (event.position_id, position_side) {
                 self.clear_pending_entry_state();
                 self.open_position_active = true;
@@ -2853,14 +2993,19 @@ impl DataActor for EthChainlinkTaker {
             }
         } else if exit_fill {
             self.open_position_active = self.open_position.is_some();
-            if let Some(market_id) = self.pending_exit_market_id.clone().or_else(|| {
-                self.open_position
-                    .as_ref()
-                    .and_then(|position| position.market_id.clone())
-            }) {
+            if let Some(market_id) = self
+                .pending_exit
+                .as_ref()
+                .and_then(|pending| pending.market_id.clone())
+                .or_else(|| {
+                    self.open_position
+                        .as_ref()
+                        .and_then(|position| position.market_id.clone())
+                })
+            {
                 self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
-            self.pending_exit_market_id = None;
+            self.pending_exit = None;
         }
         Ok(())
     }
@@ -2872,9 +3017,12 @@ impl DataActor for EthChainlinkTaker {
         if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
             self.clear_pending_entry_state();
         }
-        if self.pending_exit_order.as_ref() == Some(&event.client_order_id) {
-            self.pending_exit_order = None;
-            self.pending_exit_market_id = None;
+        if self
+            .pending_exit
+            .as_ref()
+            .is_some_and(|pending| pending.client_order_id == event.client_order_id)
+        {
+            self.pending_exit = None;
         }
         Ok(())
     }
@@ -2885,9 +3033,12 @@ nautilus_strategy!(EthChainlinkTaker, {
         if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
             self.clear_pending_entry_state();
         }
-        if self.pending_exit_order.as_ref() == Some(&event.client_order_id) {
-            self.pending_exit_order = None;
-            self.pending_exit_market_id = None;
+        if self
+            .pending_exit
+            .as_ref()
+            .is_some_and(|pending| pending.client_order_id == event.client_order_id)
+        {
+            self.pending_exit = None;
         }
     }
 
@@ -2895,9 +3046,12 @@ nautilus_strategy!(EthChainlinkTaker, {
         if self.pending_entry_order.as_ref() == Some(&event.client_order_id) {
             self.clear_pending_entry_state();
         }
-        if self.pending_exit_order.as_ref() == Some(&event.client_order_id) {
-            self.pending_exit_order = None;
-            self.pending_exit_market_id = None;
+        if self
+            .pending_exit
+            .as_ref()
+            .is_some_and(|pending| pending.client_order_id == event.client_order_id)
+        {
+            self.pending_exit = None;
         }
     }
 
@@ -2928,11 +3082,18 @@ nautilus_strategy!(EthChainlinkTaker, {
             .open_position
             .as_ref()
             .is_some_and(|position| position.position_id == _event.position_id);
+        let quarantined_position_closed = self
+            .quarantined_position
+            .as_ref()
+            .is_some_and(|position| position.observed.position_id == _event.position_id);
         if tracked_position_closed {
             self.open_position_active = false;
             self.open_position = None;
-            self.pending_exit_order = None;
-            self.pending_exit_market_id = None;
+        }
+        if quarantined_position_closed {
+            self.quarantined_position = None;
+        }
+        if tracked_position_closed || quarantined_position_closed {
             self.recovery = false;
         }
         self.refresh_book_subscriptions_for_current_state();
@@ -4975,13 +5136,22 @@ mod tests {
             })
         );
 
-        strategy.pending_exit_order = Some(ClientOrderId::from("EXIT-001"));
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-001"),
+            market_id: Some("MKT-1".to_string()),
+        });
         strategy.recovery = true;
         strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
         assert!(!strategy.open_position_active);
         assert!(strategy.open_position.is_none());
-        assert!(strategy.pending_exit_order.is_none());
+        assert_eq!(
+            strategy
+                .pending_exit
+                .as_ref()
+                .map(|pending| pending.client_order_id),
+            Some(ClientOrderId::from("EXIT-001"))
+        );
         assert!(!strategy.recovery);
     }
 
@@ -5008,7 +5178,10 @@ mod tests {
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         });
-        strategy.pending_exit_order = Some(exit_client_order_id);
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: exit_client_order_id,
+            market_id: Some("MKT-1".to_string()),
+        });
 
         strategy
             .on_order_filled(&order_filled_event(
@@ -5018,14 +5191,14 @@ mod tests {
             ))
             .expect("exit fill bookkeeping should succeed");
 
-        assert_eq!(strategy.pending_exit_order, Some(exit_client_order_id));
+        assert!(strategy.pending_exit.is_none());
         assert!(strategy.open_position_active);
 
         strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
         assert!(!strategy.open_position_active);
         assert!(strategy.open_position.is_none());
-        assert!(strategy.pending_exit_order.is_none());
+        assert!(strategy.pending_exit.is_none());
     }
 
     #[test]
@@ -5034,21 +5207,30 @@ mod tests {
         let exit_client_order_id = ClientOrderId::from("EXIT-001");
 
         let mut canceled = ready_to_trade_strategy();
-        canceled.pending_exit_order = Some(exit_client_order_id);
+        canceled.pending_exit = Some(PendingExitState {
+            client_order_id: exit_client_order_id,
+            market_id: Some("MKT-1".to_string()),
+        });
         canceled
             .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
             .expect("exit cancel bookkeeping should succeed");
-        assert!(canceled.pending_exit_order.is_none());
+        assert!(canceled.pending_exit.is_none());
 
         let mut rejected = ready_to_trade_strategy();
-        rejected.pending_exit_order = Some(exit_client_order_id);
+        rejected.pending_exit = Some(PendingExitState {
+            client_order_id: exit_client_order_id,
+            market_id: Some("MKT-1".to_string()),
+        });
         rejected.on_order_rejected(order_rejected_event(exit_client_order_id, instrument_id));
-        assert!(rejected.pending_exit_order.is_none());
+        assert!(rejected.pending_exit.is_none());
 
         let mut expired = ready_to_trade_strategy();
-        expired.pending_exit_order = Some(exit_client_order_id);
+        expired.pending_exit = Some(PendingExitState {
+            client_order_id: exit_client_order_id,
+            market_id: Some("MKT-1".to_string()),
+        });
         expired.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
-        assert!(expired.pending_exit_order.is_none());
+        assert!(expired.pending_exit.is_none());
     }
 
     #[test]
@@ -5070,21 +5252,14 @@ mod tests {
     fn numeric_token_position_semantics_do_not_guess_without_suffixes() {
         let down_instrument = InstrumentId::from("0xcondition-222.POLYMARKET");
         let up_instrument = InstrumentId::from("0xcondition-111.POLYMARKET");
+        let policy = StrategyExecutionPolicy::LongOnly;
 
         assert_eq!(
-            EthChainlinkTaker::infer_outcome_side_from_position(
-                OrderSide::Buy,
-                PositionSide::Long,
-                down_instrument,
-            ),
+            policy.infer_outcome_side(OrderSide::Buy, PositionSide::Long, down_instrument),
             None
         );
         assert_eq!(
-            EthChainlinkTaker::infer_outcome_side_from_position(
-                OrderSide::Buy,
-                PositionSide::Long,
-                up_instrument,
-            ),
+            policy.infer_outcome_side(OrderSide::Buy, PositionSide::Long, up_instrument),
             None
         );
     }
@@ -5202,7 +5377,10 @@ mod tests {
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         });
-        strategy.pending_exit_order = Some(exit_client_order_id);
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: exit_client_order_id,
+            market_id: Some("MKT-1".to_string()),
+        });
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
         strategy
@@ -5240,8 +5418,10 @@ mod tests {
             book: strategy.active.books.up.clone(),
         });
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
-        strategy.pending_exit_order = Some(exit_client_order_id);
-        strategy.pending_exit_market_id = strategy.current_position_market_id();
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: exit_client_order_id,
+            market_id: strategy.current_position_market_id(),
+        });
 
         strategy
             .on_order_filled(&order_filled_event(
@@ -5276,8 +5456,10 @@ mod tests {
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         });
-        strategy.pending_exit_order = Some(exit_client_order_id);
-        strategy.pending_exit_market_id = Some("MKT-1".to_string());
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: exit_client_order_id,
+            market_id: Some("MKT-1".to_string()),
+        });
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
 
@@ -5289,8 +5471,8 @@ mod tests {
             ))
             .expect("delayed exit fill should not arm the wrong market cooldown");
 
+        assert!(strategy.market_in_cooldown("MKT-1", 1_000));
         assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
-        assert!(!strategy.market_in_cooldown("MKT-1", 1_000));
     }
 
     #[test]
@@ -5540,6 +5722,17 @@ mod tests {
         assert!(strategy.recovery);
         assert!(!strategy.open_position_active);
         assert!(strategy.open_position.is_none());
+        let quarantined = strategy
+            .quarantined_position
+            .as_ref()
+            .expect("unsupported short should be quarantined truthfully");
+        assert_eq!(quarantined.observed.instrument_id, instrument_id);
+        assert_eq!(
+            quarantined.observed.position_id,
+            PositionId::from("P-SHORT")
+        );
+        assert_eq!(quarantined.observed.entry_order_side, OrderSide::Sell);
+        assert_eq!(quarantined.observed.side, PositionSide::Short);
         assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
     }
 
@@ -5638,7 +5831,10 @@ mod tests {
             seconds_to_expiry_at_selection: Some(300),
             book: strategy.active.books.up.clone(),
         });
-        strategy.pending_exit_order = Some(ClientOrderId::from("EXIT-001"));
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-001"),
+            market_id: Some("MKT-1".to_string()),
+        });
 
         strategy.on_position_closed(position_closed_event(
             tracked_instrument,
@@ -5646,7 +5842,10 @@ mod tests {
         ));
 
         assert_eq!(
-            strategy.pending_exit_order,
+            strategy
+                .pending_exit
+                .as_ref()
+                .map(|pending| pending.client_order_id),
             Some(ClientOrderId::from("EXIT-001"))
         );
         assert!(strategy.open_position.is_some());
@@ -6246,7 +6445,10 @@ mod tests {
     #[test]
     fn task5_one_position_invariant_panics_in_debug_or_rejects_in_release() {
         let mut strategy = ready_to_trade_strategy();
-        strategy.pending_exit_order = Some(ClientOrderId::from("EXIT-001"));
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-001"),
+            market_id: Some("MKT-1".to_string()),
+        });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             strategy.enforce_one_position_invariant()
@@ -6262,7 +6464,10 @@ mod tests {
     #[test]
     fn entry_gate_reports_one_position_invariant_only_on_occupancy_change() {
         let mut strategy = ready_to_trade_strategy();
-        strategy.pending_exit_order = Some(ClientOrderId::from("EXIT-001"));
+        strategy.pending_exit = Some(PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-001"),
+            market_id: Some("MKT-1".to_string()),
+        });
 
         let first = strategy.entry_gate_decision_at(2_000);
         let second = strategy.entry_gate_decision_at(2_001);
@@ -6280,7 +6485,7 @@ mod tests {
         );
         assert_eq!(first.blocked_by, second.blocked_by);
 
-        strategy.pending_exit_order = None;
+        strategy.pending_exit = None;
         let cleared = strategy.entry_gate_decision_at(2_002);
         assert!(
             !cleared
@@ -6649,7 +6854,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_short_position_exits_by_buying_best_ask_to_flatten() {
+    fn quarantined_legacy_short_position_blocks_exit_submission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let instrument_id = InstrumentId::from("0xcondition-legacy-222.POLYMARKET");
         let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
@@ -6657,34 +6862,33 @@ mod tests {
         tracked_book.best_bid = Some(0.520);
         tracked_book.best_ask = Some(0.530);
         tracked_book.liquidity_available = Some(100.0);
-        strategy.open_position_active = true;
-        strategy.open_position = Some(OpenPositionState {
-            market_id: None,
-            instrument_id,
-            position_id: PositionId::from("P-LEGACY-SHORT-001"),
-            outcome_side: None,
-            outcome_fees: OutcomeFeeState::default(),
-            entry_order_side: OrderSide::Sell,
-            side: PositionSide::Short,
-            quantity: Quantity::new(5.0, 2),
-            avg_px_open: 0.480,
-            interval_open: None,
-            selection_published_at_ms: None,
-            seconds_to_expiry_at_selection: None,
-            book: tracked_book,
+        strategy.recovery = true;
+        strategy.quarantined_position = Some(QuarantinedPositionState {
+            observed: OpenPositionState {
+                market_id: None,
+                instrument_id,
+                position_id: PositionId::from("P-LEGACY-SHORT-001"),
+                outcome_side: None,
+                outcome_fees: OutcomeFeeState::default(),
+                entry_order_side: OrderSide::Sell,
+                side: PositionSide::Short,
+                quantity: Quantity::new(5.0, 2),
+                avg_px_open: 0.480,
+                interval_open: None,
+                selection_published_at_ms: None,
+                seconds_to_expiry_at_selection: None,
+                book: tracked_book,
+            },
         });
 
         let decision = strategy.exit_submission_decision_at(2_000);
 
-        assert_eq!(
-            decision.evaluation.exit_decision,
-            Some(ExitDecision::ExitFailClosed)
-        );
-        assert_eq!(decision.instrument_id, Some(instrument_id));
-        assert_eq!(decision.order_side, Some(OrderSide::Buy));
-        assert_eq!(decision.price, Some(0.530));
-        assert_eq!(decision.quantity, Some(Quantity::new(5.0, 2)));
-        assert_eq!(decision.blocked_reason, None);
+        assert_eq!(decision.evaluation.exit_decision, None);
+        assert_eq!(decision.instrument_id, None);
+        assert_eq!(decision.order_side, None);
+        assert_eq!(decision.price, None);
+        assert_eq!(decision.quantity, None);
+        assert_eq!(decision.blocked_reason, Some("exit_decision_unavailable"));
     }
 
     #[test]

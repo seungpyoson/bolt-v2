@@ -348,8 +348,8 @@ max_local_backlog_bytes = 10485760
 }
 
 #[test]
-fn materialize_live_config_rejects_non_default_strategy_input_in_ruleset_mode() {
-    let tempdir = TempCaseDir::new("ruleset-strategy-input-rejected");
+fn materialize_live_config_rejects_legacy_strategy_block() {
+    let tempdir = TempCaseDir::new("legacy-strategy-input-rejected");
     let input_path = tempdir.path().join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
     let input = r#"
@@ -411,16 +411,12 @@ max_local_backlog_bytes = 10485760
     fs::write(&input_path, input).expect("input config should be written");
 
     let error = materialize_live_config(&input_path, &output_path)
-        .expect_err("ruleset mode should reject non-default live-local strategy input")
+        .expect_err("legacy live-local strategy block should be rejected")
         .to_string();
 
     assert!(
-        error.contains("strategy"),
-        "expected live-local validation to mention strategy: {error}"
-    );
-    assert!(
-        error.contains("must not be customized when rulesets are enabled"),
-        "expected ruleset-mode strategy error, got: {error}"
+        error.contains("unknown field `strategy`"),
+        "expected parse error for legacy strategy block, got: {error}"
     );
     assert!(!output_path.exists());
 }
@@ -607,6 +603,120 @@ fn write_input(tempdir: &TempCaseDir, file_name: &str) -> PathBuf {
 fn tracked_live_local_example() -> String {
     fs::read_to_string(repo_path("config/live.local.example.toml"))
         .expect("tracked operator template should be readable")
+}
+
+#[test]
+fn eth_ruleset_operator_input_materializes_taker_runtime_template() {
+    let tempdir = TempCaseDir::new("eth-ruleset-runtime-template");
+    let input_path = tempdir.path().join("live.local.toml");
+    let output_path = tempdir.path().join("live.toml");
+    let input = r#"
+[node]
+name = "BOLT-V2-ETH-001"
+trader_id = "BOLT-ETH-001"
+
+[polymarket]
+instrument_id = "0x8213d395e079614d6c4d7f4cbb9be9337ab51648a21cc2a334ae8f1966d164b4-111128191581505463501777127559667396812474366956707382672202929745167742497287.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
+signature_type = 2
+
+[secrets]
+region = "eu-west-1"
+pk = "/bolt/polymarket/private-key"
+api_key = "/bolt/polymarket/api-key"
+api_secret = "/bolt/polymarket/api-secret"
+passphrase = "/bolt/polymarket/api-passphrase"
+
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[reference.chainlink]
+region = "eu-west-1"
+api_key = "/bolt/chainlink/api-key"
+api_secret = "/bolt/chainlink/api-secret"
+ws_url = "wss://streams.chain.link"
+ws_reconnect_alert_threshold = 5
+
+[[reference.venues]]
+name = "CHAINLINK-ETH"
+type = "chainlink"
+instrument_id = "ETHUSD.CHAINLINK"
+base_weight = 1.0
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+price_scale = 18
+
+[[strategies]]
+type = "eth_chainlink_taker"
+[strategies.config]
+strategy_id = "ETHCHAINLINKTAKER-001"
+client_id = "POLYMARKET"
+warmup_tick_count = 20
+period_duration_secs = 300
+reentry_cooldown_secs = 30
+max_position_usdc = 1000.0
+book_impact_cap_bps = 15
+risk_lambda = 0.5
+worst_case_ev_min_bps = -20
+exit_hysteresis_bps = 5
+vol_window_secs = 60
+vol_gap_reset_secs = 10
+vol_min_observations = 20
+vol_bridge_valid_secs = 10
+pricing_kurtosis = 0.0
+theta_decay_factor = 0.0
+forced_flat_stale_chainlink_ms = 1500
+forced_flat_thin_book_min_liquidity = 100.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
+
+[[rulesets]]
+id = "ETHCHAINLINKTAKER"
+venue = "polymarket"
+resolution_basis = "chainlink_ethusd"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
+
+[rulesets.selector]
+tag_slug = "ethereum"
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#;
+
+    fs::write(&input_path, input).expect("input config should be written");
+
+    materialize_live_config(&input_path, &output_path)
+        .expect("ruleset operator input should materialize");
+
+    let rendered = fs::read_to_string(&output_path).expect("rendered config should be readable");
+    let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+
+    assert!(
+        rendered.contains("[[strategies]]"),
+        "eth taker operator config should render a runtime strategy template"
+    );
+    assert_eq!(cfg.strategies.len(), 1);
+    assert_eq!(cfg.strategies[0].kind, "eth_chainlink_taker");
+    assert_eq!(
+        cfg.strategies[0].config["strategy_id"].as_str(),
+        Some("ETHCHAINLINKTAKER-001")
+    );
 }
 
 fn assert_generated_output(path: &Path) {

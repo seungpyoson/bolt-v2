@@ -65,22 +65,6 @@ fn default_ws_max_subscriptions() -> usize {
     200
 }
 
-fn default_strategy_id() -> String {
-    "STRATEGY-001".to_string()
-}
-
-fn default_order_qty() -> String {
-    "5".to_string()
-}
-
-fn default_tob_offset_ticks() -> u64 {
-    5
-}
-
-fn default_use_post_only() -> bool {
-    true
-}
-
 fn default_region() -> String {
     "eu-west-1".to_string()
 }
@@ -111,7 +95,7 @@ pub struct LiveLocalConfig {
     #[serde(default)]
     pub polymarket: LivePolymarketInput,
     #[serde(default)]
-    pub strategy: LiveStrategyInput,
+    pub strategies: Vec<LiveStrategyTemplateInput>,
     #[serde(default)]
     pub secrets: LiveSecretsInput,
     #[serde(default)]
@@ -124,6 +108,14 @@ pub struct LiveLocalConfig {
     pub rulesets: Vec<LiveRulesetInput>,
     #[serde(default)]
     pub audit: Option<LiveAuditInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveStrategyTemplateInput {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub config: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,42 +236,6 @@ impl Default for LivePolymarketInput {
             update_instruments_interval_mins: default_update_instruments_interval_mins(),
             gamma_refresh_interval_secs: default_gamma_refresh_interval_secs(),
             ws_max_subscriptions: default_ws_max_subscriptions(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveStrategyInput {
-    #[serde(default = "default_strategy_id")]
-    pub strategy_id: String,
-    #[serde(default = "default_order_qty")]
-    pub order_qty: String,
-    #[serde(default)]
-    pub log_data: bool,
-    #[serde(default = "default_tob_offset_ticks")]
-    pub tob_offset_ticks: u64,
-    #[serde(default = "default_use_post_only")]
-    pub use_post_only: bool,
-    #[serde(default)]
-    pub enable_limit_sells: bool,
-    #[serde(default)]
-    pub enable_stop_buys: bool,
-    #[serde(default)]
-    pub enable_stop_sells: bool,
-}
-
-impl Default for LiveStrategyInput {
-    fn default() -> Self {
-        Self {
-            strategy_id: default_strategy_id(),
-            order_qty: default_order_qty(),
-            log_data: false,
-            tob_offset_ticks: default_tob_offset_ticks(),
-            use_post_only: default_use_post_only(),
-            enable_limit_sells: false,
-            enable_stop_buys: false,
-            enable_stop_sells: false,
         }
     }
 }
@@ -501,21 +457,7 @@ struct RenderedSecretsConfig {
 struct RenderedStrategyEntry {
     #[serde(rename = "type")]
     kind: String,
-    config: RenderedStrategyConfig,
-}
-
-#[derive(Serialize)]
-struct RenderedStrategyConfig {
-    strategy_id: String,
-    instrument_id: String,
-    client_id: String,
-    order_qty: String,
-    log_data: bool,
-    tob_offset_ticks: u64,
-    use_post_only: bool,
-    enable_limit_sells: bool,
-    enable_stop_buys: bool,
-    enable_stop_sells: bool,
+    config: Value,
 }
 
 #[derive(Serialize)]
@@ -712,7 +654,14 @@ fn render_runtime_config(
                 position_check_interval_secs: Some(position_check_interval_secs),
             },
         ),
-        strategies: Vec::new(),
+        strategies: input
+            .strategies
+            .iter()
+            .map(|strategy| RenderedStrategyEntry {
+                kind: strategy.kind.clone(),
+                config: strategy.config.clone(),
+            })
+            .collect(),
         streaming: if input.streaming.catalog_path.trim().is_empty() {
             None
         } else {
@@ -1067,8 +1016,37 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
+    fn repo_root() -> PathBuf {
+        let tracked = Path::new("config/live.local.example.toml");
+        if tracked.exists() {
+            return std::env::current_dir().expect("current_dir should resolve for tests");
+        }
+
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git should be available for repo-root lookup");
+        assert!(
+            output.status.success(),
+            "git rev-parse --show-toplevel failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let root = PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("git output should be utf-8")
+                .trim()
+                .to_string(),
+        );
+        assert!(
+            root.join("config/live.local.example.toml").exists(),
+            "repo root {} does not contain config/live.local.example.toml",
+            root.display()
+        );
+        root
+    }
+
     fn repo_path(relative: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+        repo_root().join(relative)
     }
 
     #[test]

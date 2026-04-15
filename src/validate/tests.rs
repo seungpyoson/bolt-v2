@@ -28,10 +28,6 @@ instrument_id = "0xabc-12345.POLYMARKET"
 account_id = "POLYMARKET-001"
 funder = "0xabc"
 
-[strategy]
-strategy_id = "STRATEGY-001"
-order_qty = "5"
-
 [secrets]
 pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
@@ -122,8 +118,29 @@ fn valid_config_passes_all_validation() {
 
 #[test]
 fn tracked_template_passes_validation() {
-    let source =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/live.local.example.toml");
+    let tracked = std::path::Path::new("config/live.local.example.toml");
+    let source = if tracked.exists() {
+        std::env::current_dir()
+            .expect("current_dir should resolve for tests")
+            .join(tracked)
+    } else {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git should be available for repo-root lookup");
+        assert!(
+            output.status.success(),
+            "git rev-parse --show-toplevel failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::path::PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("git output should be utf-8")
+                .trim()
+                .to_string(),
+        )
+        .join("config/live.local.example.toml")
+    };
     let contents = std::fs::read_to_string(&source).expect("tracked template should exist");
     let config: LiveLocalConfig = toml::from_str(&contents).expect("tracked template should parse");
     let errors = validate_live_local(&config);
@@ -134,8 +151,8 @@ fn tracked_template_passes_validation() {
 fn unknown_field_in_live_local_rejected() {
     let toml = replace(
         &valid_toml(),
-        "order_qty = \"5\"",
-        "order_qty = \"5\"\noder_qty = \"10\"",
+        "pk = \"/bolt/poly/pk\"",
+        "pk = \"/bolt/poly/pk\"\noder_qty = \"10\"",
     );
     let error = parse_error_for(&toml);
     assert!(
@@ -284,31 +301,6 @@ fn account_id_without_hyphen_rejected() {
     );
 }
 
-#[test]
-fn strategy_id_without_hyphen_rejected() {
-    let toml = replace(
-        &valid_toml(),
-        "strategy_id = \"STRATEGY-001\"",
-        "strategy_id = \"EXECTESTER001\"",
-    );
-    let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.strategy_id", "missing_hyphen");
-}
-
-#[test]
-fn strategy_id_external_accepted() {
-    let toml = replace(
-        &valid_toml(),
-        "strategy_id = \"STRATEGY-001\"",
-        "strategy_id = \"EXTERNAL\"",
-    );
-    let errors = errors_for(&toml);
-    assert!(
-        !errors.iter().any(|e| e.field == "strategy.strategy_id"),
-        "EXTERNAL should not produce strategy_id errors, got: {errors:?}"
-    );
-}
-
 // ════════════════════════════════════════════════════════════════
 // Instrument ID
 // ════════════════════════════════════════════════════════════════
@@ -368,91 +360,6 @@ fn instrument_id_whitespace_symbol_rejected() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// Quantity (check_positive_qty)
-// ════════════════════════════════════════════════════════════════
-
-#[test]
-fn order_qty_non_numeric_rejected() {
-    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"abc\"");
-    let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
-}
-
-#[test]
-fn order_qty_zero_rejected() {
-    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"0\"");
-    let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_positive_number");
-}
-
-#[test]
-fn order_qty_negative_rejected() {
-    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"-1\"");
-    let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
-}
-
-#[test]
-fn order_qty_infinity_rejected() {
-    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"inf\"");
-    let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
-}
-
-#[test]
-fn order_qty_with_underscores_accepted() {
-    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1_000\"");
-    let errors = errors_for(&toml);
-    assert_no_errors(&errors);
-}
-
-#[test]
-fn order_qty_scientific_notation_accepted() {
-    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1e3\"");
-    let errors = errors_for(&toml);
-    assert_no_errors(&errors);
-}
-
-#[test]
-fn order_qty_high_precision_accepted() {
-    let toml = replace(
-        &valid_toml(),
-        "order_qty = \"5\"",
-        "order_qty = \"0.0000000001\"",
-    );
-    let errors = errors_for(&toml);
-    assert_no_errors(&errors);
-}
-
-#[test]
-fn order_qty_scientific_negative_exponent_accepted() {
-    let toml = replace(&valid_toml(), "order_qty = \"5\"", "order_qty = \"1e-10\"");
-    let errors = errors_for(&toml);
-    assert_no_errors(&errors);
-}
-
-#[test]
-fn order_qty_precision_error_includes_nt_diagnostic() {
-    let toml = replace(
-        &valid_toml(),
-        "order_qty = \"5\"",
-        "order_qty = \"0.12345678901234567\"",
-    );
-    let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy.order_qty", "not_parseable");
-
-    let error = errors
-        .iter()
-        .find(|e| e.field == "strategy.order_qty" && e.code == "not_parseable")
-        .expect("expected quantity parse error");
-    assert!(
-        error.message.contains("precision") || error.message.contains("FIXED_PRECISION"),
-        "expected NT diagnostic in parse error, got: {:?}",
-        error.message
-    );
-}
-
-// ════════════════════════════════════════════════════════════════
 // New fields: client_name, environment, log_level
 // ════════════════════════════════════════════════════════════════
 
@@ -478,8 +385,8 @@ fn invalid_environment_rejected() {
 fn invalid_log_level_rejected() {
     let toml = replace(
         &valid_toml(),
-        "[strategy]",
-        "[logging]\nstdout_level = \"info\"\nfile_level = \"debug\"\n\n[strategy]",
+        "[secrets]",
+        "[logging]\nstdout_level = \"info\"\nfile_level = \"debug\"\n\n[secrets]",
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "logging.stdout_level", "invalid_log_level");
@@ -539,8 +446,8 @@ shutdown_delay_secs = 0
 fn flush_interval_zero_with_catalog_path_rejected() {
     let toml = replace(
         &valid_toml(),
-        "[strategy]",
-        "[streaming]\ncatalog_path = \"/data\"\nflush_interval_ms = 0\n\n[strategy]",
+        "[secrets]",
+        "[streaming]\ncatalog_path = \"/data\"\nflush_interval_ms = 0\n\n[secrets]",
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "streaming.flush_interval_ms", "not_positive");
@@ -550,8 +457,8 @@ fn flush_interval_zero_with_catalog_path_rejected() {
 fn contract_path_requires_streaming_catalog_path() {
     let toml = replace(
         &valid_toml(),
-        "[strategy]",
-        "[streaming]\ncatalog_path = \"\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[strategy]",
+        "[secrets]",
+        "[streaming]\ncatalog_path = \"\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[secrets]",
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "streaming.contract_path", "requires_catalog_path");
@@ -561,8 +468,8 @@ fn contract_path_requires_streaming_catalog_path() {
 fn empty_contract_path_rejected() {
     let toml = replace(
         &valid_toml(),
-        "[strategy]",
-        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"\"\n\n[strategy]",
+        "[secrets]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"\"\n\n[secrets]",
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "streaming.contract_path", "empty");
@@ -572,8 +479,8 @@ fn empty_contract_path_rejected() {
 fn live_local_non_local_contract_path_rejected_before_render() {
     let toml = replace(
         &valid_toml(),
-        "[strategy]",
-        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"s3://bucket/contracts/polymarket.toml\"\n\n[strategy]",
+        "[secrets]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"s3://bucket/contracts/polymarket.toml\"\n\n[secrets]",
     );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "streaming.contract_path", "non_local");
@@ -590,11 +497,22 @@ fn live_local_non_local_contract_path_rejected_before_render() {
 fn live_local_relative_contract_path_remains_valid() {
     let toml = replace(
         &valid_toml(),
-        "[strategy]",
-        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[strategy]",
+        "[secrets]",
+        "[streaming]\ncatalog_path = \"var/catalog\"\ncontract_path = \"contracts/polymarket.toml\"\n\n[secrets]",
     );
     let errors = errors_for(&toml);
     assert_no_errors(&errors);
+}
+
+#[test]
+fn legacy_strategy_block_rejected_during_parse() {
+    let toml = replace(
+        &valid_toml(),
+        "[secrets]",
+        "[strategy]\nstrategy_id = \"STRATEGY-001\"\norder_qty = \"5\"\n\n[secrets]",
+    );
+    let error = parse_error_for(&toml);
+    assert!(error.contains("unknown field `strategy`"), "{error}");
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -771,14 +689,79 @@ fn phase1_audit_required_when_rulesets_are_configured() {
 }
 
 #[test]
-fn phase1_non_default_strategy_input_rejected_when_rulesets_are_configured() {
-    let toml = replace(
-        &valid_phase1_toml(),
-        "strategy_id = \"STRATEGY-001\"",
-        "strategy_id = \"STRATEGY-002\"",
+fn strategies_require_rulesets_in_live_local_input() {
+    let toml = format!(
+        "{}\n{}",
+        valid_toml(),
+        r#"
+[[strategies]]
+type = "eth_chainlink_taker"
+[strategies.config]
+strategy_id = "ETHCHAINLINKTAKER-001"
+client_id = "POLYMARKET"
+warmup_tick_count = 20
+period_duration_secs = 300
+reentry_cooldown_secs = 30
+max_position_usdc = 1000.0
+book_impact_cap_bps = 15
+risk_lambda = 0.5
+worst_case_ev_min_bps = -20
+exit_hysteresis_bps = 5
+vol_window_secs = 60
+vol_gap_reset_secs = 10
+vol_min_observations = 20
+vol_bridge_valid_secs = 10
+pricing_kurtosis = 0.0
+theta_decay_factor = 0.0
+forced_flat_stale_chainlink_ms = 1500
+forced_flat_thin_book_min_liquidity = 100.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
+"#
     );
     let errors = errors_for(&toml);
-    assert_has_error(&errors, "strategy", "forbidden_in_ruleset_mode");
+    assert_has_error(&errors, "strategies", "requires_rulesets");
+}
+
+#[test]
+fn strategies_config_must_be_table_in_live_local_input() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_toml(),
+        r#"
+[[strategies]]
+type = "eth_chainlink_taker"
+config = "oops"
+"#
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategies[0].config", "wrong_type");
+}
+
+#[test]
+fn strategies_missing_required_builder_fields_fail_at_live_local_layer() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_toml(),
+        r#"
+[[strategies]]
+type = "eth_chainlink_taker"
+[strategies.config]
+strategy_id = "ETHCHAINLINKTAKER-001"
+client_id = "POLYMARKET"
+"#
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.warmup_tick_count",
+        "missing_warmup_tick_count",
+    );
+    assert_has_error(
+        &errors,
+        "strategies[0].config.period_duration_secs",
+        "missing_period_duration_secs",
+    );
 }
 
 #[test]

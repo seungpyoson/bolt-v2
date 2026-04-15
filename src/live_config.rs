@@ -1016,8 +1016,37 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
+    fn repo_root() -> PathBuf {
+        let tracked = Path::new("config/live.local.example.toml");
+        if tracked.exists() {
+            return std::env::current_dir().expect("current_dir should resolve for tests");
+        }
+
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git should be available for repo-root lookup");
+        assert!(
+            output.status.success(),
+            "git rev-parse --show-toplevel failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let root = PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("git output should be utf-8")
+                .trim()
+                .to_string(),
+        );
+        assert!(
+            root.join("config/live.local.example.toml").exists(),
+            "repo root {} does not contain config/live.local.example.toml",
+            root.display()
+        );
+        root
+    }
+
     fn repo_path(relative: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+        repo_root().join(relative)
     }
 
     #[test]

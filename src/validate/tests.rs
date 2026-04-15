@@ -118,8 +118,29 @@ fn valid_config_passes_all_validation() {
 
 #[test]
 fn tracked_template_passes_validation() {
-    let source =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/live.local.example.toml");
+    let tracked = std::path::Path::new("config/live.local.example.toml");
+    let source = if tracked.exists() {
+        std::env::current_dir()
+            .expect("current_dir should resolve for tests")
+            .join(tracked)
+    } else {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git should be available for repo-root lookup");
+        assert!(
+            output.status.success(),
+            "git rev-parse --show-toplevel failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::path::PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("git output should be utf-8")
+                .trim()
+                .to_string(),
+        )
+        .join("config/live.local.example.toml")
+    };
     let contents = std::fs::read_to_string(&source).expect("tracked template should exist");
     let config: LiveLocalConfig = toml::from_str(&contents).expect("tracked template should parse");
     let errors = validate_live_local(&config);
@@ -130,8 +151,8 @@ fn tracked_template_passes_validation() {
 fn unknown_field_in_live_local_rejected() {
     let toml = replace(
         &valid_toml(),
-        "order_qty = \"5\"",
-        "order_qty = \"5\"\noder_qty = \"10\"",
+        "pk = \"/bolt/poly/pk\"",
+        "pk = \"/bolt/poly/pk\"\noder_qty = \"10\"",
     );
     let error = parse_error_for(&toml);
     assert!(

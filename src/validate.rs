@@ -877,6 +877,13 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
                         strategy.config.type_str()
                     ),
                 );
+            } else {
+                registry.validate(
+                    &strategy.kind,
+                    &strategy.config,
+                    &format!("strategies[{i}].config"),
+                    &mut errors,
+                );
             }
         }
         if !config.rulesets.is_empty() {
@@ -896,7 +903,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
                 );
             }
         }
-    } else {
+    } else if !config.strategies.is_empty() {
         push_error(
             &mut errors,
             "strategies",

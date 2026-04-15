@@ -739,6 +739,32 @@ config = "oops"
 }
 
 #[test]
+fn strategies_missing_required_builder_fields_fail_at_live_local_layer() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_toml(),
+        r#"
+[[strategies]]
+type = "eth_chainlink_taker"
+[strategies.config]
+strategy_id = "ETHCHAINLINKTAKER-001"
+client_id = "POLYMARKET"
+"#
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "strategies[0].config.warmup_tick_count",
+        "missing_warmup_tick_count",
+    );
+    assert_has_error(
+        &errors,
+        "strategies[0].config.period_duration_secs",
+        "missing_period_duration_secs",
+    );
+}
+
+#[test]
 fn phase1_duplicate_ruleset_ids_rejected() {
     let toml = format!(
         "{}\n{}",

@@ -611,7 +611,9 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
         let cache_handle = node.kernel().cache();
         let mut cache = cache_handle.borrow_mut();
         cache.add_instrument(polymarket_binary_option(up)).unwrap();
-        cache.add_instrument(polymarket_binary_option(down)).unwrap();
+        cache
+            .add_instrument(polymarket_binary_option(down))
+            .unwrap();
     }
 
     let handle = node.handle();
@@ -672,7 +674,9 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
                         Quantity::new(5.0, 2),
                         Price::new(0.450, 3),
                     ))
-                    .expect("entry fill should materialize position from submitted client order id");
+                    .expect(
+                        "entry fill should materialize position from submitted client order id",
+                    );
             } else {
                 panic!("runtime strategy actor should be registered");
             }

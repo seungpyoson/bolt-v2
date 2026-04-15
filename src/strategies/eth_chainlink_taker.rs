@@ -598,7 +598,9 @@ impl ExitPendingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryReconcileReason {
     AwaitingPositionMaterialization,
-    UnsupportedEntryFillSide { order_side: OrderSide },
+    UnsupportedEntryFillSide {
+        order_side: OrderSide,
+    },
     InvalidObservedPosition {
         entry_order_side: OrderSide,
         side: PositionSide,
@@ -614,7 +616,9 @@ enum UnsupportedObservedReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlindRecoveryReason {
     CacheProbeFailed,
-    MultipleOpenPositions { count: usize },
+    MultipleOpenPositions {
+        count: usize,
+    },
     InvalidBootstrappedPosition {
         entry_order_side: OrderSide,
         side: PositionSide,
@@ -689,7 +693,10 @@ impl ExposureState {
     fn observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
         match self {
             Self::Managed(position) => Some(&mut position.position),
-            Self::ExitPending(exit) => exit.position.as_mut().map(|position| &mut position.position),
+            Self::ExitPending(exit) => exit
+                .position
+                .as_mut()
+                .map(|position| &mut position.position),
             Self::UnsupportedObserved(observed) => Some(&mut observed.observed),
             _ => None,
         }
@@ -713,9 +720,7 @@ impl ExposureState {
         match self {
             Self::Flat => None,
             Self::PendingEntry(_) => Some(ExposureOccupancy::PendingEntry),
-            Self::EntryReconcilePending { .. } => {
-                Some(ExposureOccupancy::EntryReconcilePending)
-            }
+            Self::EntryReconcilePending { .. } => Some(ExposureOccupancy::EntryReconcilePending),
             Self::Managed(_) => Some(ExposureOccupancy::ManagedPosition),
             Self::ExitPending(_) => Some(ExposureOccupancy::ExitPending),
             Self::UnsupportedObserved(_) => Some(ExposureOccupancy::UnsupportedObserved),
@@ -731,10 +736,9 @@ impl ExposureState {
     fn is_recovering(&self) -> bool {
         match self {
             Self::Managed(position) => position.origin == ManagedPositionOrigin::RecoveryBootstrap,
-            Self::ExitPending(exit) => exit
-                .position
-                .as_ref()
-                .is_some_and(|position| position.origin == ManagedPositionOrigin::RecoveryBootstrap),
+            Self::ExitPending(exit) => exit.position.as_ref().is_some_and(|position| {
+                position.origin == ManagedPositionOrigin::RecoveryBootstrap
+            }),
             Self::EntryReconcilePending { .. }
             | Self::UnsupportedObserved(_)
             | Self::BlindRecovery(_) => true,
@@ -753,14 +757,19 @@ impl ExposureState {
 }
 
 fn supports_strategy_managed_position(entry_order_side: OrderSide, side: PositionSide) -> bool {
-    matches!((entry_order_side, side), (OrderSide::Buy, PositionSide::Long))
+    matches!(
+        (entry_order_side, side),
+        (OrderSide::Buy, PositionSide::Long)
+    )
 }
 
 fn is_observed_open_side(side: PositionSide) -> bool {
     matches!(side, PositionSide::Long | PositionSide::Short)
 }
 
-fn infer_strategy_position_side_from_entry_fill(entry_order_side: OrderSide) -> Option<PositionSide> {
+fn infer_strategy_position_side_from_entry_fill(
+    entry_order_side: OrderSide,
+) -> Option<PositionSide> {
     match entry_order_side {
         OrderSide::Buy => Some(PositionSide::Long),
         _ => None,
@@ -1306,10 +1315,8 @@ impl EthChainlinkTaker {
         observed: OpenPositionState,
         reason: UnsupportedObservedReason,
     ) {
-        self.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
-            observed,
-            reason,
-        });
+        self.exposure =
+            ExposureState::UnsupportedObserved(UnsupportedObservedState { observed, reason });
         self.refresh_book_subscriptions_for_current_state();
     }
 
@@ -1479,7 +1486,10 @@ impl EthChainlinkTaker {
 
     fn record_market_fill(&mut self, market_id: &str, now_ms: u64) {
         self.arm_market_cooldown(market_id, now_ms);
-        let counter = self.churn_counters.entry(market_id.to_string()).or_insert(0);
+        let counter = self
+            .churn_counters
+            .entry(market_id.to_string())
+            .or_insert(0);
         *counter = counter.saturating_add(1);
     }
 
@@ -1975,10 +1985,7 @@ impl EthChainlinkTaker {
         }
     }
 
-    fn pending_entry_context_for(
-        &self,
-        instrument_id: InstrumentId,
-    ) -> Option<PendingEntryState> {
+    fn pending_entry_context_for(&self, instrument_id: InstrumentId) -> Option<PendingEntryState> {
         let pending = self.pending_entry()?.clone();
         if pending.instrument_id != instrument_id {
             return None;
@@ -2010,7 +2017,13 @@ impl EthChainlinkTaker {
                         None
                     }
                 })
-                .or_else(|| infer_strategy_outcome_side(spec.entry_order_side, spec.side, spec.instrument_id)),
+                .or_else(|| {
+                    infer_strategy_outcome_side(
+                        spec.entry_order_side,
+                        spec.side,
+                        spec.instrument_id,
+                    )
+                }),
             outcome_fees: preserved
                 .map(|position| position.outcome_fees.clone())
                 .or_else(|| pending_context.map(|pending| pending.outcome_fees.clone()))
@@ -2059,7 +2072,8 @@ impl EthChainlinkTaker {
         let pending_context = self.pending_entry_context_for(instrument_id);
         let pending_matches = pending_context.is_some();
         let observed_open_side = is_observed_open_side(side);
-        let tradable_position_supported = supports_strategy_managed_position(entry_order_side, side);
+        let tradable_position_supported =
+            supports_strategy_managed_position(entry_order_side, side);
 
         if !observed_open_side {
             self.exposure = if let Some(pending) = pending_context {
@@ -2098,19 +2112,22 @@ impl EthChainlinkTaker {
                 entry_order_side,
                 side,
             );
-            self.set_unsupported_observed_exposure(self.build_open_position_state(
-                preserved.as_ref(),
-                pending_context.as_ref(),
-                PositionMaterializationSpec {
-                    instrument_id,
-                    position_id,
-                    entry_order_side,
-                    side,
-                    quantity,
-                    avg_px_open,
-                },
-                false,
-            ), UnsupportedObservedReason::LiveUnsupportedContract);
+            self.set_unsupported_observed_exposure(
+                self.build_open_position_state(
+                    preserved.as_ref(),
+                    pending_context.as_ref(),
+                    PositionMaterializationSpec {
+                        instrument_id,
+                        position_id,
+                        entry_order_side,
+                        side,
+                        quantity,
+                        avg_px_open,
+                    },
+                    false,
+                ),
+                UnsupportedObservedReason::LiveUnsupportedContract,
+            );
             return;
         }
 
@@ -2198,7 +2215,8 @@ impl EthChainlinkTaker {
             && next.down_instrument_id != Some(open_position.instrument_id)
         {
             next.tracked_position_instrument_id = Some(open_position.instrument_id);
-        } else if let Some(pending_entry_instrument_id) = self.pending_entry().map(|pending| pending.instrument_id)
+        } else if let Some(pending_entry_instrument_id) =
+            self.pending_entry().map(|pending| pending.instrument_id)
             && next.up_instrument_id != Some(pending_entry_instrument_id)
             && next.down_instrument_id != Some(pending_entry_instrument_id)
         {
@@ -4446,10 +4464,8 @@ mod tests {
         observed: OpenPositionState,
         reason: UnsupportedObservedReason,
     ) {
-        strategy.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
-            observed,
-            reason,
-        });
+        strategy.exposure =
+            ExposureState::UnsupportedObserved(UnsupportedObservedState { observed, reason });
     }
 
     fn managed_position_ref(strategy: &EthChainlinkTaker) -> Option<&OpenPositionState> {
@@ -5757,10 +5773,7 @@ mod tests {
             OutcomeSide::Up,
             strategy.active.books.up.clone(),
         );
-        set_pending_entry(
-            &mut strategy,
-            pending,
-        );
+        set_pending_entry(&mut strategy, pending);
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy
@@ -5981,10 +5994,7 @@ mod tests {
             OutcomeSide::Up,
             original_book.clone(),
         );
-        set_pending_entry(
-            &mut strategy,
-            pending,
-        );
+        set_pending_entry(&mut strategy, pending);
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy
@@ -6012,8 +6022,7 @@ mod tests {
             Some(300)
         );
         assert_eq!(
-            managed_position_ref(&strategy)
-                .and_then(|p| p.outcome_fees.up_token_id.as_deref()),
+            managed_position_ref(&strategy).and_then(|p| p.outcome_fees.up_token_id.as_deref()),
             Some("MKT-1-UP")
         );
         assert_eq!(
@@ -6038,10 +6047,7 @@ mod tests {
             OutcomeSide::Up,
             original_book.clone(),
         );
-        set_pending_entry(
-            &mut strategy,
-            pending,
-        );
+        set_pending_entry(&mut strategy, pending);
 
         strategy
             .on_order_filled(&order_filled_event_with_details(
@@ -6055,7 +6061,9 @@ mod tests {
         assert!(strategy.exposure.is_recovering());
         assert!(strategy.managed_position().is_none());
         assert_eq!(
-            strategy.pending_entry().map(|pending| pending.client_order_id),
+            strategy
+                .pending_entry()
+                .map(|pending| pending.client_order_id),
             Some(entry_client_order_id)
         );
         assert!(strategy.market_in_cooldown("MKT-1", 1_000));
@@ -6160,10 +6168,7 @@ mod tests {
             OutcomeSide::Down,
             strategy.active.books.down.clone(),
         );
-        set_pending_entry(
-            &mut strategy,
-            pending,
-        );
+        set_pending_entry(&mut strategy, pending);
 
         strategy
             .on_order_filled(&order_filled_event_with_details(
@@ -6177,11 +6182,15 @@ mod tests {
         assert!(strategy.exposure.is_recovering());
         assert!(strategy.managed_position().is_none());
         assert_eq!(
-            strategy.pending_entry().map(|pending| pending.client_order_id),
+            strategy
+                .pending_entry()
+                .map(|pending| pending.client_order_id),
             Some(entry_client_order_id)
         );
         assert_eq!(
-            strategy.pending_entry().map(|pending| pending.instrument_id),
+            strategy
+                .pending_entry()
+                .map(|pending| pending.instrument_id),
             Some(instrument_id)
         );
     }
@@ -6198,10 +6207,7 @@ mod tests {
             OutcomeSide::Down,
             strategy.active.books.down.clone(),
         );
-        set_pending_entry(
-            &mut strategy,
-            pending,
-        );
+        set_pending_entry(&mut strategy, pending);
 
         strategy.on_position_opened(position_opened_event_with_details(
             instrument_id,
@@ -6240,10 +6246,7 @@ mod tests {
             OutcomeSide::Up,
             strategy.active.books.up.clone(),
         );
-        set_pending_entry(
-            &mut strategy,
-            pending,
-        );
+        set_pending_entry(&mut strategy, pending);
 
         strategy.on_position_opened(position_opened_event_with_details(
             instrument_id,
@@ -6257,7 +6260,9 @@ mod tests {
         assert!(strategy.exposure.is_recovering());
         assert!(strategy.managed_position().is_none());
         assert_eq!(
-            strategy.pending_entry().map(|pending| pending.client_order_id),
+            strategy
+                .pending_entry()
+                .map(|pending| pending.client_order_id),
             Some(entry_client_order_id)
         );
     }
@@ -7592,7 +7597,10 @@ mod tests {
         exit_pending.pending_exit.close_received = true;
         assert!(exit_pending.is_terminal());
         assert_eq!(
-            exit_pending.position.as_ref().map(|state| state.position.position_id),
+            exit_pending
+                .position
+                .as_ref()
+                .map(|state| state.position.position_id),
             Some(PositionId::from("P-EXIT-STATE-001"))
         );
     }

@@ -18,7 +18,6 @@ pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 #[derive(Clone)]
 pub struct StrategyBuildContext {
     pub fee_provider: Arc<dyn FeeProvider>,
-    pub reference_publish_topic: String,
 }
 
 pub trait StrategyBuilder: Send + Sync + 'static {
@@ -248,45 +247,9 @@ mod tests {
         }
     }
 
-    struct ContextAwareBuilder;
-
-    impl StrategyBuilder for ContextAwareBuilder {
-        fn kind() -> &'static str {
-            "context_runtime"
-        }
-
-        fn validate_config(_raw: &Value, _field_prefix: &str, _errors: &mut Vec<ValidationError>) {}
-
-        fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-            let strategy_id = raw
-                .get("strategy_id")
-                .and_then(Value::as_str)
-                .context("context builder requires strategy_id")?;
-            let expected_topic = raw
-                .get("expected_reference_publish_topic")
-                .and_then(Value::as_str)
-                .context("context builder requires expected_reference_publish_topic")?;
-            anyhow::ensure!(
-                context.reference_publish_topic == expected_topic,
-                "expected reference publish topic {expected_topic}, got {}",
-                context.reference_publish_topic
-            );
-            Ok(Box::new(TestStrategy::new(strategy_id)))
-        }
-
-        fn register(
-            _raw: &Value,
-            _context: &StrategyBuildContext,
-            _trader: &Rc<RefCell<Trader>>,
-        ) -> Result<StrategyId> {
-            Err(anyhow!("context builder register is unused in this test"))
-        }
-    }
-
     fn test_context() -> StrategyBuildContext {
         StrategyBuildContext {
             fee_provider: Arc::new(NoopFeeProvider),
-            reference_publish_topic: "platform.reference.test".to_string(),
         }
     }
 
@@ -347,25 +310,5 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, "missing_strategy_id");
-    }
-
-    #[test]
-    fn strategy_registry_build_passes_reference_publish_topic_through_context() {
-        let mut registry = StrategyRegistry::new();
-        registry.register::<ContextAwareBuilder>().unwrap();
-
-        let context = test_context();
-        let raw = toml::toml! {
-            strategy_id = "ALPHA-REFERENCE-001"
-            expected_reference_publish_topic = "platform.reference.test"
-        }
-        .into();
-
-        let strategy = registry.build("context_runtime", &raw, &context).unwrap();
-
-        assert_eq!(
-            strategy.component_id().inner().as_str(),
-            "ALPHA-REFERENCE-001"
-        );
     }
 }

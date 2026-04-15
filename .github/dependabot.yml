@@ -19,6 +19,25 @@ updates:
         versions: [">=0.13"]
       - dependency-name: "sha2"
         versions: [">=0.11"]
+      # Keep this NT crate list aligned with config/nt_pointer_probe/control.toml.
+      # validate-control-plane fails closed if they drift.
+      - dependency-name: "nautilus-common"
+      - dependency-name: "nautilus-core"
+      - dependency-name: "nautilus-data"
+      - dependency-name: "nautilus-binance"
+      - dependency-name: "nautilus-bybit"
+      - dependency-name: "nautilus-deribit"
+      - dependency-name: "nautilus-hyperliquid"
+      - dependency-name: "nautilus-kraken"
+      - dependency-name: "nautilus-live"
+      - dependency-name: "nautilus-model"
+      - dependency-name: "nautilus-network"
+      - dependency-name: "nautilus-okx"
+      - dependency-name: "nautilus-persistence"
+      - dependency-name: "nautilus-polymarket"
+      - dependency-name: "nautilus-system"
+      - dependency-name: "nautilus-trading"
+      - dependency-name: "nautilus-execution"
     groups:
       cargo-dependencies:
         patterns:

@@ -1,0 +1,53 @@
+name: NT Pointer Trust Root
+
+on:
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TRUST_ROOT_VALIDATOR_REPO: "seungpyoson/claude-config"
+  TRUST_ROOT_VALIDATOR_SHA: ${{ vars.NT_POINTER_TRUST_ROOT_VALIDATOR_SHA }}
+
+concurrency:
+  group: nt-pointer-trust-root-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trust_root:
+    name: nt-pointer-trust-root
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch external trust-root validator
+        shell: bash
+        run: |
+          base_url="https://raw.githubusercontent.com/${TRUST_ROOT_VALIDATOR_REPO}/${TRUST_ROOT_VALIDATOR_SHA}"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt_trust_root_validator.py" "$base_url/lib/bolt_trust_root_validator.py"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" "$base_url/config/bolt-v2-trust-root-policy.json"
+          chmod +x "$RUNNER_TEMP/bolt_trust_root_validator.py"
+
+      - name: Materialize protected files from PR head
+        shell: bash
+        env:
+          HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
+          mkdir -p "$repo_root"
+          jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
+            target_path="$repo_root/$relative_path"
+            mkdir -p "$(dirname "$target_path")"
+            file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}"
+            curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url"
+          done
+          printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path"
+
+      - name: Validate external trust root
+        shell: bash
+        run: |
+          repo_root="$(cat "$RUNNER_TEMP/bolt-v2-trust-root-path")"
+          python3 "$RUNNER_TEMP/bolt_trust_root_validator.py" \
+            --repo "$repo_root" \
+            --policy "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"

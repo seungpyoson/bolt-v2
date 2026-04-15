@@ -1,0 +1,119 @@
+name: NT Pointer Branch Governance Drift
+
+on:
+  schedule:
+    - cron: "0 10 * * 1"
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: nt-pointer-branch-governance-drift-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  branch_protection_drift:
+    name: branch_protection_drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+
+      - name: Fetch branch protection state
+        id: fetch
+        continue-on-error: true
+        shell: bash
+        env:
+          NT_POINTER_PROBE_GH_ADMIN_TOKEN: ${{ secrets.NT_POINTER_PROBE_GH_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${NT_POINTER_PROBE_GH_ADMIN_TOKEN}" ]; then
+            export GH_TOKEN="${NT_POINTER_PROBE_GH_ADMIN_TOKEN}"
+          fi
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" > "$RUNNER_TEMP/branch-protection.json" 2> "$RUNNER_TEMP/branch-protection.stderr"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ ! -s "$RUNNER_TEMP/branch-protection.json" ]; then
+            cat "$RUNNER_TEMP/branch-protection.stderr" >&2
+            exit "$status"
+          fi
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "$RUNNER_TEMP/branch-rules.json" 2> "$RUNNER_TEMP/branch-rules.stderr"
+          rules_status=$?
+          set -e
+          if [ "$rules_status" -ne 0 ] && [ ! -s "$RUNNER_TEMP/branch-rules.json" ]; then
+            cat "$RUNNER_TEMP/branch-rules.stderr" >&2
+            exit "$rules_status"
+          fi
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets" > "$RUNNER_TEMP/rulesets-summary.json" 2> "$RUNNER_TEMP/rulesets-summary.stderr"
+          rulesets_status=$?
+          set -e
+          if [ "$rulesets_status" -ne 0 ] && [ ! -s "$RUNNER_TEMP/rulesets-summary.json" ]; then
+            cat "$RUNNER_TEMP/rulesets-summary.stderr" >&2
+            exit "$rulesets_status"
+          fi
+          set +e
+          jq -r '.[].id' "$RUNNER_TEMP/rulesets-summary.json" | while read -r ruleset_id; do
+            gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}"
+          done | jq -s '.' > "$RUNNER_TEMP/ruleset-details.json" 2> "$RUNNER_TEMP/ruleset-details.stderr"
+          ruleset_details_status=$?
+          set -e
+          if [ "$ruleset_details_status" -ne 0 ] && [ ! -s "$RUNNER_TEMP/ruleset-details.json" ]; then
+            cat "$RUNNER_TEMP/ruleset-details.stderr" >&2
+            exit "$ruleset_details_status"
+          fi
+          cat "$RUNNER_TEMP/branch-protection.stderr" >&2 || true
+          cat "$RUNNER_TEMP/branch-rules.stderr" >&2 || true
+          cat "$RUNNER_TEMP/rulesets-summary.stderr" >&2 || true
+          cat "$RUNNER_TEMP/ruleset-details.stderr" >&2 || true
+
+      - name: Compare branch governance to expected state
+        id: compare
+        if: steps.fetch.outcome == 'success'
+        continue-on-error: true
+        run: just nt-pointer-probe-compare-branch-governance "$RUNNER_TEMP/branch-protection.json" "$RUNNER_TEMP/branch-rules.json" "$RUNNER_TEMP/ruleset-details.json"
+
+      - name: Update drift issue on failure
+        if: steps.fetch.outcome == 'failure' || steps.compare.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          label="nt-pointer-probe-drift"
+          title_prefix="NT Pointer Probe Drift"
+          gh label create "$label" --description "NT pointer probe drift failures" --color "B60205" 2>/dev/null || true
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --label "$label" --state open --json number,title --jq '.[] | select(.title | startswith("'"$title_prefix"'")) | .number' | head -n 1)"
+          body="$(cat <<'EOF'
+          ## Drift Failure
+
+          The scheduled NT pointer branch-governance drift check failed.
+
+          Required follow-up:
+          - inspect the failing `branch_protection_drift` workflow run
+          - determine whether this is governance drift or an auth/config issue
+          - do not ignore repeated failures; the drift lane is part of the control plane
+          EOF
+          )"
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --title "$title_prefix ($(date -u +%Y-%m-%d))" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label "$label" --title "$title_prefix ($(date -u +%Y-%m-%d))" --body "$body"
+          fi
+
+      - name: Fail after drift issue update
+        if: steps.fetch.outcome == 'failure' || steps.compare.outcome == 'failure'
+        run: exit 1

@@ -925,6 +925,12 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
                 switchboard::get_book_deltas_topic(market_b_down),
                 &book_deltas(market_b_down, 0.500, 0.510),
             );
+            sleep(Duration::from_millis(50)).await;
+            assert!(
+                recorded_mock_exec_submissions().is_empty(),
+                "{:?}",
+                recorded_mock_exec_submissions()
+            );
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
                 &freeze_selection_snapshot_for("MKT-ETH-2", rotation_ts_ms),

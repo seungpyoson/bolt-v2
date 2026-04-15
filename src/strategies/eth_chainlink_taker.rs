@@ -539,6 +539,27 @@ struct OpenPositionState {
     book: OutcomeBookState,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct PendingEntryContextSnapshot {
+    market_id: Option<String>,
+    outcome_side: Option<OutcomeSide>,
+    outcome_fees: OutcomeFeeState,
+    interval_open: Option<f64>,
+    selection_published_at_ms: Option<u64>,
+    seconds_to_expiry_at_selection: Option<u64>,
+    book: OutcomeBookState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PositionMaterializationSpec {
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    entry_order_side: OrderSide,
+    side: PositionSide,
+    quantity: Quantity,
+    avg_px_open: f64,
+}
+
 impl PricingState {
     fn from_config(config: &EthChainlinkTakerConfig) -> Self {
         Self {
@@ -904,11 +925,6 @@ impl EthChainlinkTaker {
 
     fn apply_selection_snapshot(&mut self, snapshot: RuntimeSelectionSnapshot) {
         let now_ms = snapshot.published_at_ms;
-        let previous_market_identity = (
-            self.active.market_id.clone(),
-            self.active.instrument_id,
-            self.active.interval_start_ms,
-        );
         let previous_phase = self.active.phase;
         let previous_fee_tokens = self.active.outcome_fees.token_ids();
         let next_selection_books = selection_book_subscriptions(&snapshot);
@@ -920,15 +936,6 @@ impl EthChainlinkTaker {
         self.active.books.up.instrument_id = next_selection_books.up_instrument_id;
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
-        let market_changed = previous_market_identity
-            != (
-                self.active.market_id.clone(),
-                self.active.instrument_id,
-                self.active.interval_start_ms,
-            );
-        if market_changed {
-            self.pricing = PricingState::from_config(&self.config);
-        }
         let reactivated_into_active =
             previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
         let next_fee_tokens = self.active.outcome_fees.token_ids();
@@ -1684,12 +1691,6 @@ impl EthChainlinkTaker {
         }
     }
 
-    fn infer_outcome_side_from_entry_order_side(
-        _entry_order_side: OrderSide,
-    ) -> Option<OutcomeSide> {
-        None
-    }
-
     fn infer_outcome_side_from_position(
         entry_order_side: OrderSide,
         position_side: PositionSide,
@@ -1706,9 +1707,168 @@ impl EthChainlinkTaker {
     fn infer_position_side(entry_order_side: OrderSide) -> Option<PositionSide> {
         match entry_order_side {
             OrderSide::Buy => Some(PositionSide::Long),
-            OrderSide::Sell => Some(PositionSide::Short),
             _ => None,
         }
+    }
+
+    fn pending_entry_context_for(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Option<PendingEntryContextSnapshot> {
+        if self.pending_entry_instrument_id != Some(instrument_id) {
+            return None;
+        }
+
+        Some(PendingEntryContextSnapshot {
+            market_id: self.pending_entry_market_id.clone(),
+            outcome_side: self.pending_entry_outcome_side,
+            outcome_fees: self
+                .pending_entry_outcome_fees
+                .clone()
+                .unwrap_or_else(|| self.active.outcome_fees.clone()),
+            interval_open: self.pending_entry_interval_open,
+            selection_published_at_ms: self.pending_entry_selection_published_at_ms,
+            seconds_to_expiry_at_selection: self.pending_entry_seconds_to_expiry_at_selection,
+            book: self
+                .pending_entry_book
+                .clone()
+                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(instrument_id)),
+        })
+    }
+
+    fn pending_entry_contract_supported(entry_order_side: OrderSide, side: PositionSide) -> bool {
+        entry_order_side == OrderSide::Buy && side == PositionSide::Long
+    }
+
+    fn build_open_position_state(
+        &self,
+        preserved: Option<&OpenPositionState>,
+        pending_context: Option<&PendingEntryContextSnapshot>,
+        spec: PositionMaterializationSpec,
+        trust_pending_outcome_side: bool,
+    ) -> OpenPositionState {
+        OpenPositionState {
+            market_id: preserved
+                .and_then(|position| position.market_id.clone())
+                .or_else(|| pending_context.and_then(|pending| pending.market_id.clone()))
+                .or_else(|| self.active.market_id.clone()),
+            instrument_id: spec.instrument_id,
+            position_id: spec.position_id,
+            outcome_side: preserved
+                .and_then(|position| position.outcome_side)
+                .or_else(|| {
+                    if trust_pending_outcome_side {
+                        pending_context.and_then(|pending| pending.outcome_side)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    Self::infer_outcome_side_from_position(
+                        spec.entry_order_side,
+                        spec.side,
+                        spec.instrument_id,
+                    )
+                }),
+            outcome_fees: preserved
+                .map(|position| position.outcome_fees.clone())
+                .or_else(|| pending_context.map(|pending| pending.outcome_fees.clone()))
+                .unwrap_or_else(|| self.active.outcome_fees.clone()),
+            entry_order_side: spec.entry_order_side,
+            side: spec.side,
+            quantity: spec.quantity,
+            avg_px_open: spec.avg_px_open,
+            interval_open: preserved
+                .and_then(|position| position.interval_open)
+                .or_else(|| pending_context.and_then(|pending| pending.interval_open))
+                .or(self.active.interval_open),
+            selection_published_at_ms: preserved
+                .and_then(|position| position.selection_published_at_ms)
+                .or_else(|| pending_context.and_then(|pending| pending.selection_published_at_ms))
+                .or(self.active.selection_published_at_ms),
+            seconds_to_expiry_at_selection: preserved
+                .and_then(|position| position.seconds_to_expiry_at_selection)
+                .or_else(|| {
+                    pending_context.and_then(|pending| pending.seconds_to_expiry_at_selection)
+                })
+                .or(self.active.seconds_to_expiry_at_selection),
+            book: preserved
+                .map(|position| position.book.clone())
+                .or_else(|| pending_context.map(|pending| pending.book.clone()))
+                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(spec.instrument_id)),
+        }
+    }
+
+    fn materialize_position_from_event(
+        &mut self,
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+        entry_order_side: OrderSide,
+        side: PositionSide,
+        quantity: Quantity,
+        avg_px_open: f64,
+    ) {
+        let preserved = self
+            .open_position
+            .as_ref()
+            .filter(|position| {
+                position.position_id == position_id && position.instrument_id == instrument_id
+            })
+            .cloned();
+        let pending_context = self.pending_entry_context_for(instrument_id);
+        let pending_matches = pending_context.is_some();
+        let pending_contract_supported =
+            !pending_matches || Self::pending_entry_contract_supported(entry_order_side, side);
+        let supported_position_side = matches!(side, PositionSide::Long | PositionSide::Short);
+
+        if !supported_position_side {
+            self.recovery = true;
+            self.open_position_active = self.open_position.is_some();
+            if !self.open_position_active {
+                self.open_position = None;
+            }
+            log::error!(
+                "eth_chainlink_taker position event carried unsupported position side: strategy_id={} instrument_id={} position_id={} entry_order_side={:?} side={:?}",
+                self.config.strategy_id,
+                instrument_id,
+                position_id,
+                entry_order_side,
+                side,
+            );
+            self.refresh_book_subscriptions_for_current_state();
+            return;
+        }
+
+        if pending_matches && !pending_contract_supported {
+            self.recovery = true;
+            log::error!(
+                "eth_chainlink_taker pending entry materialized unsupported live position contract: strategy_id={} instrument_id={} entry_order_side={:?} side={:?}",
+                self.config.strategy_id,
+                instrument_id,
+                entry_order_side,
+                side,
+            );
+        }
+
+        self.open_position_active = true;
+        self.open_position = Some(self.build_open_position_state(
+            preserved.as_ref(),
+            pending_context.as_ref(),
+            PositionMaterializationSpec {
+                instrument_id,
+                position_id,
+                entry_order_side,
+                side,
+                quantity,
+                avg_px_open,
+            },
+            pending_contract_supported,
+        ));
+        if pending_matches {
+            self.clear_pending_entry_state();
+        }
+        self.sync_open_position_from_active();
+        self.refresh_book_subscriptions_for_current_state();
     }
 
     fn seconds_to_expiry_from_selection(
@@ -2648,41 +2808,24 @@ impl DataActor for EthChainlinkTaker {
         let exit_fill = self.pending_exit_order.as_ref() == Some(&event.client_order_id);
 
         if entry_fill {
-            let pending_market_id = self.pending_entry_market_id.clone();
-            let pending_outcome_side = self.pending_entry_outcome_side;
-            let pending_outcome_fees = self
-                .pending_entry_outcome_fees
-                .clone()
-                .unwrap_or_else(|| self.active.outcome_fees.clone());
-            let pending_interval_open = self.pending_entry_interval_open;
-            let pending_selection_published_at_ms = self.pending_entry_selection_published_at_ms;
-            let pending_seconds_to_expiry_at_selection =
-                self.pending_entry_seconds_to_expiry_at_selection;
-            let pending_book = self
-                .pending_entry_book
-                .clone()
-                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(event.instrument_id));
+            let pending_context = self.pending_entry_context_for(event.instrument_id);
             let position_side = Self::infer_position_side(event.order_side);
             if let (Some(position_id), Some(position_side)) = (event.position_id, position_side) {
                 self.clear_pending_entry_state();
                 self.open_position_active = true;
-                self.open_position = Some(OpenPositionState {
-                    market_id: pending_market_id.clone(),
-                    instrument_id: event.instrument_id,
-                    position_id,
-                    outcome_side: pending_outcome_side.or_else(|| {
-                        Self::infer_outcome_side_from_entry_order_side(event.order_side)
-                    }),
-                    outcome_fees: pending_outcome_fees,
-                    entry_order_side: event.order_side,
-                    side: position_side,
-                    quantity: event.last_qty,
-                    avg_px_open: event.last_px.as_f64(),
-                    interval_open: pending_interval_open,
-                    selection_published_at_ms: pending_selection_published_at_ms,
-                    seconds_to_expiry_at_selection: pending_seconds_to_expiry_at_selection,
-                    book: pending_book,
-                });
+                self.open_position = Some(self.build_open_position_state(
+                    None,
+                    pending_context.as_ref(),
+                    PositionMaterializationSpec {
+                        instrument_id: event.instrument_id,
+                        position_id,
+                        entry_order_side: event.order_side,
+                        side: position_side,
+                        quantity: event.last_qty,
+                        avg_px_open: event.last_px.as_f64(),
+                    },
+                    true,
+                ));
                 self.sync_open_position_from_active();
                 self.refresh_book_subscriptions_for_current_state();
             } else {
@@ -2690,7 +2833,7 @@ impl DataActor for EthChainlinkTaker {
                 self.open_position = None;
                 self.recovery = true;
                 log::error!(
-                    "eth_chainlink_taker entry fill missing position identity: strategy_id={} client_order_id={} instrument_id={} order_side={:?} position_id_present={} position_side_inferable={}",
+                    "eth_chainlink_taker entry fill could not materialize supported long position: strategy_id={} client_order_id={} instrument_id={} order_side={:?} position_id_present={} position_side_inferable={}",
                     self.config.strategy_id,
                     event.client_order_id,
                     event.instrument_id,
@@ -2699,7 +2842,7 @@ impl DataActor for EthChainlinkTaker {
                     position_side.is_some(),
                 );
             }
-            if let Some(market_id) = pending_market_id {
+            if let Some(market_id) = pending_context.and_then(|pending| pending.market_id) {
                 self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
         } else if exit_fill {
@@ -2755,177 +2898,25 @@ nautilus_strategy!(EthChainlinkTaker, {
     }
 
     fn on_position_opened(&mut self, _event: nautilus_model::events::PositionOpened) {
-        let preserved = self
-            .open_position
-            .as_ref()
-            .filter(|position| {
-                position.position_id == _event.position_id
-                    && position.instrument_id == _event.instrument_id
-            })
-            .cloned();
-        let pending_matches = self.pending_entry_instrument_id == Some(_event.instrument_id);
-        let pending_market_id = pending_matches
-            .then(|| self.pending_entry_market_id.clone())
-            .flatten();
-        let pending_outcome_side = pending_matches
-            .then_some(self.pending_entry_outcome_side)
-            .flatten();
-        let pending_outcome_fees = pending_matches
-            .then(|| self.pending_entry_outcome_fees.clone())
-            .flatten();
-        let pending_interval_open = pending_matches
-            .then_some(self.pending_entry_interval_open)
-            .flatten();
-        let pending_selection_published_at_ms = pending_matches
-            .then_some(self.pending_entry_selection_published_at_ms)
-            .flatten();
-        let pending_seconds_to_expiry_at_selection = pending_matches
-            .then_some(self.pending_entry_seconds_to_expiry_at_selection)
-            .flatten();
-        let pending_book = pending_matches
-            .then(|| self.pending_entry_book.clone())
-            .flatten();
-        self.open_position_active = true;
-        self.open_position = Some(OpenPositionState {
-            market_id: preserved
-                .as_ref()
-                .and_then(|position| position.market_id.clone())
-                .or(pending_market_id)
-                .or_else(|| self.active.market_id.clone()),
-            instrument_id: _event.instrument_id,
-            position_id: _event.position_id,
-            outcome_side: preserved
-                .as_ref()
-                .and_then(|position| position.outcome_side)
-                .or(pending_outcome_side)
-                .or_else(|| {
-                    Self::infer_outcome_side_from_position(
-                        _event.entry,
-                        _event.side,
-                        _event.instrument_id,
-                    )
-                }),
-            outcome_fees: preserved
-                .as_ref()
-                .map(|position| position.outcome_fees.clone())
-                .or(pending_outcome_fees)
-                .unwrap_or_else(|| self.active.outcome_fees.clone()),
-            entry_order_side: _event.entry,
-            side: _event.side,
-            quantity: _event.quantity,
-            avg_px_open: _event.avg_px_open,
-            interval_open: preserved
-                .as_ref()
-                .and_then(|position| position.interval_open)
-                .or(pending_interval_open)
-                .or(self.active.interval_open),
-            selection_published_at_ms: preserved
-                .as_ref()
-                .and_then(|position| position.selection_published_at_ms)
-                .or(pending_selection_published_at_ms)
-                .or(self.active.selection_published_at_ms),
-            seconds_to_expiry_at_selection: preserved
-                .as_ref()
-                .and_then(|position| position.seconds_to_expiry_at_selection)
-                .or(pending_seconds_to_expiry_at_selection)
-                .or(self.active.seconds_to_expiry_at_selection),
-            book: preserved
-                .map(|position| position.book)
-                .or(pending_book)
-                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(_event.instrument_id)),
-        });
-        if pending_matches {
-            self.clear_pending_entry_state();
-        }
-        self.sync_open_position_from_active();
-        self.refresh_book_subscriptions_for_current_state();
+        self.materialize_position_from_event(
+            _event.instrument_id,
+            _event.position_id,
+            _event.entry,
+            _event.side,
+            _event.quantity,
+            _event.avg_px_open,
+        );
     }
 
     fn on_position_changed(&mut self, _event: nautilus_model::events::PositionChanged) {
-        let preserved = self
-            .open_position
-            .as_ref()
-            .filter(|position| {
-                position.position_id == _event.position_id
-                    && position.instrument_id == _event.instrument_id
-            })
-            .cloned();
-        let pending_matches = self.pending_entry_instrument_id == Some(_event.instrument_id);
-        let pending_market_id = pending_matches
-            .then(|| self.pending_entry_market_id.clone())
-            .flatten();
-        let pending_outcome_side = pending_matches
-            .then_some(self.pending_entry_outcome_side)
-            .flatten();
-        let pending_outcome_fees = pending_matches
-            .then(|| self.pending_entry_outcome_fees.clone())
-            .flatten();
-        let pending_interval_open = pending_matches
-            .then_some(self.pending_entry_interval_open)
-            .flatten();
-        let pending_selection_published_at_ms = pending_matches
-            .then_some(self.pending_entry_selection_published_at_ms)
-            .flatten();
-        let pending_seconds_to_expiry_at_selection = pending_matches
-            .then_some(self.pending_entry_seconds_to_expiry_at_selection)
-            .flatten();
-        let pending_book = pending_matches
-            .then(|| self.pending_entry_book.clone())
-            .flatten();
-        self.open_position_active = true;
-        self.open_position = Some(OpenPositionState {
-            market_id: preserved
-                .as_ref()
-                .and_then(|position| position.market_id.clone())
-                .or(pending_market_id)
-                .or_else(|| self.active.market_id.clone()),
-            instrument_id: _event.instrument_id,
-            position_id: _event.position_id,
-            outcome_side: preserved
-                .as_ref()
-                .and_then(|position| position.outcome_side)
-                .or(pending_outcome_side)
-                .or_else(|| {
-                    Self::infer_outcome_side_from_position(
-                        _event.entry,
-                        _event.side,
-                        _event.instrument_id,
-                    )
-                }),
-            outcome_fees: preserved
-                .as_ref()
-                .map(|position| position.outcome_fees.clone())
-                .or(pending_outcome_fees)
-                .unwrap_or_else(|| self.active.outcome_fees.clone()),
-            entry_order_side: _event.entry,
-            side: _event.side,
-            quantity: _event.quantity,
-            avg_px_open: _event.avg_px_open,
-            interval_open: preserved
-                .as_ref()
-                .and_then(|position| position.interval_open)
-                .or(pending_interval_open)
-                .or(self.active.interval_open),
-            selection_published_at_ms: preserved
-                .as_ref()
-                .and_then(|position| position.selection_published_at_ms)
-                .or(pending_selection_published_at_ms)
-                .or(self.active.selection_published_at_ms),
-            seconds_to_expiry_at_selection: preserved
-                .as_ref()
-                .and_then(|position| position.seconds_to_expiry_at_selection)
-                .or(pending_seconds_to_expiry_at_selection)
-                .or(self.active.seconds_to_expiry_at_selection),
-            book: preserved
-                .map(|position| position.book)
-                .or(pending_book)
-                .unwrap_or_else(|| OutcomeBookState::from_instrument_id(_event.instrument_id)),
-        });
-        if pending_matches {
-            self.clear_pending_entry_state();
-        }
-        self.sync_open_position_from_active();
-        self.refresh_book_subscriptions_for_current_state();
+        self.materialize_position_from_event(
+            _event.instrument_id,
+            _event.position_id,
+            _event.entry,
+            _event.side,
+            _event.quantity,
+            _event.avg_px_open,
+        );
     }
 
     fn on_position_closed(&mut self, _event: nautilus_model::events::PositionClosed) {
@@ -4237,6 +4228,24 @@ mod tests {
         quantity: Quantity,
         avg_px_open: f64,
     ) -> nautilus_model::events::PositionOpened {
+        position_opened_event_with_details(
+            instrument_id,
+            position_id,
+            quantity,
+            avg_px_open,
+            OrderSide::Buy,
+            PositionSide::Long,
+        )
+    }
+
+    fn position_opened_event_with_details(
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+        quantity: Quantity,
+        avg_px_open: f64,
+        entry: OrderSide,
+        side: PositionSide,
+    ) -> nautilus_model::events::PositionOpened {
         nautilus_model::events::PositionOpened {
             trader_id: nautilus_model::identifiers::TraderId::from("TRADER-001"),
             strategy_id: StrategyId::from("ETHCHAINLINKTAKER-001"),
@@ -4244,8 +4253,8 @@ mod tests {
             position_id,
             account_id: nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
             opening_order_id: ClientOrderId::from("ENTRY-001"),
-            entry: OrderSide::Buy,
-            side: PositionSide::Long,
+            entry,
+            side,
             signed_qty: quantity.as_f64(),
             quantity,
             last_qty: quantity,
@@ -4887,6 +4896,9 @@ mod tests {
         let mut strategy = test_strategy();
         strategy.cooldowns.insert("A".to_string(), 123);
         strategy.recovery = true;
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+        strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
+        strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
         {
             let active = &mut strategy.active;
             active.interval_open = Some(3_000.0);
@@ -4903,6 +4915,12 @@ mod tests {
         assert_eq!(active.warmup_count, 0);
         assert!(!active.outcome_fees.up_ready);
         assert!(!active.outcome_fees.down_ready);
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("bybit", 3_100.5, 1_200))
+        );
+        assert_eq!(strategy.pricing.realized_vol.last_ready_vol, Some(1.5));
+        assert_eq!(strategy.pricing.realized_vol.last_ready_ts_ms, Some(1_200));
     }
 
     #[test]
@@ -5422,7 +5440,7 @@ mod tests {
     }
 
     #[test]
-    fn sell_fill_is_tracked_as_short_instead_of_coerced_long() {
+    fn sell_fill_enters_recovery_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
@@ -5443,17 +5461,78 @@ mod tests {
                 Some(PositionId::from("P-SHORT")),
                 OrderSide::Sell,
             ))
-            .expect("sell fill should be tracked truthfully");
+            .expect("sell fill should fail closed into recovery");
+
+        assert!(strategy.recovery);
+        assert!(!strategy.open_position_active);
+        assert!(strategy.open_position.is_none());
+        assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
+        assert_eq!(strategy.pending_entry_instrument_id, Some(instrument_id));
+    }
+
+    #[test]
+    fn pending_entry_short_position_event_is_quarantined_as_recovery_only_position() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.down.instrument_id.unwrap();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
+        strategy.pending_entry_order = Some(entry_client_order_id);
+        strategy.pending_entry_market_id = Some("MKT-1".to_string());
+        strategy.pending_entry_instrument_id = Some(instrument_id);
+        strategy.pending_entry_outcome_side = Some(OutcomeSide::Down);
+        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
+        strategy.pending_entry_interval_open = Some(3_100.0);
+        strategy.pending_entry_selection_published_at_ms = Some(1_000);
+        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
+        strategy.pending_entry_book = Some(strategy.active.books.down.clone());
+
+        strategy.on_position_opened(position_opened_event_with_details(
+            instrument_id,
+            PositionId::from("P-SHORT"),
+            Quantity::new(10.0, 2),
+            0.450,
+            OrderSide::Sell,
+            PositionSide::Short,
+        ));
 
         let open_position = strategy
             .open_position
             .as_ref()
-            .expect("sell fill should materialize a tracked position");
+            .expect("position event should materialize a tracked recovery position");
+        assert!(strategy.recovery);
+        assert!(strategy.open_position_active);
         assert_eq!(open_position.side, PositionSide::Short);
         assert_eq!(open_position.entry_order_side, OrderSide::Sell);
-        let decision = strategy.exit_submission_decision_at(2_000);
-        assert_eq!(decision.order_side, Some(OrderSide::Buy));
-        assert_eq!(decision.price, strategy.active.books.down.best_ask);
+        assert!(strategy.pending_entry_order.is_none());
+    }
+
+    #[test]
+    fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_position() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-BAD-SIDE");
+        strategy.pending_entry_order = Some(entry_client_order_id);
+        strategy.pending_entry_market_id = Some("MKT-1".to_string());
+        strategy.pending_entry_instrument_id = Some(instrument_id);
+        strategy.pending_entry_outcome_side = Some(OutcomeSide::Up);
+        strategy.pending_entry_outcome_fees = Some(strategy.active.outcome_fees.clone());
+        strategy.pending_entry_interval_open = Some(3_100.0);
+        strategy.pending_entry_selection_published_at_ms = Some(1_000);
+        strategy.pending_entry_seconds_to_expiry_at_selection = Some(300);
+        strategy.pending_entry_book = Some(strategy.active.books.up.clone());
+
+        strategy.on_position_opened(position_opened_event_with_details(
+            instrument_id,
+            PositionId::from("P-BAD-SIDE"),
+            Quantity::new(10.0, 2),
+            0.450,
+            OrderSide::Buy,
+            PositionSide::Flat,
+        ));
+
+        assert!(strategy.recovery);
+        assert!(!strategy.open_position_active);
+        assert!(strategy.open_position.is_none());
+        assert_eq!(strategy.pending_entry_order, Some(entry_client_order_id));
     }
 
     #[test]

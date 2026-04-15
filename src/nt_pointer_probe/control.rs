@@ -620,11 +620,16 @@ impl LoadedControlPlane {
             self.control.guard_contract.dependabot_workflow
         );
 
-        let drift_workflow =
-            fs::read_to_string(self.repo_root.join(&self.control.guard_contract.drift_workflow))
-                .with_context(|| {
-                    format!("failed to read {}", self.control.guard_contract.drift_workflow)
-                })?;
+        let drift_workflow = fs::read_to_string(
+            self.repo_root
+                .join(&self.control.guard_contract.drift_workflow),
+        )
+        .with_context(|| {
+            format!(
+                "failed to read {}",
+                self.control.guard_contract.drift_workflow
+            )
+        })?;
         ensure!(
             workflow_job_matches_hash(
                 &drift_workflow,

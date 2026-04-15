@@ -194,8 +194,7 @@ updates:
     )
     .expect("fixture self-test workflow should copy");
     fs::copy(
-        repo_root()
-            .join(".github/workflows/nt-pointer-branch-governance-drift.yml"),
+        repo_root().join(".github/workflows/nt-pointer-branch-governance-drift.yml"),
         tempdir
             .path()
             .join(".github/workflows/nt-pointer-branch-governance-drift.yml"),

@@ -527,6 +527,18 @@ fn self_test_workflow_is_always_present_but_runtime_gated() {
         &YamlValue::String("${{ github.event_name == 'pull_request' }}".to_string()),
         "self-test workflow must only cancel superseded pull_request runs so push attestations on main complete"
     );
+    let env = yaml
+        .get(YamlValue::String("env".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("self-test workflow should declare top-level env");
+    let cargo_build_jobs = env
+        .get(YamlValue::String("CARGO_BUILD_JOBS".to_string()))
+        .expect("self-test workflow should cap Cargo build parallelism");
+    assert_eq!(
+        cargo_build_jobs,
+        &YamlValue::String("1".to_string()),
+        "self-test workflow must cap Cargo build jobs to reduce runner linker pressure"
+    );
 
     for required_path in [
         "Cargo.toml",

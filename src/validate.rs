@@ -889,6 +889,14 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "strategy.order_qty",
         &config.strategy.order_qty,
     );
+    if !config.strategies.is_empty() && config.strategy != LiveStrategyInput::default() {
+        push_error(
+            &mut errors,
+            "strategy",
+            "conflicts_with_strategies",
+            "must not be combined with [[strategies]]; choose exactly one live-local runtime strategy path".to_string(),
+        );
+    }
     if !config.rulesets.is_empty() && config.strategy != LiveStrategyInput::default() {
         push_error(
             &mut errors,

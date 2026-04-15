@@ -782,6 +782,45 @@ fn phase1_non_default_strategy_input_rejected_when_rulesets_are_configured() {
 }
 
 #[test]
+fn live_local_rejects_mixing_strategy_and_strategies_paths() {
+    let toml = format!(
+        "{}\n{}",
+        replace(
+            &valid_phase1_toml(),
+            "strategy_id = \"STRATEGY-001\"",
+            "strategy_id = \"STRATEGY-002\"",
+        ),
+        r#"
+[[strategies]]
+type = "eth_chainlink_taker"
+[strategies.config]
+strategy_id = "ETHCHAINLINKTAKER-001"
+client_id = "POLYMARKET"
+warmup_tick_count = 20
+period_duration_secs = 300
+reentry_cooldown_secs = 30
+max_position_usdc = 1000.0
+book_impact_cap_bps = 15
+risk_lambda = 0.5
+worst_case_ev_min_bps = -20
+exit_hysteresis_bps = 5
+vol_window_secs = 60
+vol_gap_reset_secs = 10
+vol_min_observations = 20
+vol_bridge_valid_secs = 10
+pricing_kurtosis = 0.0
+theta_decay_factor = 0.0
+forced_flat_stale_chainlink_ms = 1500
+forced_flat_thin_book_min_liquidity = 100.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
+"#
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "strategy", "conflicts_with_strategies");
+}
+
+#[test]
 fn phase1_duplicate_ruleset_ids_rejected() {
     let toml = format!(
         "{}\n{}",

@@ -113,6 +113,8 @@ pub struct LiveLocalConfig {
     #[serde(default)]
     pub strategy: LiveStrategyInput,
     #[serde(default)]
+    pub strategies: Vec<LiveStrategyTemplateInput>,
+    #[serde(default)]
     pub secrets: LiveSecretsInput,
     #[serde(default)]
     pub raw_capture: LiveRawCaptureInput,
@@ -124,6 +126,14 @@ pub struct LiveLocalConfig {
     pub rulesets: Vec<LiveRulesetInput>,
     #[serde(default)]
     pub audit: Option<LiveAuditInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveStrategyTemplateInput {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub config: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -501,21 +511,7 @@ struct RenderedSecretsConfig {
 struct RenderedStrategyEntry {
     #[serde(rename = "type")]
     kind: String,
-    config: RenderedStrategyConfig,
-}
-
-#[derive(Serialize)]
-struct RenderedStrategyConfig {
-    strategy_id: String,
-    instrument_id: String,
-    client_id: String,
-    order_qty: String,
-    log_data: bool,
-    tob_offset_ticks: u64,
-    use_post_only: bool,
-    enable_limit_sells: bool,
-    enable_stop_buys: bool,
-    enable_stop_sells: bool,
+    config: Value,
 }
 
 #[derive(Serialize)]
@@ -712,7 +708,14 @@ fn render_runtime_config(
                 position_check_interval_secs: Some(position_check_interval_secs),
             },
         ),
-        strategies: Vec::new(),
+        strategies: input
+            .strategies
+            .iter()
+            .map(|strategy| RenderedStrategyEntry {
+                kind: strategy.kind.clone(),
+                config: strategy.config.clone(),
+            })
+            .collect(),
         streaming: if input.streaming.catalog_path.trim().is_empty() {
             None
         } else {

@@ -57,9 +57,12 @@ fn temp_fixture(name: &str) -> TempDir {
         "justfile",
         "src",
         "scripts/nt_pin_block_guard.sh",
+        "scripts/require_rust_verification_owner.sh",
+        "scripts/install_ci_rust_verification_owner.sh",
         "tests/reference_actor.rs",
         "tests/reference_pipeline.rs",
         ".github/dependabot.yml",
+        ".github/actions/setup-environment/action.yml",
         ".github/workflows/nt-pointer-control-plane.yml",
         ".github/workflows/dependabot-auto-merge.yml",
     ] {
@@ -81,6 +84,8 @@ fn init_temp_git_repo() -> TempDir {
     fs::create_dir_all(tempdir.path().join("src/platform")).expect("src/platform should create");
     fs::create_dir_all(tempdir.path().join("src/clients")).expect("src/clients should create");
     fs::create_dir_all(tempdir.path().join("tests")).expect("tests dir should create");
+    fs::create_dir_all(tempdir.path().join(".github/actions/setup-environment"))
+        .expect("setup-environment dir should create");
     fs::create_dir_all(tempdir.path().join(".github/workflows"))
         .expect("workflow dir should create");
     fs::create_dir_all(tempdir.path().join("scripts")).expect("scripts dir should create");
@@ -126,12 +131,14 @@ pr_title_prefix = "NT Pointer Probe"
 [guard_contract]
 script_path = "scripts/nt_pin_block_guard.sh"
 script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
-check_mutation_recipe = "nt-pointer-probe-check-nt-mutation"
-check_mutation_recipe_sha256 = "033dc0fa8ef84cefad66fbe8783955b25fc2131f32ea79226e1355ced56476b8"
-validate_control_plane_recipe = "nt-pointer-probe-validate-control-plane"
-validate_control_plane_recipe_sha256 = "d6ceaa58c934504e1232eb9548cbc8e6b7a4752e9523b0ed405c8afcad95f88b"
-self_test_recipe = "nt-pointer-probe-self-test"
-self_test_recipe_sha256 = "79a8bc900fedc6542d05705586565428f5e2e634c054919ddca4617e270aeb49"
+justfile_path = "justfile"
+justfile_sha256 = "658f0704bc279d0e702c68ae4fd9b540bbdfa37bc99121e51e3d1bd6d69ca51f"
+owner_require_script_path = "scripts/require_rust_verification_owner.sh"
+owner_require_script_sha256 = "629dc8f068538400b445f19946e10ddaf0a6550e92c9da7c13c3ad51d0fd7e31"
+owner_install_script_path = "scripts/install_ci_rust_verification_owner.sh"
+owner_install_script_sha256 = "98d2c3f1d3c0eaf1ffcc1b5ae5c1f0f30f89b48ae33c2f308f47d33e68d13a4d"
+setup_environment_action_path = ".github/actions/setup-environment/action.yml"
+setup_environment_action_sha256 = "e5db83cc2ea93cb2c49fa86c64c1089c56da1005db82845b02efa28569039834"
 control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
 control_plane_job = "control_plane"
 control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
@@ -204,10 +211,31 @@ updates:
     )
     .expect("fixture guard script should copy");
     fs::copy(
+        repo_root().join("scripts/require_rust_verification_owner.sh"),
+        tempdir
+            .path()
+            .join("scripts/require_rust_verification_owner.sh"),
+    )
+    .expect("fixture owner require script should copy");
+    fs::copy(
+        repo_root().join("scripts/install_ci_rust_verification_owner.sh"),
+        tempdir
+            .path()
+            .join("scripts/install_ci_rust_verification_owner.sh"),
+    )
+    .expect("fixture owner install script should copy");
+    fs::copy(
         repo_root().join("justfile"),
         tempdir.path().join("justfile"),
     )
     .expect("fixture justfile should copy");
+    fs::copy(
+        repo_root().join(".github/actions/setup-environment/action.yml"),
+        tempdir
+            .path()
+            .join(".github/actions/setup-environment/action.yml"),
+    )
+    .expect("fixture setup action should copy");
 
     for command in [
         ["init"].as_slice(),
@@ -275,6 +303,33 @@ fn repo_control_plane_loads_and_validates() {
 }
 
 #[test]
+fn control_plane_workflow_is_pull_request_only() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-control-plane.yml"))
+            .expect("control-plane workflow should load");
+    let yaml: YamlValue =
+        serde_yaml::from_str(&workflow).expect("control-plane workflow should parse as YAML");
+
+    let triggers = yaml
+        .get(YamlValue::String("on".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("control-plane workflow should declare triggers");
+
+    assert!(
+        triggers.contains_key(YamlValue::String("pull_request".to_string())),
+        "control-plane workflow must run on pull_request"
+    );
+    assert!(
+        !triggers.contains_key(YamlValue::String("workflow_dispatch".to_string())),
+        "control-plane workflow must not be manually dispatchable"
+    );
+    assert!(
+        !triggers.contains_key(YamlValue::String("schedule".to_string())),
+        "control-plane workflow must not be scheduled"
+    );
+}
+
+#[test]
 fn guard_contract_rejects_block_step_gating_fields() {
     let tempdir = temp_fixture("valid_minimal");
     let workflow_path = tempdir
@@ -314,6 +369,61 @@ jobs:
     assert!(
         err.to_string()
             .contains("must keep the exact guard job contract"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn guard_contract_rejects_top_level_justfile_variable_drift() {
+    let tempdir = temp_fixture("valid_minimal");
+    let justfile_path = tempdir.path().join("justfile");
+    fs::remove_file(&justfile_path).expect("justfile symlink should be removable");
+    let contents = fs::read_to_string(repo_root().join("justfile")).expect("justfile should read");
+    fs::write(
+        &justfile_path,
+        contents.replace(
+            "rust_verification_owner := env_var('HOME') + \"/.claude/lib/rust_verification.py\"",
+            "rust_verification_owner := \"./wrapper.py\"",
+        ),
+    )
+    .expect("mutated justfile should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("top-level justfile variable drift should fail validation");
+
+    assert!(
+        err.to_string().contains("justfile hash drift"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn guard_contract_rejects_setup_environment_action_drift() {
+    let tempdir = temp_fixture("valid_minimal");
+    let action_path = tempdir
+        .path()
+        .join(".github/actions/setup-environment/action.yml");
+    fs::remove_file(&action_path).expect("setup action symlink should be removable");
+    fs::write(
+        &action_path,
+        r#"name: Setup Environment
+runs:
+  using: composite
+  steps:
+    - name: noop
+      shell: bash
+      run: |
+        exit 0
+"#,
+    )
+    .expect("mutated setup action should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("setup action drift should fail validation");
+
+    assert!(
+        err.to_string()
+            .contains("setup-environment action hash drift"),
         "unexpected error: {err}"
     );
 }
@@ -599,12 +709,14 @@ pr_title_prefix = "NT Pointer Probe"
 [guard_contract]
 script_path = "scripts/nt_pin_block_guard.sh"
 script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
-check_mutation_recipe = "nt-pointer-probe-check-nt-mutation"
-check_mutation_recipe_sha256 = "033dc0fa8ef84cefad66fbe8783955b25fc2131f32ea79226e1355ced56476b8"
-validate_control_plane_recipe = "nt-pointer-probe-validate-control-plane"
-validate_control_plane_recipe_sha256 = "d6ceaa58c934504e1232eb9548cbc8e6b7a4752e9523b0ed405c8afcad95f88b"
-self_test_recipe = "nt-pointer-probe-self-test"
-self_test_recipe_sha256 = "79a8bc900fedc6542d05705586565428f5e2e634c054919ddca4617e270aeb49"
+justfile_path = "justfile"
+justfile_sha256 = "658f0704bc279d0e702c68ae4fd9b540bbdfa37bc99121e51e3d1bd6d69ca51f"
+owner_require_script_path = "scripts/require_rust_verification_owner.sh"
+owner_require_script_sha256 = "629dc8f068538400b445f19946e10ddaf0a6550e92c9da7c13c3ad51d0fd7e31"
+owner_install_script_path = "scripts/install_ci_rust_verification_owner.sh"
+owner_install_script_sha256 = "98d2c3f1d3c0eaf1ffcc1b5ae5c1f0f30f89b48ae33c2f308f47d33e68d13a4d"
+setup_environment_action_path = ".github/actions/setup-environment/action.yml"
+setup_environment_action_sha256 = "e5db83cc2ea93cb2c49fa86c64c1089c56da1005db82845b02efa28569039834"
 control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
 control_plane_job = "control_plane"
 control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
@@ -1225,9 +1337,10 @@ fn branch_protection_comparison_rejects_wrong_required_check_app_id() {
 
 #[test]
 fn drift_lane_workflow_exposes_durable_failure_surface() {
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-control-plane.yml"))
-            .expect("control-plane workflow should load");
+    let workflow = fs::read_to_string(
+        repo_root().join(".github/workflows/nt-pointer-branch-governance-drift.yml"),
+    )
+    .expect("drift workflow should load");
     let yaml: YamlValue =
         serde_yaml::from_str(&workflow).expect("control-plane workflow should parse as YAML");
 

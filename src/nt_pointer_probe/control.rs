@@ -108,12 +108,14 @@ pub struct TaggedLane {
 pub struct GuardContract {
     pub script_path: String,
     pub script_sha256: String,
-    pub check_mutation_recipe: String,
-    pub check_mutation_recipe_sha256: String,
-    pub validate_control_plane_recipe: String,
-    pub validate_control_plane_recipe_sha256: String,
-    pub self_test_recipe: String,
-    pub self_test_recipe_sha256: String,
+    pub justfile_path: String,
+    pub justfile_sha256: String,
+    pub owner_require_script_path: String,
+    pub owner_require_script_sha256: String,
+    pub owner_install_script_path: String,
+    pub owner_install_script_sha256: String,
+    pub setup_environment_action_path: String,
+    pub setup_environment_action_sha256: String,
     pub control_plane_workflow: String,
     pub control_plane_job: String,
     pub control_plane_job_sha256: String,
@@ -499,37 +501,56 @@ impl LoadedControlPlane {
             self.control.guard_contract.script_path
         );
 
-        let justfile_contents = fs::read_to_string(self.repo_root.join("justfile"))
-            .context("failed to read justfile")?;
-        for (recipe, expected_hash) in [
+        for (path, expected_hash, label) in [
             (
-                self.control.guard_contract.check_mutation_recipe.as_str(),
-                self.control
-                    .guard_contract
-                    .check_mutation_recipe_sha256
-                    .as_str(),
+                self.control.guard_contract.justfile_path.as_str(),
+                self.control.guard_contract.justfile_sha256.as_str(),
+                "justfile",
             ),
             (
                 self.control
                     .guard_contract
-                    .validate_control_plane_recipe
+                    .owner_require_script_path
                     .as_str(),
                 self.control
                     .guard_contract
-                    .validate_control_plane_recipe_sha256
+                    .owner_require_script_sha256
                     .as_str(),
+                "owner require script",
             ),
             (
-                self.control.guard_contract.self_test_recipe.as_str(),
-                self.control.guard_contract.self_test_recipe_sha256.as_str(),
+                self.control
+                    .guard_contract
+                    .owner_install_script_path
+                    .as_str(),
+                self.control
+                    .guard_contract
+                    .owner_install_script_sha256
+                    .as_str(),
+                "owner install script",
+            ),
+            (
+                self.control
+                    .guard_contract
+                    .setup_environment_action_path
+                    .as_str(),
+                self.control
+                    .guard_contract
+                    .setup_environment_action_sha256
+                    .as_str(),
+                "setup-environment action",
             ),
         ] {
-            let body = extract_just_recipe_body(&justfile_contents, recipe)?;
-            let actual_hash = sha256_hex(body.as_bytes());
+            validate_repo_path_exists(&self.repo_root, path)?;
+            let actual_hash = sha256_hex(
+                &fs::read(self.repo_root.join(path))
+                    .with_context(|| format!("failed to read {}", path))?,
+            );
             ensure!(
                 actual_hash == expected_hash,
-                "just recipe hash drift for {}",
-                recipe
+                "{} hash drift for {}",
+                label,
+                path
             );
         }
 
@@ -632,6 +653,10 @@ impl ControlConfig {
         validate_repo_relative(&self.paths.advisory_issue_template)?;
         validate_repo_relative(&self.paths.draft_pr_template)?;
         validate_repo_relative(&self.guard_contract.script_path)?;
+        validate_repo_relative(&self.guard_contract.justfile_path)?;
+        validate_repo_relative(&self.guard_contract.owner_require_script_path)?;
+        validate_repo_relative(&self.guard_contract.owner_install_script_path)?;
+        validate_repo_relative(&self.guard_contract.setup_environment_action_path)?;
         validate_repo_relative(&self.guard_contract.control_plane_workflow)?;
         validate_repo_relative(&self.guard_contract.dependabot_workflow)?;
 
@@ -677,14 +702,14 @@ impl ControlConfig {
         );
         for field in [
             self.guard_contract.script_sha256.as_str(),
-            self.guard_contract.check_mutation_recipe.as_str(),
-            self.guard_contract.check_mutation_recipe_sha256.as_str(),
-            self.guard_contract.validate_control_plane_recipe.as_str(),
-            self.guard_contract
-                .validate_control_plane_recipe_sha256
-                .as_str(),
-            self.guard_contract.self_test_recipe.as_str(),
-            self.guard_contract.self_test_recipe_sha256.as_str(),
+            self.guard_contract.justfile_path.as_str(),
+            self.guard_contract.justfile_sha256.as_str(),
+            self.guard_contract.owner_require_script_path.as_str(),
+            self.guard_contract.owner_require_script_sha256.as_str(),
+            self.guard_contract.owner_install_script_path.as_str(),
+            self.guard_contract.owner_install_script_sha256.as_str(),
+            self.guard_contract.setup_environment_action_path.as_str(),
+            self.guard_contract.setup_environment_action_sha256.as_str(),
             self.guard_contract.control_plane_job.as_str(),
             self.guard_contract.control_plane_job_sha256.as_str(),
             self.guard_contract.dependabot_job.as_str(),
@@ -1940,6 +1965,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[cfg(test)]
 fn extract_just_recipe_body(contents: &str, recipe_name: &str) -> Result<String> {
     let lines = contents.lines().collect::<Vec<_>>();
     let mut header = None;
@@ -2474,11 +2500,49 @@ next:
     }
 
     #[test]
-    fn repo_workflow_job_hashes_match_guard_contract() {
+    fn repo_guard_contract_hashes_match_tracked_files() {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let control: ControlConfig =
             load_toml(&repo_root.join("config/nt_pointer_probe/control.toml"))
                 .expect("control.toml should parse");
+
+        for (path, expected_hash) in [
+            (
+                control.guard_contract.script_path.as_str(),
+                control.guard_contract.script_sha256.as_str(),
+            ),
+            (
+                control.guard_contract.justfile_path.as_str(),
+                control.guard_contract.justfile_sha256.as_str(),
+            ),
+            (
+                control.guard_contract.owner_require_script_path.as_str(),
+                control.guard_contract.owner_require_script_sha256.as_str(),
+            ),
+            (
+                control.guard_contract.owner_install_script_path.as_str(),
+                control.guard_contract.owner_install_script_sha256.as_str(),
+            ),
+            (
+                control
+                    .guard_contract
+                    .setup_environment_action_path
+                    .as_str(),
+                control
+                    .guard_contract
+                    .setup_environment_action_sha256
+                    .as_str(),
+            ),
+        ] {
+            let actual_hash = sha256_hex(
+                &fs::read(repo_root.join(path)).expect("guard contract file should read"),
+            );
+            assert_eq!(
+                actual_hash, expected_hash,
+                "guard contract hash drift for {}",
+                path
+            );
+        }
 
         for (workflow_path, job_name, expected_hash) in [
             (

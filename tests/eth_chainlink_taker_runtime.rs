@@ -20,17 +20,17 @@ use bolt_v2::{
     strategies::{eth_chainlink_taker::EthChainlinkTaker, production_strategy_registry},
 };
 use nautilus_common::{
-    actor::registry::try_get_actor_unchecked,
+    actor::{DataActor, registry::try_get_actor_unchecked},
     enums::Environment,
     logging::logger::LoggerConfig,
-    msgbus::{publish_any, publish_deltas, switchboard},
+    msgbus::{publish_any, publish_deltas, publish_order_event, switchboard},
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{BookOrder, OrderBookDelta, OrderBookDeltas},
     enums::{AssetClass, BookAction, LiquiditySide, OmsType, OrderSide, OrderType, PositionSide},
-    events::OrderFilled,
+    events::{OrderEventAny, OrderFilled},
     identifiers::{
         AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
         TraderId, VenueOrderId,
@@ -418,6 +418,70 @@ fn position_opened_event(
     }
 }
 
+fn order_filled_event(
+    strategy_id: StrategyId,
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    quantity: Quantity,
+    price: Price,
+) -> OrderFilled {
+    let mut fill = OrderFilled::new(
+        TraderId::from("BOLT-001"),
+        strategy_id,
+        instrument_id,
+        client_order_id,
+        VenueOrderId::from("V-ENTRY-RT-001"),
+        AccountId::from("TEST-ACCOUNT"),
+        TradeId::from("T-ENTRY-RT-001"),
+        OrderSide::Buy,
+        OrderType::Limit,
+        quantity,
+        price,
+        Currency::USDC(),
+        LiquiditySide::Taker,
+        UUID4::new(),
+        UnixNanos::from(1_u64),
+        UnixNanos::from(1_u64),
+        false,
+        None,
+        Some(Money::from("0.01 USDC")),
+    );
+    fill.position_id = Some(position_id);
+    fill
+}
+
+fn entry_fill_event(
+    strategy_id: StrategyId,
+    instrument_id: InstrumentId,
+    client_order_id: ClientOrderId,
+    position_id: PositionId,
+) -> OrderEventAny {
+    let mut fill = OrderFilled::new(
+        TraderId::from("BOLT-001"),
+        strategy_id,
+        instrument_id,
+        client_order_id,
+        VenueOrderId::from("V-RT-ENTRY-001"),
+        AccountId::from("TEST-ACCOUNT"),
+        TradeId::from("E-RT-ENTRY-001"),
+        OrderSide::Buy,
+        OrderType::Market,
+        Quantity::from("5"),
+        Price::from("0.450"),
+        Currency::USDC(),
+        LiquiditySide::Taker,
+        UUID4::new(),
+        UnixNanos::from(2_u64),
+        UnixNanos::from(2_u64),
+        false,
+        None,
+        Some(Money::from("0.01 USDC")),
+    );
+    fill.position_id = Some(position_id);
+    OrderEventAny::Filled(fill)
+}
+
 async fn wait_for_running(handle: &LiveNodeHandle) {
     while !handle.is_running() {
         sleep(Duration::from_millis(10)).await;
@@ -521,6 +585,241 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
         submissions[0].instrument_id,
         InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
     );
+    assert!(submissions[0].client_order_id.to_string().starts_with('O'));
+}
+
+#[test]
+fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_order_id() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_factory = registry_runtime_strategy_factory(
+        production_strategy_registry().unwrap(),
+        make_strategy_build_context(
+            Arc::new(StaticFeeProvider),
+            "platform.reference.test.chainlink".to_string(),
+        ),
+    );
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    {
+        let cache_handle = node.kernel().cache();
+        let mut cache = cache_handle.borrow_mut();
+        cache.add_instrument(polymarket_binary_option(up)).unwrap();
+        cache.add_instrument(polymarket_binary_option(down)).unwrap();
+    }
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+
+            for _ in 0..50 {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(recorded_mock_exec_submissions().len(), 1);
+
+            let entry_submission = recorded_mock_exec_submissions()
+                .into_iter()
+                .next()
+                .expect("expected entry submission");
+            let entry_client_order_id = entry_submission.client_order_id;
+            clear_mock_exec_submissions();
+
+            if let Some(mut actor) =
+                try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
+            {
+                actor
+                    .on_order_filled(&order_filled_event(
+                        strategy_id,
+                        entry_client_order_id,
+                        up,
+                        PositionId::from("P-ATTR-001"),
+                        Quantity::new(5.0, 2),
+                        Price::new(0.450, 3),
+                    ))
+                    .expect("entry fill should materialize position from submitted client order id");
+            } else {
+                panic!("runtime strategy actor should be registered");
+            }
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &freeze_selection_snapshot(start_ts_ms),
+            );
+
+            for _ in 0..50 {
+                if recorded_mock_exec_submissions().len() == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(recorded_mock_exec_submissions().len(), 1);
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].strategy_id, strategy_id);
+    assert_eq!(submissions[0].instrument_id, up);
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_factory = registry_runtime_strategy_factory(
+        production_strategy_registry().unwrap(),
+        make_strategy_build_context(
+            Arc::new(StaticFeeProvider),
+            "platform.reference.test.chainlink".to_string(),
+        ),
+    );
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let cache_handle = node.kernel().cache();
+
+    {
+        let mut cache = cache_handle.borrow_mut();
+        cache.add_instrument(polymarket_binary_option(up)).unwrap();
+        cache
+            .add_instrument(polymarket_binary_option(down))
+            .unwrap();
+    }
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+
+            for _ in 0..50 {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            let entry_submission = recorded_mock_exec_submissions()
+                .into_iter()
+                .next()
+                .expect("entry submission should be recorded");
+            clear_mock_exec_submissions();
+
+            publish_order_event(
+                switchboard::get_event_orders_topic(strategy_id),
+                &entry_fill_event(
+                    strategy_id,
+                    entry_submission.instrument_id,
+                    entry_submission.client_order_id,
+                    PositionId::from("P-RT-ENTRY-001"),
+                ),
+            );
+            sleep(Duration::from_millis(50)).await;
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &freeze_selection_snapshot(start_ts_ms),
+            );
+
+            for _ in 0..50 {
+                if recorded_mock_exec_submissions().len() == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(recorded_mock_exec_submissions().len(), 1);
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].strategy_id, strategy_id);
+    assert_eq!(submissions[0].instrument_id, up);
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
 }
 

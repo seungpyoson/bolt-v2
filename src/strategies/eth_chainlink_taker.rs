@@ -1112,6 +1112,7 @@ pub struct EthChainlinkTaker {
     active: ActiveMarketState,
     book_subscriptions: OutcomeBookSubscriptions,
     cooldowns: BTreeMap<String, u64>,
+    churn_counters: BTreeMap<String, u64>,
     exposure: ExposureState,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
@@ -1134,6 +1135,7 @@ impl EthChainlinkTaker {
             active: ActiveMarketState::default(),
             book_subscriptions: OutcomeBookSubscriptions::default(),
             cooldowns: BTreeMap::new(),
+            churn_counters: BTreeMap::new(),
             exposure: ExposureState::Flat,
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
@@ -1435,7 +1437,6 @@ impl EthChainlinkTaker {
         }
     }
 
-    #[cfg(test)]
     fn enforce_one_position_invariant(&self) -> Result<()> {
         let Some(occupancy) = self.exposure_occupancy() else {
             return Ok(());
@@ -1446,7 +1447,7 @@ impl EthChainlinkTaker {
             panic!("{message}");
         }
 
-        log::error!("{message}");
+        self.report_one_position_invariant_violation(occupancy);
         anyhow::bail!("{message}");
     }
 
@@ -1474,6 +1475,17 @@ impl EthChainlinkTaker {
                     .saturating_mul(MILLIS_PER_SECOND_U64),
             ),
         );
+    }
+
+    fn record_market_fill(&mut self, market_id: &str, now_ms: u64) {
+        self.arm_market_cooldown(market_id, now_ms);
+        let counter = self.churn_counters.entry(market_id.to_string()).or_insert(0);
+        *counter = counter.saturating_add(1);
+    }
+
+    #[cfg(test)]
+    fn market_churn_count(&self, market_id: &str) -> u64 {
+        self.churn_counters.get(market_id).copied().unwrap_or(0)
     }
 
     fn entry_gate_decision_at(&self, now_ms: u64) -> EntryGateDecision {
@@ -2767,6 +2779,12 @@ impl EthChainlinkTaker {
             .current_instrument(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("entry instrument missing from cache"))?;
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
+
+        if self.exposure_occupancy().is_some() {
+            let _ = self.enforce_one_position_invariant();
+            return Ok(None);
+        }
+
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         let order = self.core.order_factory().limit(
@@ -3108,7 +3126,7 @@ impl DataActor for EthChainlinkTaker {
                 );
             }
             if let Some(market_id) = pending_context.and_then(|pending| pending.market_id.clone()) {
-                self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
+                self.record_market_fill(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
         } else if exit_fill {
             if let Some(market_id) = self
@@ -3117,7 +3135,7 @@ impl DataActor for EthChainlinkTaker {
                 .and_then(|exit| exit.pending_exit.market_id.clone())
                 .or_else(|| self.current_position_market_id())
             {
-                self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / 1_000_000);
+                self.record_market_fill(&market_id, event.ts_event.as_u64() / 1_000_000);
             }
             if let Some(exit_pending) = self.exposure.exit_pending_mut() {
                 exit_pending.pending_exit.fill_received = true;
@@ -5287,6 +5305,7 @@ mod tests {
     fn switch_resets_only_active_market_state() {
         let mut strategy = test_strategy();
         strategy.cooldowns.insert("A".to_string(), 123);
+        strategy.churn_counters.insert("A".to_string(), 2);
         set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
@@ -5300,6 +5319,7 @@ mod tests {
         strategy.apply_selection_snapshot(active_snapshot("B"));
 
         assert_eq!(strategy.cooldowns.get("A"), Some(&123));
+        assert_eq!(strategy.churn_counters.get("A"), Some(&2));
         assert!(strategy.exposure.is_recovering());
         let active = &strategy.active;
         assert_eq!(active.market_id.as_deref(), Some("B"));
@@ -5753,6 +5773,8 @@ mod tests {
 
         assert!(strategy.market_in_cooldown("MKT-1", 1_000));
         assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+        assert_eq!(strategy.market_churn_count("MKT-1"), 1);
+        assert_eq!(strategy.market_churn_count("MKT-2"), 0);
     }
 
     #[test]
@@ -5796,6 +5818,8 @@ mod tests {
 
         assert!(strategy.market_in_cooldown("MKT-1", 1_000));
         assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+        assert_eq!(strategy.market_churn_count("MKT-1"), 1);
+        assert_eq!(strategy.market_churn_count("MKT-2"), 0);
     }
 
     #[test]

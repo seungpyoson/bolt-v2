@@ -110,6 +110,10 @@ event_slug_prefix = "bitcoin"
 # strategy at runtime. Keep the values in TOML rather than hardcoding them in
 # the render/deploy path.
 #
+# The default active example above is still a BTC ruleset. Do not uncomment the
+# ETH taker template below unless you also switch the example ruleset and
+# reference venues to the matching ETH/Chainlink operator config.
+#
 #[[strategies]]
 #type = "eth_chainlink_taker"
 #[strategies.config]

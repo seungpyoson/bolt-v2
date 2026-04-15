@@ -81,7 +81,7 @@ fn tracked_template_materializes_to_parseable_runtime_config() {
     assert_eq!(cfg.exec_clients[0].kind, "polymarket");
     assert!(
         !rendered.contains("[[strategies]]"),
-        "ruleset mode should not materialize runtime strategy templates into the generated config"
+        "tracked example has no active strategy templates (all commented out), so rendered config should contain no [[strategies]] section"
     );
     assert!(
         cfg.data_clients[0].config.get("event_slugs").is_none(),

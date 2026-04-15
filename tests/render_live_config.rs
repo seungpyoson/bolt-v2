@@ -348,8 +348,8 @@ max_local_backlog_bytes = 10485760
 }
 
 #[test]
-fn materialize_live_config_rejects_non_default_strategy_input_in_ruleset_mode() {
-    let tempdir = TempCaseDir::new("ruleset-strategy-input-rejected");
+fn materialize_live_config_rejects_legacy_strategy_block() {
+    let tempdir = TempCaseDir::new("legacy-strategy-input-rejected");
     let input_path = tempdir.path().join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
     let input = r#"
@@ -411,16 +411,12 @@ max_local_backlog_bytes = 10485760
     fs::write(&input_path, input).expect("input config should be written");
 
     let error = materialize_live_config(&input_path, &output_path)
-        .expect_err("ruleset mode should reject non-default live-local strategy input")
+        .expect_err("legacy live-local strategy block should be rejected")
         .to_string();
 
     assert!(
-        error.contains("strategy"),
-        "expected live-local validation to mention strategy: {error}"
-    );
-    assert!(
-        error.contains("must not be customized when rulesets are enabled"),
-        "expected ruleset-mode strategy error, got: {error}"
+        error.contains("unknown field `strategy`"),
+        "expected parse error for legacy strategy block, got: {error}"
     );
     assert!(!output_path.exists());
 }

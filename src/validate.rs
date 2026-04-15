@@ -1,14 +1,12 @@
 use crate::clients::chainlink::parse_chainlink_ws_origins;
 use crate::config::{Config, ReferenceConfig, ReferenceVenueKind, RulesetVenueKind};
-use crate::live_config::{LiveLocalConfig, LiveReferenceInput, LiveStrategyInput};
+use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
 use crate::platform::resolution_basis::{
     parse_ruleset_resolution_basis, required_reference_venue_kind,
 };
 use crate::strategies::{production_strategy_registry, registry::StrategyRegistry};
 use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
-use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
-use std::str::FromStr;
 use toml::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -218,30 +216,6 @@ fn check_hex_prefixed(errors: &mut Vec<ValidationError>, field: &str, value: &st
             "missing_hex_prefix",
             format!("must start with 0x, got \"{value}\" (example: \"0xabc...\")"),
         );
-    }
-}
-
-/// Bolt policy: quantities must be strictly positive even though NT accepts zero.
-/// Parsing delegates entirely to NT's `Quantity::from_str`.
-pub(crate) fn check_strictly_positive_qty(
-    errors: &mut Vec<ValidationError>,
-    field: &str,
-    value: &str,
-) {
-    match Quantity::from_str(value) {
-        Ok(qty) if qty.raw == 0 => push_error(
-            errors,
-            field,
-            "not_positive_number",
-            format!("must be a positive number, got \"{value}\""),
-        ),
-        Ok(_) => {}
-        Err(e) => push_error(
-            errors,
-            field,
-            "not_parseable",
-            format!("must be a valid Quantity, got \"{value}\" ({e})"),
-        ),
     }
 }
 
@@ -875,34 +849,59 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         config.polymarket.gamma_refresh_interval_secs,
     );
 
-    if config.strategy.strategy_id != "EXTERNAL" {
-        check_nt_hyphenated(
-            &mut errors,
-            "strategy.strategy_id",
-            &config.strategy.strategy_id,
-            split_last_hyphen,
-            "NAME-TAG",
-        );
-    }
-    check_strictly_positive_qty(
-        &mut errors,
-        "strategy.order_qty",
-        &config.strategy.order_qty,
-    );
-    if !config.strategies.is_empty() && config.strategy != LiveStrategyInput::default() {
+    if !config.strategies.is_empty() && config.rulesets.is_empty() {
         push_error(
             &mut errors,
-            "strategy",
-            "conflicts_with_strategies",
-            "must not be combined with [[strategies]]; choose exactly one live-local runtime strategy path".to_string(),
+            "strategies",
+            "requires_rulesets",
+            "[[strategies]] requires at least one [[rulesets]] entry; runtime strategy templates are only for ruleset mode".to_string(),
         );
     }
-    if !config.rulesets.is_empty() && config.strategy != LiveStrategyInput::default() {
+    if let Ok(registry) = production_strategy_registry() {
+        let valid_strategy_types = registry.kinds();
+        for (i, strategy) in config.strategies.iter().enumerate() {
+            check_allowlist(
+                &mut errors,
+                &format!("strategies[{i}].type"),
+                &strategy.kind,
+                valid_strategy_types.as_slice(),
+                "unsupported_type",
+            );
+            if !matches!(strategy.config, Value::Table(_)) {
+                push_error(
+                    &mut errors,
+                    &format!("strategies[{i}].config"),
+                    "wrong_type",
+                    format!(
+                        "must be a TOML table, got {} value",
+                        strategy.config.type_str()
+                    ),
+                );
+            }
+        }
+        if !config.rulesets.is_empty() {
+            let runtime_strategy_templates = config
+                .strategies
+                .iter()
+                .filter(|strategy| registry.get(&strategy.kind).is_some())
+                .count();
+            if runtime_strategy_templates > 1 {
+                push_error(
+                    &mut errors,
+                    "strategies",
+                    "phase1_runtime_strategy_template_count",
+                    format!(
+                        "Phase 1 supports at most one runtime strategy template when rulesets are configured, got {runtime_strategy_templates}"
+                    ),
+                );
+            }
+        }
+    } else {
         push_error(
             &mut errors,
-            "strategy",
-            "forbidden_in_ruleset_mode",
-            "must not be customized when rulesets are enabled; live.local [strategy] is not materialized in ruleset mode".to_string(),
+            "strategies",
+            "registry_unavailable",
+            "failed to load strategy registry for live-local validation".to_string(),
         );
     }
 

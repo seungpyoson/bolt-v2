@@ -65,22 +65,6 @@ fn default_ws_max_subscriptions() -> usize {
     200
 }
 
-fn default_strategy_id() -> String {
-    "STRATEGY-001".to_string()
-}
-
-fn default_order_qty() -> String {
-    "5".to_string()
-}
-
-fn default_tob_offset_ticks() -> u64 {
-    5
-}
-
-fn default_use_post_only() -> bool {
-    true
-}
-
 fn default_region() -> String {
     "eu-west-1".to_string()
 }
@@ -110,8 +94,6 @@ pub struct LiveLocalConfig {
     pub exec_engine: LiveExecEngineInput,
     #[serde(default)]
     pub polymarket: LivePolymarketInput,
-    #[serde(default)]
-    pub strategy: LiveStrategyInput,
     #[serde(default)]
     pub strategies: Vec<LiveStrategyTemplateInput>,
     #[serde(default)]
@@ -254,42 +236,6 @@ impl Default for LivePolymarketInput {
             update_instruments_interval_mins: default_update_instruments_interval_mins(),
             gamma_refresh_interval_secs: default_gamma_refresh_interval_secs(),
             ws_max_subscriptions: default_ws_max_subscriptions(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveStrategyInput {
-    #[serde(default = "default_strategy_id")]
-    pub strategy_id: String,
-    #[serde(default = "default_order_qty")]
-    pub order_qty: String,
-    #[serde(default)]
-    pub log_data: bool,
-    #[serde(default = "default_tob_offset_ticks")]
-    pub tob_offset_ticks: u64,
-    #[serde(default = "default_use_post_only")]
-    pub use_post_only: bool,
-    #[serde(default)]
-    pub enable_limit_sells: bool,
-    #[serde(default)]
-    pub enable_stop_buys: bool,
-    #[serde(default)]
-    pub enable_stop_sells: bool,
-}
-
-impl Default for LiveStrategyInput {
-    fn default() -> Self {
-        Self {
-            strategy_id: default_strategy_id(),
-            order_qty: default_order_qty(),
-            log_data: false,
-            tob_offset_ticks: default_tob_offset_ticks(),
-            use_post_only: default_use_post_only(),
-            enable_limit_sells: false,
-            enable_stop_buys: false,
-            enable_stop_sells: false,
         }
     }
 }

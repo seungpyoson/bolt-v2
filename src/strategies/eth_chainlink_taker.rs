@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     cell::{Cell, RefCell},
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
 };
 
@@ -529,6 +529,7 @@ struct OpenPositionState {
     position_id: PositionId,
     outcome_side: Option<OutcomeSide>,
     outcome_fees: OutcomeFeeState,
+    historical_entry_fee_bps: Option<f64>,
     entry_order_side: OrderSide,
     side: PositionSide,
     quantity: Quantity,
@@ -546,6 +547,7 @@ struct PendingEntryState {
     instrument_id: InstrumentId,
     outcome_side: Option<OutcomeSide>,
     outcome_fees: OutcomeFeeState,
+    historical_entry_fee_bps: Option<f64>,
     interval_open: Option<f64>,
     selection_published_at_ms: Option<u64>,
     seconds_to_expiry_at_selection: Option<u64>,
@@ -1017,6 +1019,19 @@ impl OutcomeFeeState {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MarketLifecycleLedger {
+    cooldown_expires_at_ms: Option<u64>,
+    churn_count: u64,
+}
+
+impl MarketLifecycleLedger {
+    fn in_cooldown(&self, now_ms: u64) -> bool {
+        self.cooldown_expires_at_ms
+            .is_some_and(|expiry_ms| now_ms < expiry_ms)
+    }
+}
+
 impl ActiveMarketState {
     fn from_snapshot(snapshot: &RuntimeSelectionSnapshot, warmup_target: u64) -> Self {
         match &snapshot.decision.state {
@@ -1120,8 +1135,7 @@ pub struct EthChainlinkTaker {
     context: StrategyBuildContext,
     active: ActiveMarketState,
     book_subscriptions: OutcomeBookSubscriptions,
-    cooldowns: BTreeMap<String, u64>,
-    churn_counters: BTreeMap<String, u64>,
+    market_lifecycle: BTreeMap<String, MarketLifecycleLedger>,
     exposure: ExposureState,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
@@ -1143,8 +1157,7 @@ impl EthChainlinkTaker {
             context,
             active: ActiveMarketState::default(),
             book_subscriptions: OutcomeBookSubscriptions::default(),
-            cooldowns: BTreeMap::new(),
-            churn_counters: BTreeMap::new(),
+            market_lifecycle: BTreeMap::new(),
             exposure: ExposureState::Flat,
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
@@ -1157,8 +1170,9 @@ impl EthChainlinkTaker {
 
     fn apply_selection_snapshot(&mut self, snapshot: RuntimeSelectionSnapshot) {
         let now_ms = snapshot.published_at_ms;
-        let previous_phase = self.active.phase;
-        let previous_fee_tokens = self.active.outcome_fees.token_ids();
+        let previous_active = self.active.clone();
+        let previous_phase = previous_active.phase;
+        let previous_fee_tokens = previous_active.outcome_fees.token_ids();
         let next_selection_books = selection_book_subscriptions(&snapshot);
         apply_selection_snapshot_to_active(
             &mut self.active,
@@ -1170,14 +1184,18 @@ impl EthChainlinkTaker {
         self.active.apply_selection_timing(&snapshot);
         let reactivated_into_active =
             previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
+        let same_market_interval_rollover =
+            same_market_interval_rollover(&previous_active, &self.active);
         let next_fee_tokens = self.active.outcome_fees.token_ids();
         if previous_fee_tokens != next_fee_tokens
+            || (same_market_interval_rollover && !next_fee_tokens.is_empty())
             || (reactivated_into_active && !next_fee_tokens.is_empty())
         {
             self.trigger_fee_warm_for_market();
             self.refresh_fee_readiness();
         }
         self.sync_exposure_context_from_active();
+        self.prune_market_lifecycle(now_ms);
         self.refresh_book_subscriptions_for_current_state();
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order(now_ms)
@@ -1337,6 +1355,7 @@ impl EthChainlinkTaker {
                         position.instrument_id,
                     ),
                     outcome_fees: OutcomeFeeState::default(),
+                    historical_entry_fee_bps: None,
                     entry_order_side: position.entry,
                     side: position.side,
                     quantity: position.quantity,
@@ -1441,6 +1460,8 @@ impl EthChainlinkTaker {
     fn clear_pending_entry_state(&mut self) {
         if matches!(self.exposure, ExposureState::PendingEntry(_)) {
             self.exposure = ExposureState::Flat;
+            let now_ms = self.clock().timestamp_ns().as_u64() / 1_000_000;
+            self.prune_market_lifecycle(now_ms);
         }
     }
 
@@ -1468,14 +1489,16 @@ impl EthChainlinkTaker {
     }
 
     fn market_in_cooldown(&self, market_id: &str, now_ms: u64) -> bool {
-        self.cooldowns
+        self.market_lifecycle
             .get(market_id)
-            .is_some_and(|expiry_ms| now_ms < *expiry_ms)
+            .is_some_and(|ledger| ledger.in_cooldown(now_ms))
     }
 
     fn arm_market_cooldown(&mut self, market_id: &str, now_ms: u64) {
-        self.cooldowns.insert(
-            market_id.to_string(),
+        self.market_lifecycle
+            .entry(market_id.to_string())
+            .or_default()
+            .cooldown_expires_at_ms = Some(
             now_ms.saturating_add(
                 self.config
                     .reentry_cooldown_secs
@@ -1486,16 +1509,54 @@ impl EthChainlinkTaker {
 
     fn record_market_fill(&mut self, market_id: &str, now_ms: u64) {
         self.arm_market_cooldown(market_id, now_ms);
-        let counter = self
-            .churn_counters
+        let ledger = self
+            .market_lifecycle
             .entry(market_id.to_string())
-            .or_insert(0);
-        *counter = counter.saturating_add(1);
+            .or_default();
+        ledger.churn_count = ledger.churn_count.saturating_add(1);
+        self.prune_market_lifecycle(now_ms);
     }
 
     #[cfg(test)]
     fn market_churn_count(&self, market_id: &str) -> u64 {
-        self.churn_counters.get(market_id).copied().unwrap_or(0)
+        self.market_lifecycle
+            .get(market_id)
+            .map(|ledger| ledger.churn_count)
+            .unwrap_or(0)
+    }
+
+    fn prune_market_lifecycle(&mut self, now_ms: u64) {
+        let retained_market_ids = self.retained_market_lifecycle_ids();
+        self.market_lifecycle.retain(|market_id, ledger| {
+            retained_market_ids.contains(market_id) || ledger.in_cooldown(now_ms)
+        });
+    }
+
+    fn retained_market_lifecycle_ids(&self) -> BTreeSet<String> {
+        let mut retained = BTreeSet::new();
+        if let Some(market_id) = self.active.market_id.clone() {
+            retained.insert(market_id);
+        }
+        if let Some(market_id) = self
+            .pending_entry()
+            .and_then(|pending| pending.market_id.clone())
+        {
+            retained.insert(market_id);
+        }
+        if let Some(market_id) = self
+            .tracked_observed_position()
+            .and_then(|position| position.market_id.clone())
+        {
+            retained.insert(market_id);
+        }
+        if let Some(market_id) = self
+            .exposure
+            .exit_pending()
+            .and_then(|exit| exit.pending_exit.market_id.clone())
+        {
+            retained.insert(market_id);
+        }
+        retained
     }
 
     fn entry_gate_decision_at(&self, now_ms: u64) -> EntryGateDecision {
@@ -2028,6 +2089,9 @@ impl EthChainlinkTaker {
                 .map(|position| position.outcome_fees.clone())
                 .or_else(|| pending_context.map(|pending| pending.outcome_fees.clone()))
                 .unwrap_or_else(|| self.active.outcome_fees.clone()),
+            historical_entry_fee_bps: preserved
+                .and_then(|position| position.historical_entry_fee_bps)
+                .or_else(|| pending_context.and_then(|pending| pending.historical_entry_fee_bps)),
             entry_order_side: spec.entry_order_side,
             side: spec.side,
             quantity: spec.quantity,
@@ -2327,10 +2391,7 @@ impl EthChainlinkTaker {
             down_fee_bps,
         )?;
         let effective_entry_cost = self.open_position_effective_entry_cost()?;
-        let fee_bps = match side {
-            OutcomeSide::Up => up_fee_bps,
-            OutcomeSide::Down => down_fee_bps,
-        };
+        let fee_bps = self.open_position_historical_entry_fee_bps()?;
 
         compute_worst_case_ev_bps(
             side,
@@ -2345,19 +2406,42 @@ impl EthChainlinkTaker {
 
     fn current_exit_ev_bps_at(&self, side: OutcomeSide) -> Option<f64> {
         let effective_entry_cost = self.open_position_effective_entry_cost()?;
-        let fee_bps = self.position_outcome_fee_bps(side)?;
-        let total_entry_cost = effective_entry_cost * (1.0 + fee_bps / BPS_DENOMINATOR);
+        let historical_entry_fee_bps = self.open_position_historical_entry_fee_bps()?;
+        let current_exit_fee_bps = self.position_outcome_fee_bps(side)?;
+        let total_entry_cost =
+            effective_entry_cost * (1.0 + historical_entry_fee_bps / BPS_DENOMINATOR);
         if !total_entry_cost.is_finite() || total_entry_cost <= 0.0 {
             return None;
         }
 
         let current_exit_value = self.current_exit_value_for_open_position()?;
-        let net_exit_value = current_exit_value * (1.0 - fee_bps / BPS_DENOMINATOR);
+        let net_exit_value = current_exit_value * (1.0 - current_exit_fee_bps / BPS_DENOMINATOR);
         if !net_exit_value.is_finite() || net_exit_value <= 0.0 {
             return None;
         }
 
         Some(((net_exit_value - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR)
+    }
+
+    fn open_position_historical_entry_fee_bps(&self) -> Option<f64> {
+        self.managed_position()?.position.historical_entry_fee_bps
+    }
+
+    fn historical_entry_fee_log_fields(&self) -> (bool, &'static str) {
+        let Some(managed_position) = self.managed_position() else {
+            return (false, "no_managed_position");
+        };
+
+        if managed_position.position.historical_entry_fee_bps.is_some() {
+            (true, "captured_from_strategy_entry_state")
+        } else if managed_position.origin == ManagedPositionOrigin::RecoveryBootstrap {
+            (
+                false,
+                "recovery_bootstrap_position_missing_original_fee_rate",
+            )
+        } else {
+            (false, "position_state_missing_original_fee_rate")
+        }
     }
 
     fn position_outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
@@ -2457,6 +2541,8 @@ impl EthChainlinkTaker {
         decision: &ExitSubmissionDecision,
     ) -> ExitEvaluationLogFields {
         let open_position = self.managed_position().map(|managed| &managed.position);
+        let (historical_entry_fee_rate_known, historical_entry_fee_rate_reason) =
+            self.historical_entry_fee_log_fields();
         ExitEvaluationLogFields {
             market_id: self.current_position_market_id(),
             phase: self.active.phase,
@@ -2489,8 +2575,8 @@ impl EthChainlinkTaker {
             hold_ev_bps: decision.evaluation.hold_ev_bps,
             exit_ev_bps: decision.evaluation.exit_ev_bps,
             exit_decision: decision.evaluation.exit_decision,
-            historical_entry_fee_rate_known: false,
-            historical_entry_fee_rate_reason: "position_state_does_not_store_original_fee_rate",
+            historical_entry_fee_rate_known,
+            historical_entry_fee_rate_reason,
             maker_rebate_available: false,
             maker_rebate_reason: "taker_fok_path_does_not_use_maker_rebate",
             category_available: false,
@@ -2793,6 +2879,17 @@ impl EthChainlinkTaker {
             }
             return Ok(None);
         };
+        let Some(historical_entry_fee_bps) = decision
+            .evaluation
+            .selected_side
+            .and_then(|selected_side| self.outcome_fee_bps(selected_side))
+        else {
+            log::warn!(
+                "eth_chainlink_taker entry submit skipped: strategy_id={} reason=historical_entry_fee_unavailable",
+                self.config.strategy_id
+            );
+            return Ok(None);
+        };
         let instrument = self
             .current_instrument(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("entry instrument missing from cache"))?;
@@ -2831,6 +2928,7 @@ impl EthChainlinkTaker {
             instrument_id,
             outcome_side: decision.evaluation.selected_side,
             outcome_fees: self.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(historical_entry_fee_bps),
             interval_open: self.active.interval_open,
             selection_published_at_ms: self.active.selection_published_at_ms,
             seconds_to_expiry_at_selection: self.active.seconds_to_expiry_at_selection,
@@ -3085,6 +3183,7 @@ impl DataActor for EthChainlinkTaker {
         &mut self,
         event: &nautilus_model::events::OrderFilled,
     ) -> anyhow::Result<()> {
+        let now_ms = event.ts_event.as_u64() / 1_000_000;
         let entry_fill = self
             .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id);
@@ -3144,7 +3243,7 @@ impl DataActor for EthChainlinkTaker {
                 );
             }
             if let Some(market_id) = pending_context.and_then(|pending| pending.market_id.clone()) {
-                self.record_market_fill(&market_id, event.ts_event.as_u64() / 1_000_000);
+                self.record_market_fill(&market_id, now_ms);
             }
         } else if exit_fill {
             if let Some(market_id) = self
@@ -3153,7 +3252,7 @@ impl DataActor for EthChainlinkTaker {
                 .and_then(|exit| exit.pending_exit.market_id.clone())
                 .or_else(|| self.current_position_market_id())
             {
-                self.record_market_fill(&market_id, event.ts_event.as_u64() / 1_000_000);
+                self.record_market_fill(&market_id, now_ms);
             }
             if let Some(exit_pending) = self.exposure.exit_pending_mut() {
                 exit_pending.pending_exit.fill_received = true;
@@ -3162,6 +3261,7 @@ impl DataActor for EthChainlinkTaker {
                 }
             }
         }
+        self.prune_market_lifecycle(now_ms);
         Ok(())
     }
 
@@ -3169,10 +3269,10 @@ impl DataActor for EthChainlinkTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
-        if self
-            .pending_entry()
-            .is_some_and(|pending| pending.client_order_id == event.client_order_id)
-        {
+        if matches!(
+            &self.exposure,
+            ExposureState::PendingEntry(pending) if pending.client_order_id == event.client_order_id
+        ) {
             self.clear_pending_entry_state();
         }
         if let Some(exit_pending) = self.exposure.exit_pending().cloned()
@@ -3184,16 +3284,17 @@ impl DataActor for EthChainlinkTaker {
                 None => ExposureState::Flat,
             };
         }
+        self.prune_market_lifecycle(event.ts_event.as_u64() / 1_000_000);
         Ok(())
     }
 }
 
 nautilus_strategy!(EthChainlinkTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
-        if self
-            .pending_entry()
-            .is_some_and(|pending| pending.client_order_id == event.client_order_id)
-        {
+        if matches!(
+            &self.exposure,
+            ExposureState::PendingEntry(pending) if pending.client_order_id == event.client_order_id
+        ) {
             self.clear_pending_entry_state();
         }
         if let Some(exit_pending) = self.exposure.exit_pending().cloned()
@@ -3205,13 +3306,14 @@ nautilus_strategy!(EthChainlinkTaker, {
                 None => ExposureState::Flat,
             };
         }
+        self.prune_market_lifecycle(event.ts_event.as_u64() / 1_000_000);
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
-        if self
-            .pending_entry()
-            .is_some_and(|pending| pending.client_order_id == event.client_order_id)
-        {
+        if matches!(
+            &self.exposure,
+            ExposureState::PendingEntry(pending) if pending.client_order_id == event.client_order_id
+        ) {
             self.clear_pending_entry_state();
         }
         if let Some(exit_pending) = self.exposure.exit_pending().cloned()
@@ -3223,6 +3325,7 @@ nautilus_strategy!(EthChainlinkTaker, {
                 None => ExposureState::Flat,
             };
         }
+        self.prune_market_lifecycle(event.ts_event.as_u64() / 1_000_000);
     }
 
     fn on_position_opened(&mut self, _event: nautilus_model::events::PositionOpened) {
@@ -3271,6 +3374,7 @@ nautilus_strategy!(EthChainlinkTaker, {
             _ => {}
         }
         self.refresh_book_subscriptions_for_current_state();
+        self.prune_market_lifecycle(_event.ts_event.as_u64() / 1_000_000);
     }
 });
 
@@ -3405,6 +3509,13 @@ fn same_market_transition(current: &ActiveMarketState, next: &ActiveMarketState)
         && current.market_id == next.market_id
         && current.instrument_id == next.instrument_id
         && current.interval_start_ms == next.interval_start_ms
+}
+
+fn same_market_interval_rollover(current: &ActiveMarketState, next: &ActiveMarketState) -> bool {
+    current.market_id.is_some()
+        && current.market_id == next.market_id
+        && current.instrument_id == next.instrument_id
+        && current.interval_start_ms != next.interval_start_ms
 }
 
 fn selection_book_subscriptions(snapshot: &RuntimeSelectionSnapshot) -> OutcomeBookSubscriptions {
@@ -4343,11 +4454,18 @@ mod tests {
         up_fee_bps: Decimal,
         down_fee_bps: Decimal,
     ) -> EthChainlinkTaker {
+        ready_to_trade_strategy_with_recording_fees(up_fee_bps, down_fee_bps).0
+    }
+
+    fn ready_to_trade_strategy_with_recording_fees(
+        up_fee_bps: Decimal,
+        down_fee_bps: Decimal,
+    ) -> (EthChainlinkTaker, Arc<RecordingFeeProvider>) {
         let fee_provider = RecordingFeeProvider::cold();
         fee_provider.set_fee("MKT-1-UP", up_fee_bps);
         fee_provider.set_fee("MKT-1-DOWN", down_fee_bps);
 
-        let mut strategy = test_strategy_with_fee_provider(fee_provider);
+        let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
         strategy.config.warmup_tick_count = 2;
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
         strategy.active.interval_open = Some(3_100.0);
@@ -4392,7 +4510,7 @@ mod tests {
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
-        strategy
+        (strategy, fee_provider)
     }
 
     fn pending_entry_state(
@@ -4408,6 +4526,7 @@ mod tests {
             instrument_id,
             outcome_side: Some(outcome_side),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: strategy.outcome_fee_bps(outcome_side).or(Some(0.0)),
             interval_open: Some(3_100.0),
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
@@ -5320,8 +5439,13 @@ mod tests {
     #[test]
     fn switch_resets_only_active_market_state() {
         let mut strategy = test_strategy();
-        strategy.cooldowns.insert("A".to_string(), 123);
-        strategy.churn_counters.insert("A".to_string(), 2);
+        strategy.market_lifecycle.insert(
+            "A".to_string(),
+            MarketLifecycleLedger {
+                cooldown_expires_at_ms: Some(123),
+                churn_count: 2,
+            },
+        );
         set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
@@ -5334,8 +5458,13 @@ mod tests {
 
         strategy.apply_selection_snapshot(active_snapshot("B"));
 
-        assert_eq!(strategy.cooldowns.get("A"), Some(&123));
-        assert_eq!(strategy.churn_counters.get("A"), Some(&2));
+        assert_eq!(
+            strategy.market_lifecycle.get("A"),
+            Some(&MarketLifecycleLedger {
+                cooldown_expires_at_ms: Some(123),
+                churn_count: 2,
+            })
+        );
         assert!(strategy.exposure.is_recovering());
         let active = &strategy.active;
         assert_eq!(active.market_id.as_deref(), Some("B"));
@@ -5388,6 +5517,7 @@ mod tests {
                 position_id,
                 outcome_side: Some(OutcomeSide::Up),
                 outcome_fees: strategy.active.outcome_fees.clone(),
+                historical_entry_fee_bps: None,
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Long,
                 quantity: Quantity::new(10.0, 2),
@@ -5441,6 +5571,7 @@ mod tests {
             position_id,
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -5497,6 +5628,7 @@ mod tests {
             position_id: PositionId::from("P-TRACKED"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -5537,6 +5669,7 @@ mod tests {
             position_id: PositionId::from("P-TRACKED"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -5583,6 +5716,7 @@ mod tests {
             position_id: PositionId::from("P-CANCEL"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: canceled.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(1.0, 2),
@@ -5613,6 +5747,7 @@ mod tests {
             position_id: PositionId::from("P-REJECT"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: rejected.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(1.0, 2),
@@ -5641,6 +5776,7 @@ mod tests {
             position_id: PositionId::from("P-EXPIRE"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: expired.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(1.0, 2),
@@ -5661,6 +5797,141 @@ mod tests {
         expired.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
         assert!(pending_exit_ref(&expired).is_none());
         assert!(expired.managed_position().is_some());
+    }
+
+    #[test]
+    fn filled_exit_pending_ignores_stale_cancel_until_position_close() {
+        let instrument_id = polymarket_instrument_id("condition-MKT-1", "MKT-1-UP");
+        let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-CANCEL");
+
+        let mut strategy = ready_to_trade_strategy();
+        let position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-FILLED-CANCEL"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            position,
+            exit_client_order_id,
+            true,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        strategy
+            .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
+            .expect("stale cancel should not clear filled exit pending");
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+            Some(exit_client_order_id)
+        );
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+            Some(true)
+        );
+
+        strategy.on_position_closed(position_closed_event(
+            instrument_id,
+            PositionId::from("P-FILLED-CANCEL"),
+        ));
+        assert!(pending_exit_ref(&strategy).is_none());
+        assert!(strategy.managed_position().is_none());
+    }
+
+    #[test]
+    fn filled_exit_pending_ignores_stale_reject() {
+        let instrument_id = polymarket_instrument_id("condition-MKT-1", "MKT-1-UP");
+        let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-REJECT");
+
+        let mut strategy = ready_to_trade_strategy();
+        let position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-FILLED-REJECT"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            position,
+            exit_client_order_id,
+            true,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        strategy.on_order_rejected(order_rejected_event(exit_client_order_id, instrument_id));
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+            Some(exit_client_order_id)
+        );
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn filled_exit_pending_ignores_stale_expire() {
+        let instrument_id = polymarket_instrument_id("condition-MKT-1", "MKT-1-UP");
+        let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-EXPIRE");
+
+        let mut strategy = ready_to_trade_strategy();
+        let position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-FILLED-EXPIRE"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.45,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            position,
+            exit_client_order_id,
+            true,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+            Some(exit_client_order_id)
+        );
+        assert_eq!(
+            pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+            Some(true)
+        );
     }
 
     #[test]
@@ -5802,6 +6073,7 @@ mod tests {
             position_id,
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -5847,6 +6119,7 @@ mod tests {
             position_id,
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -5889,6 +6162,7 @@ mod tests {
             position_id,
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -5937,6 +6211,7 @@ mod tests {
             position_id: PositionId::from("P-THIN-001"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(5.0, 2),
@@ -6278,6 +6553,7 @@ mod tests {
             position_id: PositionId::from("P-A"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -6378,6 +6654,27 @@ mod tests {
         strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 0));
         tokio::task::yield_now().await;
         strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            fee_provider.warm_calls(),
+            vec![
+                "MKT-1-UP".to_string(),
+                "MKT-1-DOWN".to_string(),
+                "MKT-1-UP".to_string(),
+                "MKT-1-DOWN".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn same_market_new_interval_rollover_warms_fees_again() {
+        let fee_provider = RecordingFeeProvider::cold();
+        let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        tokio::task::yield_now().await;
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 2_000));
         tokio::task::yield_now().await;
 
         assert_eq!(
@@ -6492,6 +6789,22 @@ mod tests {
 
         strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
         strategy.apply_selection_snapshot(active_snapshot("MKT-2"));
+
+        assert!(strategy.active.outcome_fees.up_ready);
+        assert!(strategy.active.outcome_fees.down_ready);
+    }
+
+    #[test]
+    fn same_market_new_interval_with_cached_fee_rates_stays_ready_while_refresh_runs() {
+        let fee_provider = RecordingFeeProvider::cold();
+        fee_provider.set_fee("MKT-1-UP", Decimal::new(175, 2));
+        fee_provider.set_fee("MKT-1-DOWN", Decimal::new(180, 2));
+        let mut strategy = test_strategy_with_fee_provider(fee_provider);
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        assert!(strategy.active.outcome_fees.market_ready());
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 2_000));
 
         assert!(strategy.active.outcome_fees.up_ready);
         assert!(strategy.active.outcome_fees.down_ready);
@@ -6884,13 +7197,20 @@ mod tests {
     fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 1_000));
-        strategy.cooldowns.insert("MKT-1".to_string(), 5_000);
+        strategy.market_lifecycle.insert(
+            "MKT-1".to_string(),
+            MarketLifecycleLedger {
+                cooldown_expires_at_ms: Some(5_000),
+                churn_count: 0,
+            },
+        );
         let pending = PendingEntryState {
             client_order_id: ClientOrderId::from("ENTRY-001"),
             market_id: Some("MKT-1".to_string()),
             instrument_id: strategy.active.books.up.instrument_id.unwrap(),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             interval_open: None,
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: None,
@@ -6930,6 +7250,7 @@ mod tests {
             position_id: PositionId::from("P-INVARIANT-1"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(5.0, 2),
@@ -6968,6 +7289,7 @@ mod tests {
             position_id: PositionId::from("P-INVARIANT-2"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(5.0, 2),
@@ -7126,6 +7448,50 @@ mod tests {
                 .blocked_by
                 .contains(&EntryBlockReason::RecoveryMode)
         );
+    }
+
+    #[test]
+    fn inactive_expired_market_lifecycle_is_pruned_after_selection_update() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.record_market_fill("STALE", 0);
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 31_001));
+
+        assert!(!strategy.market_lifecycle.contains_key("STALE"));
+        assert_eq!(strategy.market_churn_count("STALE"), 0);
+    }
+
+    #[test]
+    fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
+        let mut strategy = ready_to_trade_strategy();
+        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let open_position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id: tracked_instrument,
+            position_id: PositionId::from("P-LIFECYCLE-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        strategy.record_market_fill("MKT-1", 0);
+
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 31_001));
+
+        assert!(strategy.market_lifecycle.contains_key("MKT-1"));
+        assert_eq!(strategy.market_churn_count("MKT-1"), 1);
     }
 
     #[test]
@@ -7304,6 +7670,7 @@ mod tests {
             position_id: PositionId::from("P-UP-LOG-001"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(1.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -7336,6 +7703,75 @@ mod tests {
     }
 
     #[test]
+    fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let client_order_id = ClientOrderId::from("ENTRY-HIST-FEE-001");
+        let pending = pending_entry_state(
+            &strategy,
+            client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            strategy.active.books.up.clone(),
+        );
+        set_pending_entry(&mut strategy, pending);
+
+        fee_provider.set_fee("MKT-1-UP", Decimal::new(300, 2));
+        strategy
+            .on_order_filled(&order_filled_event(
+                client_order_id,
+                instrument_id,
+                PositionId::from("P-HIST-FEE-001"),
+            ))
+            .expect("entry fill should materialize position for exit EV test");
+
+        let exit_ev_bps = strategy
+            .current_exit_ev_bps_at(OutcomeSide::Up)
+            .expect("historical entry fee test should produce exit EV");
+        let total_entry_cost = 0.450 * (1.0 + 1.0 / BPS_DENOMINATOR);
+        let net_exit_value = 0.500 * (1.0 - 3.0 / BPS_DENOMINATOR);
+        let expected_exit_ev_bps =
+            ((net_exit_value - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR;
+
+        assert!((exit_ev_bps - expected_exit_ev_bps).abs() < 1e-9);
+    }
+
+    #[test]
+    fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let client_order_id = ClientOrderId::from("ENTRY-HIST-LOG-001");
+        let pending = pending_entry_state(
+            &strategy,
+            client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            strategy.active.books.up.clone(),
+        );
+        set_pending_entry(&mut strategy, pending);
+
+        fee_provider.set_fee("MKT-1-UP", Decimal::new(300, 2));
+        strategy
+            .on_order_filled(&order_filled_event(
+                client_order_id,
+                instrument_id,
+                PositionId::from("P-HIST-LOG-001"),
+            ))
+            .expect("entry fill should materialize position for log test");
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+        let fields = strategy.exit_evaluation_log_fields_at(1_200, &decision);
+
+        assert!(fields.historical_entry_fee_rate_known);
+        assert_eq!(
+            fields.historical_entry_fee_rate_reason,
+            "captured_from_strategy_entry_state"
+        );
+    }
+
+    #[test]
     fn unknown_recovered_position_side_exits_fail_closed_using_tracked_book() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
@@ -7352,6 +7788,7 @@ mod tests {
                 position_id: PositionId::from("P-UNKNOWN-001"),
                 outcome_side: None,
                 outcome_fees: OutcomeFeeState::default(),
+                historical_entry_fee_bps: None,
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Long,
                 quantity: Quantity::new(5.0, 2),
@@ -7394,6 +7831,7 @@ mod tests {
                 position_id: PositionId::from("P-LEGACY-SHORT-001"),
                 outcome_side: None,
                 outcome_fees: OutcomeFeeState::default(),
+                historical_entry_fee_bps: None,
                 entry_order_side: OrderSide::Sell,
                 side: PositionSide::Short,
                 quantity: Quantity::new(5.0, 2),
@@ -7426,6 +7864,7 @@ mod tests {
             position_id: PositionId::from("P-UP-001"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -7463,6 +7902,7 @@ mod tests {
             position_id: PositionId::from("P-DOWN-001"),
             outcome_side: Some(OutcomeSide::Down),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(12.0, 2),
@@ -7499,6 +7939,7 @@ mod tests {
             position_id: PositionId::from("P-UP-002"),
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
             quantity: Quantity::new(10.0, 2),
@@ -7540,6 +7981,7 @@ mod tests {
             instrument_id,
             outcome_side: Some(OutcomeSide::Up),
             outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
             interval_open: Some(3_100.0),
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
@@ -7569,6 +8011,7 @@ mod tests {
                 position_id: PositionId::from("P-EXIT-STATE-001"),
                 outcome_side: Some(OutcomeSide::Up),
                 outcome_fees: strategy.active.outcome_fees.clone(),
+                historical_entry_fee_bps: Some(0.0),
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Long,
                 quantity: Quantity::new(10.0, 2),
@@ -7616,6 +8059,7 @@ mod tests {
                 position_id: PositionId::from("P-RECOVERY-001"),
                 outcome_side: Some(OutcomeSide::Up),
                 outcome_fees: strategy.active.outcome_fees.clone(),
+                historical_entry_fee_bps: None,
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Long,
                 quantity: Quantity::new(5.0, 2),

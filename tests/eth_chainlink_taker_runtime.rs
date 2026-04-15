@@ -1133,6 +1133,106 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_factory = registry_runtime_strategy_factory(
+        production_strategy_registry().unwrap(),
+        make_strategy_build_context(
+            Arc::new(StaticFeeProvider),
+            "platform.reference.test.chainlink".to_string(),
+        ),
+    );
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+
+    {
+        let cache_handle = node.kernel().cache();
+        let mut cache = cache_handle.borrow_mut();
+        cache.add_instrument(polymarket_binary_option(up)).unwrap();
+        cache
+            .add_instrument(polymarket_binary_option(down))
+            .unwrap();
+    }
+    seed_cached_position_with_entry(
+        &node,
+        strategy_id,
+        up,
+        OrderSide::Buy,
+        Price::from("0.450"),
+        PositionId::from("P-RECOVERY-001"),
+    );
+    seed_cached_position_with_entry(
+        &node,
+        strategy_id,
+        down,
+        OrderSide::Buy,
+        Price::from("0.480"),
+        PositionId::from("P-RECOVERY-002"),
+    );
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &freeze_selection_snapshot(start_ts_ms),
+            );
+            sleep(Duration::from_millis(100)).await;
+
+            assert!(
+                recorded_mock_exec_submissions().is_empty(),
+                "{:?}",
+                recorded_mock_exec_submissions()
+            );
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    assert!(recorded_mock_exec_submissions().is_empty());
+}
+
+#[test]
 fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotation_to_market_b() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();

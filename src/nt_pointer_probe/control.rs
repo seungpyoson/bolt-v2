@@ -116,12 +116,10 @@ pub struct GuardContract {
     pub self_test_recipe_sha256: String,
     pub control_plane_workflow: String,
     pub control_plane_job: String,
-    pub control_plane_step: String,
-    pub control_plane_run: String,
+    pub control_plane_job_sha256: String,
     pub dependabot_workflow: String,
     pub dependabot_job: String,
-    pub dependabot_step: String,
-    pub dependabot_run: String,
+    pub dependabot_job_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -282,7 +280,7 @@ struct NormalizedBranchProtection {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExpectedEffectiveRule {
     Deletion,
     NonFastForward,
@@ -293,14 +291,12 @@ pub enum ExpectedEffectiveRule {
         require_last_push_approval: bool,
         required_review_thread_resolution: bool,
         allowed_merge_methods: Vec<String>,
-        #[serde(default)]
-        allowed_bypass_actors: Vec<String>,
     },
     RequiredStatusChecks {
         strict_required_status_checks_policy: bool,
         required_status_checks: Vec<String>,
         #[serde(default)]
-        allowed_bypass_actors: Vec<String>,
+        required_status_check_integration_ids: BTreeMap<String, u64>,
     },
 }
 
@@ -467,16 +463,23 @@ impl LoadedControlPlane {
             cargo_nt_crates
         );
 
-        let dependabot_ignores = extract_nt_crates_from_dependabot(
+        let dependabot_blocks = extract_nt_ignores_from_dependabot_cargo_blocks(
             &fs::read_to_string(self.repo_root.join(".github/dependabot.yml"))
                 .context("failed to read .github/dependabot.yml")?,
         )?;
         ensure!(
-            dependabot_ignores == configured,
-            "configured nt_crates {:?} do not match Dependabot NT ignores {:?}",
-            configured,
-            dependabot_ignores
+            !dependabot_blocks.is_empty(),
+            "Dependabot must declare at least one cargo updates block"
         );
+        for (directory, ignores) in dependabot_blocks {
+            ensure!(
+                ignores == configured,
+                "configured nt_crates {:?} do not match Dependabot NT ignores {:?} in cargo block {}",
+                configured,
+                ignores,
+                directory
+            );
+        }
 
         Ok(())
     }
@@ -541,13 +544,12 @@ impl LoadedControlPlane {
             )
         })?;
         ensure!(
-            workflow_has_exact_step_run(
+            workflow_job_matches_hash(
                 &control_plane_workflow,
                 &self.control.guard_contract.control_plane_job,
-                &self.control.guard_contract.control_plane_step,
-                &self.control.guard_contract.control_plane_run,
+                &self.control.guard_contract.control_plane_job_sha256,
             )?,
-            "{} must keep the exact guard step contract",
+            "{} must keep the exact guard job contract",
             self.control.guard_contract.control_plane_workflow
         );
 
@@ -562,13 +564,12 @@ impl LoadedControlPlane {
             )
         })?;
         ensure!(
-            workflow_has_exact_step_run(
+            workflow_job_matches_hash(
                 &dependabot_workflow,
                 &self.control.guard_contract.dependabot_job,
-                &self.control.guard_contract.dependabot_step,
-                &self.control.guard_contract.dependabot_run,
+                &self.control.guard_contract.dependabot_job_sha256,
             )?,
-            "{} must keep the exact guard step contract",
+            "{} must keep the exact guard job contract",
             self.control.guard_contract.dependabot_workflow
         );
 
@@ -685,11 +686,9 @@ impl ControlConfig {
             self.guard_contract.self_test_recipe.as_str(),
             self.guard_contract.self_test_recipe_sha256.as_str(),
             self.guard_contract.control_plane_job.as_str(),
-            self.guard_contract.control_plane_step.as_str(),
-            self.guard_contract.control_plane_run.as_str(),
+            self.guard_contract.control_plane_job_sha256.as_str(),
             self.guard_contract.dependabot_job.as_str(),
-            self.guard_contract.dependabot_step.as_str(),
-            self.guard_contract.dependabot_run.as_str(),
+            self.guard_contract.dependabot_job_sha256.as_str(),
         ] {
             ensure!(
                 !field.trim().is_empty(),
@@ -1041,6 +1040,35 @@ impl ExpectedBranchProtection {
             effective_required_status_checks,
             classic_required_status_checks
         );
+
+        for integration_ids in self
+            .required_effective_rules
+            .iter()
+            .filter_map(|rule| match rule {
+                ExpectedEffectiveRule::RequiredStatusChecks {
+                    required_status_check_integration_ids,
+                    ..
+                } if !required_status_check_integration_ids.is_empty() => {
+                    Some(required_status_check_integration_ids)
+                }
+                _ => None,
+            })
+        {
+            let effective_app_id_status_checks =
+                integration_ids.keys().cloned().collect::<BTreeSet<_>>();
+            ensure!(
+                effective_app_id_status_checks == classic_required_status_checks,
+                "required_effective_rules required_status_check_integration_ids keys {:?} must match classic required_status_checks {:?}",
+                effective_app_id_status_checks,
+                classic_required_status_checks
+            );
+            ensure!(
+                integration_ids == &self.required_status_check_app_ids,
+                "required_effective_rules required_status_check_integration_ids {:?} must match classic required_status_check_app_ids {:?}",
+                integration_ids,
+                self.required_status_check_app_ids
+            );
+        }
 
         for pull_request_rule in
             self.required_effective_rules
@@ -1480,30 +1508,42 @@ fn normalize_effective_rules_response(actual_json: &str) -> Result<BTreeSet<Stri
                 let parameters = rule
                     .get("parameters")
                     .ok_or_else(|| anyhow!("required_status_checks rule missing parameters"))?;
-                let contexts = parameters
+                let checks = parameters
                     .get("required_status_checks")
                     .and_then(Value::as_array)
                     .ok_or_else(|| {
                         anyhow!("required_status_checks rule missing required_status_checks")
-                    })?
+                    })?;
+                let mut contexts = BTreeSet::new();
+                let mut integration_ids = BTreeMap::new();
+                for entry in checks {
+                    let context = entry
+                        .get("context")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            anyhow!("required_status_checks rule entry missing context string")
+                        })?;
+                    contexts.insert(context.clone());
+                    if let Some(integration_id) =
+                        entry.get("integration_id").and_then(Value::as_u64)
+                    {
+                        integration_ids.insert(context, integration_id);
+                    }
+                }
+                let integrations = integration_ids
                     .iter()
-                    .map(|entry| {
-                        entry
-                            .get("context")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                            .ok_or_else(|| {
-                                anyhow!("required_status_checks rule entry missing context string")
-                            })
-                    })
-                    .collect::<Result<BTreeSet<_>>>()?;
+                    .map(|(context, integration_id)| format!("{context}:{integration_id}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 format!(
-                    "required_status_checks|strict_required_status_checks_policy={}|contexts={}",
+                    "required_status_checks|strict_required_status_checks_policy={}|contexts={}|integration_ids={}",
                     parameters
                         .get("strict_required_status_checks_policy")
                         .and_then(Value::as_bool)
                         .ok_or_else(|| anyhow!("required_status_checks rule missing strict_required_status_checks_policy"))?,
-                    contexts.into_iter().collect::<Vec<_>>().join(",")
+                    contexts.into_iter().collect::<Vec<_>>().join(","),
+                    integrations
                 )
             }
             other => return Err(anyhow!("unsupported effective rule type {}", other)),
@@ -1677,8 +1717,8 @@ fn git_show_text_or_empty(repo_root: &Path, git_ref: &str, path: &str) -> Result
         String::from_utf8_lossy(&output.stderr)
     );
 
-    Ok(String::from_utf8(output.stdout)
-        .with_context(|| format!("{} at {} is not valid UTF-8", path, git_ref))?)
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("{} at {} is not valid UTF-8", path, git_ref))
 }
 
 fn normalize_relative(path: &str) -> Result<String> {
@@ -1726,12 +1766,17 @@ fn is_nt_guarded_surface(path: &str) -> bool {
 }
 
 fn is_cargo_config_path(path: &str) -> bool {
-    path == ".cargo/config.toml" || path == ".cargo/config" || path.starts_with(".cargo/config.d/")
+    path == ".cargo/config.toml"
+        || path == ".cargo/config"
+        || path.starts_with(".cargo/config.d/")
+        || path.ends_with("/.cargo/config.toml")
+        || path.ends_with("/.cargo/config")
+        || path.contains("/.cargo/config.d/")
 }
 
 fn extract_guarded_cargo_config_state(config: &TomlValue) -> BTreeSet<String> {
     let mut state = BTreeSet::new();
-    for key in ["patch", "source", "paths"] {
+    for key in ["patch", "replace", "source", "paths"] {
         if let Some(value) = config.get(key) {
             state.insert(format!("{}={}", key, canonical_toml_value(value)));
         }
@@ -1796,7 +1841,9 @@ fn extract_nt_dependency_records_from_cargo_toml(
     records
 }
 
-fn extract_nt_crates_from_dependabot(contents: &str) -> Result<BTreeSet<String>> {
+fn extract_nt_ignores_from_dependabot_cargo_blocks(
+    contents: &str,
+) -> Result<Vec<(String, BTreeSet<String>)>> {
     #[derive(Deserialize)]
     struct DependabotConfig {
         #[serde(default)]
@@ -1823,20 +1870,23 @@ fn extract_nt_crates_from_dependabot(contents: &str) -> Result<BTreeSet<String>>
     Ok(parsed
         .updates
         .into_iter()
-        .find(|update| update.package_ecosystem == "cargo" && update.directory == "/")
+        .filter(|update| update.package_ecosystem == "cargo")
         .map(|update| {
-            update
-                .ignore
-                .into_iter()
-                .filter_map(|ignore| {
-                    ignore
-                        .dependency_name
-                        .starts_with("nautilus-")
-                        .then_some(ignore.dependency_name)
-                })
-                .collect()
+            (
+                update.directory,
+                update
+                    .ignore
+                    .into_iter()
+                    .filter_map(|ignore| {
+                        ignore
+                            .dependency_name
+                            .starts_with("nautilus-")
+                            .then_some(ignore.dependency_name)
+                    })
+                    .collect(),
+            )
         })
-        .unwrap_or_default())
+        .collect())
 }
 
 fn regex_escape_literal(value: &str) -> String {
@@ -1892,17 +1942,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn extract_just_recipe_body(contents: &str, recipe_name: &str) -> Result<String> {
     let lines = contents.lines().collect::<Vec<_>>();
+    let mut header = None;
     let mut start = None;
     for (index, line) in lines.iter().enumerate() {
-        if let Some(rest) = line.strip_prefix(recipe_name) {
-            if rest.starts_with(':') || rest.starts_with(' ') {
-                if rest.contains(':') {
-                    start = Some(index + 1);
-                    break;
-                }
-            }
+        if let Some(rest) = line.strip_prefix(recipe_name)
+            && (rest.starts_with(':') || rest.starts_with(' '))
+            && rest.contains(':')
+        {
+            header = Some(*line);
+            start = Some(index + 1);
+            break;
         }
         if line.starts_with(&format!("{}:", recipe_name)) {
+            header = Some(*line);
             start = Some(index + 1);
             break;
         }
@@ -1910,8 +1962,9 @@ fn extract_just_recipe_body(contents: &str, recipe_name: &str) -> Result<String>
     let Some(start) = start else {
         return Err(anyhow!("just recipe {} not found", recipe_name));
     };
+    let header = header.expect("recipe header should exist when start exists");
 
-    let mut body = Vec::new();
+    let mut body = vec![header];
     for line in &lines[start..] {
         if line.starts_with("    ") || line.starts_with('\t') || line.is_empty() {
             body.push(*line);
@@ -1923,39 +1976,66 @@ fn extract_just_recipe_body(contents: &str, recipe_name: &str) -> Result<String>
     Ok(format!("{}\n", normalized))
 }
 
-fn workflow_has_exact_step_run(
-    contents: &str,
-    job_name: &str,
-    step_name: &str,
-    expected_run: &str,
-) -> Result<bool> {
+fn workflow_job_hash(contents: &str, job_name: &str) -> Result<Option<String>> {
     let value: YamlValue =
         serde_yaml::from_str(contents).context("failed to parse workflow YAML")?;
     let Some(jobs) = value.get("jobs").and_then(YamlValue::as_mapping) else {
-        return Ok(false);
+        return Ok(None);
     };
 
     let Some(job) = jobs.get(YamlValue::String(job_name.to_string())) else {
-        return Ok(false);
+        return Ok(None);
     };
-    let Some(steps) = job.get("steps").and_then(YamlValue::as_sequence) else {
-        return Ok(false);
-    };
+    let normalized = canonical_yaml_value(job)?;
+    Ok(Some(sha256_hex(normalized.as_bytes())))
+}
 
-    for step in steps {
-        let Some(actual_step_name) = step.get("name").and_then(YamlValue::as_str) else {
-            continue;
-        };
-        if actual_step_name != step_name {
-            continue;
+fn workflow_job_matches_hash(contents: &str, job_name: &str, expected_hash: &str) -> Result<bool> {
+    Ok(workflow_job_hash(contents, job_name)?.is_some_and(|actual| actual == expected_hash))
+}
+
+fn canonical_yaml_value(value: &YamlValue) -> Result<String> {
+    match value {
+        YamlValue::Null => Ok("null".to_string()),
+        YamlValue::Bool(inner) => Ok(inner.to_string()),
+        YamlValue::Number(inner) => Ok(inner.to_string()),
+        YamlValue::String(inner) => {
+            serde_json::to_string(inner).context("failed to canonicalize YAML string")
         }
-        let Some(run) = step.get("run").and_then(YamlValue::as_str) else {
-            return Ok(false);
-        };
-        return Ok(run.trim() == expected_run.trim());
+        YamlValue::Sequence(items) => Ok(format!(
+            "[{}]",
+            items
+                .iter()
+                .map(canonical_yaml_value)
+                .collect::<Result<Vec<_>>>()?
+                .join(",")
+        )),
+        YamlValue::Mapping(map) => {
+            let mut entries = map
+                .iter()
+                .map(|(key, value)| {
+                    let key = key
+                        .as_str()
+                        .ok_or_else(|| anyhow!("workflow contract keys must be strings"))?;
+                    Ok((key.to_string(), canonical_yaml_value(value)?))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(format!(
+                "{{{}}}",
+                entries
+                    .into_iter()
+                    .map(|(key, value)| format!(
+                        "{}:{}",
+                        serde_json::to_string(&key).expect("string keys serialize"),
+                        value
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        }
+        YamlValue::Tagged(tagged) => canonical_yaml_value(&tagged.value),
     }
-
-    Ok(false)
 }
 
 fn collect_nt_data_from_toml_table(
@@ -2102,7 +2182,7 @@ fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
         ExpectedEffectiveRule::RequiredStatusChecks {
             strict_required_status_checks_policy,
             required_status_checks,
-            ..
+            required_status_check_integration_ids,
         } => {
             let contexts = required_status_checks
                 .iter()
@@ -2111,9 +2191,14 @@ fn expected_effective_rule_signature(rule: &ExpectedEffectiveRule) -> String {
                 .into_iter()
                 .collect::<Vec<_>>()
                 .join(",");
+            let integrations = required_status_check_integration_ids
+                .iter()
+                .map(|(context, integration_id)| format!("{context}:{integration_id}"))
+                .collect::<Vec<_>>()
+                .join(",");
             format!(
-                "required_status_checks|strict_required_status_checks_policy={}|contexts={}",
-                strict_required_status_checks_policy, contexts
+                "required_status_checks|strict_required_status_checks_policy={}|contexts={}|integration_ids={}",
+                strict_required_status_checks_policy, contexts, integrations
             )
         }
     }
@@ -2139,10 +2224,13 @@ fn expected_ruleset_signature(ruleset: &ExpectedRuleset) -> String {
 #[cfg(test)]
 mod unit_tests {
     use super::{
+        ControlConfig, canonical_yaml_value, extract_guarded_cargo_config_state,
         extract_just_recipe_body, extract_nt_crates_from_cargo_toml,
-        extract_nt_crates_from_dependabot, sha256_hex, workflow_has_exact_step_run,
+        extract_nt_ignores_from_dependabot_cargo_blocks, load_toml, sha256_hex, workflow_job_hash,
+        workflow_job_matches_hash,
     };
-    use std::collections::BTreeSet;
+    use serde_yaml::Value as YamlValue;
+    use std::{collections::BTreeSet, fs, path::PathBuf};
 
     #[test]
     fn cargo_nt_extractor_scans_workspace_target_build_and_patch_sections() {
@@ -2207,16 +2295,46 @@ edition = "2024"
         assert!(super::is_cargo_config_path(".cargo/config.toml"));
         assert!(super::is_cargo_config_path(".cargo/config"));
         assert!(super::is_cargo_config_path(".cargo/config.d/override.toml"));
+        assert!(super::is_cargo_config_path(
+            "crates/model/.cargo/config.toml"
+        ));
+        assert!(super::is_cargo_config_path("crates/model/.cargo/config"));
+        assert!(super::is_cargo_config_path(
+            "crates/model/.cargo/config.d/override.toml"
+        ));
         assert!(!super::is_cargo_config_path(".cargo/not-config.toml"));
     }
 
     #[test]
-    fn dependabot_nt_extractor_is_scoped_to_cargo_block() {
+    fn cargo_config_state_includes_replace_entries() {
+        let config = toml::from_str::<toml::Value>(
+            r#"
+[replace]
+"nautilus-common:0.1.0" = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "abc" }
+"#,
+        )
+        .expect("fixture config should parse");
+
+        let state = extract_guarded_cargo_config_state(&config);
+
+        assert!(
+            state.iter().any(|entry| entry.starts_with("replace=")),
+            "replace entries should be guarded"
+        );
+    }
+
+    #[test]
+    fn dependabot_nt_extractor_collects_all_cargo_blocks() {
         let contents = r#"
 version: 2
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
+    ignore:
+      - dependency-name: "nautilus-common"
+      - dependency-name: "nautilus-core"
+  - package-ecosystem: "cargo"
+    directory: "/crates/core"
     ignore:
       - dependency-name: "nautilus-common"
       - dependency-name: "nautilus-core"
@@ -2226,18 +2344,27 @@ updates:
       - dependency-name: "nautilus-fake"
 "#;
 
-        let extracted =
-            extract_nt_crates_from_dependabot(contents).expect("dependabot fixture should parse");
+        let extracted = extract_nt_ignores_from_dependabot_cargo_blocks(contents)
+            .expect("dependabot fixture should parse");
 
         assert_eq!(
             extracted,
-            BTreeSet::from(["nautilus-common".to_string(), "nautilus-core".to_string()])
+            vec![
+                (
+                    "/".to_string(),
+                    BTreeSet::from(["nautilus-common".to_string(), "nautilus-core".to_string()])
+                ),
+                (
+                    "/crates/core".to_string(),
+                    BTreeSet::from(["nautilus-common".to_string(), "nautilus-core".to_string()])
+                )
+            ]
         );
     }
 
     #[test]
     fn dependabot_nt_extractor_reports_yaml_errors() {
-        let err = extract_nt_crates_from_dependabot("not: [valid")
+        let err = extract_nt_ignores_from_dependabot_cargo_blocks("not: [valid")
             .expect_err("malformed YAML should fail");
         assert!(
             err.to_string()
@@ -2246,29 +2373,84 @@ updates:
     }
 
     #[test]
-    fn workflow_guard_detection_requires_exact_run_contract() {
-        let workflow = r#"
+    fn workflow_guard_detection_requires_exact_job_contract() {
+        let baseline = r#"
 name: Example
 jobs:
   control_plane:
+    name: nt-pointer-control-plane
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@pinned
       - name: Block direct NT pin changes
+        if: github.event_name == 'pull_request'
+        shell: bash
         run: |
-          if false; then
-            bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-          fi
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
+"#;
+        let gated = r#"
+name: Example
+jobs:
+  control_plane:
+    name: nt-pointer-control-plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@pinned
+      - name: Block direct NT pin changes
+        if: github.event_name == 'pull_request' && false
+        shell: bash
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
+"#;
+        let prep_step = r#"
+name: Example
+jobs:
+  control_plane:
+    name: nt-pointer-control-plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@pinned
+      - name: Workspace setup
+        shell: bash
+        run: |
           exit 0
+      - name: Block direct NT pin changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
 "#;
 
-        let detected = workflow_has_exact_step_run(
-            workflow,
-            "control_plane",
-            "Block direct NT pin changes",
-            r#"bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}""#,
-        )
-        .expect("workflow fixture should parse");
-        assert!(!detected);
+        let value: YamlValue =
+            serde_yaml::from_str(baseline).expect("baseline workflow should parse");
+        let jobs = value
+            .get("jobs")
+            .and_then(YamlValue::as_mapping)
+            .expect("workflow should include jobs");
+        let job = jobs
+            .get(YamlValue::String("control_plane".to_string()))
+            .expect("workflow should include control_plane");
+        let expected_hash = sha256_hex(
+            canonical_yaml_value(job)
+                .expect("job should canonicalize")
+                .as_bytes(),
+        );
+
+        assert!(
+            workflow_job_matches_hash(baseline, "control_plane", &expected_hash)
+                .expect("baseline workflow should parse"),
+            "baseline workflow should match its contract"
+        );
+        assert!(
+            !workflow_job_matches_hash(gated, "control_plane", &expected_hash)
+                .expect("gated workflow should parse"),
+            "gating fields should drift the job contract"
+        );
+        assert!(
+            !workflow_job_matches_hash(prep_step, "control_plane", &expected_hash)
+                .expect("prep-step workflow should parse"),
+            "extra prep steps should drift the job contract"
+        );
     }
 
     #[test]
@@ -2284,10 +2466,42 @@ next:
 
         let body =
             extract_just_recipe_body(justfile, "recipe-name").expect("recipe should extract");
-        assert_eq!(body, "    echo hello\n    echo world\n");
+        assert_eq!(body, "recipe-name arg:\n    echo hello\n    echo world\n");
         assert_eq!(
             sha256_hex(body.as_bytes()),
-            "833cf9af831eefc559ec13f012c8100286a3916d007f514f9b0e022969f3a156"
+            "a2630f081b7424aec0b869d604e864506faaede33f34a5161a3ba681aa52893b"
         );
+    }
+
+    #[test]
+    fn repo_workflow_job_hashes_match_guard_contract() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let control: ControlConfig =
+            load_toml(&repo_root.join("config/nt_pointer_probe/control.toml"))
+                .expect("control.toml should parse");
+
+        for (workflow_path, job_name, expected_hash) in [
+            (
+                control.guard_contract.control_plane_workflow.as_str(),
+                control.guard_contract.control_plane_job.as_str(),
+                control.guard_contract.control_plane_job_sha256.as_str(),
+            ),
+            (
+                control.guard_contract.dependabot_workflow.as_str(),
+                control.guard_contract.dependabot_job.as_str(),
+                control.guard_contract.dependabot_job_sha256.as_str(),
+            ),
+        ] {
+            let contents =
+                fs::read_to_string(repo_root.join(workflow_path)).expect("workflow should read");
+            let actual_hash = workflow_job_hash(&contents, job_name)
+                .expect("workflow should parse")
+                .expect("workflow should contain guarded job");
+            assert_eq!(
+                actual_hash, expected_hash,
+                "guard contract hash drift for {}",
+                workflow_path
+            );
+        }
     }
 }

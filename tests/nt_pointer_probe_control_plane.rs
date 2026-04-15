@@ -127,19 +127,17 @@ pr_title_prefix = "NT Pointer Probe"
 script_path = "scripts/nt_pin_block_guard.sh"
 script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
 check_mutation_recipe = "nt-pointer-probe-check-nt-mutation"
-check_mutation_recipe_sha256 = "7dd549c4410e59938eee58967b29fb6b78bafc886ad8dcee54b416a6277c93b2"
+check_mutation_recipe_sha256 = "033dc0fa8ef84cefad66fbe8783955b25fc2131f32ea79226e1355ced56476b8"
 validate_control_plane_recipe = "nt-pointer-probe-validate-control-plane"
-validate_control_plane_recipe_sha256 = "5bba05dd823f5d2196c4b4b2eb996001f21679df96c96e403ebe61b1c6ea6f8b"
+validate_control_plane_recipe_sha256 = "d6ceaa58c934504e1232eb9548cbc8e6b7a4752e9523b0ed405c8afcad95f88b"
 self_test_recipe = "nt-pointer-probe-self-test"
-self_test_recipe_sha256 = "06a2d6cd1a7d82a843b3acb04805465819eca5514aaf89cd1e7181dbd53c33f8"
+self_test_recipe_sha256 = "79a8bc900fedc6542d05705586565428f5e2e634c054919ddca4617e270aeb49"
 control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
 control_plane_job = "control_plane"
-control_plane_step = "Block direct NT pin changes"
-control_plane_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
+control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
 dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
 dependabot_job = "dependabot"
-dependabot_step = "Block NT pin auto-merge"
-dependabot_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
+dependabot_job_sha256 = "a03cf579aee5e6eab93934a7f2b65fb942afeb90be82b29eb69d8abb982f24c5"
 "#,
     )
     .expect("fixture control.toml should write");
@@ -166,36 +164,20 @@ updates:
 "#,
     )
     .expect("fixture dependabot should write");
-    fs::write(
+    fs::copy(
+        repo_root().join(".github/workflows/nt-pointer-control-plane.yml"),
         tempdir
             .path()
             .join(".github/workflows/nt-pointer-control-plane.yml"),
-        r#"name: NT Pointer Control Plane
-jobs:
-  control_plane:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Block direct NT pin changes
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-"#,
     )
-    .expect("fixture control-plane workflow should write");
-    fs::write(
+    .expect("fixture control-plane workflow should copy");
+    fs::copy(
+        repo_root().join(".github/workflows/dependabot-auto-merge.yml"),
         tempdir
             .path()
             .join(".github/workflows/dependabot-auto-merge.yml"),
-        r#"name: Dependabot auto-merge
-jobs:
-  dependabot:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Block NT pin auto-merge
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
-"#,
     )
-    .expect("fixture dependabot workflow should write");
+    .expect("fixture dependabot workflow should copy");
     fs::write(
         tempdir.path().join("src/platform/reference_actor.rs"),
         "// fixture\n",
@@ -289,6 +271,101 @@ fn repo_control_plane_loads_and_validates() {
             .iter()
             .any(|seam| seam.name == "subscription_custom_data_semantics"),
         "expected initial seam registry to include subscription semantics seam"
+    );
+}
+
+#[test]
+fn guard_contract_rejects_block_step_gating_fields() {
+    let tempdir = temp_fixture("valid_minimal");
+    let workflow_path = tempdir
+        .path()
+        .join(".github/workflows/nt-pointer-control-plane.yml");
+    fs::remove_file(&workflow_path).expect("workflow symlink should be removable");
+    fs::write(
+        &workflow_path,
+        r#"name: NT Pointer Control Plane
+jobs:
+  control_plane:
+    name: nt-pointer-control-plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+      - name: Validate control-plane artifacts
+        run: just nt-pointer-probe-validate-control-plane
+      - name: Block direct NT pin changes
+        if: github.event_name == 'pull_request' && false
+        shell: bash
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
+"#,
+    )
+    .expect("gated workflow fixture should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("guard step gating fields should fail validation");
+
+    assert!(
+        err.to_string()
+            .contains("must keep the exact guard job contract"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn guard_contract_rejects_extra_prep_steps_before_block() {
+    let tempdir = temp_fixture("valid_minimal");
+    let workflow_path = tempdir
+        .path()
+        .join(".github/workflows/nt-pointer-control-plane.yml");
+    fs::remove_file(&workflow_path).expect("workflow symlink should be removable");
+    fs::write(
+        &workflow_path,
+        r#"name: NT Pointer Control Plane
+jobs:
+  control_plane:
+    name: nt-pointer-control-plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+      - name: Validate control-plane artifacts
+        run: just nt-pointer-probe-validate-control-plane
+      - name: Workspace setup
+        shell: bash
+        run: |
+          cat > scripts/nt_pin_block_guard.sh <<'EOF'
+          #!/usr/bin/env bash
+          exit 0
+          EOF
+      - name: Block direct NT pin changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.number }}"
+"#,
+    )
+    .expect("prep-step workflow fixture should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("prep-step bypass should fail validation");
+
+    assert!(
+        err.to_string()
+            .contains("must keep the exact guard job contract"),
+        "unexpected error: {err}"
     );
 }
 
@@ -523,19 +600,17 @@ pr_title_prefix = "NT Pointer Probe"
 script_path = "scripts/nt_pin_block_guard.sh"
 script_sha256 = "fa795594d4368b32b364a2601cb2701ff04ae4dd1696eb85c708b150e594e16f"
 check_mutation_recipe = "nt-pointer-probe-check-nt-mutation"
-check_mutation_recipe_sha256 = "7dd549c4410e59938eee58967b29fb6b78bafc886ad8dcee54b416a6277c93b2"
+check_mutation_recipe_sha256 = "033dc0fa8ef84cefad66fbe8783955b25fc2131f32ea79226e1355ced56476b8"
 validate_control_plane_recipe = "nt-pointer-probe-validate-control-plane"
-validate_control_plane_recipe_sha256 = "5bba05dd823f5d2196c4b4b2eb996001f21679df96c96e403ebe61b1c6ea6f8b"
+validate_control_plane_recipe_sha256 = "d6ceaa58c934504e1232eb9548cbc8e6b7a4752e9523b0ed405c8afcad95f88b"
 self_test_recipe = "nt-pointer-probe-self-test"
-self_test_recipe_sha256 = "06a2d6cd1a7d82a843b3acb04805465819eca5514aaf89cd1e7181dbd53c33f8"
+self_test_recipe_sha256 = "79a8bc900fedc6542d05705586565428f5e2e634c054919ddca4617e270aeb49"
 control_plane_workflow = ".github/workflows/nt-pointer-control-plane.yml"
 control_plane_job = "control_plane"
-control_plane_step = "Block direct NT pin changes"
-control_plane_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
+control_plane_job_sha256 = "1a398426e4936b834db5109135ac547b1bbcc2a40d36656d2d590853ba4b4aec"
 dependabot_workflow = ".github/workflows/dependabot-auto-merge.yml"
 dependabot_job = "dependabot"
-dependabot_step = "Block NT pin auto-merge"
-dependabot_run = "bash scripts/nt_pin_block_guard.sh \"$GITHUB_WORKSPACE\" \"${{ github.event.pull_request.base.ref }}\" \"${{ github.event.pull_request.number }}\""
+dependabot_job_sha256 = "a03cf579aee5e6eab93934a7f2b65fb942afeb90be82b29eb69d8abb982f24c5"
 "#,
     )
     .expect("invalid control fixture should write");
@@ -599,6 +674,54 @@ assertion = "Reference pipeline still compiles and wires shared custom-data sema
     assert!(
         err.to_string()
             .contains("repo path does not exist: src/does_not_exist.rs"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn second_dependabot_cargo_block_without_nt_ignores_fails_closed() {
+    let tempdir = temp_fixture("valid_minimal");
+    let dependabot_path = tempdir.path().join(".github/dependabot.yml");
+    fs::remove_file(&dependabot_path).expect("dependabot symlink should be removable");
+    fs::write(
+        &dependabot_path,
+        r#"version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    ignore:
+      - dependency-name: "nautilus-common"
+      - dependency-name: "nautilus-core"
+      - dependency-name: "nautilus-binance"
+      - dependency-name: "nautilus-bybit"
+      - dependency-name: "nautilus-deribit"
+      - dependency-name: "nautilus-hyperliquid"
+      - dependency-name: "nautilus-kraken"
+      - dependency-name: "nautilus-live"
+      - dependency-name: "nautilus-model"
+      - dependency-name: "nautilus-network"
+      - dependency-name: "nautilus-okx"
+      - dependency-name: "nautilus-persistence"
+      - dependency-name: "nautilus-polymarket"
+      - dependency-name: "nautilus-system"
+      - dependency-name: "nautilus-trading"
+      - dependency-name: "nautilus-execution"
+  - package-ecosystem: "cargo"
+    directory: "/crates/core"
+    ignore:
+      - dependency-name: "nautilus-common"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+"#,
+    )
+    .expect("dependabot fixture should write");
+
+    let err = LoadedControlPlane::load_from_repo_root(tempdir.path())
+        .expect_err("all cargo dependabot blocks must enforce NT ignores");
+
+    assert!(
+        err.to_string()
+            .contains("do not match Dependabot NT ignores"),
         "unexpected error: {err}"
     );
 }
@@ -839,6 +962,133 @@ fn branch_governance_comparison_accepts_matching_fixture() {
 }
 
 #[test]
+fn branch_governance_comparison_rejects_wrong_effective_rule_integration_id() {
+    let tempdir = tempfile::tempdir().expect("tempdir should create");
+    fs::write(
+        tempdir.path().join("expected.toml"),
+        r#"schema_version = 1
+branch = "main"
+enforce_admins = true
+allow_deletions = false
+allow_force_pushes = false
+block_creations = false
+dismiss_stale_reviews = true
+required_linear_history = false
+required_conversation_resolution = false
+lock_branch = false
+require_signed_commits = false
+require_code_owner_reviews = false
+required_approving_review_count = 1
+strict_required_status_checks = false
+required_status_checks = [
+  "gate",
+  "clippy",
+  "test",
+  "build",
+  "nt-pointer-control-plane",
+  "nt-pointer-probe-self-test",
+]
+required_status_check_app_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+
+[[required_effective_rules]]
+type = "deletion"
+
+[[required_effective_rules]]
+type = "non_fast_forward"
+
+[[required_effective_rules]]
+type = "pull_request"
+required_approving_review_count = 1
+dismiss_stale_reviews_on_push = false
+require_code_owner_review = false
+require_last_push_approval = false
+required_review_thread_resolution = false
+allowed_merge_methods = ["merge", "squash", "rebase"]
+
+[[required_effective_rules]]
+type = "required_status_checks"
+strict_required_status_checks_policy = false
+required_status_checks = [
+  "gate",
+  "clippy",
+  "test",
+  "build",
+  "nt-pointer-control-plane",
+  "nt-pointer-probe-self-test",
+]
+required_status_check_integration_ids = { gate = 15368, clippy = 15368, test = 15368, build = 15368, nt-pointer-control-plane = 15368, nt-pointer-probe-self-test = 15368 }
+
+[[required_rulesets]]
+id = 14763241
+name = "Branch governance"
+enforcement = "active"
+allowed_bypass_actors = []
+
+[[required_rulesets]]
+id = 14763242
+name = "CI gates"
+enforcement = "active"
+allowed_bypass_actors = []
+"#,
+    )
+    .expect("expected branch protection fixture should write");
+
+    let expected =
+        ExpectedBranchProtection::load_and_validate(&tempdir.path().join("expected.toml"))
+            .expect("expected branch protection fixture should parse");
+    let actual_protection =
+        std::fs::read_to_string(fixture("branch_protection/matching_actual.json"))
+            .expect("matching branch protection fixture should load");
+    let actual_rules = r#"[
+  { "type": "deletion" },
+  { "type": "non_fast_forward" },
+  {
+    "type": "pull_request",
+    "parameters": {
+      "required_approving_review_count": 1,
+      "dismiss_stale_reviews_on_push": false,
+      "required_reviewers": [],
+      "require_code_owner_review": false,
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": false,
+      "allowed_merge_methods": ["merge", "squash", "rebase"]
+    }
+  },
+  {
+    "type": "required_status_checks",
+    "parameters": {
+      "strict_required_status_checks_policy": false,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [
+        { "context": "gate", "integration_id": 15368 },
+        { "context": "clippy", "integration_id": 15368 },
+        { "context": "test", "integration_id": 15368 },
+        { "context": "build", "integration_id": 15368 },
+        { "context": "nt-pointer-control-plane", "integration_id": 99999 },
+        { "context": "nt-pointer-probe-self-test", "integration_id": 15368 }
+      ]
+    }
+  }
+]"#;
+    let actual_rulesets =
+        std::fs::read_to_string(fixture("branch_protection/matching_rulesets.json"))
+            .expect("matching ruleset details fixture should load");
+
+    let err = compare_branch_governance_responses(
+        &expected,
+        &actual_protection,
+        actual_rules,
+        &actual_rulesets,
+    )
+    .expect_err("mismatched effective-rule integration ID should fail closed");
+
+    assert!(
+        err.to_string().contains("effective rules differ"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn branch_protection_comparison_rejects_unprotected_branch() {
     let expected =
         ExpectedBranchProtection::load_and_validate(&fixture("branch_protection/expected.toml"))
@@ -982,7 +1232,7 @@ fn drift_lane_workflow_exposes_durable_failure_surface() {
         serde_yaml::from_str(&workflow).expect("control-plane workflow should parse as YAML");
 
     let permissions = yaml
-        .get("permissions")
+        .get(YamlValue::String("permissions".to_string()))
         .and_then(YamlValue::as_mapping)
         .expect("workflow should declare permissions");
     let issues_permission = permissions
@@ -992,8 +1242,9 @@ fn drift_lane_workflow_exposes_durable_failure_surface() {
     assert_eq!(issues_permission, "write");
 
     let steps = yaml
-        .get("jobs")
-        .and_then(|jobs| jobs.get("branch_protection_drift"))
+        .get(YamlValue::String("jobs".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .and_then(|jobs| jobs.get(YamlValue::String("branch_protection_drift".to_string())))
         .and_then(|job| job.get("steps"))
         .and_then(YamlValue::as_sequence)
         .expect("branch_protection_drift steps should exist");

@@ -1,4 +1,4 @@
-use std::{fs, path::Path, path::PathBuf};
+use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use bolt_v2::nt_pointer_probe::control::{
     ExpectedBranchProtection, LoadedControlPlane, compare_branch_governance_responses,
@@ -307,6 +307,10 @@ nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git
     tempdir
 }
 
+fn nt_pointer_probe_command() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_nt_pointer_probe"))
+}
+
 #[test]
 fn repo_control_plane_loads_and_validates() {
     let loaded = LoadedControlPlane::load_from_repo_root(&repo_root())
@@ -359,6 +363,71 @@ fn control_plane_load_no_longer_requires_guard_contract_block() {
         .expect("semantic control-plane validation should not depend on repo-local guard hashes");
 
     assert_eq!(loaded.control.repo, "seungpyoson/bolt-v2");
+}
+
+#[test]
+fn validate_control_plane_subprocess_fails_closed_on_invalid_fixture() {
+    let tempdir = temp_fixture("bad_shared_crate_prefix");
+    let output = nt_pointer_probe_command()
+        .args([
+            "validate-control-plane",
+            "--repo-root",
+            tempdir
+                .path()
+                .to_str()
+                .expect("fixture path should be utf-8"),
+        ])
+        .output()
+        .expect("nt_pointer_probe validate-control-plane should run");
+
+    assert!(
+        !output.status.success(),
+        "invalid control-plane fixture must fail closed"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("shared NT crate safe-list entries must use exact match"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("validated control plane"),
+        "invalid control-plane fixture must not report success: {stdout}"
+    );
+}
+
+#[test]
+fn nt_pointer_probe_subprocess_aborts_before_success_when_panicking() {
+    let tempdir = temp_fixture("valid_minimal");
+    let output = nt_pointer_probe_command()
+        .env("BOLT_NT_POINTER_PROBE_TEST_PANIC", "before-parse")
+        .args([
+            "validate-control-plane",
+            "--repo-root",
+            tempdir
+                .path()
+                .to_str()
+                .expect("fixture path should be utf-8"),
+        ])
+        .output()
+        .expect("nt_pointer_probe panic smoke path should run");
+
+    assert!(
+        !output.status.success(),
+        "panic smoke path must terminate unsuccessfully"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("nt_pointer_probe test panic before CLI parse"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("validated control plane"),
+        "panic smoke path must abort before success handling: {stdout}"
+    );
 }
 
 #[test]
@@ -636,9 +705,20 @@ fn nt_pointer_probe_binary_exits_without_drop_unwind_on_control_plane_errors() {
     let control = fs::read_to_string(repo_root().join("src/nt_pointer_probe/control.rs"))
         .expect("nt_pointer_probe control plane should load");
 
+    let install_abort = binary
+        .find("install_abort_on_panic();")
+        .expect("nt_pointer_probe binary must install abort-on-panic handling");
+    let parse = binary
+        .find("Cli::parse()")
+        .expect("nt_pointer_probe binary must parse CLI args");
+
     assert!(
         binary.contains("std::process::exit(1)"),
         "nt_pointer_probe binary must terminate fail-closed without unwinding through destructors"
+    );
+    assert!(
+        install_abort < parse,
+        "nt_pointer_probe binary must install abort-on-panic handling before CLI parsing"
     );
     assert!(
         !binary.contains("LoadedControlPlane::load_from_repo_root(&repo_root)?"),

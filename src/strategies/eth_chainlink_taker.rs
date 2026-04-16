@@ -330,6 +330,7 @@ struct ActiveMarketState {
     market_id: Option<String>,
     instrument_id: Option<InstrumentId>,
     outcome_fees: OutcomeFeeState,
+    price_to_beat: Option<f64>,
     interval_start_ms: Option<u64>,
     selection_published_at_ms: Option<u64>,
     seconds_to_expiry_at_selection: Option<u64>,
@@ -1060,6 +1061,7 @@ impl ActiveMarketState {
             market_id: Some(market.market_id.clone()),
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
             outcome_fees: OutcomeFeeState::from_market(market),
+            price_to_beat: market.price_to_beat,
             interval_start_ms: Some(market.start_ts_ms),
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: Some(market.seconds_to_end),
@@ -1108,7 +1110,11 @@ impl ActiveMarketState {
         let Some(interval_start_ms) = self.interval_start_ms else {
             return;
         };
-        let Some(fair_value) = snapshot.fair_value else {
+        let Some(anchor_price) = self
+            .price_to_beat
+            .or_else(|| best_healthy_oracle_price(snapshot))
+            .or(snapshot.fair_value)
+        else {
             return;
         };
         if snapshot.ts_ms < interval_start_ms {
@@ -1123,7 +1129,7 @@ impl ActiveMarketState {
 
         self.last_reference_ts_ms = Some(snapshot.ts_ms);
         if self.interval_open.is_none() {
-            self.interval_open = Some(fair_value);
+            self.interval_open = Some(anchor_price);
         }
         self.warmup_count += 1;
     }
@@ -4708,6 +4714,7 @@ mod tests {
             condition_id,
             up_token_id,
             down_token_id,
+            price_to_beat: None,
             start_ts_ms: interval_start_ms,
             declared_resolution_basis: parse_ruleset_resolution_basis("chainlink_ethusd")
                 .expect("test resolution basis should parse"),
@@ -6658,6 +6665,65 @@ mod tests {
 
         strategy.observe_reference_snapshot(&reference_tick(1_000, 3_101.0));
         assert_eq!(strategy.active.interval_open, Some(3_101.0));
+    }
+
+    #[test]
+    fn interval_open_uses_raw_chainlink_price_not_fused_reference_value() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 1_000,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_107.0),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("chainlink", 1.0, 3_100.0, 1_000),
+                orderbook_venue("bybit", 0.9, 3_120.0, 1_000),
+            ],
+        });
+
+        assert_eq!(strategy.active.interval_open, Some(3_100.0));
+    }
+
+    #[test]
+    fn interval_open_prefers_polymarket_price_to_beat_over_chainlink() {
+        let mut strategy = test_strategy();
+        let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);
+        let SelectionState::Active { market } = &mut snapshot.decision.state else {
+            panic!("expected active snapshot");
+        };
+        market.price_to_beat = Some(3_099.0);
+        strategy.apply_selection_snapshot(snapshot);
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 1_000,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_107.0),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("chainlink", 1.0, 3_100.0, 1_000),
+                orderbook_venue("bybit", 0.9, 3_120.0, 1_000),
+            ],
+        });
+
+        assert_eq!(strategy.active.interval_open, Some(3_099.0));
+    }
+
+    #[test]
+    fn interval_open_falls_back_to_fused_reference_when_no_polymarket_or_oracle_anchor_exists() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 1_000,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_107.0),
+            confidence: 1.0,
+            venues: vec![],
+        });
+
+        assert_eq!(strategy.active.interval_open, Some(3_107.0));
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub struct CandidateMarket {
     pub condition_id: String,
     pub up_token_id: String,
     pub down_token_id: String,
+    pub price_to_beat: Option<f64>,
     pub start_ts_ms: u64,
     pub declared_resolution_basis: ResolutionBasis,
     pub accepting_orders: bool,

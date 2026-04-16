@@ -199,9 +199,34 @@ async fn load_markets_from_event_markets(
     let (addr, request_count) =
         spawn_test_server(vec![json!([event_with_markets("event-1", markets)])]).await;
     let client = test_gamma_client(addr);
-    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset(), &client)
-        .await
-        .unwrap();
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset(),
+        &client,
+        Some(&format!("http://{addr}")),
+    )
+    .await
+    .unwrap();
+
+    (markets, request_count)
+}
+
+async fn load_markets_from_event_markets_with_raw_base_url(
+    markets: Vec<Value>,
+    raw_base_url: &str,
+) -> (
+    Vec<bolt_v2::platform::ruleset::CandidateMarket>,
+    Arc<AtomicUsize>,
+) {
+    let (addr, request_count) =
+        spawn_test_server(vec![json!([event_with_markets("event-1", markets)])]).await;
+    let client = test_gamma_client(addr);
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset(),
+        &client,
+        Some(raw_base_url),
+    )
+    .await
+    .unwrap();
 
     (markets, request_count)
 }
@@ -215,9 +240,13 @@ async fn load_markets_from_event_pages(
     let response_bodies = event_pages.into_iter().map(Value::Array).collect();
     let (addr, request_count) = spawn_test_server(response_bodies).await;
     let client = test_gamma_client(addr);
-    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset(), &client)
-        .await
-        .unwrap();
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset(),
+        &client,
+        Some(&format!("http://{addr}")),
+    )
+    .await
+    .unwrap();
 
     (markets, request_count)
 }
@@ -232,9 +261,13 @@ async fn load_markets_from_ruleset_and_event_pages(
     let response_bodies = event_pages.into_iter().map(Value::Array).collect();
     let (addr, request_count) = spawn_test_server(response_bodies).await;
     let client = test_gamma_client(addr);
-    let markets = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset, &client)
-        .await
-        .unwrap();
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset,
+        &client,
+        Some(&format!("http://{addr}")),
+    )
+    .await
+    .unwrap();
 
     (markets, request_count)
 }
@@ -401,7 +434,7 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
     ])
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-good");
     assert_eq!(markets[0].instrument_id, "0xcondition1-111.POLYMARKET");
@@ -424,6 +457,32 @@ async fn loads_candidate_markets_for_ruleset_and_translates_seconds_to_end() {
         polymarket_instrument_id("0xcondition1", "111"),
         InstrumentId::from_str("0xcondition1-111.POLYMARKET").unwrap()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loads_polymarket_price_to_beat_when_event_payload_exposes_anchor_fields() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let mut market = valid_market(end_date);
+    market["xAxisValue"] = json!("3100.25");
+
+    let (markets, _request_count) = load_markets_from_event_markets(vec![market]).await;
+
+    assert_eq!(markets.len(), 1);
+    assert_eq!(markets[0].price_to_beat, Some(3100.25));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_anchor_fetch_failure_preserves_candidates_and_falls_back_to_none() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets_with_raw_base_url(
+        vec![valid_market(end_date)],
+        "http://127.0.0.1:9",
+    )
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(markets.len(), 1);
+    assert_eq!(markets[0].price_to_beat, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -457,7 +516,7 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
     let (markets, request_count) =
         load_markets_from_event_pages(vec![first_page, second_page]).await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 2);
+    assert_eq!(request_count.load(Ordering::Relaxed), 3);
     assert_eq!(markets.len(), 2);
     assert_eq!(
         markets
@@ -505,7 +564,7 @@ async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
     )
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-prefix-match");
 }
@@ -528,7 +587,7 @@ async fn rejects_catalog_row_with_invalid_end_date() {
     })])
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert!(markets.is_empty());
 }
 
@@ -550,7 +609,7 @@ async fn rejects_catalog_row_with_missing_accepting_orders() {
         })])
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert!(markets.is_empty());
 }
 
@@ -572,7 +631,7 @@ async fn rejects_catalog_row_with_missing_liquidity_num() {
         })])
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert!(markets.is_empty());
 }
 
@@ -595,7 +654,7 @@ async fn rejects_catalog_row_with_malformed_clob_token_ids() {
     })])
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert!(markets.is_empty());
 }
 
@@ -618,7 +677,7 @@ async fn rejects_catalog_row_with_unknown_basis() {
     })])
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert!(markets.is_empty());
 }
 
@@ -641,6 +700,6 @@ async fn rejects_catalog_row_with_exchange_candle_description_missing_interval()
     })])
     .await;
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(request_count.load(Ordering::Relaxed), 2);
     assert!(markets.is_empty());
 }

@@ -86,7 +86,7 @@ fn collect_polymarket_startup_validation_targets(
 ) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>> {
     collect_polymarket_startup_validation_targets_with_resolver(
         cfg,
-        polymarket::resolve_event_slugs_for_selectors,
+        polymarket::resolve_event_slugs_for_prefix_discoveries,
     )
 }
 
@@ -96,7 +96,7 @@ fn collect_polymarket_startup_validation_targets_with_resolver<F>(
 ) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>>
 where
     F: Fn(
-        &[polymarket::PolymarketRulesetSelector],
+        &[polymarket::PolymarketPrefixDiscovery],
         u64,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>>,
 {
@@ -104,6 +104,7 @@ where
     let mut event_slugs = BTreeSet::new();
 
     let selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
+    let prefix_discoveries = polymarket::polymarket_ruleset_prefix_discoveries(&cfg.rulesets)?;
     if !selectors.is_empty() {
         for selector in &selectors {
             if selector.event_slug_prefix.is_none() {
@@ -111,14 +112,9 @@ where
             }
         }
 
-        let prefix_selectors: Vec<_> = selectors
-            .iter()
-            .filter(|selector| selector.event_slug_prefix.is_some())
-            .cloned()
-            .collect();
-        if !prefix_selectors.is_empty() {
+        if !prefix_discoveries.is_empty() {
             let resolved_event_slugs =
-                resolve_event_slugs(&prefix_selectors, cfg.node.timeout_connection_secs)?;
+                resolve_event_slugs(&prefix_discoveries, cfg.node.timeout_connection_secs)?;
             for event_slug in resolved_event_slugs {
                 event_slugs.insert(event_slug);
             }
@@ -268,13 +264,15 @@ mod tests {
             .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
 
         let targets =
-            collect_polymarket_startup_validation_targets_with_resolver(&cfg, |selectors, _| {
-                assert_eq!(selectors.len(), 1);
-                assert_eq!(selectors[0].tag_slug, "bitcoin");
+            collect_polymarket_startup_validation_targets_with_resolver(&cfg, |discoveries, _| {
+                assert_eq!(discoveries.len(), 1);
+                assert_eq!(discoveries[0].selector.tag_slug, "bitcoin");
                 assert_eq!(
-                    selectors[0].event_slug_prefix.as_deref(),
+                    discoveries[0].selector.event_slug_prefix.as_deref(),
                     Some("bitcoin-5m")
                 );
+                assert_eq!(discoveries[0].min_time_to_expiry_secs, 60);
+                assert_eq!(discoveries[0].max_time_to_expiry_secs, 900);
                 Ok(vec![
                     "bitcoin-5m-alpha".to_string(),
                     "bitcoin-5m-beta".to_string(),

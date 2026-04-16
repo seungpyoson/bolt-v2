@@ -441,6 +441,13 @@ impl PolymarketRulesetSetup {
         self.selector_state.clone()
     }
 
+    pub fn resolved_prefix_event_slugs(&self) -> Vec<String> {
+        self.selector_state
+            .as_ref()
+            .map(PolymarketSelectorState::current_event_slugs)
+            .unwrap_or_default()
+    }
+
     pub fn spawn_selector_refresh_task_if_configured(
         &self,
         raw: &Value,

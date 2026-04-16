@@ -63,7 +63,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bolt_v2::log_sweep::sweep_stale_logs();
             let cfg = Config::load(&config)?;
             ensure_runtime_has_active_path(&cfg)?;
-            startup_validation::validate_polymarket_startup(&cfg)?;
 
             let trader_id = TraderId::from(cfg.node.trader_id.as_str());
             let environment = parse_environment(&cfg.node.environment)?;
@@ -76,6 +75,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &cfg.rulesets,
                 cfg.node.timeout_connection_secs,
             )?;
+            startup_validation::validate_polymarket_startup_with_prefix_event_slugs(
+                &cfg,
+                polymarket_ruleset_setup.resolved_prefix_event_slugs(),
+            )?;
             let live_node_config = make_live_node_config(&cfg, trader_id, environment, log_config);
             let mut polymarket_selector_refresh_raw = None;
             let mut data_client_registrations: Vec<DataClientRegistration> = Vec::new();
@@ -84,9 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for client in &cfg.data_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        if polymarket_selector_refresh_raw.is_none() {
-                            polymarket_selector_refresh_raw = Some(client.config.clone());
-                        }
+                        polymarket_selector_refresh_raw = Some(client.config.clone());
                         let (factory, config) =
                             polymarket_ruleset_setup.build_data_client(&client.config)?;
                         data_client_registrations.push((

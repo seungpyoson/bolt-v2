@@ -35,6 +35,28 @@ pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
         return Ok(());
     };
 
+    validate_polymarket_startup_with_targets(cfg, targets)
+}
+
+pub fn validate_polymarket_startup_with_prefix_event_slugs(
+    cfg: &Config,
+    resolved_prefix_event_slugs: Vec<String>,
+) -> AppResult {
+    let Some(targets) = collect_polymarket_startup_validation_targets_with_prefix_event_slugs(
+        cfg,
+        resolved_prefix_event_slugs,
+    )?
+    else {
+        return Ok(());
+    };
+
+    validate_polymarket_startup_with_targets(cfg, targets)
+}
+
+fn validate_polymarket_startup_with_targets(
+    cfg: &Config,
+    targets: PolymarketStartupValidationTargets,
+) -> AppResult {
     let instrument_client = build_gamma_instrument_client(cfg.node.timeout_connection_secs)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -90,6 +112,16 @@ fn collect_polymarket_startup_validation_targets(
     )
 }
 
+fn collect_polymarket_startup_validation_targets_with_prefix_event_slugs(
+    cfg: &Config,
+    resolved_prefix_event_slugs: Vec<String>,
+) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>> {
+    collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slugs(
+        cfg,
+        resolved_prefix_event_slugs,
+    )
+}
+
 fn collect_polymarket_startup_validation_targets_with_resolver<F>(
     cfg: &Config,
     resolve_event_slugs: F,
@@ -118,6 +150,78 @@ where
             for event_slug in resolved_event_slugs {
                 event_slugs.insert(event_slug);
             }
+        }
+    } else {
+        for client in &cfg.data_clients {
+            if client.kind != "polymarket" {
+                continue;
+            }
+
+            let input: polymarket::PolymarketDataClientInput = client.config.clone().try_into()?;
+            for event_slug in input.event_slugs {
+                let trimmed = event_slug.trim();
+                if !trimmed.is_empty() {
+                    event_slugs.insert(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    let mut configured_instrument_ids = BTreeSet::new();
+    for strategy in &cfg.strategies {
+        let Some(instrument_id) = strategy
+            .config
+            .get("instrument_id")
+            .and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+
+        if instrument_id.ends_with(".POLYMARKET") {
+            configured_instrument_ids.insert(instrument_id.to_string());
+        }
+    }
+
+    if tag_slugs.is_empty() && event_slugs.is_empty() {
+        if configured_instrument_ids.is_empty() {
+            return Ok(None);
+        }
+
+        return Err(std::io::Error::other(format!(
+            "Polymarket startup validation cannot validate configured instrument_id(s) [{}] because no Polymarket selector discovery targets are available",
+            configured_instrument_ids
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+        .into());
+    }
+
+    Ok(Some(PolymarketStartupValidationTargets {
+        tag_slugs: tag_slugs.into_iter().collect(),
+        event_slugs: event_slugs.into_iter().collect(),
+        configured_instrument_ids: configured_instrument_ids.into_iter().collect(),
+    }))
+}
+
+fn collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slugs(
+    cfg: &Config,
+    resolved_prefix_event_slugs: Vec<String>,
+) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>> {
+    let mut tag_slugs = BTreeSet::new();
+    let mut event_slugs = BTreeSet::new();
+
+    let selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
+    if !selectors.is_empty() {
+        for selector in &selectors {
+            if selector.event_slug_prefix.is_none() {
+                tag_slugs.insert(selector.tag_slug.clone());
+            }
+        }
+
+        for event_slug in resolved_prefix_event_slugs {
+            event_slugs.insert(event_slug);
         }
     } else {
         for client in &cfg.data_clients {
@@ -300,6 +404,32 @@ mod tests {
             "{err}"
         );
         assert!(err.contains(" and "), "{err}");
+    }
+
+    #[test]
+    fn startup_validation_can_use_pre_resolved_prefix_event_slugs() {
+        let mut cfg = test_config(vec!["ethereum"], vec!["alpha.POLYMARKET"]);
+        cfg.rulesets
+            .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
+
+        let targets = collect_polymarket_startup_validation_targets_with_prefix_event_slugs(
+            &cfg,
+            vec![
+                "bitcoin-5m-alpha".to_string(),
+                "bitcoin-5m-beta".to_string(),
+            ],
+        )
+        .expect("targets should collect")
+        .expect("polymarket targets should exist");
+
+        assert_eq!(targets.tag_slugs, vec!["ethereum"]);
+        assert_eq!(
+            targets.event_slugs,
+            vec![
+                "bitcoin-5m-alpha".to_string(),
+                "bitcoin-5m-beta".to_string()
+            ]
+        );
     }
 
     #[test]

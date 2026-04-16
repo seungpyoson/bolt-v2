@@ -428,6 +428,14 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must not reference head.ref at all in the no-checkout design"
     );
     assert!(
+        !workflow.contains("github.event.pull_request.head.repo.full_name"),
+        "workflow must not reference head.repo.full_name in the no-checkout design"
+    );
+    assert!(
+        !workflow.contains("HEAD_REPO_FULL_NAME"),
+        "workflow must not retain the old HEAD_REPO_FULL_NAME env path"
+    );
+    assert!(
         workflow.contains("HEAD_SHA: ${{ github.event.pull_request.head.sha }}"),
         "workflow must source head.sha through an environment variable"
     );
@@ -437,7 +445,7 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must not use anonymous raw.githubusercontent.com fetches"
     );
     assert!(
-        workflow.contains("git -C \"$tmp_repo\" fetch --depth=1 --no-tags origin \"${TRUST_ROOT_VALIDATOR_SHA}\""),
+        workflow.contains("git -C \"$tmp_repo\" -c http.extraheader=\"$auth_header\" fetch --depth=1 --no-tags origin \"${TRUST_ROOT_VALIDATOR_SHA}\""),
         "workflow must use authenticated git fetch for the external validator"
     );
     assert!(

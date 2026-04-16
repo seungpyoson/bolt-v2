@@ -457,13 +457,83 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must verify the fetched PR head SHA"
     );
 
-    let pr_materialization_start = workflow
-        .find("name: Materialize protected files from PR head")
-        .expect("materialization step should exist");
-    let pr_materialization_block = &workflow[pr_materialization_start..];
+    // Verify token isolation using structured YAML analysis
+    let env = yaml.get(&YamlValue::String("env".to_string()));
+    if let Some(env_map) = env.and_then(YamlValue::as_mapping) {
+        assert!(
+            !env_map.contains_key(&YamlValue::String("CLAUDE_CONFIG_READ_TOKEN".to_string())),
+            "CLAUDE_CONFIG_READ_TOKEN must not be in the top-level env"
+        );
+    }
+
+    let jobs = yaml
+        .get(&YamlValue::String("jobs".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("workflow should have jobs");
+    let trust_root_job = jobs
+        .get(&YamlValue::String("trust_root".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("trust_root job should exist");
+
+    if let Some(job_env) = trust_root_job
+        .get(&YamlValue::String("env".to_string()))
+        .and_then(YamlValue::as_mapping)
+    {
+        assert!(
+            !job_env.contains_key(&YamlValue::String("CLAUDE_CONFIG_READ_TOKEN".to_string())),
+            "CLAUDE_CONFIG_READ_TOKEN must not be in the job-level env"
+        );
+    }
+
+    let steps = trust_root_job
+        .get(&YamlValue::String("steps".to_string()))
+        .and_then(YamlValue::as_sequence)
+        .expect("job should have steps");
+
+    let mut found_validator_fetch = false;
+    let mut found_pr_materialization = false;
+
+    for step in steps {
+        let step_map = step.as_mapping().expect("step should be a mapping");
+        let name = step_map
+            .get(&YamlValue::String("name".to_string()))
+            .and_then(YamlValue::as_str)
+            .unwrap_or("");
+
+        let step_env = step_map
+            .get(&YamlValue::String("env".to_string()))
+            .and_then(YamlValue::as_mapping);
+
+        if name == "Fetch external trust-root validator" {
+            found_validator_fetch = true;
+            let env_map = step_env.expect("validator fetch step must have env");
+            assert!(
+                env_map.contains_key(&YamlValue::String("CLAUDE_CONFIG_READ_TOKEN".to_string())),
+                "validator fetch step must have CLAUDE_CONFIG_READ_TOKEN"
+            );
+        } else if name == "Materialize protected files from PR head" {
+            found_pr_materialization = true;
+            if let Some(env_map) = step_env {
+                assert!(
+                    !env_map.contains_key(&YamlValue::String("CLAUDE_CONFIG_READ_TOKEN".to_string())),
+                    "PR materialization step must not have CLAUDE_CONFIG_READ_TOKEN"
+                );
+            }
+        } else {
+            if let Some(env_map) = step_env {
+                assert!(
+                    !env_map.contains_key(&YamlValue::String("CLAUDE_CONFIG_READ_TOKEN".to_string())),
+                    "Step '{}' must not have CLAUDE_CONFIG_READ_TOKEN",
+                    name
+                );
+            }
+        }
+    }
+
+    assert!(found_validator_fetch, "did not find validator fetch step");
     assert!(
-        !pr_materialization_block.contains("CLAUDE_CONFIG_READ_TOKEN"),
-        "CLAUDE_CONFIG_READ_TOKEN must not be present in the PR materialization environment"
+        found_pr_materialization,
+        "did not find PR materialization step"
     );
 }
 

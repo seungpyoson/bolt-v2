@@ -5,6 +5,7 @@ use bolt_v2::nt_pointer_probe::control::{
 };
 use clap::{Parser, Subcommand};
 
+#[cfg(debug_assertions)]
 const TEST_PANIC_ENV: &str = "BOLT_NT_POINTER_PROBE_TEST_PANIC";
 
 #[derive(Debug, Parser)]

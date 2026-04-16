@@ -369,14 +369,8 @@ fn control_plane_load_no_longer_requires_guard_contract_block() {
 fn validate_control_plane_subprocess_fails_closed_on_invalid_fixture() {
     let tempdir = temp_fixture("bad_shared_crate_prefix");
     let output = nt_pointer_probe_command()
-        .args([
-            "validate-control-plane",
-            "--repo-root",
-            tempdir
-                .path()
-                .to_str()
-                .expect("fixture path should be utf-8"),
-        ])
+        .args(["validate-control-plane", "--repo-root"])
+        .arg(tempdir.path())
         .output()
         .expect("nt_pointer_probe validate-control-plane should run");
 
@@ -398,24 +392,26 @@ fn validate_control_plane_subprocess_fails_closed_on_invalid_fixture() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 fn nt_pointer_probe_subprocess_aborts_before_success_when_panicking() {
     let tempdir = temp_fixture("valid_minimal");
     let output = nt_pointer_probe_command()
         .env("BOLT_NT_POINTER_PROBE_TEST_PANIC", "before-parse")
-        .args([
-            "validate-control-plane",
-            "--repo-root",
-            tempdir
-                .path()
-                .to_str()
-                .expect("fixture path should be utf-8"),
-        ])
+        .args(["validate-control-plane", "--repo-root"])
+        .arg(tempdir.path())
         .output()
         .expect("nt_pointer_probe panic smoke path should run");
 
     assert!(
         !output.status.success(),
         "panic smoke path must terminate unsuccessfully"
+    );
+
+    #[cfg(unix)]
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&output.status),
+        Some(6),
+        "panic smoke path must terminate via SIGABRT"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -427,6 +423,111 @@ fn nt_pointer_probe_subprocess_aborts_before_success_when_panicking() {
     assert!(
         !stdout.contains("validated control plane"),
         "panic smoke path must abort before success handling: {stdout}"
+    );
+}
+
+#[test]
+fn compare_branch_protection_subprocess_fails_closed_on_drift_fixture() {
+    let tempdir = temp_fixture("valid_minimal");
+    fs::copy(
+        fixture("branch_protection/expected.toml"),
+        tempdir
+            .path()
+            .join("config/nt_pointer_probe/expected_branch_protection.toml"),
+    )
+    .expect("expected branch protection fixture should copy into temp repo");
+
+    let output = nt_pointer_probe_command()
+        .args(["compare-branch-protection", "--repo-root"])
+        .arg(tempdir.path())
+        .arg("--actual-json")
+        .arg(fixture("branch_protection/unprotected_actual.json"))
+        .output()
+        .expect("nt_pointer_probe compare-branch-protection should run");
+
+    assert!(
+        !output.status.success(),
+        "branch protection drift fixture must fail closed"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("branch protection drift: expected protected branch"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("branch protection matches expected state"),
+        "drift fixture must not report success: {stdout}"
+    );
+}
+
+#[test]
+fn compare_branch_governance_subprocess_fails_closed_on_rules_drift_fixture() {
+    let tempdir = temp_fixture("valid_minimal");
+    fs::copy(
+        fixture("branch_protection/expected.toml"),
+        tempdir
+            .path()
+            .join("config/nt_pointer_probe/expected_branch_protection.toml"),
+    )
+    .expect("expected branch protection fixture should copy into temp repo");
+
+    let output = nt_pointer_probe_command()
+        .args(["compare-branch-governance", "--repo-root"])
+        .arg(tempdir.path())
+        .arg("--actual-json")
+        .arg(fixture("branch_protection/matching_actual.json"))
+        .arg("--actual-rules-json")
+        .arg(fixture(
+            "branch_protection/missing_required_status_rule.json",
+        ))
+        .arg("--actual-ruleset-details-json")
+        .arg(fixture("branch_protection/matching_rulesets.json"))
+        .output()
+        .expect("nt_pointer_probe compare-branch-governance should run");
+
+    assert!(
+        !output.status.success(),
+        "branch governance drift fixture must fail closed"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("branch governance drift: effective rules differ"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("branch governance matches expected state"),
+        "drift fixture must not report success: {stdout}"
+    );
+}
+
+#[test]
+fn check_nt_mutation_subprocess_fails_closed_on_nt_manifest_change() {
+    let tempdir = init_temp_git_repo();
+    let output = nt_pointer_probe_command()
+        .args(["check-nt-mutation", "--repo-root"])
+        .arg(tempdir.path())
+        .args(["--base-ref", "HEAD~1", "--head-ref", "HEAD"])
+        .output()
+        .expect("nt_pointer_probe check-nt-mutation should run");
+
+    assert!(
+        !output.status.success(),
+        "NT manifest mutation fixture must fail closed"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Cargo.toml changed NT dependency records"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("no unmanaged NT mutations detected"),
+        "mutation fixture must not report success: {stdout}"
     );
 }
 

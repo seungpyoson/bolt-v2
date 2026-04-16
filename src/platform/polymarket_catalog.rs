@@ -116,6 +116,12 @@ async fn load_events_for_selector(
         if !event_slugs.is_empty() {
             return load_events_by_event_slugs(&event_slugs, client).await;
         }
+
+        log::debug!(
+            "selector state empty for tag_slug={} prefix={:?}; falling back to fresh prefix discovery",
+            selector.tag_slug,
+            selector.event_slug_prefix.as_deref()
+        );
     }
 
     let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)

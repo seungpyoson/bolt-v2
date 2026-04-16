@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -465,7 +466,11 @@ fn gamma_selector_datetime_after_seconds(
 ) -> anyhow::Result<String> {
     let offset_secs = i64::try_from(offset_secs)
         .map_err(|_| anyhow::anyhow!("selector expiry bound {offset_secs} exceeds i64::MAX"))?;
-    Ok((now + ChronoDuration::seconds(offset_secs))
+    Ok(now
+        .checked_add_signed(ChronoDuration::seconds(offset_secs))
+        .ok_or_else(|| {
+            anyhow::anyhow!("selector expiry bound {offset_secs} results in datetime overflow")
+        })?
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string())
 }
@@ -509,26 +514,42 @@ pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_cl
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<Vec<GammaEvent>, Box<dyn std::error::Error>> {
     let mut matched_events = Vec::new();
-    let mut seen_event_slugs: Vec<String> = Vec::new();
+    let mut seen_event_slugs = HashSet::new();
     let now = Utc::now();
+    let mut grouped_discoveries: BTreeMap<
+        (String, String, String),
+        (GetGammaEventsParams, Vec<&PolymarketPrefixDiscovery>),
+    > = BTreeMap::new();
 
     for discovery in discoveries {
         let params = gamma_event_params_for_prefix_discovery(discovery, now)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let key = (
+            params.tag_slug.clone().unwrap_or_default(),
+            params.end_date_min.clone().unwrap_or_default(),
+            params.end_date_max.clone().unwrap_or_default(),
+        );
+        grouped_discoveries
+            .entry(key)
+            .and_modify(|(_, bucket)| bucket.push(discovery))
+            .or_insert_with(|| (params, vec![discovery]));
+    }
+
+    for (_, (params, discoveries)) in grouped_discoveries {
         let events = fetch_gamma_events_paginated(client, params).await?;
 
         for event in events {
             let Some(event_slug) = event.slug.as_deref() else {
                 continue;
             };
-            if discovery
-                .selector
-                .event_slug_prefix
-                .as_deref()
-                .is_some_and(|prefix| event_slug.starts_with(prefix))
-                && !seen_event_slugs.iter().any(|seen| seen == event_slug)
+            if discoveries.iter().any(|discovery| {
+                discovery
+                    .selector
+                    .event_slug_prefix
+                    .as_deref()
+                    .is_some_and(|prefix| event_slug.starts_with(prefix))
+            }) && seen_event_slugs.insert(event_slug.to_string())
             {
-                seen_event_slugs.push(event_slug.to_string());
                 matched_events.push(event);
             }
         }
@@ -756,6 +777,30 @@ mod tests {
         ))
         .unwrap();
         assert_eq!((end_date_max - end_date_min).num_seconds(), 270);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_event_slugs_dedupes_identical_prefix_discovery_fetches() {
+        let (addr, requests) = spawn_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discoveries = vec![
+            prefix_discovery("bitcoin", "bitcoin-5m", 30, 300),
+            prefix_discovery("bitcoin", "bitcoin-15m", 30, 300),
+        ];
+
+        let event_slugs =
+            resolve_event_slugs_for_selectors_with_gamma_client(&discoveries, &client)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            vec![
+                "bitcoin-5m-alpha".to_string(),
+                "bitcoin-15m-beta".to_string()
+            ]
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[test]

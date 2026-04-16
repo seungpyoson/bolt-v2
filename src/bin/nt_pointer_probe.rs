@@ -5,6 +5,8 @@ use bolt_v2::nt_pointer_probe::control::{
 };
 use clap::{Parser, Subcommand};
 
+const TEST_PANIC_ENV: &str = "BOLT_NT_POINTER_PROBE_TEST_PANIC";
+
 #[derive(Debug, Parser)]
 #[command(name = "nt_pointer_probe")]
 struct Cli {
@@ -61,7 +63,24 @@ where
     }
 }
 
+fn install_abort_on_panic() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        default_hook(panic_info);
+        std::process::abort();
+    }));
+}
+
+fn trigger_test_panic_before_parse() {
+    #[cfg(debug_assertions)]
+    if std::env::var_os(TEST_PANIC_ENV).is_some() {
+        panic!("nt_pointer_probe test panic before CLI parse");
+    }
+}
+
 fn main() {
+    install_abort_on_panic();
+    trigger_test_panic_before_parse();
     let cli = Cli::parse();
 
     match cli.command {

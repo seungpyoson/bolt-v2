@@ -6711,6 +6711,22 @@ mod tests {
     }
 
     #[test]
+    fn interval_open_falls_back_to_fused_reference_when_no_polymarket_or_oracle_anchor_exists() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 1_000,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_107.0),
+            confidence: 1.0,
+            venues: vec![],
+        });
+
+        assert_eq!(strategy.active.interval_open, Some(3_107.0));
+    }
+
+    #[test]
     fn fees_ready_requires_both_outcome_tokens_before_refresh_can_succeed() {
         let fee_provider = RecordingFeeProvider::cold();
         let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());

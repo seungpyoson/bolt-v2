@@ -210,6 +210,27 @@ async fn load_markets_from_event_markets(
     (markets, request_count)
 }
 
+async fn load_markets_from_event_markets_with_raw_base_url(
+    markets: Vec<Value>,
+    raw_base_url: &str,
+) -> (
+    Vec<bolt_v2::platform::ruleset::CandidateMarket>,
+    Arc<AtomicUsize>,
+) {
+    let (addr, request_count) =
+        spawn_test_server(vec![json!([event_with_markets("event-1", markets)])]).await;
+    let client = test_gamma_client(addr);
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset(),
+        &client,
+        Some(raw_base_url),
+    )
+    .await
+    .unwrap();
+
+    (markets, request_count)
+}
+
 async fn load_markets_from_event_pages(
     event_pages: Vec<Vec<Value>>,
 ) -> (
@@ -448,6 +469,20 @@ async fn loads_polymarket_price_to_beat_when_event_payload_exposes_anchor_fields
 
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].price_to_beat, Some(3100.25));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_anchor_fetch_failure_preserves_candidates_and_falls_back_to_none() {
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let (markets, request_count) = load_markets_from_event_markets_with_raw_base_url(
+        vec![valid_market(end_date)],
+        "http://127.0.0.1:9",
+    )
+    .await;
+
+    assert_eq!(request_count.load(Ordering::Relaxed), 1);
+    assert_eq!(markets.len(), 1);
+    assert_eq!(markets[0].price_to_beat, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

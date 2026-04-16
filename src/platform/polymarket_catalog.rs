@@ -1,5 +1,6 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+use futures_util::future::join_all;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::identifiers::InstrumentId;
 use nautilus_network::http::{HttpClient, Method, USER_AGENT};
@@ -25,7 +26,6 @@ use crate::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawGammaEvent {
-    slug: Option<String>,
     #[serde(default)]
     markets: Vec<RawGammaMarket>,
 }
@@ -133,7 +133,6 @@ async fn load_price_to_beat_map_for_events(
     match fetch_raw_events_by_slugs(&slugs, &base_url, timeout_secs).await {
         Ok(raw_events) => {
             for event in raw_events {
-                let _ = &event.slug;
                 for market in event.markets {
                     by_market_id.insert(market.id.clone(), extract_price_to_beat(&market));
                 }
@@ -161,32 +160,44 @@ async fn fetch_raw_events_by_slugs(
         None,
     )
     .context("failed to build raw gamma http client")?;
-    let mut events = Vec::new();
+    let requests = slugs.iter().cloned().map(|slug| {
+        let client = client.clone();
+        let url = format!("{}/events", base_url.trim_end_matches('/'));
+        async move {
+            let response = client
+                .request_with_params(
+                    Method::GET,
+                    url,
+                    Some(&SlugParam { slug: &slug }),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-    for slug in slugs {
-        let response = client
-            .request_with_params(
-                Method::GET,
-                format!("{}/events", base_url.trim_end_matches('/')),
-                Some(&SlugParam { slug }),
-                None,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            if !response.status.is_success() {
+                return Err(anyhow::anyhow!(
+                    "raw gamma events request for slug {slug} failed with status {}",
+                    response.status.as_u16()
+                ));
+            }
 
-        if !response.status.is_success() {
-            return Err(anyhow::anyhow!(
-                "raw gamma events request for slug {slug} failed with status {}",
-                response.status.as_u16()
-            ));
+            let page: Vec<RawGammaEvent> = serde_json::from_slice(&response.body)
+                .context("failed to decode raw gamma events response")?;
+            Ok::<_, anyhow::Error>((slug, page))
         }
+    });
 
-        let mut page: Vec<RawGammaEvent> = serde_json::from_slice(&response.body)
-            .context("failed to decode raw gamma events response")?;
-        events.append(&mut page);
+    let mut events = Vec::new();
+    for result in join_all(requests).await {
+        match result {
+            Ok((_slug, mut page)) => events.append(&mut page),
+            Err(error) => {
+                log::warn!("failed to fetch raw polymarket anchor slug: {error:#}");
+            }
+        }
     }
 
     Ok(events)

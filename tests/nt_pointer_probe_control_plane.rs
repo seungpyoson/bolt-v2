@@ -630,6 +630,35 @@ fn control_plane_workflow_rejects_unexpected_build_injection_surfaces() {
 }
 
 #[test]
+fn nt_pointer_probe_binary_exits_without_drop_unwind_on_control_plane_errors() {
+    let binary = fs::read_to_string(repo_root().join("src/bin/nt_pointer_probe.rs"))
+        .expect("nt_pointer_probe binary should load");
+    let control = fs::read_to_string(repo_root().join("src/nt_pointer_probe/control.rs"))
+        .expect("nt_pointer_probe control plane should load");
+
+    assert!(
+        binary.contains("std::process::exit(1)"),
+        "nt_pointer_probe binary must terminate fail-closed without unwinding through destructors"
+    );
+    assert!(
+        !binary.contains("LoadedControlPlane::load_from_repo_root(&repo_root)?"),
+        "nt_pointer_probe binary must not use ? when constructing LoadedControlPlane"
+    );
+    assert!(
+        !binary.contains("loaded.ensure_no_nt_mutation_from_git_refs(&base_ref, &head_ref)?"),
+        "nt_pointer_probe binary must not use ? on the NT mutation guard path"
+    );
+    assert!(
+        !control.contains("loaded.validate()?"),
+        "LoadedControlPlane::load_from_repo_root must not use ? after constructing LoadedControlPlane"
+    );
+    assert!(
+        control.contains("std::mem::forget(loaded);"),
+        "LoadedControlPlane::load_from_repo_root must avoid dropping a rejected LoadedControlPlane"
+    );
+}
+
+#[test]
 fn current_external_snapshot_validator_matches_local_checkout() {
     let Some(root) = external_claude_config_root() else {
         return;

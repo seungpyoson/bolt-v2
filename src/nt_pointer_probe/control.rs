@@ -314,8 +314,14 @@ impl LoadedControlPlane {
             replay_set,
             expected_branch_protection,
         };
-        loaded.validate()?;
-        Ok(loaded)
+        match loaded.validate() {
+            Ok(()) => Ok(loaded),
+            // Leak the rejected value so a same-crate Drop impl cannot override the error exit path.
+            Err(err) => {
+                std::mem::forget(loaded);
+                Err(err)
+            }
+        }
     }
 
     pub fn validate(&self) -> Result<()> {

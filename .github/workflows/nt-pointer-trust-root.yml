@@ -33,12 +33,12 @@ jobs:
         env:
           CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
-          repo_url="https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
           tmp_repo="$RUNNER_TEMP/claude-config-fetch"
           mkdir -p "$tmp_repo"
           git init -q "$tmp_repo"
-          git -C "$tmp_repo" remote add origin "$repo_url"
-          git -C "$tmp_repo" fetch --depth=1 --no-tags origin "${TRUST_ROOT_VALIDATOR_SHA}"
+          git -C "$tmp_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+          git -C "$tmp_repo" -c http.extraheader="$auth_header" fetch --depth=1 --no-tags origin "${TRUST_ROOT_VALIDATOR_SHA}"
 
           fetched_sha="$(git -C "$tmp_repo" rev-parse FETCH_HEAD)"
           if [ "$fetched_sha" != "${TRUST_ROOT_VALIDATOR_SHA}" ]; then

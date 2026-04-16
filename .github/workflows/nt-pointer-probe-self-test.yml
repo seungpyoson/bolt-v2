@@ -65,9 +65,14 @@ jobs:
               .github/workflows/nt-pointer-probe-self-test.yml|\
               .github/workflows/nt-pointer-trust-root.yml|\
               .github/workflows/nt-pointer-branch-governance-drift.yml|\
+              build.rs|\
               Cargo.toml|\
               Cargo.lock|\
+              rust-toolchain.toml|\
               config/nt_pointer_probe/*|\
+              .cargo/config|\
+              .cargo/config.toml|\
+              .cargo/config.d/*|\
               scripts/install_ci_rust_verification_owner.sh|\
               scripts/nt_pin_block_guard.sh|\
               scripts/require_rust_verification_owner.sh|\
@@ -86,6 +91,10 @@ jobs:
       - name: Skip NT pointer probe self-tests
         if: steps.scope.outputs.run != 'true'
         run: echo "NT pointer probe self-tests not required for this diff"
+
+      - name: Reject unexpected build-time injection surfaces
+        if: steps.scope.outputs.run == 'true'
+        run: just nt-pointer-probe-forbid-build-injection-surfaces
 
       - name: Run NT pointer probe self-tests
         if: steps.scope.outputs.run == 'true'

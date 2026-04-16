@@ -4,6 +4,7 @@ use bolt_v2::nt_pointer_probe::control::{
     ExpectedBranchProtection, LoadedControlPlane, compare_branch_governance_responses,
     compare_branch_protection_response,
 };
+use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use tempfile::TempDir;
 
@@ -439,19 +440,46 @@ fn trust_root_workflow_file_is_part_of_external_snapshot_policy() {
     };
     let policy = fs::read_to_string(root.join("config/bolt-v2-trust-root-policy.json"))
         .expect("external trust-root policy should read");
+    let parsed: JsonValue =
+        serde_json::from_str(&policy).expect("external trust-root policy should parse");
+    let protected_entries = parsed
+        .get("protected_entries")
+        .and_then(JsonValue::as_array)
+        .expect("external trust-root policy should declare protected_entries");
+    let forbidden_entries = parsed
+        .get("forbidden_entries")
+        .and_then(JsonValue::as_array)
+        .expect("external trust-root policy should declare forbidden_entries");
 
     for required_path in [
         ".github/workflows/nt-pointer-trust-root.yml",
         ".github/workflows/ci.yml",
         "Cargo.toml",
         "Cargo.lock",
+        "rust-toolchain.toml",
         "src/lib.rs",
         "src/nt_pointer_probe/mod.rs",
         "tests/nt_pointer_probe_control_plane.rs",
     ] {
         assert!(
-            policy.contains(&format!("\"path\": \"{required_path}\"")),
+            protected_entries.iter().any(|entry| {
+                entry.get("path").and_then(JsonValue::as_str) == Some(required_path)
+            }),
             "external snapshot policy must protect {required_path}"
+        );
+    }
+
+    for forbidden_path in [
+        "build.rs",
+        ".cargo/config",
+        ".cargo/config.toml",
+        ".cargo/config.d",
+    ] {
+        assert!(
+            forbidden_entries.iter().any(|entry| {
+                entry.get("path").and_then(JsonValue::as_str) == Some(forbidden_path)
+            }),
+            "external snapshot policy must forbid {forbidden_path}"
         );
     }
 }
@@ -547,8 +575,13 @@ fn self_test_workflow_is_always_present_but_runtime_gated() {
     );
 
     for required_path in [
+        "build.rs",
         "Cargo.toml",
         "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config",
+        ".cargo/config.toml",
+        ".cargo/config.d/*",
         ".github/dependabot.yml",
         ".github/workflows/dependabot-auto-merge.yml",
         "tests/fixtures/nt_pointer_probe/*",
@@ -558,6 +591,14 @@ fn self_test_workflow_is_always_present_but_runtime_gated() {
             "self-test workflow scope must include {required_path}"
         );
     }
+    assert!(
+        workflow.contains("Reject unexpected build-time injection surfaces"),
+        "self-test workflow must fail closed on unexpected build-time injection surfaces before running cargo"
+    );
+    assert!(
+        workflow.contains("just nt-pointer-probe-forbid-build-injection-surfaces"),
+        "self-test workflow must invoke the protected build-injection guard recipe"
+    );
 
     assert!(
         workflow.contains("Determine NT pointer self-test scope"),
@@ -570,6 +611,21 @@ fn self_test_workflow_is_always_present_but_runtime_gated() {
     assert!(
         workflow.contains("if: steps.scope.outputs.run == 'true'"),
         "self-test workflow must run heavy tests only when relevant"
+    );
+}
+
+#[test]
+fn control_plane_workflow_rejects_unexpected_build_injection_surfaces() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-control-plane.yml"))
+            .expect("control-plane workflow should load");
+    assert!(
+        workflow.contains("Reject unexpected build-time injection surfaces"),
+        "control-plane workflow must fail closed on unexpected build-time injection surfaces before cargo"
+    );
+    assert!(
+        workflow.contains("just nt-pointer-probe-forbid-build-injection-surfaces"),
+        "control-plane workflow must invoke the protected build-injection guard recipe"
     );
 }
 

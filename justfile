@@ -136,7 +136,7 @@ ci-lint-workflow:
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection|nt-pointer-probe-compare-branch-governance|nt-pointer-probe-print-nt-crate-diff-pattern|nt-pointer-probe-check-nt-mutation)([^[:alnum:]_]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-forbid-build-injection-surfaces|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection|nt-pointer-probe-compare-branch-governance|nt-pointer-probe-print-nt-crate-diff-pattern|nt-pointer-probe-check-nt-mutation)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_lint_literal='lint-workflow-contract:'
     setup_lint_true_literal='lint-workflow-contract: "true"'
@@ -684,6 +684,16 @@ ci-lint-workflow:
     else
         echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
     fi
+
+nt-pointer-probe-forbid-build-injection-surfaces: check-workspace
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for path in build.rs .cargo/config .cargo/config.toml .cargo/config.d; do
+        if [ -e "$path" ]; then
+            echo "unexpected build-time injection surface present: $path" >&2
+            exit 1
+        fi
+    done
 
 nt-pointer-probe-validate-control-plane: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- validate-control-plane --repo-root "{{repo_root}}"

@@ -30,6 +30,9 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           lint-workflow-contract: "true"
 
+      - name: Reject unexpected build-time injection surfaces
+        run: just nt-pointer-probe-forbid-build-injection-surfaces
+
       - name: Validate control-plane artifacts
         run: just nt-pointer-probe-validate-control-plane
 

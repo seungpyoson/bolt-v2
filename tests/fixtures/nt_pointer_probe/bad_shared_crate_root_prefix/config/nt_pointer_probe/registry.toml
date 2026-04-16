@@ -1,0 +1,37 @@
+schema_version = 1
+coverage_classes = [
+  "compile-time-api",
+  "unit-behavior",
+  "integration-behavior",
+  "bootstrap-materialization",
+  "serialization-contract",
+  "network-transport",
+  "timing-ordering",
+]
+
+[[seams]]
+name = "subscription_custom_data_semantics"
+risk = "Subscription ownership and custom-data delivery changes can break Bolt actor wiring."
+bolt_usage = [
+  "src/platform/reference_actor.rs",
+  "src/clients/chainlink.rs",
+]
+upstream_prefixes = [
+  "crates/common/src",
+  "crates/system/src",
+  "crates/adapters/polymarket/src",
+]
+required_coverage = ["compile-time-api", "integration-behavior"]
+escalation = "fail"
+
+[[seams.canaries]]
+id = "tests/reference_actor.rs::reference_actor_subscribes_to_quotes_for_configured_venues"
+path = "tests/reference_actor.rs"
+coverage = "integration-behavior"
+assertion = "Reference actor still subscribes through the expected NT client seams."
+
+[[seams.canaries]]
+id = "tests/reference_pipeline.rs::builds_shared_chainlink_reference_data_client_for_all_configured_chainlink_venues"
+path = "tests/reference_pipeline.rs"
+coverage = "compile-time-api"
+assertion = "Reference pipeline still compiles and wires shared custom-data semantics."

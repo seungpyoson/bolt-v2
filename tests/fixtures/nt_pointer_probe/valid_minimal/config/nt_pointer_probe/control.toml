@@ -1,0 +1,59 @@
+schema_version = 1
+repo = "seungpyoson/bolt-v2"
+default_branch = "main"
+artifact_store_uri = "s3://bolt-deploy-artifacts/artifacts/bolt-v2/nt-pointer-probe"
+artifact_retention_days = 90
+max_safe_list_duration_days = 30
+tag_soak_days = 7
+nt_crates = [
+  "nautilus-common",
+  "nautilus-core",
+  "nautilus-data",
+  "nautilus-binance",
+  "nautilus-bybit",
+  "nautilus-deribit",
+  "nautilus-hyperliquid",
+  "nautilus-kraken",
+  "nautilus-live",
+  "nautilus-model",
+  "nautilus-network",
+  "nautilus-okx",
+  "nautilus-persistence",
+  "nautilus-polymarket",
+  "nautilus-system",
+  "nautilus-trading",
+  "nautilus-execution",
+]
+required_status_check_floor = [
+  "nt-pointer-trust-root",
+  "nt-pointer-control-plane",
+  "nt-pointer-probe-self-test",
+]
+
+[paths]
+registry = "config/nt_pointer_probe/registry.toml"
+safe_list = "config/nt_pointer_probe/safe_list.toml"
+replay_set = "config/nt_pointer_probe/replay_set.toml"
+expected_branch_protection = "config/nt_pointer_probe/expected_branch_protection.toml"
+advisory_issue_template = ".github/nt-pointer-probe/advisory_issue.md"
+draft_pr_template = ".github/nt-pointer-probe/draft_pr.md"
+
+[status_checks]
+trust_root = "nt-pointer-trust-root"
+control_plane = "nt-pointer-control-plane"
+self_test = "nt-pointer-probe-self-test"
+develop = "nt-pointer-probe-develop"
+tagged = "nt-pointer-probe-tagged"
+external_review = "external-adversarial-review"
+
+[develop_lane]
+issue_label = "nt-pointer-probe-advisory"
+issue_title_prefix = "NT Pointer Probe Advisory"
+
+[drift_lane]
+issue_label = "nt-pointer-probe-drift"
+issue_title_prefix = "NT Pointer Probe Drift"
+
+[tagged_lane]
+pr_branch = "automation/nt-pointer-probe"
+pr_title_prefix = "NT Pointer Probe"

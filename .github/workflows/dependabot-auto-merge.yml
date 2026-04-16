@@ -1,6 +1,9 @@
 name: Dependabot auto-merge
 on: pull_request
 
+env:
+  JUST_VERSION: "1.49.0"
+
 permissions:
   pull-requests: write
   contents: write
@@ -10,9 +13,28 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+
+      - name: Block NT pin auto-merge
+        shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{github.event.pull_request.html_url}}
+          GH_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        run: |
+          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "$BASE_REF" "$PR_NUMBER"
+
       - name: Dependabot metadata
         id: metadata
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@ffa630c65fa7e0ecfa0625b5ceda64399aea1b36 # v3
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 

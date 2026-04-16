@@ -117,13 +117,11 @@ async fn load_events_for_selector(
             return load_events_by_event_slugs(&event_slugs, client).await;
         }
 
-        log::debug!(
-            "selector state empty for tag_slug={} prefix={:?}; falling back to fresh prefix discovery",
+        anyhow::bail!(
+            "selector state empty for tag_slug={} prefix={:?}; failing closed until selector refresh repopulates event slugs",
             selector.tag_slug,
             selector.event_slug_prefix.as_deref()
         );
-
-        return Ok(Vec::new());
     }
 
     let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)
@@ -741,16 +739,19 @@ mod tests {
             vec![],
         );
 
-        let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        let err = load_candidate_markets_for_ruleset_with_gamma_client(
             &ruleset,
             &client,
             Some(&format!("http://{addr}")),
             Some(selector_state),
         )
         .await
-        .unwrap();
+        .expect_err("empty selector state should fail closed");
 
-        assert!(markets.is_empty());
+        assert!(
+            format!("{err:#}").contains("selector state empty"),
+            "unexpected error: {err:#}"
+        );
         assert_eq!(request_count.load(Ordering::Relaxed), 0);
     }
 }

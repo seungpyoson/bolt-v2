@@ -695,6 +695,29 @@ fn branch_protection_comparison_forgets_normalized_state_before_drift_return() {
         compare_fn.contains("std::mem::forget(expected_normalized);"),
         "compare_branch_protection_response must forget the normalized expected state before returning detected drift"
     );
+
+    let success_tail_start = compare_fn
+        .rfind("fail_branch_protection_drift!(")
+        .expect("branch protection comparison should end with a drift guard");
+    let success_tail = &compare_fn[success_tail_start..];
+    let forget_actual = success_tail
+        .find("std::mem::forget(actual);")
+        .expect("compare_branch_protection_response must forget the normalized actual state before returning success");
+    let forget_expected = success_tail
+        .find("std::mem::forget(expected_normalized);")
+        .expect("compare_branch_protection_response must forget the normalized expected state before returning success");
+    let ok_return = success_tail
+        .find("Ok(())")
+        .expect("compare_branch_protection_response must end in Ok(())");
+
+    assert!(
+        forget_actual < ok_return,
+        "compare_branch_protection_response must forget the normalized actual state before returning success"
+    );
+    assert!(
+        forget_expected < ok_return,
+        "compare_branch_protection_response must forget the normalized expected state before returning success"
+    );
 }
 
 #[test]

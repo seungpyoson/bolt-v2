@@ -1101,6 +1101,8 @@ pub fn compare_branch_protection_response(
         actual.strict_required_status_checks
     );
 
+    std::mem::forget(actual);
+    std::mem::forget(expected_normalized);
     Ok(())
 }
 

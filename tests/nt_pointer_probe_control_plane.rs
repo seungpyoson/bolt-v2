@@ -431,6 +431,40 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         workflow.contains("HEAD_SHA: ${{ github.event.pull_request.head.sha }}"),
         "workflow must source head.sha through an environment variable"
     );
+
+    assert!(
+        !workflow.contains("raw.githubusercontent.com"),
+        "workflow must not use anonymous raw.githubusercontent.com fetches"
+    );
+    assert!(
+        workflow.contains("git -C \"$tmp_repo\" fetch --depth=1 --no-tags origin \"${TRUST_ROOT_VALIDATOR_SHA}\""),
+        "workflow must use authenticated git fetch for the external validator"
+    );
+    assert!(
+        workflow.contains("if [ \"$fetched_sha\" != \"${TRUST_ROOT_VALIDATOR_SHA}\" ]; then"),
+        "workflow must verify the fetched validator SHA"
+    );
+    assert!(
+        workflow.contains("CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"),
+        "workflow must use CLAUDE_CONFIG_READ_TOKEN for validator fetch"
+    );
+    assert!(
+        workflow.contains("git -C \"$tmp_repo\" fetch --depth=1 --no-tags origin \"+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head\""),
+        "workflow must fetch PR content through the base repo synthetic PR ref"
+    );
+    assert!(
+        workflow.contains("if [ \"$fetched_sha\" != \"${HEAD_SHA}\" ]; then"),
+        "workflow must verify the fetched PR head SHA"
+    );
+
+    let pr_materialization_start = workflow
+        .find("name: Materialize protected files from PR head")
+        .expect("materialization step should exist");
+    let pr_materialization_block = &workflow[pr_materialization_start..];
+    assert!(
+        !pr_materialization_block.contains("CLAUDE_CONFIG_READ_TOKEN"),
+        "CLAUDE_CONFIG_READ_TOKEN must not be present in the PR materialization environment"
+    );
 }
 
 #[test]

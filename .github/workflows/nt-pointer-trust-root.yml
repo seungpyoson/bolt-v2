@@ -30,25 +30,50 @@ jobs:
 
       - name: Fetch external trust-root validator
         shell: bash
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
-          base_url="https://raw.githubusercontent.com/${TRUST_ROOT_VALIDATOR_REPO}/${TRUST_ROOT_VALIDATOR_SHA}"
-          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt_trust_root_validator.py" "$base_url/lib/bolt_trust_root_validator.py"
-          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" "$base_url/config/bolt-v2-trust-root-policy.json"
+          repo_url="https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+          tmp_repo="$RUNNER_TEMP/claude-config-fetch"
+          mkdir -p "$tmp_repo"
+          git init -q "$tmp_repo"
+          git -C "$tmp_repo" remote add origin "$repo_url"
+          git -C "$tmp_repo" fetch --depth=1 --no-tags origin "${TRUST_ROOT_VALIDATOR_SHA}"
+
+          fetched_sha="$(git -C "$tmp_repo" rev-parse FETCH_HEAD)"
+          if [ "$fetched_sha" != "${TRUST_ROOT_VALIDATOR_SHA}" ]; then
+            echo "ERROR: fetched validator commit $fetched_sha does not match requested ${TRUST_ROOT_VALIDATOR_SHA}" >&2
+            exit 1
+          fi
+
+          git -C "$tmp_repo" show "FETCH_HEAD:lib/bolt_trust_root_validator.py" > "$RUNNER_TEMP/bolt_trust_root_validator.py"
+          git -C "$tmp_repo" show "FETCH_HEAD:config/bolt-v2-trust-root-policy.json" > "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"
           chmod +x "$RUNNER_TEMP/bolt_trust_root_validator.py"
 
       - name: Materialize protected files from PR head
         shell: bash
         env:
-          HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          tmp_repo="$RUNNER_TEMP/pr-head-fetch"
+          mkdir -p "$tmp_repo"
+          git init -q "$tmp_repo"
+          git -C "$tmp_repo" remote add origin "https://github.com/${{ github.repository }}.git"
+          git -C "$tmp_repo" fetch --depth=1 --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"
+
+          fetched_sha="$(git -C "$tmp_repo" rev-parse refs/remotes/origin/pr-head)"
+          if [ "$fetched_sha" != "${HEAD_SHA}" ]; then
+            echo "ERROR: fetched PR head $fetched_sha does not match expected ${HEAD_SHA}" >&2
+            exit 1
+          fi
+
           repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
           mkdir -p "$repo_root"
           jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
             target_path="$repo_root/$relative_path"
             mkdir -p "$(dirname "$target_path")"
-            file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}"
-            curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url"
+            git -C "$tmp_repo" show "refs/remotes/origin/pr-head:${relative_path}" > "$target_path"
           done
           printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path"
 

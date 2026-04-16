@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Context;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nautilus_model::identifiers::{AccountId, TraderId};
 use nautilus_polymarket::http::query::GetGammaEventsParams;
 use nautilus_polymarket::{
@@ -60,6 +61,13 @@ pub struct PolymarketRulesetSelector {
     pub event_slug_prefix: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PolymarketPrefixDiscovery {
+    pub selector: PolymarketRulesetSelector,
+    pub min_time_to_expiry_secs: u64,
+    pub max_time_to_expiry_secs: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct PolymarketSelectorState {
     prefix_selectors: Vec<PolymarketRulesetSelector>,
@@ -67,7 +75,10 @@ pub struct PolymarketSelectorState {
 }
 
 impl PolymarketSelectorState {
-    fn new(prefix_selectors: Vec<PolymarketRulesetSelector>, event_slugs: Vec<String>) -> Self {
+    pub(crate) fn new(
+        prefix_selectors: Vec<PolymarketRulesetSelector>,
+        event_slugs: Vec<String>,
+    ) -> Self {
         Self {
             prefix_selectors,
             event_slugs: Arc::new(RwLock::new(event_slugs)),
@@ -86,6 +97,20 @@ impl PolymarketSelectorState {
             .event_slugs
             .write()
             .expect("selector event slugs lock poisoned") = event_slugs;
+    }
+
+    pub(crate) fn event_slugs_for_selector(
+        &self,
+        selector: &PolymarketRulesetSelector,
+    ) -> Vec<String> {
+        let event_slugs = self.current_event_slugs();
+        match selector.event_slug_prefix.as_deref() {
+            Some(prefix) => event_slugs
+                .into_iter()
+                .filter(|event_slug| event_slug.starts_with(prefix))
+                .collect(),
+            None => event_slugs,
+        }
     }
 
     fn accepts_new_market_slug(&self, slug: &str) -> bool {
@@ -109,6 +134,13 @@ impl PolymarketSelectorState {
 pub struct PolymarketSelectorRefreshGuard {
     cancellation: CancellationToken,
     join_handle: JoinHandle<()>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PolymarketRulesetSetup {
+    selectors: Vec<PolymarketRulesetSelector>,
+    prefix_discoveries: Vec<PolymarketPrefixDiscovery>,
+    selector_state: Option<PolymarketSelectorState>,
 }
 
 fn default_update_instruments_interval_mins() -> u64 {
@@ -226,6 +258,28 @@ pub fn polymarket_ruleset_tag_slugs(
     Ok(tag_slugs)
 }
 
+fn polymarket_ruleset_selector(
+    ruleset: &RulesetConfig,
+) -> Result<PolymarketRulesetSelector, Box<dyn std::error::Error>> {
+    let selector: PolymarketRulesetSelector =
+        ruleset.selector.clone().try_into().map_err(|error| {
+            format!(
+                "failed to parse polymarket selector for ruleset {}: {error}",
+                ruleset.id
+            )
+        })?;
+
+    if selector.tag_slug.contains(char::is_whitespace) {
+        return Err(format!(
+            "polymarket selector tag_slug for ruleset {} must not contain whitespace, got {:?}",
+            ruleset.id, selector.tag_slug
+        )
+        .into());
+    }
+
+    Ok(selector)
+}
+
 pub fn polymarket_ruleset_selectors(
     rulesets: &[RulesetConfig],
 ) -> Result<Vec<PolymarketRulesetSelector>, Box<dyn std::error::Error>> {
@@ -235,26 +289,53 @@ pub fn polymarket_ruleset_selectors(
             continue;
         }
 
-        let selector: PolymarketRulesetSelector =
-            ruleset.selector.clone().try_into().map_err(|error| {
-                format!(
-                    "failed to parse polymarket selector for ruleset {}: {error}",
-                    ruleset.id
-                )
-            })?;
-
-        if selector.tag_slug.contains(char::is_whitespace) {
-            return Err(format!(
-                "polymarket selector tag_slug for ruleset {} must not contain whitespace, got {:?}",
-                ruleset.id, selector.tag_slug
-            )
-            .into());
-        }
-
-        selectors.push(selector);
+        selectors.push(polymarket_ruleset_selector(ruleset)?);
     }
 
     Ok(selectors)
+}
+
+pub(crate) fn polymarket_ruleset_prefix_discoveries(
+    rulesets: &[RulesetConfig],
+) -> Result<Vec<PolymarketPrefixDiscovery>, Box<dyn std::error::Error>> {
+    let mut discoveries = Vec::new();
+    for ruleset in rulesets {
+        if ruleset.venue != RulesetVenueKind::Polymarket {
+            continue;
+        }
+
+        let selector = polymarket_ruleset_selector(ruleset)?;
+        if selector.event_slug_prefix.is_none() {
+            continue;
+        }
+
+        discoveries.push(PolymarketPrefixDiscovery {
+            selector,
+            min_time_to_expiry_secs: ruleset.min_time_to_expiry_secs,
+            max_time_to_expiry_secs: ruleset.max_time_to_expiry_secs,
+        });
+    }
+
+    Ok(discoveries)
+}
+
+pub(crate) fn polymarket_prefix_discovery_for_ruleset(
+    ruleset: &RulesetConfig,
+) -> Result<Option<PolymarketPrefixDiscovery>, Box<dyn std::error::Error>> {
+    if ruleset.venue != RulesetVenueKind::Polymarket {
+        return Ok(None);
+    }
+
+    let selector = polymarket_ruleset_selector(ruleset)?;
+    if selector.event_slug_prefix.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(PolymarketPrefixDiscovery {
+        selector,
+        min_time_to_expiry_secs: ruleset.min_time_to_expiry_secs,
+        max_time_to_expiry_secs: ruleset.max_time_to_expiry_secs,
+    }))
 }
 
 pub fn gamma_refresh_interval_secs(raw: &Value) -> Result<u64, Box<dyn std::error::Error>> {
@@ -262,29 +343,27 @@ pub fn gamma_refresh_interval_secs(raw: &Value) -> Result<u64, Box<dyn std::erro
     Ok(input.gamma_refresh_interval_secs)
 }
 
-pub fn build_selector_state(
-    selectors: &[PolymarketRulesetSelector],
+pub(crate) fn build_selector_state(
+    prefix_discoveries: &[PolymarketPrefixDiscovery],
     timeout_secs: u64,
 ) -> Result<Option<PolymarketSelectorState>, Box<dyn std::error::Error>> {
-    let prefix_selectors: Vec<PolymarketRulesetSelector> = selectors
-        .iter()
-        .filter(|selector| selector.event_slug_prefix.is_some())
-        .cloned()
-        .collect();
-
-    if prefix_selectors.is_empty() {
+    if prefix_discoveries.is_empty() {
         return Ok(None);
     }
 
-    let event_slugs = resolve_event_slugs_for_selectors(&prefix_selectors, timeout_secs)?;
+    let event_slugs = resolve_event_slugs_for_prefix_discoveries(prefix_discoveries, timeout_secs)?;
     Ok(Some(PolymarketSelectorState::new(
-        prefix_selectors,
+        prefix_discoveries
+            .iter()
+            .map(|discovery| discovery.selector.clone())
+            .collect(),
         event_slugs,
     )))
 }
 
-pub fn spawn_selector_refresh_task(
+pub(crate) fn spawn_selector_refresh_task(
     selector_state: PolymarketSelectorState,
+    prefix_discoveries: Vec<PolymarketPrefixDiscovery>,
     interval_secs: u64,
     timeout_secs: u64,
 ) -> Result<PolymarketSelectorRefreshGuard, Box<dyn std::error::Error>> {
@@ -303,7 +382,7 @@ pub fn spawn_selector_refresh_task(
             }
 
             match resolve_event_slugs_for_selectors_with_gamma_client(
-                &selector_state.prefix_selectors,
+                &prefix_discoveries,
                 &raw_client,
             )
             .await
@@ -329,8 +408,88 @@ impl PolymarketSelectorRefreshGuard {
     }
 }
 
-pub(crate) fn resolve_event_slugs_for_selectors(
-    selectors: &[PolymarketRulesetSelector],
+impl PolymarketRulesetSetup {
+    pub fn from_rulesets(
+        rulesets: &[RulesetConfig],
+        timeout_secs: u64,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let selectors = polymarket_ruleset_selectors(rulesets)?;
+        let prefix_discoveries = polymarket_ruleset_prefix_discoveries(rulesets)?;
+        let selector_state = build_selector_state(&prefix_discoveries, timeout_secs)?;
+        Ok(Self {
+            selectors,
+            prefix_discoveries,
+            selector_state,
+        })
+    }
+
+    pub fn build_data_client(
+        &self,
+        raw: &Value,
+    ) -> Result<
+        (
+            Box<PolymarketDataClientFactory>,
+            Box<PolymarketDataClientConfig>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        build_data_client(raw, &self.selectors, self.selector_state.clone())
+    }
+
+    pub fn selector_state(&self) -> Option<PolymarketSelectorState> {
+        self.selector_state.clone()
+    }
+
+    pub fn spawn_selector_refresh_task_if_configured(
+        &self,
+        raw: &Value,
+        timeout_secs: u64,
+    ) -> Result<Option<PolymarketSelectorRefreshGuard>, Box<dyn std::error::Error>> {
+        let Some(selector_state) = self.selector_state.clone() else {
+            return Ok(None);
+        };
+
+        spawn_selector_refresh_task(
+            selector_state,
+            self.prefix_discoveries.clone(),
+            gamma_refresh_interval_secs(raw)?,
+            timeout_secs,
+        )
+        .map(Some)
+    }
+}
+
+fn gamma_selector_datetime_after_seconds(
+    now: DateTime<Utc>,
+    offset_secs: u64,
+) -> anyhow::Result<String> {
+    let offset_secs = i64::try_from(offset_secs)
+        .map_err(|_| anyhow::anyhow!("selector expiry bound {offset_secs} exceeds i64::MAX"))?;
+    Ok((now + ChronoDuration::seconds(offset_secs))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string())
+}
+
+pub(crate) fn gamma_event_params_for_prefix_discovery(
+    discovery: &PolymarketPrefixDiscovery,
+    now: DateTime<Utc>,
+) -> anyhow::Result<GetGammaEventsParams> {
+    Ok(GetGammaEventsParams {
+        tag_slug: Some(discovery.selector.tag_slug.clone()),
+        end_date_min: Some(gamma_selector_datetime_after_seconds(
+            now,
+            discovery.min_time_to_expiry_secs,
+        )?),
+        end_date_max: Some(gamma_selector_datetime_after_seconds(
+            now,
+            discovery.max_time_to_expiry_secs,
+        )?),
+        ..Default::default()
+    })
+}
+
+pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
+    discoveries: &[PolymarketPrefixDiscovery],
     timeout_secs: u64,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let raw_client = PolymarketGammaRawHttpClient::new(None, timeout_secs)
@@ -340,44 +499,33 @@ pub(crate) fn resolve_event_slugs_for_selectors(
         .build()?;
 
     runtime.block_on(resolve_event_slugs_for_selectors_with_gamma_client(
-        selectors,
+        discoveries,
         &raw_client,
     ))
 }
 
-pub(crate) async fn resolve_matching_events_for_selectors_with_gamma_client(
-    selectors: &[PolymarketRulesetSelector],
+pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_client(
+    discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<Vec<GammaEvent>, Box<dyn std::error::Error>> {
     let mut matched_events = Vec::new();
     let mut seen_event_slugs: Vec<String> = Vec::new();
+    let now = Utc::now();
 
-    let mut unique_tag_slugs = Vec::new();
-    for selector in selectors {
-        if !unique_tag_slugs.contains(&selector.tag_slug) {
-            unique_tag_slugs.push(selector.tag_slug.clone());
-        }
-    }
-
-    for tag_slug in unique_tag_slugs {
-        let events = fetch_gamma_events_paginated(
-            client,
-            GetGammaEventsParams {
-                tag_slug: Some(tag_slug.clone()),
-                ..Default::default()
-            },
-        )
-        .await?;
+    for discovery in discoveries {
+        let params = gamma_event_params_for_prefix_discovery(discovery, now)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let events = fetch_gamma_events_paginated(client, params).await?;
 
         for event in events {
             let Some(event_slug) = event.slug.as_deref() else {
                 continue;
             };
-            if selectors
-                .iter()
-                .filter(|selector| selector.tag_slug == tag_slug)
-                .filter_map(|selector| selector.event_slug_prefix.as_deref())
-                .any(|prefix| event_slug.starts_with(prefix))
+            if discovery
+                .selector
+                .event_slug_prefix
+                .as_deref()
+                .is_some_and(|prefix| event_slug.starts_with(prefix))
                 && !seen_event_slugs.iter().any(|seen| seen == event_slug)
             {
                 seen_event_slugs.push(event_slug.to_string());
@@ -390,11 +538,11 @@ pub(crate) async fn resolve_matching_events_for_selectors_with_gamma_client(
 }
 
 pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
-    selectors: &[PolymarketRulesetSelector],
+    discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     Ok(
-        resolve_matching_events_for_selectors_with_gamma_client(selectors, client)
+        resolve_matching_events_for_prefix_discoveries_with_gamma_client(discoveries, client)
             .await?
             .into_iter()
             .filter_map(|event| event.slug)
@@ -486,13 +634,17 @@ pub fn build_fee_provider(
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::net::SocketAddr;
+    use std::{
+        collections::HashMap,
+        net::SocketAddr,
+        sync::{Arc, Mutex},
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
 
-    fn parse_request_target(request: &str) -> (&str, std::collections::HashMap<String, String>) {
+    fn parse_request_target(request: &str) -> (&str, HashMap<String, String>) {
         let target = request
             .lines()
             .next()
@@ -510,17 +662,41 @@ mod tests {
         (path, params)
     }
 
-    async fn spawn_test_server() -> SocketAddr {
+    fn decode_query_param(value: &str) -> String {
+        value.replace("%3A", ":").replace("%3a", ":")
+    }
+
+    fn prefix_discovery(
+        tag_slug: &str,
+        event_slug_prefix: &str,
+        min_time_to_expiry_secs: u64,
+        max_time_to_expiry_secs: u64,
+    ) -> PolymarketPrefixDiscovery {
+        PolymarketPrefixDiscovery {
+            selector: PolymarketRulesetSelector {
+                tag_slug: tag_slug.to_string(),
+                event_slug_prefix: Some(event_slug_prefix.to_string()),
+            },
+            min_time_to_expiry_secs,
+            max_time_to_expiry_secs,
+        }
+    }
+
+    async fn spawn_test_server() -> (SocketAddr, Arc<Mutex<Vec<HashMap<String, String>>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
+                let server_requests = Arc::clone(&server_requests);
                 tokio::spawn(async move {
                     let mut buffer = vec![0_u8; 4096];
                     let read = stream.read(&mut buffer).await.unwrap();
                     let request = String::from_utf8_lossy(&buffer[..read]);
                     let (path, params) = parse_request_target(&request);
+                    server_requests.lock().unwrap().push(params.clone());
 
                     let body = if path == "/events"
                         && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
@@ -543,23 +719,60 @@ mod tests {
                 });
             }
         });
-        addr
+        (addr, requests)
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_event_slugs_for_selectors_with_gamma_client_filters_prefixes() {
-        let addr = spawn_test_server().await;
+        let (addr, requests) = spawn_test_server().await;
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
-        let selectors = vec![PolymarketRulesetSelector {
-            tag_slug: "bitcoin".to_string(),
-            event_slug_prefix: Some("bitcoin-5m".to_string()),
-        }];
+        let discoveries = vec![prefix_discovery("bitcoin", "bitcoin-5m", 30, 300)];
 
-        let event_slugs = resolve_event_slugs_for_selectors_with_gamma_client(&selectors, &client)
-            .await
-            .unwrap();
+        let event_slugs =
+            resolve_event_slugs_for_selectors_with_gamma_client(&discoveries, &client)
+                .await
+                .unwrap();
 
         assert_eq!(event_slugs, vec!["bitcoin-5m-alpha".to_string()]);
+
+        let recorded_requests = requests.lock().unwrap();
+        assert_eq!(recorded_requests.len(), 1);
+        let params = &recorded_requests[0];
+        assert_eq!(params.get("tag_slug").map(String::as_str), Some("bitcoin"));
+        assert_eq!(params.get("active"), None);
+        assert_eq!(params.get("closed"), None);
+        assert_eq!(params.get("archived"), None);
+
+        let end_date_min = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_min")
+                .expect("prefix discovery should send end_date_min"),
+        ))
+        .unwrap();
+        let end_date_max = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_max")
+                .expect("prefix discovery should send end_date_max"),
+        ))
+        .unwrap();
+        assert_eq!((end_date_max - end_date_min).num_seconds(), 270);
+    }
+
+    #[test]
+    fn prefix_discovery_builds_narrowed_event_params() {
+        let discovery = prefix_discovery("ethereum", "eth-updown-5m", 30, 300);
+        let now = DateTime::parse_from_rfc3339("2026-04-16T10:38:38Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let params = gamma_event_params_for_prefix_discovery(&discovery, now).unwrap();
+
+        assert_eq!(params.tag_slug.as_deref(), Some("ethereum"));
+        assert_eq!(params.active, None);
+        assert_eq!(params.closed, None);
+        assert_eq!(params.archived, None);
+        assert_eq!(params.end_date_min.as_deref(), Some("2026-04-16T10:39:08Z"));
+        assert_eq!(params.end_date_max.as_deref(), Some("2026-04-16T10:43:38Z"));
     }
 
     #[test]

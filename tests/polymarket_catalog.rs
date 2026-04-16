@@ -203,6 +203,7 @@ async fn load_markets_from_event_markets(
         &ruleset(),
         &client,
         Some(&format!("http://{addr}")),
+        None,
     )
     .await
     .unwrap();
@@ -224,6 +225,7 @@ async fn load_markets_from_event_markets_with_raw_base_url(
         &ruleset(),
         &client,
         Some(raw_base_url),
+        None,
     )
     .await
     .unwrap();
@@ -244,6 +246,7 @@ async fn load_markets_from_event_pages(
         &ruleset(),
         &client,
         Some(&format!("http://{addr}")),
+        None,
     )
     .await
     .unwrap();
@@ -265,6 +268,7 @@ async fn load_markets_from_ruleset_and_event_pages(
         &ruleset,
         &client,
         Some(&format!("http://{addr}")),
+        None,
     )
     .await
     .unwrap();

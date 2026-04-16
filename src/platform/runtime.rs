@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use toml::Value;
 
 use crate::{
-    clients::{self, ReferenceDataClientParts},
+    clients::{self, ReferenceDataClientParts, polymarket::PolymarketSelectorState},
     config::{Config, ReferenceVenueEntry, ReferenceVenueKind, RulesetConfig},
     platform::{
         audit::{
@@ -84,9 +84,12 @@ pub struct PlatformRuntimeServices {
 }
 
 impl PlatformRuntimeServices {
-    pub fn production(runtime_strategy_factory: RuntimeStrategyFactory) -> Self {
+    pub fn production(
+        runtime_strategy_factory: RuntimeStrategyFactory,
+        selector_state: Option<PolymarketSelectorState>,
+    ) -> Self {
         Self {
-            candidate_loader: Arc::new(ProductionCandidateMarketLoader),
+            candidate_loader: Arc::new(ProductionCandidateMarketLoader { selector_state }),
             audit_task_factory: Arc::new(ProductionAuditTaskFactory),
             now_ms: Arc::new(|| {
                 SystemTime::now()
@@ -372,11 +375,12 @@ pub fn wire_platform_runtime(
     node: &mut LiveNode,
     cfg: &Config,
     runtime_strategy_factory: RuntimeStrategyFactory,
+    selector_state: Option<PolymarketSelectorState>,
 ) -> anyhow::Result<PlatformRuntimeGuards> {
     wire_platform_runtime_with_services(
         node,
         cfg,
-        PlatformRuntimeServices::production(runtime_strategy_factory),
+        PlatformRuntimeServices::production(runtime_strategy_factory, selector_state),
     )
 }
 
@@ -996,14 +1000,21 @@ async fn wait_for_node_running(
     }
 }
 
-struct ProductionCandidateMarketLoader;
+struct ProductionCandidateMarketLoader {
+    selector_state: Option<PolymarketSelectorState>,
+}
 
 impl CandidateMarketLoader for ProductionCandidateMarketLoader {
     fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
+        let selector_state = self.selector_state.clone();
         Box::pin(async move {
-            load_candidate_markets_for_ruleset(&ruleset, ruleset.candidate_load_timeout_secs)
-                .await
-                .context("failed to load candidate markets for ruleset")
+            load_candidate_markets_for_ruleset(
+                &ruleset,
+                ruleset.candidate_load_timeout_secs,
+                selector_state,
+            )
+            .await
+            .context("failed to load candidate markets for ruleset")
         })
     }
 }

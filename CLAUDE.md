@@ -20,3 +20,12 @@
 - Do not let a broad issue silently collapse into a narrower PR without saying so.
 - Do not claim a PR closes a broader issue unless the diff actually satisfies that broader issue.
 - If a stale branch still exists after a merge, use it only for forensics. Never continue implementation from it unless you first prove the accepted scope is absent from `main`.
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)

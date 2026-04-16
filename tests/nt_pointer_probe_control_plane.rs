@@ -671,6 +671,33 @@ fn nt_pointer_probe_binary_exits_without_drop_unwind_on_control_plane_errors() {
 }
 
 #[test]
+fn branch_protection_comparison_forgets_normalized_state_before_drift_return() {
+    let control = fs::read_to_string(repo_root().join("src/nt_pointer_probe/control.rs"))
+        .expect("nt_pointer_probe control plane should load");
+    let compare_start = control
+        .find("pub fn compare_branch_protection_response(")
+        .expect("branch protection comparison function should exist");
+    let compare_end = control[compare_start..]
+        .find("pub fn compare_branch_governance_responses(")
+        .map(|offset| compare_start + offset)
+        .expect("branch governance comparison function should follow branch protection comparison");
+    let compare_fn = &control[compare_start..compare_end];
+
+    assert!(
+        !compare_fn.contains("ensure!("),
+        "compare_branch_protection_response must not use ensure! while NormalizedBranchProtection locals are live"
+    );
+    assert!(
+        compare_fn.contains("std::mem::forget(actual);"),
+        "compare_branch_protection_response must forget the normalized actual state before returning detected drift"
+    );
+    assert!(
+        compare_fn.contains("std::mem::forget(expected_normalized);"),
+        "compare_branch_protection_response must forget the normalized expected state before returning detected drift"
+    );
+}
+
+#[test]
 fn current_external_snapshot_validator_matches_local_checkout() {
     let Some(root) = external_claude_config_root() else {
         return;

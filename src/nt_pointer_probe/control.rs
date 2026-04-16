@@ -1003,87 +1003,98 @@ pub fn compare_branch_protection_response(
         strict_required_status_checks: expected.strict_required_status_checks,
     };
 
-    ensure!(
+    macro_rules! fail_branch_protection_drift {
+        ($condition:expr, $($arg:tt)*) => {
+            if !($condition) {
+                let err = anyhow!($($arg)*);
+                std::mem::forget(actual);
+                std::mem::forget(expected_normalized);
+                return Err(err);
+            }
+        };
+    }
+
+    fail_branch_protection_drift!(
         actual.enforce_admins == expected_normalized.enforce_admins,
         "branch protection drift: enforce_admins expected {}, got {}",
         expected_normalized.enforce_admins,
         actual.enforce_admins
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.allow_deletions == expected_normalized.allow_deletions,
         "branch protection drift: allow_deletions expected {}, got {}",
         expected_normalized.allow_deletions,
         actual.allow_deletions
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.allow_force_pushes == expected_normalized.allow_force_pushes,
         "branch protection drift: allow_force_pushes expected {}, got {}",
         expected_normalized.allow_force_pushes,
         actual.allow_force_pushes
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.block_creations == expected_normalized.block_creations,
         "branch protection drift: block_creations expected {}, got {}",
         expected_normalized.block_creations,
         actual.block_creations
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.dismiss_stale_reviews == expected_normalized.dismiss_stale_reviews,
         "branch protection drift: dismiss_stale_reviews expected {}, got {}",
         expected_normalized.dismiss_stale_reviews,
         actual.dismiss_stale_reviews
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.required_linear_history == expected_normalized.required_linear_history,
         "branch protection drift: required_linear_history expected {}, got {}",
         expected_normalized.required_linear_history,
         actual.required_linear_history
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.required_conversation_resolution
             == expected_normalized.required_conversation_resolution,
         "branch protection drift: required_conversation_resolution expected {}, got {}",
         expected_normalized.required_conversation_resolution,
         actual.required_conversation_resolution
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.lock_branch == expected_normalized.lock_branch,
         "branch protection drift: lock_branch expected {}, got {}",
         expected_normalized.lock_branch,
         actual.lock_branch
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.require_signed_commits == expected_normalized.require_signed_commits,
         "branch protection drift: require_signed_commits expected {}, got {}",
         expected_normalized.require_signed_commits,
         actual.require_signed_commits
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.require_code_owner_reviews == expected_normalized.require_code_owner_reviews,
         "branch protection drift: require_code_owner_reviews expected {}, got {}",
         expected_normalized.require_code_owner_reviews,
         actual.require_code_owner_reviews
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.required_approving_review_count
             == expected_normalized.required_approving_review_count,
         "branch protection drift: required_approving_review_count expected {}, got {}",
         expected_normalized.required_approving_review_count,
         actual.required_approving_review_count
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.required_status_checks == expected_normalized.required_status_checks,
         "branch protection drift: required status checks differ (expected {:?}, got {:?})",
         expected_normalized.required_status_checks,
         actual.required_status_checks
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.required_status_check_app_ids == expected_normalized.required_status_check_app_ids,
         "branch protection drift: required status check app ids differ (expected {:?}, got {:?})",
         expected_normalized.required_status_check_app_ids,
         actual.required_status_check_app_ids
     );
-    ensure!(
+    fail_branch_protection_drift!(
         actual.strict_required_status_checks == expected_normalized.strict_required_status_checks,
         "branch protection drift: strict status-check policy expected {}, got {}",
         expected_normalized.strict_required_status_checks,

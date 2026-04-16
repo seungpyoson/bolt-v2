@@ -298,6 +298,8 @@ impl LoadedControlPlane {
     pub fn load_from_repo_root(repo_root: &Path) -> Result<Self> {
         let control_path = repo_root.join("config/nt_pointer_probe/control.toml");
         let control: ManuallyDrop<ControlConfig> = ManuallyDrop::new(load_toml(&control_path)?);
+        #[allow(clippy::question_mark)]
+        // Intentionally avoid `?` to preserve the fail-closed destructor boundary.
         if let Err(err) = control.validate() {
             return Err(err);
         }

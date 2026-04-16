@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    mem::ManuallyDrop,
     path::{Component, Path, PathBuf},
 };
 
@@ -296,23 +297,29 @@ pub struct ExpectedRuleset {
 impl LoadedControlPlane {
     pub fn load_from_repo_root(repo_root: &Path) -> Result<Self> {
         let control_path = repo_root.join("config/nt_pointer_probe/control.toml");
-        let control: ControlConfig = load_toml(&control_path)?;
-        control.validate()?;
+        let control: ManuallyDrop<ControlConfig> = ManuallyDrop::new(load_toml(&control_path)?);
+        if let Err(err) = control.validate() {
+            return Err(err);
+        }
 
-        let registry: RegistryFile = load_toml(&repo_root.join(&control.paths.registry))?;
-        let safe_list: SafeListFile = load_toml(&repo_root.join(&control.paths.safe_list))?;
-        let replay_set: ReplaySetFile = load_toml(&repo_root.join(&control.paths.replay_set))?;
-        let expected_branch_protection = ExpectedBranchProtection::load_and_validate(
-            &repo_root.join(&control.paths.expected_branch_protection),
-        )?;
+        let registry: ManuallyDrop<RegistryFile> =
+            ManuallyDrop::new(load_toml(&repo_root.join(&control.paths.registry))?);
+        let safe_list: ManuallyDrop<SafeListFile> =
+            ManuallyDrop::new(load_toml(&repo_root.join(&control.paths.safe_list))?);
+        let replay_set: ManuallyDrop<ReplaySetFile> =
+            ManuallyDrop::new(load_toml(&repo_root.join(&control.paths.replay_set))?);
+        let expected_branch_protection: ManuallyDrop<ExpectedBranchProtection> =
+            ManuallyDrop::new(ExpectedBranchProtection::load_and_validate(
+                &repo_root.join(&control.paths.expected_branch_protection),
+            )?);
 
         let loaded = Self {
             repo_root: repo_root.to_path_buf(),
-            control,
-            registry,
-            safe_list,
-            replay_set,
-            expected_branch_protection,
+            control: ManuallyDrop::into_inner(control),
+            registry: ManuallyDrop::into_inner(registry),
+            safe_list: ManuallyDrop::into_inner(safe_list),
+            replay_set: ManuallyDrop::into_inner(replay_set),
+            expected_branch_protection: ManuallyDrop::into_inner(expected_branch_protection),
         };
         match loaded.validate() {
             Ok(()) => Ok(loaded),
@@ -817,8 +824,13 @@ impl ReplaySetFile {
 impl ExpectedBranchProtection {
     pub fn load_and_validate(path: &Path) -> Result<Self> {
         let expected: Self = load_toml(path)?;
-        expected.validate()?;
-        Ok(expected)
+        match expected.validate() {
+            Ok(()) => Ok(expected),
+            Err(err) => {
+                std::mem::forget(expected);
+                Err(err)
+            }
+        }
     }
 
     fn validate(&self) -> Result<()> {

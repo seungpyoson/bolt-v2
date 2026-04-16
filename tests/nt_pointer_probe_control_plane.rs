@@ -656,6 +656,18 @@ fn nt_pointer_probe_binary_exits_without_drop_unwind_on_control_plane_errors() {
         control.contains("std::mem::forget(loaded);"),
         "LoadedControlPlane::load_from_repo_root must avoid dropping a rejected LoadedControlPlane"
     );
+    assert!(
+        !control.contains("control.validate()?;"),
+        "LoadedControlPlane::load_from_repo_root must not use ? after constructing ControlConfig"
+    );
+    assert!(
+        !control.contains("expected.validate()?"),
+        "ExpectedBranchProtection::load_and_validate must not use ? after constructing ExpectedBranchProtection"
+    );
+    assert!(
+        control.contains("ManuallyDrop::new(load_toml(&control_path)?)"),
+        "LoadedControlPlane::load_from_repo_root must protect the constructed control config before later fallible steps"
+    );
 }
 
 #[test]

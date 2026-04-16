@@ -66,6 +66,7 @@ async fn load_events_for_selector(
         .map_err(|error| anyhow::anyhow!(error.to_string()));
     }
 
+<<<<<<< HEAD
     // Prefix selectors require a selector_state populated by the production wiring
     // (build_selector_state at startup + selector refresh task). Missing state here
     // would silently trigger the old fallback that performed a broad Gamma discovery
@@ -77,6 +78,20 @@ async fn load_events_for_selector(
             ruleset.id
         );
     };
+=======
+    if let Some(selector_state) = selector_state {
+        let event_slugs = selector_state.event_slugs_for_selector(selector);
+        if !event_slugs.is_empty() {
+            return load_events_by_event_slugs(&event_slugs, client).await;
+        }
+
+        log::debug!(
+            "selector state empty for tag_slug={} prefix={:?}; falling back to fresh prefix discovery",
+            selector.tag_slug,
+            selector.event_slug_prefix.as_deref()
+        );
+    }
+>>>>>>> a5c3024 (fix: address selector review feedback)
 
     let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?

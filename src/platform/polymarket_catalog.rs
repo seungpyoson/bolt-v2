@@ -122,6 +122,8 @@ async fn load_events_for_selector(
             selector.tag_slug,
             selector.event_slug_prefix.as_deref()
         );
+
+        return Ok(Vec::new());
     }
 
     let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)
@@ -714,5 +716,41 @@ mod tests {
         assert_eq!(request_count.load(Ordering::Relaxed), 2);
         assert_eq!(markets.len(), 1);
         assert_eq!(markets[0].market_id, "market-prefix-hit");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prefix_selector_catalog_does_not_rediscover_when_selector_state_is_empty() {
+        let (addr, request_count) = spawn_test_server(vec![json!([event_with_slug_and_markets(
+            "event-slug-hit",
+            "bitcoin-5m-alpha",
+            "Bitcoin 5m",
+            vec![valid_market_with(
+                "market-prefix-hit",
+                "[\"111\",\"222\"]",
+                (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339(),
+            )],
+        )])])
+        .await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let ruleset = ruleset_with_prefix("bitcoin-5m");
+        let selector_state = PolymarketSelectorState::new(
+            vec![PolymarketRulesetSelector {
+                tag_slug: "bitcoin".to_string(),
+                event_slug_prefix: Some("bitcoin-5m".to_string()),
+            }],
+            vec![],
+        );
+
+        let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+            &ruleset,
+            &client,
+            Some(&format!("http://{addr}")),
+            Some(selector_state),
+        )
+        .await
+        .unwrap();
+
+        assert!(markets.is_empty());
+        assert_eq!(request_count.load(Ordering::Relaxed), 0);
     }
 }

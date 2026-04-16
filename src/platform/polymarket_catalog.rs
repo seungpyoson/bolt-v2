@@ -160,9 +160,10 @@ async fn fetch_raw_events_by_slugs(
         None,
     )
     .context("failed to build raw gamma http client")?;
-    let requests = slugs.iter().cloned().map(|slug| {
+    let requests = slugs.iter().map(|slug| {
         let client = client.clone();
         let url = format!("{}/events", base_url.trim_end_matches('/'));
+        let slug = slug.clone();
         async move {
             let response = client
                 .request_with_params(

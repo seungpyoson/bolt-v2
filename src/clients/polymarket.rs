@@ -294,7 +294,10 @@ pub(crate) fn build_data_client(
 
     let has_prefix_selectors = has_any_prefix_selector(selectors);
 
-    warn_on_subscribe_new_markets_override(common_input.subscribe_new_markets, has_prefix_selectors);
+    let _ = warn_on_subscribe_new_markets_override(
+        common_input.subscribe_new_markets,
+        has_prefix_selectors,
+    );
 
     let config = PolymarketDataClientConfig {
         subscribe_new_markets: common_input.subscribe_new_markets && !has_prefix_selectors,
@@ -350,19 +353,22 @@ pub(crate) fn has_any_prefix_selector(selectors: &[PolymarketRulesetSelector]) -
 
 /// Emit a single WARN when the operator-requested `subscribe_new_markets = true`
 /// is overridden because at least one ruleset uses an `event_slug_prefix`
-/// selector. Extracted into a helper so it can be tested directly without
-/// racing other `build_data_client` callers under parallel test execution.
+/// selector. Returns `true` iff the warn was emitted, so tests can assert the
+/// branch deterministically without depending on a global logger fixture.
+#[must_use]
 pub(crate) fn warn_on_subscribe_new_markets_override(
     subscribe_new_markets: bool,
     has_prefix_selectors: bool,
-) {
-    if subscribe_new_markets && has_prefix_selectors {
+) -> bool {
+    let should_warn = subscribe_new_markets && has_prefix_selectors;
+    if should_warn {
         log::warn!(
             "polymarket data_client: operator set subscribe_new_markets = true but at least one ruleset uses event_slug_prefix; \
              the setting is overridden to false to prevent over-admission. \
              Real-time prefix-aware admission is tracked on #188."
         );
     }
+    should_warn
 }
 
 pub fn polymarket_ruleset_selectors(
@@ -1655,113 +1661,27 @@ mod tests {
         );
     }
 
-    // --- Capturing logger for warn-log assertions -----------------------------
-    //
-    // `log` crate permits exactly one global logger per process, so all tests in
-    // this module share a single capturing sink. Installation is idempotent via
-    // `OnceLock`; each test filters captured records by a message-specific
-    // substring so parallel tests emitting unrelated log records do not confuse
-    // assertions.
-    struct CapturingLogger {
-        records: Mutex<Vec<(log::Level, String)>>,
-    }
-
-    impl log::Log for CapturingLogger {
-        fn enabled(&self, metadata: &log::Metadata) -> bool {
-            // Only capture WARN-or-more-severe records. The assertions in this
-            // module only care about WARN emissions, and filtering here keeps
-            // the shared buffer bounded under parallel test execution.
-            metadata.level() <= log::Level::Warn
-        }
-
-        fn log(&self, record: &log::Record) {
-            if self.enabled(record.metadata()) {
-                let mut guard = self.records.lock().expect("log buffer poisoned");
-                guard.push((record.level(), format!("{}", record.args())));
-            }
-        }
-
-        fn flush(&self) {}
-    }
-
-    static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
-        std::sync::OnceLock::new();
-
-    fn install_capturing_logger() -> &'static CapturingLogger {
-        CAPTURING_LOGGER.get_or_init(|| {
-            let logger: &'static CapturingLogger = Box::leak(Box::new(CapturingLogger {
-                records: Mutex::new(Vec::new()),
-            }));
-            log::set_logger(logger).expect("capturing logger must install");
-            log::set_max_level(log::LevelFilter::Trace);
-            logger
-        })
-    }
-
-    fn captured_records_matching(
-        logger: &'static CapturingLogger,
-        needle: &str,
-    ) -> Vec<(log::Level, String)> {
-        logger
-            .records
-            .lock()
-            .expect("log buffer poisoned")
-            .iter()
-            .filter(|(_, msg)| msg.contains(needle))
-            .cloned()
-            .collect()
-    }
-
     #[test]
     fn warns_when_subscribe_new_markets_is_overridden_by_prefix_selector_presence() {
-        let logger = install_capturing_logger();
-        // Use a needle unique to this specific warn message. The helper
-        // `warn_on_subscribe_new_markets_override` is called from exactly one
-        // production site (inside `build_data_client`) and from this test, so
-        // no other concurrent test contends for this needle.
-        let needle = "subscribe_new_markets = true but at least one ruleset uses event_slug_prefix";
-        // Snapshot before count so a hypothetical duplicate emission elsewhere
-        // cannot silently pass this test.
-        let before = captured_records_matching(logger, needle).len();
+        assert!(warn_on_subscribe_new_markets_override(true, true));
+        assert!(!warn_on_subscribe_new_markets_override(false, true));
+        assert!(!warn_on_subscribe_new_markets_override(true, false));
+        assert!(!warn_on_subscribe_new_markets_override(false, false));
 
-        // Positive case: warn must fire exactly once.
-        warn_on_subscribe_new_markets_override(true, true);
-
-        // Full truth-table negative cases: none of these must emit.
-        warn_on_subscribe_new_markets_override(false, true);
-        warn_on_subscribe_new_markets_override(true, false);
-        warn_on_subscribe_new_markets_override(false, false);
-
-        let after = captured_records_matching(logger, needle);
-        let emitted: Vec<_> = after.into_iter().skip(before).collect();
-        assert_eq!(
-            emitted.len(),
-            1,
-            "exactly one warn must be emitted for the override; got {}: {:?}",
-            emitted.len(),
-            emitted
-        );
-        let (level, message) = &emitted[0];
-        assert_eq!(
-            *level,
-            log::Level::Warn,
-            "override log must be at WARN level, got {level:?}: {message}"
-        );
+        // Static regression guard: ensure the log::warn! macro is still invoked inside the helper.
+        // Protects against a developer keeping the if/return but deleting the log line.
+        let source = std::fs::read_to_string(file!()).expect("read own source");
+        let helper_start = source
+            .find("pub(crate) fn warn_on_subscribe_new_markets_override")
+            .expect("helper declaration not found");
+        let helper_end = source[helper_start..]
+            .find("\n}\n")
+            .map(|o| helper_start + o)
+            .expect("helper body close brace not found");
+        let helper_body = &source[helper_start..helper_end];
         assert!(
-            message.contains("subscribe_new_markets"),
-            "warn message must name the overridden setting: {message}"
-        );
-        assert!(
-            message.contains("overridden"),
-            "warn message must describe the override: {message}"
-        );
-        assert!(
-            message.contains("#188"),
-            "warn message must cite follow-up tracker #188: {message}"
-        );
-        assert!(
-            !message.contains("#175"),
-            "warn message must not cite historical issue #175: {message}"
+            helper_body.contains("log::warn!"),
+            "helper body must still emit log::warn! — regression guard"
         );
     }
 

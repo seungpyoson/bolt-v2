@@ -109,6 +109,21 @@ impl PolymarketSelectorState {
             .collect()
     }
 
+    /// Insert or overwrite the event-slug list for each discovery in the input.
+    ///
+    /// This function operates per-discovery: every `(discovery, event_slugs)` entry
+    /// in the iterator inserts into `event_slugs_by_discovery`, overwriting any prior
+    /// value for that discovery. Discoveries NOT present in the input iterator are
+    /// left untouched — this is NOT a whole-map replace despite the name.
+    ///
+    /// The only caller today (`resolve_event_slugs_for_prefix_discoveries_with_gamma_client`)
+    /// pre-seeds every configured discovery with an empty vec before populating, so the
+    /// input always covers every known discovery. Any future caller that passes a subset
+    /// must be aware that absent entries retain their prior value.
+    ///
+    /// Empty `event_slugs` for a given discovery overwrites with an empty list and emits
+    /// a warn log naming the discovery (see commit `a79bbc5` and #180 for the empty-response
+    /// semantics trade-off).
     fn replace_event_slugs<I>(&self, event_slugs_by_discovery: I)
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,

@@ -1,5 +1,6 @@
 use crate::config::{Config, ReferenceConfig, ReferenceVenueKind};
 use crate::live_config::{LiveLocalConfig, LiveReferenceInput};
+use crate::platform::resolution_basis::{implied_reference_venue_kind, parse_resolution_basis};
 use nautilus_model::types::Quantity;
 use std::collections::{HashMap, hash_map::Entry};
 use std::str::FromStr;
@@ -70,6 +71,21 @@ fn check_non_empty(errors: &mut Vec<ValidationError>, field: &str, value: &str) 
             field,
             "whitespace_only",
             format!("must not be whitespace-only, got \"{value}\""),
+        );
+    }
+}
+
+fn check_resolution_basis(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+    check_non_empty(errors, field, value);
+
+    if !value.trim().is_empty() && parse_resolution_basis(value).is_none() {
+        push_error(
+            errors,
+            field,
+            "invalid_resolution_basis",
+            format!(
+                "{field} must use <family>_<symbol> or <family>_<symbol>_<cadence>, got \"{value}\""
+            ),
         );
     }
 }
@@ -439,23 +455,6 @@ fn first_seen_index<'a>(
     }
 }
 
-fn implied_reference_venue_kind(resolution_basis: &str) -> Option<ReferenceVenueKind> {
-    const PREFIXES: &[(&str, ReferenceVenueKind)] = &[
-        ("binance_", ReferenceVenueKind::Binance),
-        ("bybit_", ReferenceVenueKind::Bybit),
-        ("deribit_", ReferenceVenueKind::Deribit),
-        ("hyperliquid_", ReferenceVenueKind::Hyperliquid),
-        ("kraken_", ReferenceVenueKind::Kraken),
-        ("okx_", ReferenceVenueKind::Okx),
-        ("polymarket_", ReferenceVenueKind::Polymarket),
-        ("chainlink_", ReferenceVenueKind::Chainlink),
-    ];
-
-    PREFIXES
-        .iter()
-        .find_map(|(prefix, kind)| resolution_basis.starts_with(prefix).then(|| kind.clone()))
-}
-
 fn check_contract_path_catalog_dependency(
     errors: &mut Vec<ValidationError>,
     catalog_path: &str,
@@ -727,7 +726,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
-        check_non_empty(
+        check_resolution_basis(
             &mut errors,
             &resolution_basis_field,
             &ruleset.resolution_basis,
@@ -1407,7 +1406,7 @@ pub fn validate_runtime(config: &Config) -> Vec<ValidationError> {
         check_non_empty(&mut errors, &tag_slug_field, &ruleset.tag_slug);
 
         let resolution_basis_field = format!("rulesets[{i}].resolution_basis");
-        check_non_empty(
+        check_resolution_basis(
             &mut errors,
             &resolution_basis_field,
             &ruleset.resolution_basis,

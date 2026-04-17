@@ -230,6 +230,41 @@ fn parses_chainlink_basis_from_known_description_patterns() {
 }
 
 #[test]
+fn parses_eth_chainlink_basis_from_known_description_patterns() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            None,
+            Some(
+                "The resolution source for this market is information from Chainlink ETH/USD feeds."
+            ),
+        ),
+        Some("chainlink_ethusd".to_string())
+    );
+}
+
+#[test]
+fn parses_eth_binance_basis_from_variant_description_formatting() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            None,
+            Some("RESOLUTION SOURCE: Binance spot eth / usdt data will be used."),
+        ),
+        Some("binance_ethusdt_1m".to_string())
+    );
+}
+
+#[test]
+fn rejects_ambiguous_chainlink_description_without_symbol_pair() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            None,
+            Some("The resolution source for this market is Chainlink data."),
+        ),
+        None
+    );
+}
+
+#[test]
 fn parses_binance_basis_from_variant_description_formatting() {
     assert_eq!(
         parse_declared_resolution_basis(

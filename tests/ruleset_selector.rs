@@ -63,6 +63,43 @@ fn rejects_market_when_resolution_basis_mismatches() {
 }
 
 #[test]
+fn canonicalizes_resolution_basis_matching_across_case_for_eth_chainlink() {
+    let mut ruleset = ruleset();
+    ruleset.tag_slug = "ethereum".to_string();
+    ruleset.resolution_basis = "CHAINLINK_ETHUSD".to_string();
+
+    let candidates = vec![CandidateMarket {
+        market_id: "market-eth-good".to_string(),
+        instrument_id: "market-eth-good-yes".to_string(),
+        tag_slug: "ethereum".to_string(),
+        declared_resolution_basis: "chainlink_ethusd".to_string(),
+        accepting_orders: true,
+        liquidity_num: 9_000.0,
+        seconds_to_end: 1_200,
+    }];
+
+    let decision = select_market(&ruleset, &candidates);
+
+    assert_eq!(
+        decision,
+        SelectionDecision {
+            ruleset_id: "btc-5m".to_string(),
+            state: SelectionState::Active {
+                market: CandidateMarket {
+                    market_id: "market-eth-good".to_string(),
+                    instrument_id: "market-eth-good-yes".to_string(),
+                    tag_slug: "ethereum".to_string(),
+                    declared_resolution_basis: "chainlink_ethusd".to_string(),
+                    accepting_orders: true,
+                    liquidity_num: 9_000.0,
+                    seconds_to_end: 1_200,
+                },
+            },
+        }
+    );
+}
+
+#[test]
 fn exposes_tag_mismatch_rejection() {
     let ruleset = ruleset();
     let candidates = vec![CandidateMarket {

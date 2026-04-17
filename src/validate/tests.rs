@@ -2217,6 +2217,36 @@ fn phase1_runtime_resolution_basis_requires_matching_reference_venue_family() {
 }
 
 #[test]
+fn phase1_runtime_rejects_invalid_resolution_basis_format() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].resolution_basis",
+        "invalid_resolution_basis",
+    );
+}
+
+#[test]
+fn phase1_runtime_eth_chainlink_basis_requires_matching_reference_venue_family() {
+    let toml = replace(
+        &valid_phase1_runtime_toml(),
+        "resolution_basis = \"binance_btcusdt_1m\"",
+        "resolution_basis = \"chainlink_ethusd\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "rulesets[0].resolution_basis",
+        "missing_reference_venue_family",
+    );
+}
+
+#[test]
 fn phase1_runtime_polymarket_reference_must_reuse_primary_client() {
     let toml = format!(
         "{}\n{}",

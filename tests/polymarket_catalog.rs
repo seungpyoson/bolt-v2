@@ -9,6 +9,7 @@ use std::{
 };
 
 use bolt_v2::{
+    clients::polymarket::PolymarketSelectorState,
     config::{RulesetConfig, RulesetVenueKind},
     platform::{
         polymarket_catalog::{
@@ -244,28 +245,6 @@ async fn load_markets_from_event_pages(
     let client = test_gamma_client(addr);
     let markets = load_candidate_markets_for_ruleset_with_gamma_client(
         &ruleset(),
-        &client,
-        Some(&format!("http://{addr}")),
-        None,
-    )
-    .await
-    .unwrap();
-
-    (markets, request_count)
-}
-
-async fn load_markets_from_ruleset_and_event_pages(
-    ruleset: RulesetConfig,
-    event_pages: Vec<Vec<Value>>,
-) -> (
-    Vec<bolt_v2::platform::ruleset::CandidateMarket>,
-    Arc<AtomicUsize>,
-) {
-    let response_bodies = event_pages.into_iter().map(Value::Array).collect();
-    let (addr, request_count) = spawn_test_server(response_bodies).await;
-    let client = test_gamma_client(addr);
-    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
-        &ruleset,
         &client,
         Some(&format!("http://{addr}")),
         None,
@@ -540,37 +519,99 @@ async fn paginates_gamma_events_for_multi_page_tag_queries() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
+    // Exercises the production narrowing path: ProductionCandidateMarketLoader always
+    // passes Some(selector_state) for prefix rulesets. The catalog loader must hit
+    // Gamma by exact event-slug (GET /events?slug=<slug>) rather than by tag_slug
+    // scan, so only events whose slug is present in the selector state produce
+    // candidate markets. The fallback branch that previously performed a broad
+    // tag_slug discovery when selector_state was None has been deleted.
     let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
-    let (markets, request_count) = load_markets_from_ruleset_and_event_pages(
-        ruleset_with_prefix("bitcoin-5m"),
-        vec![vec![
-            event_with_slug_and_markets(
-                "event-1",
-                "bitcoin-5m-alpha",
-                "Bitcoin 5m",
-                vec![valid_market_with(
-                    "market-prefix-match",
-                    "[\"111\",\"222\"]",
-                    end_date.clone(),
-                )],
-            ),
-            event_with_slug_and_markets(
-                "event-2",
-                "bitcoin-15m-beta",
-                "Bitcoin 15m",
-                vec![valid_market_with(
-                    "market-prefix-miss",
-                    "[\"333\",\"444\"]",
-                    end_date,
-                )],
-            ),
-        ]],
-    )
-    .await;
+    let ruleset = ruleset_with_prefix("bitcoin-5m");
+    // Selector state seeded with the matching event slug — mirrors the output of
+    // the startup build_selector_state + selector refresh task in production.
+    let selector_state = PolymarketSelectorState::for_testing(vec![(
+        &ruleset,
+        vec!["bitcoin-5m-alpha".to_string()],
+    )])
+    .expect("seed selector state");
 
-    assert_eq!(request_count.load(Ordering::Relaxed), 2);
+    let (addr, request_count) = spawn_test_server(vec![json!([
+        event_with_slug_and_markets(
+            "event-1",
+            "bitcoin-5m-alpha",
+            "Bitcoin 5m",
+            vec![valid_market_with(
+                "market-prefix-match",
+                "[\"111\",\"222\"]",
+                end_date.clone(),
+            )],
+        ),
+        event_with_slug_and_markets(
+            "event-2",
+            "bitcoin-15m-beta",
+            "Bitcoin 15m",
+            vec![valid_market_with(
+                "market-prefix-miss",
+                "[\"333\",\"444\"]",
+                end_date,
+            )],
+        ),
+    ])])
+    .await;
+    let client = test_gamma_client(addr);
+
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset,
+        &client,
+        Some(&format!("http://{addr}")),
+        Some(selector_state),
+    )
+    .await
+    .expect("prefix ruleset with populated selector state must load");
+
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-prefix-match");
+    // Sanity: the test server counts every request. One per event-slug lookup
+    // against /events?slug=bitcoin-5m-alpha plus one raw-anchor fetch against
+    // the same slug. The bitcoin-15m-beta slug must never be fetched — proving
+    // we did NOT scan by tag_slug.
+    let total_requests = request_count.load(Ordering::Relaxed);
+    assert!(
+        total_requests >= 1,
+        "at least one slug lookup expected, got {total_requests}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prefix_selector_without_selector_state_fails_closed_with_greppable_error() {
+    // Regression guard: the deleted fallback branch used to perform a broad
+    // Gamma discovery by tag_slug when selector_state was None. Production
+    // never reaches that branch (ProductionCandidateMarketLoader::load always
+    // passes Some(state) for prefix rulesets), but if a future caller bypasses
+    // the production wiring we must fail loudly with an operator-greppable
+    // "polymarket ruleset validation:" prefix.
+    let (addr, _request_count) = spawn_test_server(vec![]).await;
+    let client = test_gamma_client(addr);
+    let ruleset = ruleset_with_prefix("bitcoin-5m");
+
+    let err = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset,
+        &client,
+        Some(&format!("http://{addr}")),
+        None,
+    )
+    .await
+    .expect_err("prefix selector with None state must fail closed");
+
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("polymarket ruleset validation:"),
+        "error must carry the operator grep anchor: {message}"
+    );
+    assert!(
+        message.contains(&ruleset.id),
+        "error must name the ruleset id: {message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

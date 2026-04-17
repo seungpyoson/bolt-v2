@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -78,6 +78,25 @@ pub struct PolymarketSelectorState {
 }
 
 impl PolymarketSelectorState {
+    /// Construct a selector state preseeded with a map of event slugs for each
+    /// prefix discovery. Public entry point for test harnesses that need to
+    /// simulate the post-startup state without running a live Gamma fetch.
+    pub fn for_testing(
+        event_slugs_by_ruleset: Vec<(&RulesetConfig, Vec<String>)>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut seeded = Vec::with_capacity(event_slugs_by_ruleset.len());
+        for (ruleset, event_slugs) in event_slugs_by_ruleset {
+            let discovery = polymarket_prefix_discovery_for_ruleset(ruleset)?.ok_or_else(|| {
+                format!(
+                    "ruleset {} must be a polymarket prefix ruleset to seed selector state",
+                    ruleset.id
+                )
+            })?;
+            seeded.push((discovery, event_slugs));
+        }
+        Ok(Self::new(seeded))
+    }
+
     pub(crate) fn new<I>(event_slugs_by_discovery: I) -> Self
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
@@ -601,29 +620,6 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
             &raw_client,
         ),
     )
-}
-
-pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_client_strict(
-    discoveries: &[PolymarketPrefixDiscovery],
-    client: &PolymarketGammaRawHttpClient,
-) -> Result<Vec<GammaEvent>, Box<dyn std::error::Error>> {
-    let matched_events_by_discovery =
-        resolve_matching_events_by_discovery_with_gamma_client_strict(discoveries, client).await?;
-    let mut matched_events = Vec::new();
-    let mut seen_event_slugs = HashSet::new();
-
-    for events in matched_events_by_discovery.into_values() {
-        for event in events {
-            let Some(event_slug) = event.slug.as_deref() else {
-                continue;
-            };
-            if seen_event_slugs.insert(event_slug.to_string()) {
-                matched_events.push(event);
-            }
-        }
-    }
-
-    Ok(matched_events)
 }
 
 /// (tag_slug, end_date_min, end_date_max) tuple identifying a Gamma fetch group.

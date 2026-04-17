@@ -18,7 +18,6 @@ use crate::{
     clients::polymarket::{
         PolymarketRulesetSelector, PolymarketSelectorState, fetch_gamma_events_paginated,
         polymarket_prefix_discovery_for_ruleset,
-        resolve_matching_events_for_prefix_discoveries_with_gamma_client_strict,
     },
     config::RulesetConfig,
     platform::{resolution_basis::parse_declared_resolution_basis, ruleset::CandidateMarket},
@@ -111,32 +110,31 @@ async fn load_events_for_selector(
         .map_err(|error| anyhow::anyhow!(error.to_string()));
     }
 
-    if let Some(selector_state) = selector_state {
-        let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?
-            .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
-        let event_slugs = selector_state.event_slugs_for_discovery(&prefix_discovery);
-        if !event_slugs.is_empty() {
-            return load_events_by_event_slugs(&event_slugs, client).await;
-        }
-
+    // Prefix selectors require a selector_state populated by the production wiring
+    // (build_selector_state at startup + selector refresh task). Missing state here
+    // would silently trigger the old fallback that performed a broad Gamma discovery
+    // per poll tick, contradicting the "single shared PolymarketRulesetSetup" ethos
+    // and exercising a code path that production never reaches.
+    let Some(selector_state) = selector_state else {
         anyhow::bail!(
-            "selector state empty for tag_slug={} prefix={:?}; failing closed until selector refresh repopulates event slugs",
-            selector.tag_slug,
-            selector.event_slug_prefix.as_deref()
+            "polymarket ruleset validation: prefix selector ruleset {} requires selector_state, got None",
+            ruleset.id
         );
-    }
+    };
 
     let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?
         .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
+    let event_slugs = selector_state.event_slugs_for_discovery(&prefix_discovery);
+    if !event_slugs.is_empty() {
+        return load_events_by_event_slugs(&event_slugs, client).await;
+    }
 
-    resolve_matching_events_for_prefix_discoveries_with_gamma_client_strict(
-        std::slice::from_ref(&prefix_discovery),
-        client,
-    )
-    .await
-    .map_err(|error| anyhow::anyhow!(error.to_string()))
+    anyhow::bail!(
+        "selector state empty for tag_slug={} prefix={:?}; failing closed until selector refresh repopulates event slugs",
+        selector.tag_slug,
+        selector.event_slug_prefix.as_deref()
+    );
 }
 
 async fn load_events_by_event_slugs(

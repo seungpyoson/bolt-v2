@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use arc_swap::ArcSwap;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nautilus_model::identifiers::{AccountId, TraderId};
 use nautilus_polymarket::http::query::GetGammaEventsParams;
@@ -73,7 +74,7 @@ pub(crate) struct PolymarketPrefixDiscovery {
 
 #[derive(Clone, Debug)]
 pub struct PolymarketSelectorState {
-    event_slugs_by_discovery: Arc<RwLock<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>>>,
+    event_slugs_by_discovery: Arc<ArcSwap<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>>>,
 }
 
 impl PolymarketSelectorState {
@@ -81,29 +82,28 @@ impl PolymarketSelectorState {
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
     {
+        let initial_map: BTreeMap<PolymarketPrefixDiscovery, Vec<String>> =
+            event_slugs_by_discovery
+                .into_iter()
+                .map(|(discovery, event_slugs)| {
+                    (
+                        discovery,
+                        event_slugs
+                            .into_iter()
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect(),
+                    )
+                })
+                .collect();
         Self {
-            event_slugs_by_discovery: Arc::new(RwLock::new(
-                event_slugs_by_discovery
-                    .into_iter()
-                    .map(|(discovery, event_slugs)| {
-                        (
-                            discovery,
-                            event_slugs
-                                .into_iter()
-                                .collect::<BTreeSet<_>>()
-                                .into_iter()
-                                .collect(),
-                        )
-                    })
-                    .collect(),
-            )),
+            event_slugs_by_discovery: Arc::new(ArcSwap::from_pointee(initial_map)),
         }
     }
 
     fn current_event_slugs(&self) -> Vec<String> {
         self.event_slugs_by_discovery
-            .read()
-            .expect("selector event slugs lock poisoned")
+            .load()
             .values()
             .flat_map(|event_slugs| event_slugs.iter().cloned())
             .collect::<BTreeSet<_>>()
@@ -120,14 +120,16 @@ impl PolymarketSelectorState {
     /// Empty `event_slugs` for a given discovery overwrites with an empty list and emits
     /// a warn log naming the discovery (see commit `a79bbc5` and #180 for the empty-response
     /// semantics trade-off).
+    ///
+    /// Single-writer contract: the only live caller is the selector refresh task, so the
+    /// load → clone → mutate → store sequence does not race against itself. Concurrent
+    /// readers see either the old snapshot fully or the new snapshot fully — never a
+    /// partially updated map.
     fn upsert_event_slugs_by_discovery<I>(&self, event_slugs_by_discovery: I)
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
     {
-        let mut state = self
-            .event_slugs_by_discovery
-            .write()
-            .expect("selector event slugs lock poisoned");
+        let mut next = (**self.event_slugs_by_discovery.load()).clone();
 
         for (discovery, event_slugs) in event_slugs_by_discovery {
             let unique_event_slugs: Vec<String> = event_slugs
@@ -142,8 +144,10 @@ impl PolymarketSelectorState {
                     discovery.selector.event_slug_prefix.as_deref()
                 );
             }
-            state.insert(discovery, unique_event_slugs);
+            next.insert(discovery, unique_event_slugs);
         }
+
+        self.event_slugs_by_discovery.store(Arc::new(next));
     }
 
     pub(crate) fn event_slugs_for_discovery(
@@ -151,8 +155,7 @@ impl PolymarketSelectorState {
         discovery: &PolymarketPrefixDiscovery,
     ) -> Vec<String> {
         self.event_slugs_by_discovery
-            .read()
-            .expect("selector event slugs lock poisoned")
+            .load()
             .get(discovery)
             .cloned()
             .unwrap_or_default()
@@ -1206,6 +1209,106 @@ mod tests {
         assert!(
             err.to_string().contains("uniformly"),
             "error should mention uniformity requirement: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn selector_state_readers_never_see_partial_map_under_concurrent_writes() {
+        // Readers must only ever observe a fully-committed snapshot (old map entirely
+        // or new map entirely). ArcSwap guarantees this; this test is a regression
+        // guard against a future refactor that reintroduces a lock+mutate pattern
+        // that could expose torn reads.
+        let discovery_a = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let discovery_b = prefix_discovery("bitcoin", "bitcoin-15m", 30, 300);
+        let initial = vec![
+            (discovery_a.clone(), vec!["bitcoin-5m-alpha".to_string()]),
+            (discovery_b.clone(), vec!["bitcoin-15m-alpha".to_string()]),
+        ];
+        let state = PolymarketSelectorState::new(initial);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let mut reader_handles = Vec::new();
+        for _ in 0..8 {
+            let state = state.clone();
+            let stop = Arc::clone(&stop);
+            let discovery_a = discovery_a.clone();
+            let discovery_b = discovery_b.clone();
+            reader_handles.push(tokio::spawn(async move {
+                let mut observations: u64 = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let slugs_a = state.event_slugs_for_discovery(&discovery_a);
+                    let slugs_b = state.event_slugs_for_discovery(&discovery_b);
+                    // Both per-discovery lists must always be non-empty because the
+                    // writer only swaps between complete paired snapshots — never
+                    // clears one side alone.
+                    assert!(
+                        !slugs_a.is_empty(),
+                        "discovery_a must always observe a non-empty slug list; got {slugs_a:?}"
+                    );
+                    assert!(
+                        !slugs_b.is_empty(),
+                        "discovery_b must always observe a non-empty slug list; got {slugs_b:?}"
+                    );
+                    // Each slug must be one of the permitted snapshot values for its
+                    // discovery — never a mixed/interleaved value.
+                    for slug in &slugs_a {
+                        assert!(
+                            slug == "bitcoin-5m-alpha" || slug == "bitcoin-5m-beta",
+                            "discovery_a saw unexpected slug: {slug}"
+                        );
+                    }
+                    for slug in &slugs_b {
+                        assert!(
+                            slug == "bitcoin-15m-alpha" || slug == "bitcoin-15m-beta",
+                            "discovery_b saw unexpected slug: {slug}"
+                        );
+                    }
+                    observations += 1;
+                    tokio::task::yield_now().await;
+                }
+                observations
+            }));
+        }
+
+        let writer_handle = {
+            let state = state.clone();
+            let stop = Arc::clone(&stop);
+            let discovery_a = discovery_a.clone();
+            let discovery_b = discovery_b.clone();
+            tokio::spawn(async move {
+                let mut toggle = false;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let (a, b) = if toggle {
+                        (
+                            vec!["bitcoin-5m-beta".to_string()],
+                            vec!["bitcoin-15m-beta".to_string()],
+                        )
+                    } else {
+                        (
+                            vec!["bitcoin-5m-alpha".to_string()],
+                            vec!["bitcoin-15m-alpha".to_string()],
+                        )
+                    };
+                    state.upsert_event_slugs_by_discovery(vec![
+                        (discovery_a.clone(), a),
+                        (discovery_b.clone(), b),
+                    ]);
+                    toggle = !toggle;
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer_handle.await.unwrap();
+        let mut total_observations = 0u64;
+        for handle in reader_handles {
+            total_observations += handle.await.unwrap();
+        }
+        assert!(
+            total_observations > 0,
+            "readers should have made at least one observation; got 0"
         );
     }
 

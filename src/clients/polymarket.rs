@@ -236,9 +236,7 @@ pub(crate) fn build_data_client(
         filters
     };
 
-    let has_prefix_selectors = selectors
-        .iter()
-        .any(|selector| selector.event_slug_prefix.is_some());
+    let has_prefix_selectors = has_any_prefix_selector(selectors);
 
     let config = PolymarketDataClientConfig {
         subscribe_new_markets: common_input.subscribe_new_markets && !has_prefix_selectors,
@@ -286,6 +284,10 @@ fn polymarket_ruleset_selector(
     }
 
     Ok(selector)
+}
+
+pub(crate) fn has_any_prefix_selector(selectors: &[PolymarketRulesetSelector]) -> bool {
+    selectors.iter().any(|s| s.event_slug_prefix.is_some())
 }
 
 pub fn polymarket_ruleset_selectors(
@@ -340,7 +342,7 @@ fn reject_mixed_polymarket_rulesets_global_scope(
             })
             .collect();
         return Err(format!(
-            "all Polymarket rulesets must be uniformly tag-only or uniformly prefix-based; found {} tag-only ruleset selector(s) [{}] mixed with {} prefix-based ruleset selector(s) [{}]",
+            "polymarket ruleset validation: all Polymarket rulesets must be uniformly tag-only or uniformly prefix-based; found {} tag-only ruleset selector(s) [{}] mixed with {} prefix-based ruleset selector(s) [{}]",
             tag_only.len(),
             tag_only_tags.join(", "),
             prefix_based.len(),
@@ -1095,6 +1097,10 @@ mod tests {
             message.contains("uniformly tag-only or uniformly prefix-based"),
             "error should state the uniformity requirement: {message}"
         );
+        assert!(
+            message.contains("polymarket ruleset validation:"),
+            "error should carry the shared greppable prefix: {message}"
+        );
     }
 
     #[test]
@@ -1144,6 +1150,12 @@ mod tests {
         // with the configured timeout), rejection would take at least timeout_secs*1000
         // ms. We pass timeout_secs=1 and assert the error returns in well under that
         // bound, guaranteeing the ordering.
+        //
+        // Headroom: budget is well under the >=1000ms HTTP timeout
+        // (timeout_secs=1) that would dominate elapsed time if the invariant
+        // regressed to post-HTTP order, so a regression fails loudly even on
+        // slow/loaded CI hosts.
+        const PRE_HTTP_REJECTION_BUDGET_MS: u128 = 500;
         let rulesets = vec![
             tag_only_ruleset("ETH-TAG", "ethereum"),
             prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"),
@@ -1153,8 +1165,9 @@ mod tests {
             .expect_err("mixed selectors should be rejected");
         let elapsed = start.elapsed();
         assert!(
-            elapsed.as_millis() < 200,
-            "rejection must be pre-HTTP; took {}ms (invariant may have been checked after HTTP)",
+            elapsed.as_millis() < PRE_HTTP_REJECTION_BUDGET_MS,
+            "rejection must be pre-HTTP (under PRE_HTTP_REJECTION_BUDGET_MS={}ms); took {}ms (invariant may have been checked after HTTP)",
+            PRE_HTTP_REJECTION_BUDGET_MS,
             elapsed.as_millis()
         );
         assert!(

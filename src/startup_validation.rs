@@ -212,14 +212,18 @@ fn collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slug
             event_slugs.insert(event_slug);
         }
 
-        let has_prefix_selectors = selectors.iter().any(|s| s.event_slug_prefix.is_some());
+        // Fail closed at startup rather than deferring to runtime refresh: a
+        // prefix-only Polymarket config that resolves zero events would otherwise
+        // boot as a silent idle node. Surfacing misconfigured prefixes or Gamma
+        // outages at deploy time makes the operator notice immediately.
+        let has_prefix_selectors = polymarket::has_any_prefix_selector(&selectors);
         if has_prefix_selectors && event_slugs.is_empty() {
             let prefix_count = selectors
                 .iter()
                 .filter(|s| s.event_slug_prefix.is_some())
                 .count();
             return Err(std::io::Error::other(format!(
-                "Polymarket startup validation found {prefix_count} prefix-based ruleset selector(s) configured, but Gamma discovery resolved zero event slugs; this indicates misconfigured prefix patterns, no matching live markets, or a Gamma outage. Failing closed until selector refresh succeeds."
+                "polymarket ruleset validation: Polymarket startup validation found {prefix_count} prefix-based ruleset selector(s) configured, but Gamma discovery resolved zero event slugs; this indicates misconfigured prefix patterns, no matching live markets, or a Gamma outage. Failing closed at startup; resolve the underlying cause (config, markets, or Gamma availability) and restart."
             ))
             .into());
         }
@@ -428,7 +432,14 @@ mod tests {
             "got: {message}"
         );
         assert!(message.contains("zero event slugs"), "got: {message}");
-        assert!(message.contains("selector refresh"), "got: {message}");
+        assert!(
+            message.contains("Failing closed at startup"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("polymarket ruleset validation:"),
+            "got: {message}"
+        );
     }
 
     #[test]

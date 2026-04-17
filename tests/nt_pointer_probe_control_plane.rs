@@ -667,6 +667,81 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must verify the fetched PR head SHA"
     );
 
+    // Top-level permissions must be contents: read and must not grant write scopes.
+    let permissions = yaml
+        .get(&YamlValue::String("permissions".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("trust-root workflow must declare a top-level permissions block");
+    assert_eq!(
+        permissions
+            .get(&YamlValue::String("contents".to_string()))
+            .and_then(YamlValue::as_str),
+        Some("read"),
+        "trust-root workflow must grant contents: read at the top level"
+    );
+    for forbidden_scope in [
+        "id-token",
+        "actions",
+        "pull-requests",
+        "issues",
+        "packages",
+        "deployments",
+        "statuses",
+        "checks",
+        "discussions",
+        "pages",
+        "repository-projects",
+        "security-events",
+    ] {
+        assert!(
+            !permissions.contains_key(&YamlValue::String(forbidden_scope.to_string())),
+            "trust-root workflow must not grant write-capable scope '{forbidden_scope}' at the top level"
+        );
+    }
+
+    // Authenticated fetch must use the one-shot `-c http.extraheader=...` form so the
+    // header lives only for the duration of that fetch and never lands in .git/config.
+    assert!(
+        workflow.contains("-c http.extraheader=\"$auth_header\""),
+        "workflow must use the one-shot `git -c http.extraheader=...` form for the authenticated fetch"
+    );
+    assert!(
+        !workflow.contains("git config --local http.extraheader"),
+        "workflow must not persist the auth header via `git config --local http.extraheader`"
+    );
+    assert!(
+        !workflow.contains("git config http.extraheader"),
+        "workflow must not persist the auth header via `git config http.extraheader`"
+    );
+
+    // Trace/debug envs and shell xtrace must not appear anywhere: any of them would echo
+    // the authenticated command line before the runner masks the derived header.
+    for forbidden_trace in [
+        "GIT_TRACE",
+        "GIT_CURL_VERBOSE",
+        "GIT_TRACE_CURL",
+        "set -x",
+        "set -o xtrace",
+        "set -v",
+        "set -o verbose",
+        "PS4=",
+    ] {
+        assert!(
+            !workflow.contains(forbidden_trace),
+            "workflow must not enable trace/debug output via '{forbidden_trace}' (would leak masked secrets to logs)"
+        );
+    }
+
+    // The PR-head materialization loop must reject unsafe policy paths before git show.
+    assert!(
+        workflow.contains("case \"$relative_path\" in"),
+        "workflow must path-shape-validate each protected entry before materialization"
+    );
+    assert!(
+        workflow.contains("''|/*|*/../*|../*|*/..|..)"),
+        "workflow must reject empty, absolute, and parent-traversal paths produced by the policy"
+    );
+
     // Verify token isolation using structured YAML analysis
     let env = yaml.get(&YamlValue::String("env".to_string()));
     if let Some(env_map) = env.and_then(YamlValue::as_mapping) {

@@ -73,6 +73,10 @@ jobs:
           repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
           mkdir -p "$repo_root"
           jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
+            # Reject empty, absolute, and parent-traversal paths before any filesystem op.
+            case "$relative_path" in
+              ''|/*|*/../*|../*|*/..|..) echo "ERROR: trust-root policy produced unsafe path: '$relative_path'" >&2; exit 1 ;;
+            esac
             target_path="$repo_root/$relative_path"
             mkdir -p "$(dirname "$target_path")"
             git -C "$tmp_repo" show "refs/remotes/origin/pr-head:${relative_path}" > "$target_path"

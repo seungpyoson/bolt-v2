@@ -1703,28 +1703,37 @@ fn validate_runtime_with_registry(
         .venues
         .iter()
         .any(|venue| venue.kind == ReferenceVenueKind::Polymarket);
-    if has_polymarket_reference {
-        let polymarket_data_clients = config
-            .data_clients
-            .iter()
-            .filter(|client| client.kind == "polymarket")
-            .count();
+    let polymarket_data_client_names: Vec<&str> = config
+        .data_clients
+        .iter()
+        .filter(|client| client.kind == "polymarket")
+        .map(|client| client.name.as_str())
+        .collect();
 
-        if polymarket_data_clients == 0 {
-            push_error(
-                &mut errors,
-                "reference.venues",
-                "missing_primary_polymarket_client",
-                "reference venue kind polymarket requires the primary polymarket data client to already be configured".to_string(),
-            );
-        } else if polymarket_data_clients > 1 {
-            push_error(
-                &mut errors,
-                "data_clients",
-                "duplicate_polymarket_client_for_reference",
-                "reference venue kind polymarket must reuse the primary polymarket data client instead of registering a second polymarket client".to_string(),
-            );
-        }
+    // Single-shared-setup invariant: the runtime builds exactly one
+    // PolymarketRulesetSetup and reuses it across every polymarket data client.
+    // More than one polymarket data_client is always rejected — this invariant
+    // is independent of whether polymarket is a reference venue (PR #183 Fix 1).
+    if polymarket_data_client_names.len() > 1 {
+        push_error(
+            &mut errors,
+            "data_clients",
+            "duplicate_polymarket_client",
+            format!(
+                "polymarket ruleset validation: exactly one polymarket data_client is supported; found {} [{}]",
+                polymarket_data_client_names.len(),
+                polymarket_data_client_names.join(", ")
+            ),
+        );
+    }
+
+    if has_polymarket_reference && polymarket_data_client_names.is_empty() {
+        push_error(
+            &mut errors,
+            "reference.venues",
+            "missing_primary_polymarket_client",
+            "reference venue kind polymarket requires the primary polymarket data client to already be configured".to_string(),
+        );
     }
 
     let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();

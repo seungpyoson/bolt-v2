@@ -2447,10 +2447,41 @@ event_slugs = ["btc-updown-5m"]
 "#
     );
     let errors = runtime_errors_for(&toml);
-    assert_has_error(
-        &errors,
-        "data_clients",
-        "duplicate_polymarket_client_for_reference",
+    // Unified with the reference-independent invariant (PR #183 Fix 1): any
+    // second polymarket data_client is rejected regardless of reference venue.
+    assert_has_error(&errors, "data_clients", "duplicate_polymarket_client");
+}
+
+#[test]
+fn phase1_runtime_rejects_multiple_polymarket_data_clients_without_polymarket_reference() {
+    // PR #183 Fix 1: the runtime assumes a single shared PolymarketRulesetSetup,
+    // so even when polymarket is NOT a reference venue, more than one
+    // polymarket data_client is unsupported and must be rejected at validation.
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml(),
+        r#"
+[[data_clients]]
+name = "POLYMARKET-EXTRA"
+type = "polymarket"
+[data_clients.config]
+subscribe_new_markets = false
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "data_clients", "duplicate_polymarket_client");
+    let message = errors
+        .iter()
+        .find(|e| e.code == "duplicate_polymarket_client")
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("polymarket ruleset validation:"),
+        "error must carry the operator grep anchor: {message}"
+    );
+    assert!(
+        message.contains("POLYMARKET") && message.contains("POLYMARKET-EXTRA"),
+        "error should name both duplicate client names: {message}"
     );
 }
 

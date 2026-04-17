@@ -1,6 +1,8 @@
 use crate::config::RulesetConfig;
 use std::cmp::Ordering;
 
+use super::resolution_basis::parse_resolution_basis;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateMarket {
     pub market_id: String,
@@ -126,7 +128,7 @@ fn reject_reason(
     if market.tag_slug != ruleset.tag_slug {
         return Some(EligibilityRejectReason::TagMismatch);
     }
-    if market.declared_resolution_basis != ruleset.resolution_basis {
+    if !resolution_basis_matches(&market.declared_resolution_basis, &ruleset.resolution_basis) {
         return Some(EligibilityRejectReason::ResolutionBasisMismatch);
     }
     if ruleset.require_accepting_orders && !market.accepting_orders {
@@ -143,4 +145,17 @@ fn reject_reason(
         return Some(EligibilityRejectReason::ExpiryTooLate);
     }
     None
+}
+
+fn resolution_basis_matches(
+    declared_resolution_basis: &str,
+    ruleset_resolution_basis: &str,
+) -> bool {
+    match (
+        parse_resolution_basis(declared_resolution_basis),
+        parse_resolution_basis(ruleset_resolution_basis),
+    ) {
+        (Some(declared), Some(ruleset)) => declared == ruleset,
+        _ => false,
+    }
 }

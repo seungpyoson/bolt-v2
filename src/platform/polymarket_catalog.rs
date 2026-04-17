@@ -18,7 +18,7 @@ use crate::{
     clients::polymarket::{
         PolymarketRulesetSelector, PolymarketSelectorState, fetch_gamma_events_paginated,
         polymarket_prefix_discovery_for_ruleset,
-        resolve_matching_events_for_prefix_discoveries_with_gamma_client,
+        resolve_matching_events_for_prefix_discoveries_with_gamma_client_strict,
     },
     config::RulesetConfig,
     platform::{resolution_basis::parse_declared_resolution_basis, ruleset::CandidateMarket},
@@ -131,7 +131,7 @@ async fn load_events_for_selector(
         .map_err(|error| anyhow::anyhow!(error.to_string()))?
         .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
 
-    resolve_matching_events_for_prefix_discoveries_with_gamma_client(
+    resolve_matching_events_for_prefix_discoveries_with_gamma_client_strict(
         std::slice::from_ref(&prefix_discovery),
         client,
     )

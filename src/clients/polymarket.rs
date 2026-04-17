@@ -448,7 +448,7 @@ pub(crate) fn spawn_selector_refresh_task(
                 _ = ticker.tick() => {}
             }
 
-            match resolve_event_slugs_for_prefix_discoveries_with_gamma_client(
+            match resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
                 &prefix_discoveries,
                 &raw_client,
             )
@@ -456,7 +456,9 @@ pub(crate) fn spawn_selector_refresh_task(
             {
                 Ok(event_slugs) => selector_state.upsert_event_slugs_by_discovery(event_slugs),
                 Err(error) => {
-                    log::warn!("failed refreshing polymarket selector event slugs: {error}");
+                    log::warn!(
+                        "polymarket ruleset validation: failed refreshing polymarket selector event slugs: {error}"
+                    );
                 }
             }
         }
@@ -578,16 +580,19 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
         .build()?;
 
     runtime.block_on(
-        resolve_event_slugs_for_prefix_discoveries_with_gamma_client(discoveries, &raw_client),
+        resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            discoveries,
+            &raw_client,
+        ),
     )
 }
 
-pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_client(
+pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_client_strict(
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<Vec<GammaEvent>, Box<dyn std::error::Error>> {
     let matched_events_by_discovery =
-        resolve_matching_events_by_discovery_with_gamma_client(discoveries, client).await?;
+        resolve_matching_events_by_discovery_with_gamma_client_strict(discoveries, client).await?;
     let mut matched_events = Vec::new();
     let mut seen_event_slugs = HashSet::new();
 
@@ -605,15 +610,22 @@ pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_cl
     Ok(matched_events)
 }
 
-async fn resolve_matching_events_by_discovery_with_gamma_client(
+/// (tag_slug, end_date_min, end_date_max) tuple identifying a Gamma fetch group.
+type GammaFetchGroupKey = (String, String, String);
+
+/// Param-grouped fetch plan for a list of prefix discoveries.
+type GroupedPrefixDiscoveries<'a> =
+    BTreeMap<GammaFetchGroupKey, (GetGammaEventsParams, Vec<&'a PolymarketPrefixDiscovery>)>;
+
+/// Build the param-grouped fetch plan for a list of prefix discoveries.
+///
+/// Multiple discoveries that share the same (tag_slug, end_date_min, end_date_max)
+/// collapse into one Gamma query and then split their matches by prefix post-hoc.
+fn group_prefix_discoveries(
     discoveries: &[PolymarketPrefixDiscovery],
-    client: &PolymarketGammaRawHttpClient,
-) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
-    let now = Utc::now();
-    let mut grouped_discoveries: BTreeMap<
-        (String, String, String),
-        (GetGammaEventsParams, Vec<&PolymarketPrefixDiscovery>),
-    > = BTreeMap::new();
+    now: DateTime<Utc>,
+) -> Result<GroupedPrefixDiscoveries<'_>, Box<dyn std::error::Error>> {
+    let mut grouped_discoveries: GroupedPrefixDiscoveries<'_> = BTreeMap::new();
 
     for discovery in discoveries {
         let params = gamma_event_params_for_prefix_discovery(discovery, now)
@@ -629,6 +641,52 @@ async fn resolve_matching_events_by_discovery_with_gamma_client(
             .or_insert_with(|| (params, vec![discovery]));
     }
 
+    Ok(grouped_discoveries)
+}
+
+fn split_events_by_prefix_discovery(
+    events: Vec<GammaEvent>,
+    discoveries: &[&PolymarketPrefixDiscovery],
+) -> BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> {
+    let mut grouped_matches: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = discoveries
+        .iter()
+        .map(|discovery| ((*discovery).clone(), Vec::new()))
+        .collect();
+
+    for event in events {
+        let Some(event_slug) = event.slug.as_deref() else {
+            continue;
+        };
+
+        for discovery in discoveries {
+            if discovery
+                .selector
+                .event_slug_prefix
+                .as_deref()
+                .is_some_and(|prefix| event_slug.starts_with(prefix))
+            {
+                grouped_matches
+                    .get_mut(*discovery)
+                    .expect("grouped discovery should have an output bucket")
+                    .push(event.clone());
+            }
+        }
+    }
+
+    grouped_matches
+}
+
+/// Strict variant: any per-group Gamma error aborts the whole resolution.
+///
+/// Used at startup (`build_selector_state`) where missing state must fail-closed
+/// rather than seed the runtime with an incomplete selector snapshot.
+async fn resolve_matching_events_by_discovery_with_gamma_client_strict(
+    discoveries: &[PolymarketPrefixDiscovery],
+    client: &PolymarketGammaRawHttpClient,
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
+    let now = Utc::now();
+    let grouped_discoveries = group_prefix_discoveries(discoveries, now)?;
+
     let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
         discoveries
             .iter()
@@ -638,30 +696,7 @@ async fn resolve_matching_events_by_discovery_with_gamma_client(
 
     for (_, (params, discoveries)) in grouped_discoveries {
         let events = fetch_gamma_events_paginated(client, params).await?;
-        let mut grouped_matches: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = discoveries
-            .iter()
-            .map(|discovery| ((*discovery).clone(), Vec::new()))
-            .collect();
-
-        for event in events {
-            let Some(event_slug) = event.slug.as_deref() else {
-                continue;
-            };
-
-            for discovery in &discoveries {
-                if discovery
-                    .selector
-                    .event_slug_prefix
-                    .as_deref()
-                    .is_some_and(|prefix| event_slug.starts_with(prefix))
-                {
-                    grouped_matches
-                        .get_mut(*discovery)
-                        .expect("grouped discovery should have an output bucket")
-                        .push(event.clone());
-                }
-            }
-        }
+        let grouped_matches = split_events_by_prefix_discovery(events, &discoveries);
 
         for (discovery, matched_events) in grouped_matches {
             matched_events_by_discovery.insert(discovery, matched_events);
@@ -671,13 +706,70 @@ async fn resolve_matching_events_by_discovery_with_gamma_client(
     Ok(matched_events_by_discovery)
 }
 
-pub(crate) async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client(
+/// Best-effort variant: per-group Gamma errors are logged as warnings and the
+/// affected group is omitted from the returned map.
+///
+/// Used by the selector refresh task so that one tag/time-window outage cannot
+/// stale every other group's selector state at once. Because
+/// `PolymarketSelectorState::upsert_event_slugs_by_discovery` leaves absent keys
+/// untouched, omitted groups keep their prior snapshot until their next refresh.
+async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
+    discoveries: &[PolymarketPrefixDiscovery],
+    client: &PolymarketGammaRawHttpClient,
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
+    let now = Utc::now();
+    let grouped_discoveries = group_prefix_discoveries(discoveries, now)?;
+
+    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
+        BTreeMap::new();
+
+    for (_, (params, discoveries)) in grouped_discoveries {
+        let tag_slug = params.tag_slug.clone().unwrap_or_default();
+        match fetch_gamma_events_paginated(client, params).await {
+            Ok(events) => {
+                let grouped_matches = split_events_by_prefix_discovery(events, &discoveries);
+                for (discovery, matched_events) in grouped_matches {
+                    matched_events_by_discovery.insert(discovery, matched_events);
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    "polymarket ruleset validation: group tag_slug={tag_slug} gamma fetch failed: {error}; preserving prior selector state for that group"
+                );
+            }
+        }
+    }
+
+    Ok(matched_events_by_discovery)
+}
+
+pub(crate) async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>, Box<dyn std::error::Error>> {
     let matched_events_by_discovery =
-        resolve_matching_events_by_discovery_with_gamma_client(discoveries, client).await?;
-    Ok(matched_events_by_discovery
+        resolve_matching_events_by_discovery_with_gamma_client_strict(discoveries, client).await?;
+    Ok(events_by_discovery_to_event_slugs(
+        matched_events_by_discovery,
+    ))
+}
+
+pub(crate) async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
+    discoveries: &[PolymarketPrefixDiscovery],
+    client: &PolymarketGammaRawHttpClient,
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>, Box<dyn std::error::Error>> {
+    let matched_events_by_discovery =
+        resolve_matching_events_by_discovery_with_gamma_client_best_effort(discoveries, client)
+            .await?;
+    Ok(events_by_discovery_to_event_slugs(
+        matched_events_by_discovery,
+    ))
+}
+
+fn events_by_discovery_to_event_slugs(
+    matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>,
+) -> BTreeMap<PolymarketPrefixDiscovery, Vec<String>> {
+    matched_events_by_discovery
         .into_iter()
         .map(|(discovery, events)| {
             let event_slugs = events
@@ -688,7 +780,7 @@ pub(crate) async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client
                 .collect();
             (discovery, event_slugs)
         })
-        .collect())
+        .collect()
 }
 
 pub(crate) async fn fetch_gamma_events_paginated(
@@ -869,10 +961,12 @@ mod tests {
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let discoveries = vec![prefix_discovery("bitcoin", "bitcoin-5m", 30, 300)];
 
-        let event_slugs =
-            resolve_event_slugs_for_prefix_discoveries_with_gamma_client(&discoveries, &client)
-                .await
-                .unwrap();
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            &discoveries,
+            &client,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             event_slugs,
@@ -911,10 +1005,12 @@ mod tests {
             prefix_discovery("bitcoin", "bitcoin-15m", 30, 300),
         ];
 
-        let event_slugs =
-            resolve_event_slugs_for_prefix_discoveries_with_gamma_client(&discoveries, &client)
-                .await
-                .unwrap();
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            &discoveries,
+            &client,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             event_slugs,
@@ -924,6 +1020,143 @@ mod tests {
             ])
         );
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    /// Test server that returns 500 for a configured set of tag_slugs and 200
+    /// with the provided body for all other tag_slugs.
+    async fn spawn_test_server_with_failing_tags(
+        success_bodies: HashMap<String, serde_json::Value>,
+        failing_tags: Vec<String>,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let success_bodies = Arc::new(success_bodies);
+        let failing_tags = Arc::new(failing_tags);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let success_bodies = Arc::clone(&success_bodies);
+                let failing_tags = Arc::clone(&failing_tags);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (_, params) = parse_request_target(&request);
+
+                    let tag_slug = params.get("tag_slug").cloned().unwrap_or_default();
+                    let (status_line, body) = if failing_tags.contains(&tag_slug) {
+                        ("HTTP/1.1 500 Internal Server Error", "{}".to_string())
+                    } else {
+                        let body = success_bodies
+                            .get(&tag_slug)
+                            .cloned()
+                            .unwrap_or_else(|| json!([]))
+                            .to_string();
+                        ("HTTP/1.1 200 OK", body)
+                    };
+
+                    let response = format!(
+                        "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn strict_variant_aborts_when_any_group_fails() {
+        let bodies = HashMap::from([(
+            "ethereum".to_string(),
+            json!([{"id":"e1","slug":"ethereum-5m-alpha","markets":[]}]),
+        )]);
+        let addr = spawn_test_server_with_failing_tags(bodies, vec!["bitcoin".to_string()]).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discoveries = vec![
+            prefix_discovery("bitcoin", "bitcoin-5m", 30, 300),
+            prefix_discovery("ethereum", "ethereum-5m", 30, 300),
+        ];
+
+        let err = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            &discoveries,
+            &client,
+        )
+        .await
+        .expect_err("strict variant must abort when any group's gamma fetch fails");
+        // Proves fail-closed behavior required by startup path.
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn best_effort_variant_returns_healthy_groups_and_omits_failed_groups() {
+        let bodies = HashMap::from([(
+            "ethereum".to_string(),
+            json!([{"id":"e1","slug":"ethereum-5m-alpha","markets":[]}]),
+        )]);
+        let addr = spawn_test_server_with_failing_tags(bodies, vec!["bitcoin".to_string()]).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let btc_discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let eth_discovery = prefix_discovery("ethereum", "ethereum-5m", 30, 300);
+        let discoveries = vec![btc_discovery.clone(), eth_discovery.clone()];
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
+            &discoveries,
+            &client,
+        )
+        .await
+        .expect("best-effort variant must not propagate per-group gamma errors");
+
+        // ethereum succeeded → present.
+        assert_eq!(
+            event_slugs.get(&eth_discovery).map(|v| v.as_slice()),
+            Some(["ethereum-5m-alpha".to_string()].as_slice()),
+            "healthy group must be populated"
+        );
+        // bitcoin failed → omitted (upsert will leave prior state untouched).
+        assert!(
+            !event_slugs.contains_key(&btc_discovery),
+            "failed group must be omitted from best-effort result so upsert preserves prior state"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_task_best_effort_preserves_prior_state_for_failed_group() {
+        // End-to-end: selector_state seeded with both groups; best-effort refresh
+        // returns success only for ethereum and skips bitcoin; upsert must leave
+        // bitcoin's prior slugs intact.
+        let bodies = HashMap::from([(
+            "ethereum".to_string(),
+            json!([{"id":"e1","slug":"ethereum-5m-alpha","markets":[]}]),
+        )]);
+        let addr = spawn_test_server_with_failing_tags(bodies, vec!["bitcoin".to_string()]).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let btc_discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let eth_discovery = prefix_discovery("ethereum", "ethereum-5m", 30, 300);
+        let state = PolymarketSelectorState::new(vec![
+            (btc_discovery.clone(), vec!["bitcoin-5m-prior".to_string()]),
+            (eth_discovery.clone(), vec!["ethereum-5m-prior".to_string()]),
+        ]);
+
+        let refresh = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
+            &[btc_discovery.clone(), eth_discovery.clone()],
+            &client,
+        )
+        .await
+        .unwrap();
+        state.upsert_event_slugs_by_discovery(refresh);
+
+        assert_eq!(
+            state.event_slugs_for_discovery(&btc_discovery),
+            vec!["bitcoin-5m-prior".to_string()],
+            "failed group's prior state must be preserved across best-effort refresh"
+        );
+        assert_eq!(
+            state.event_slugs_for_discovery(&eth_discovery),
+            vec!["ethereum-5m-alpha".to_string()],
+            "healthy group must be overwritten with fresh slugs"
+        );
     }
 
     #[test]

@@ -130,7 +130,10 @@ where
     F: Fn(
         &[polymarket::PolymarketPrefixDiscovery],
         u64,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error>>,
+    ) -> Result<
+        std::collections::BTreeMap<polymarket::PolymarketPrefixDiscovery, Vec<String>>,
+        Box<dyn std::error::Error>,
+    >,
 {
     let mut tag_slugs = BTreeSet::new();
     let mut event_slugs = BTreeSet::new();
@@ -147,7 +150,7 @@ where
         if !prefix_discoveries.is_empty() {
             let resolved_event_slugs =
                 resolve_event_slugs(&prefix_discoveries, cfg.node.timeout_connection_secs)?;
-            for event_slug in resolved_event_slugs {
+            for event_slug in resolved_event_slugs.into_values().flatten() {
                 event_slugs.insert(event_slug);
             }
         }
@@ -377,10 +380,13 @@ mod tests {
                 );
                 assert_eq!(discoveries[0].min_time_to_expiry_secs, 60);
                 assert_eq!(discoveries[0].max_time_to_expiry_secs, 900);
-                Ok(vec![
-                    "bitcoin-5m-alpha".to_string(),
-                    "bitcoin-5m-beta".to_string(),
-                ])
+                Ok(std::collections::BTreeMap::from([(
+                    discoveries[0].clone(),
+                    vec![
+                        "bitcoin-5m-alpha".to_string(),
+                        "bitcoin-5m-beta".to_string(),
+                    ],
+                )]))
             })
             .expect("targets should collect")
             .expect("polymarket targets should exist");

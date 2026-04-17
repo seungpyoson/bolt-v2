@@ -35,7 +35,7 @@ use crate::{
             ReferenceVenueSnapshot, SelectorState, VenueHealthState, VenueKindState,
             spawn_audit_worker,
         },
-        polymarket_catalog::load_candidate_markets_for_ruleset_with_gamma_client,
+        polymarket_catalog::load_candidate_markets_for_ruleset,
         reference::{ReferenceSnapshot, VenueHealth, VenueKind},
         reference_actor::{ReferenceActor, ReferenceActorConfig, ReferenceSubscription},
         ruleset::{
@@ -45,7 +45,6 @@ use crate::{
     },
     strategies::registry::{StrategyBuildContext, StrategyRegistry},
 };
-use nautilus_polymarket::http::gamma::PolymarketGammaRawHttpClient;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -88,20 +87,9 @@ impl PlatformRuntimeServices {
     pub fn production(
         runtime_strategy_factory: RuntimeStrategyFactory,
         selector_state: Option<PolymarketSelectorState>,
-        gamma_client_timeout_secs: u64,
-    ) -> anyhow::Result<Self> {
-        // Hoist the Gamma HTTP client out of the per-tick load path. Previously
-        // each selector poll tick (default 1 Hz) constructed a fresh reqwest
-        // client + TLS stack; now one Arc'd client is shared across every tick.
-        let gamma_client = Arc::new(
-            PolymarketGammaRawHttpClient::new(None, gamma_client_timeout_secs)
-                .context("failed to build shared gamma http client")?,
-        );
-        Ok(Self {
-            candidate_loader: Arc::new(ProductionCandidateMarketLoader {
-                selector_state,
-                gamma_client,
-            }),
+    ) -> Self {
+        Self {
+            candidate_loader: Arc::new(ProductionCandidateMarketLoader { selector_state }),
             audit_task_factory: Arc::new(ProductionAuditTaskFactory),
             now_ms: Arc::new(|| {
                 SystemTime::now()
@@ -110,7 +98,7 @@ impl PlatformRuntimeServices {
                     .as_millis() as u64
             }),
             runtime_strategy_factory,
-        })
+        }
     }
 }
 
@@ -389,12 +377,11 @@ pub fn wire_platform_runtime(
     runtime_strategy_factory: RuntimeStrategyFactory,
     selector_state: Option<PolymarketSelectorState>,
 ) -> anyhow::Result<PlatformRuntimeGuards> {
-    let services = PlatformRuntimeServices::production(
-        runtime_strategy_factory,
-        selector_state,
-        cfg.node.timeout_connection_secs,
-    )?;
-    wire_platform_runtime_with_services(node, cfg, services)
+    wire_platform_runtime_with_services(
+        node,
+        cfg,
+        PlatformRuntimeServices::production(runtime_strategy_factory, selector_state),
+    )
 }
 
 pub fn wire_platform_runtime_with_services(
@@ -1015,18 +1002,15 @@ async fn wait_for_node_running(
 
 struct ProductionCandidateMarketLoader {
     selector_state: Option<PolymarketSelectorState>,
-    gamma_client: Arc<PolymarketGammaRawHttpClient>,
 }
 
 impl CandidateMarketLoader for ProductionCandidateMarketLoader {
     fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
         let selector_state = self.selector_state.clone();
-        let gamma_client = Arc::clone(&self.gamma_client);
         Box::pin(async move {
-            load_candidate_markets_for_ruleset_with_gamma_client(
+            load_candidate_markets_for_ruleset(
                 &ruleset,
-                gamma_client.as_ref(),
-                None,
+                ruleset.candidate_load_timeout_secs,
                 selector_state,
             )
             .await
@@ -1240,41 +1224,5 @@ mod tests {
         );
 
         guards.shutdown().await.expect("shutdown should succeed");
-    }
-
-    /// Fix 6 regression guard (PR #183): the production candidate-market loader
-    /// must hoist its PolymarketGammaRawHttpClient out of the per-tick load path.
-    /// Constructing the loader directly and issuing 5 back-to-back `load()`
-    /// calls must share ONE gamma_client Arc — not construct a fresh one per tick.
-    #[tokio::test(flavor = "current_thread")]
-    async fn production_loader_reuses_single_gamma_client_across_ticks() {
-        let gamma_client = Arc::new(
-            PolymarketGammaRawHttpClient::new(None, 5).expect("gamma client should build"),
-        );
-        let initial_ptr = Arc::as_ptr(&gamma_client);
-        let loader = ProductionCandidateMarketLoader {
-            selector_state: None,
-            gamma_client: Arc::clone(&gamma_client),
-        };
-
-        // Issue 5 load futures. Each call clones loader.gamma_client into the
-        // returned future. All clones must resolve to the same Arc pointer —
-        // proving the client is NOT reconstructed per tick.
-        for _ in 0..5 {
-            let cloned_ptr = Arc::as_ptr(&loader.gamma_client);
-            assert!(
-                std::ptr::eq(initial_ptr, cloned_ptr),
-                "gamma_client Arc pointer must not change across load() calls"
-            );
-        }
-        // Strong count should be at least 2 (loader + outer test handle) —
-        // every load() that's invoked bumps this temporarily, so a regression
-        // that reconstructed the client inside load() would reset the count
-        // to 1 on each tick.
-        assert!(
-            Arc::strong_count(&gamma_client) >= 2,
-            "shared Arc should be held by both test fixture and the loader, got {}",
-            Arc::strong_count(&gamma_client)
-        );
     }
 }

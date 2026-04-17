@@ -304,6 +304,54 @@ pub fn polymarket_ruleset_selectors(
     Ok(selectors)
 }
 
+/// Enforce that a single Polymarket data_client's selectors are uniformly either
+/// tag-only (`event_slug_prefix = None`) or prefix-based (`event_slug_prefix = Some(_)`).
+///
+/// Mixing is rejected fail-closed before any selector state is built: the NT adapter
+/// combines `InstrumentFilter`s additively on fetch, so a tag-only selector sharing a
+/// data_client with a prefix selector would fetch the entire tag regardless of the
+/// sibling prefix selector's narrowing intent, producing end-to-end over-admission.
+///
+/// All Polymarket rulesets feed the single `PolymarketRulesetSetup` that is shared
+/// across every Polymarket data_client in the runtime, so the selector scope checked
+/// here is per-data_client by construction.
+fn reject_mixed_polymarket_selector_scope(
+    selectors: &[PolymarketRulesetSelector],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tag_only: Vec<&PolymarketRulesetSelector> = selectors
+        .iter()
+        .filter(|selector| selector.event_slug_prefix.is_none())
+        .collect();
+    let prefix_based: Vec<&PolymarketRulesetSelector> = selectors
+        .iter()
+        .filter(|selector| selector.event_slug_prefix.is_some())
+        .collect();
+
+    if !tag_only.is_empty() && !prefix_based.is_empty() {
+        let tag_only_tags: Vec<&str> = tag_only.iter().map(|s| s.tag_slug.as_str()).collect();
+        let prefix_pairs: Vec<String> = prefix_based
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}:{}",
+                    s.tag_slug,
+                    s.event_slug_prefix.as_deref().unwrap_or("")
+                )
+            })
+            .collect();
+        return Err(format!(
+            "polymarket data_client has {} tag-only selector(s) [{}] mixed with {} prefix selector(s) [{}]; all selectors on a single data_client must be uniformly tag-only or uniformly prefix-based",
+            tag_only.len(),
+            tag_only_tags.join(", "),
+            prefix_based.len(),
+            prefix_pairs.join(", "),
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 pub(crate) fn polymarket_ruleset_prefix_discoveries(
     rulesets: &[RulesetConfig],
 ) -> Result<Vec<PolymarketPrefixDiscovery>, Box<dyn std::error::Error>> {
@@ -418,6 +466,7 @@ impl PolymarketRulesetSetup {
         timeout_secs: u64,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let selectors = polymarket_ruleset_selectors(rulesets)?;
+        reject_mixed_polymarket_selector_scope(&selectors)?;
         let prefix_discoveries = polymarket_ruleset_prefix_discoveries(rulesets)?;
         let selector_state = build_selector_state(&prefix_discoveries, timeout_secs)?;
         Ok(Self {
@@ -972,9 +1021,121 @@ mod tests {
             selector_state.event_slugs_for_discovery(&discovery),
             vec!["bitcoin-1m-alpha".to_string()]
         );
-        assert!(selector_state
-            .event_slugs_for_discovery(&prefix_discovery("bitcoin", "bitcoin-15m", 30, 300))
-            .is_empty());
+        assert!(
+            selector_state
+                .event_slugs_for_discovery(&prefix_discovery("bitcoin", "bitcoin-15m", 30, 300))
+                .is_empty()
+        );
     }
 
+    fn ruleset_with_selector(id: &str, selector_toml: Value) -> RulesetConfig {
+        RulesetConfig {
+            id: id.to_string(),
+            venue: RulesetVenueKind::Polymarket,
+            selector: selector_toml,
+            resolution_basis: "binance_btcusdt_1m".to_string(),
+            min_time_to_expiry_secs: 60,
+            max_time_to_expiry_secs: 900,
+            min_liquidity_num: 1000.0,
+            require_accepting_orders: true,
+            freeze_before_end_secs: 90,
+            selector_poll_interval_ms: 1_000,
+            candidate_load_timeout_secs: 30,
+        }
+    }
+
+    fn tag_only_ruleset(id: &str, tag_slug: &str) -> RulesetConfig {
+        ruleset_with_selector(
+            id,
+            toml::toml! {
+                tag_slug = tag_slug
+            }
+            .into(),
+        )
+    }
+
+    fn prefix_ruleset(id: &str, tag_slug: &str, event_slug_prefix: &str) -> RulesetConfig {
+        ruleset_with_selector(
+            id,
+            toml::toml! {
+                tag_slug = tag_slug
+                event_slug_prefix = event_slug_prefix
+            }
+            .into(),
+        )
+    }
+
+    #[test]
+    fn rejects_mixed_tag_only_and_prefix_selectors_on_one_data_client() {
+        let rulesets = vec![
+            tag_only_ruleset("ETH-TAG", "ethereum"),
+            prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"),
+        ];
+
+        let err = PolymarketRulesetSetup::from_rulesets(&rulesets, 5)
+            .expect_err("mixed tag-only and prefix selectors must be rejected");
+        let message = err.to_string();
+
+        assert!(
+            message.contains("tag-only selector"),
+            "error should name tag-only selectors: {message}"
+        );
+        assert!(
+            message.contains("prefix selector"),
+            "error should name prefix selectors: {message}"
+        );
+        assert!(
+            message.contains("ethereum"),
+            "error should name the tag-only tag_slug: {message}"
+        );
+        assert!(
+            message.contains("bitcoin-5m"),
+            "error should name the prefix: {message}"
+        );
+        assert!(
+            message.contains("uniformly tag-only or uniformly prefix-based"),
+            "error should state the uniformity requirement: {message}"
+        );
+    }
+
+    #[test]
+    fn accepts_all_tag_only_selectors_on_one_data_client() {
+        let rulesets = vec![
+            tag_only_ruleset("ETH-TAG", "ethereum"),
+            tag_only_ruleset("BTC-TAG", "bitcoin"),
+        ];
+
+        let setup = PolymarketRulesetSetup::from_rulesets(&rulesets, 5)
+            .expect("all-tag-only selectors must be accepted");
+
+        assert!(setup.selector_state().is_none());
+        assert!(setup.resolved_prefix_event_slugs().is_empty());
+    }
+
+    #[test]
+    fn accepts_all_prefix_selectors_on_one_data_client() {
+        // Two prefix rulesets sharing a tag_slug so discovery deduplicates to a single
+        // Gamma fetch; use the in-process test server to avoid live network.
+        let rulesets = vec![
+            prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"),
+            prefix_ruleset("BTC-15M", "bitcoin", "bitcoin-15m"),
+        ];
+
+        // Verify the invariant check itself passes (the pure validation step before
+        // any HTTP happens). We re-invoke the private helper directly via the public
+        // code path stops before build_selector_state only on Err.
+        let selectors = polymarket_ruleset_selectors(&rulesets)
+            .expect("selectors should parse for all-prefix rulesets");
+        reject_mixed_polymarket_selector_scope(&selectors)
+            .expect("all-prefix selectors must pass the mixed-scope check");
+
+        let prefix_discoveries = polymarket_ruleset_prefix_discoveries(&rulesets)
+            .expect("prefix discoveries should parse for all-prefix rulesets");
+        assert_eq!(prefix_discoveries.len(), 2);
+        assert!(
+            prefix_discoveries
+                .iter()
+                .all(|d| d.selector.event_slug_prefix.is_some())
+        );
+    }
 }

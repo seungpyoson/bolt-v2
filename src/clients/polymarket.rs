@@ -294,13 +294,7 @@ pub(crate) fn build_data_client(
 
     let has_prefix_selectors = has_any_prefix_selector(selectors);
 
-    if common_input.subscribe_new_markets && has_prefix_selectors {
-        log::warn!(
-            "polymarket data_client: operator set subscribe_new_markets = true but at least one ruleset uses event_slug_prefix; \
-             the setting is overridden to false to prevent over-admission (see #175). \
-             Real-time prefix-aware admission is tracked on #188."
-        );
-    }
+    warn_on_subscribe_new_markets_override(common_input.subscribe_new_markets, has_prefix_selectors);
 
     let config = PolymarketDataClientConfig {
         subscribe_new_markets: common_input.subscribe_new_markets && !has_prefix_selectors,
@@ -352,6 +346,23 @@ fn polymarket_ruleset_selector(
 
 pub(crate) fn has_any_prefix_selector(selectors: &[PolymarketRulesetSelector]) -> bool {
     selectors.iter().any(|s| s.event_slug_prefix.is_some())
+}
+
+/// Emit a single WARN when the operator-requested `subscribe_new_markets = true`
+/// is overridden because at least one ruleset uses an `event_slug_prefix`
+/// selector. Extracted into a helper so it can be tested directly without
+/// racing other `build_data_client` callers under parallel test execution.
+pub(crate) fn warn_on_subscribe_new_markets_override(
+    subscribe_new_markets: bool,
+    has_prefix_selectors: bool,
+) {
+    if subscribe_new_markets && has_prefix_selectors {
+        log::warn!(
+            "polymarket data_client: operator set subscribe_new_markets = true but at least one ruleset uses event_slug_prefix; \
+             the setting is overridden to false to prevent over-admission. \
+             Real-time prefix-aware admission is tracked on #188."
+        );
+    }
 }
 
 pub fn polymarket_ruleset_selectors(
@@ -1656,8 +1667,11 @@ mod tests {
     }
 
     impl log::Log for CapturingLogger {
-        fn enabled(&self, _metadata: &log::Metadata) -> bool {
-            true
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            // Only capture WARN-or-more-severe records. The assertions in this
+            // module only care about WARN emissions, and filtering here keeps
+            // the shared buffer bounded under parallel test execution.
+            metadata.level() <= log::Level::Warn
         }
 
         fn log(&self, record: &log::Record) {
@@ -1701,35 +1715,22 @@ mod tests {
     #[test]
     fn warns_when_subscribe_new_markets_is_overridden_by_prefix_selector_presence() {
         let logger = install_capturing_logger();
-        // Use a unique needle that only this specific warn emits.
+        // Use a needle unique to this specific warn message. The helper
+        // `warn_on_subscribe_new_markets_override` is called from exactly one
+        // production site (inside `build_data_client`) and from this test, so
+        // no other concurrent test contends for this needle.
         let needle = "subscribe_new_markets = true but at least one ruleset uses event_slug_prefix";
-        // Snapshot the count of matching records before we trigger the warn, so
-        // if another test somehow produces the same message we still assert
-        // that *this* invocation emitted exactly one new record.
+        // Snapshot before count so a hypothetical duplicate emission elsewhere
+        // cannot silently pass this test.
         let before = captured_records_matching(logger, needle).len();
 
-        let selectors = vec![PolymarketRulesetSelector {
-            tag_slug: "bitcoin".to_string(),
-            event_slug_prefix: Some("bitcoin-5m".to_string()),
-        }];
-        let selector_state = Some(PolymarketSelectorState::new(vec![(
-            prefix_discovery("bitcoin", "bitcoin-5m", 30, 300),
-            vec!["bitcoin-5m-alpha".to_string()],
-        )]));
-        let raw = toml::toml! {
-            subscribe_new_markets = true
-            update_instruments_interval_mins = 60
-            gamma_refresh_interval_secs = 45
-            ws_max_subscriptions = 200
-        }
-        .into();
+        // Positive case: warn must fire exactly once.
+        warn_on_subscribe_new_markets_override(true, true);
 
-        let (_, config) = build_data_client(&raw, &selectors, selector_state)
-            .expect("build_data_client should succeed with prefix selector state");
-        assert!(
-            !config.subscribe_new_markets,
-            "override to false must still apply; only the observability changes"
-        );
+        // Full truth-table negative cases: none of these must emit.
+        warn_on_subscribe_new_markets_override(false, true);
+        warn_on_subscribe_new_markets_override(true, false);
+        warn_on_subscribe_new_markets_override(false, false);
 
         let after = captured_records_matching(logger, needle);
         let emitted: Vec<_> = after.into_iter().skip(before).collect();
@@ -1753,6 +1754,14 @@ mod tests {
         assert!(
             message.contains("overridden"),
             "warn message must describe the override: {message}"
+        );
+        assert!(
+            message.contains("#188"),
+            "warn message must cite follow-up tracker #188: {message}"
+        );
+        assert!(
+            !message.contains("#175"),
+            "warn message must not cite historical issue #175: {message}"
         );
     }
 

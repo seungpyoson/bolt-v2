@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     str::FromStr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -76,6 +76,31 @@ fn oracle_price_feed(source: ResolutionSourceKind, pair: &str) -> ResolutionBasi
 struct TestServerState {
     response_bodies: Arc<Vec<Value>>,
     request_count: Arc<AtomicUsize>,
+    request_params: Arc<Mutex<Vec<HashMap<String, String>>>>,
+}
+
+/// Handle returned by `spawn_test_server` so tests can assert not only the
+/// total request count but also the exact query-parameter maps for every
+/// request. Recording params lets us prove that the production narrowing
+/// path (slug-based) is taken and that the deleted broad `tag_slug` scan
+/// does NOT silently return.
+#[derive(Clone)]
+struct TestServerHandle {
+    request_count: Arc<AtomicUsize>,
+    request_params: Arc<Mutex<Vec<HashMap<String, String>>>>,
+}
+
+impl TestServerHandle {
+    fn total_requests(&self) -> usize {
+        self.request_count.load(Ordering::Relaxed)
+    }
+
+    fn recorded_params(&self) -> Vec<HashMap<String, String>> {
+        self.request_params
+            .lock()
+            .expect("request params mutex poisoned")
+            .clone()
+    }
 }
 
 fn ruleset() -> RulesetConfig {
@@ -119,11 +144,17 @@ fn parse_request_target(request: &str) -> (&str, HashMap<String, String>) {
     (path, params)
 }
 
-async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<AtomicUsize>) {
+async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, TestServerHandle) {
     let request_count = Arc::new(AtomicUsize::new(0));
+    let request_params: Arc<Mutex<Vec<HashMap<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
     let state = TestServerState {
         response_bodies: Arc::new(response_bodies),
         request_count: request_count.clone(),
+        request_params: request_params.clone(),
+    };
+    let handle = TestServerHandle {
+        request_count,
+        request_params,
     };
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -138,6 +169,11 @@ async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<Atom
                 let request = String::from_utf8_lossy(&buffer[..read]);
                 let (path, params) = parse_request_target(&request);
                 state.request_count.fetch_add(1, Ordering::Relaxed);
+                state
+                    .request_params
+                    .lock()
+                    .expect("request params mutex poisoned")
+                    .push(params.clone());
 
                 let limit = params
                     .get("limit")
@@ -184,7 +220,7 @@ async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<Atom
         }
     });
 
-    (addr, request_count)
+    (addr, handle)
 }
 
 fn test_gamma_client(addr: SocketAddr) -> PolymarketGammaRawHttpClient {
@@ -197,7 +233,7 @@ async fn load_markets_from_event_markets(
     Vec<bolt_v2::platform::ruleset::CandidateMarket>,
     Arc<AtomicUsize>,
 ) {
-    let (addr, request_count) =
+    let (addr, handle) =
         spawn_test_server(vec![json!([event_with_markets("event-1", markets)])]).await;
     let client = test_gamma_client(addr);
     let markets = load_candidate_markets_for_ruleset_with_gamma_client(
@@ -209,7 +245,7 @@ async fn load_markets_from_event_markets(
     .await
     .unwrap();
 
-    (markets, request_count)
+    (markets, handle.request_count)
 }
 
 async fn load_markets_from_event_markets_with_raw_base_url(
@@ -219,7 +255,7 @@ async fn load_markets_from_event_markets_with_raw_base_url(
     Vec<bolt_v2::platform::ruleset::CandidateMarket>,
     Arc<AtomicUsize>,
 ) {
-    let (addr, request_count) =
+    let (addr, handle) =
         spawn_test_server(vec![json!([event_with_markets("event-1", markets)])]).await;
     let client = test_gamma_client(addr);
     let markets = load_candidate_markets_for_ruleset_with_gamma_client(
@@ -231,7 +267,7 @@ async fn load_markets_from_event_markets_with_raw_base_url(
     .await
     .unwrap();
 
-    (markets, request_count)
+    (markets, handle.request_count)
 }
 
 async fn load_markets_from_event_pages(
@@ -241,7 +277,7 @@ async fn load_markets_from_event_pages(
     Arc<AtomicUsize>,
 ) {
     let response_bodies = event_pages.into_iter().map(Value::Array).collect();
-    let (addr, request_count) = spawn_test_server(response_bodies).await;
+    let (addr, handle) = spawn_test_server(response_bodies).await;
     let client = test_gamma_client(addr);
     let markets = load_candidate_markets_for_ruleset_with_gamma_client(
         &ruleset(),
@@ -252,7 +288,7 @@ async fn load_markets_from_event_pages(
     .await
     .unwrap();
 
-    (markets, request_count)
+    (markets, handle.request_count)
 }
 
 fn event_with_markets(id: &str, markets: Vec<Value>) -> Value {
@@ -535,7 +571,7 @@ async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
     )])
     .expect("seed selector state");
 
-    let (addr, request_count) = spawn_test_server(vec![json!([
+    let (addr, handle) = spawn_test_server(vec![json!([
         event_with_slug_and_markets(
             "event-1",
             "bitcoin-5m-alpha",
@@ -571,15 +607,37 @@ async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
 
     assert_eq!(markets.len(), 1);
     assert_eq!(markets[0].market_id, "market-prefix-match");
-    // Sanity: the test server counts every request. One per event-slug lookup
-    // against /events?slug=bitcoin-5m-alpha plus one raw-anchor fetch against
-    // the same slug. The bitcoin-15m-beta slug must never be fetched — proving
-    // we did NOT scan by tag_slug.
-    let total_requests = request_count.load(Ordering::Relaxed);
-    assert!(
-        total_requests >= 1,
-        "at least one slug lookup expected, got {total_requests}"
+    // Tight request-shape assertions (MEDIUM finding from code-quality review):
+    // - Exact total count: 1 gamma-client slug lookup + 1 raw-anchor slug fetch = 2.
+    //   A `>=` bound would silently pass if a regression reintroduced the deleted
+    //   broad `tag_slug=bitcoin` scan; `assert_eq!` forces exact narrowing shape.
+    // - No tag_slug param on any request — proves the Gamma network layer is
+    //   narrowed, not just the client-side filter.
+    // - Every recorded request carries `slug=bitcoin-5m-alpha`, confirming the
+    //   matching event slug from the seeded selector state drove every call.
+    assert_eq!(
+        handle.total_requests(),
+        2,
+        "expected exactly 1 gamma slug lookup + 1 raw-anchor slug fetch, got {}",
+        handle.total_requests(),
     );
+    let recorded = handle.recorded_params();
+    assert_eq!(
+        recorded.len(),
+        2,
+        "recorded params should match request count"
+    );
+    for params in &recorded {
+        assert!(
+            !params.contains_key("tag_slug"),
+            "no request should use tag_slug (broad scan); saw params: {params:?}"
+        );
+        assert_eq!(
+            params.get("slug").map(String::as_str),
+            Some("bitcoin-5m-alpha"),
+            "every request must target the matching event slug; saw params: {params:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -590,7 +648,7 @@ async fn prefix_selector_without_selector_state_fails_closed_with_greppable_erro
     // passes Some(state) for prefix rulesets), but if a future caller bypasses
     // the production wiring we must fail loudly with an operator-greppable
     // "polymarket ruleset validation:" prefix.
-    let (addr, _request_count) = spawn_test_server(vec![]).await;
+    let (addr, _handle) = spawn_test_server(vec![]).await;
     let client = test_gamma_client(addr);
     let ruleset = ruleset_with_prefix("bitcoin-5m");
 

@@ -78,9 +78,27 @@ pub struct PolymarketSelectorState {
 }
 
 impl PolymarketSelectorState {
+    /// PUBLIC TEST SEAM — production code MUST NOT call this.
+    ///
     /// Construct a selector state preseeded with a map of event slugs for each
-    /// prefix discovery. Public entry point for test harnesses that need to
-    /// simulate the post-startup state without running a live Gamma fetch.
+    /// prefix discovery. Public entry point for integration-test harnesses that
+    /// need to simulate the post-startup state without running a live Gamma
+    /// fetch. Integration tests cannot reach `pub(crate) fn new` or the
+    /// private `build_selector_state` wiring, so this is the minimum visibility
+    /// surface that keeps the tightened catalog narrowing test in
+    /// `tests/polymarket_catalog.rs` compilable.
+    ///
+    /// Rationale for keeping `pub` (rather than feature-gating behind
+    /// `#[cfg(any(test, feature = "test-utils"))]`): the local CI path invokes
+    /// tests through an externally owned `rust_verification_owner` wrapper
+    /// whose `run test` subcommand does not accept a `--features` flag, so
+    /// feature-gating this helper would require a coordinated change outside
+    /// this repository. The doc-comment trail records the decision so a later
+    /// reviewer reading the code (or re-auditing this PR) can see that the
+    /// visibility choice was deliberate, not oversight.
+    ///
+    /// Reviewers: if you see this being called from non-`tests/` code (i.e.
+    /// anywhere under `src/`), reject the diff.
     pub fn for_testing(
         event_slugs_by_ruleset: Vec<(&RulesetConfig, Vec<String>)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -144,6 +162,14 @@ impl PolymarketSelectorState {
     /// load → clone → mutate → store sequence does not race against itself. Concurrent
     /// readers see either the old snapshot fully or the new snapshot fully — never a
     /// partially updated map.
+    ///
+    /// If a second writer is ever introduced, the load → clone → mutate → store sequence
+    /// becomes racy (lost-update class): two writers loading the same snapshot, each
+    /// mutating a local clone, and the second store silently overwriting the first
+    /// writer's changes. Switch to a `compare_and_swap`/RCU pattern (retry on lost race)
+    /// or funnel all writes through a single task via an mpsc channel before adding a
+    /// second writer. The current concurrency test exercises many readers + one writer
+    /// and will NOT catch the lost-update class.
     fn upsert_event_slugs_by_discovery<I>(&self, event_slugs_by_discovery: I)
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
@@ -434,6 +460,14 @@ pub fn gamma_refresh_interval_secs(raw: &Value) -> Result<u64, Box<dyn std::erro
     Ok(input.gamma_refresh_interval_secs)
 }
 
+// Startup MUST use the strict resolver (`resolve_event_slugs_for_prefix_discoveries`,
+// which fails the whole startup if ANY prefix group fails to populate). The refresh
+// task's best-effort semantics (preserve prior state for failed groups) only produce
+// correct steady-state behavior once every configured group has been populated at
+// least once. Switching startup to best-effort would allow the binary to come up with
+// some groups permanently empty and no upstream signal that catalog narrowing is
+// degraded — failing closed at startup is the invariant that guarantees refresh's
+// "preserve prior state" branch has a prior state to preserve.
 pub(crate) fn build_selector_state(
     prefix_discoveries: &[PolymarketPrefixDiscovery],
     timeout_secs: u64,

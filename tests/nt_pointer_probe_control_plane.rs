@@ -445,6 +445,18 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must not use anonymous raw.githubusercontent.com fetches"
     );
     assert!(
+        !workflow.contains("x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@"),
+        "workflow must not embed the claude-config token in a remote URL"
+    );
+    assert!(
+        !workflow.contains("x-access-token:@github.com"),
+        "workflow must not retain any empty token-in-URL fallback"
+    );
+    assert!(
+        workflow.contains("echo \"::add-mask::$auth_header\""),
+        "workflow must mask the derived auth header before use"
+    );
+    assert!(
         workflow.contains("git -C \"$tmp_repo\" -c http.extraheader=\"$auth_header\" fetch --depth=1 --no-tags origin \"${TRUST_ROOT_VALIDATOR_SHA}\""),
         "workflow must use authenticated git fetch for the external validator"
     );

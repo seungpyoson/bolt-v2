@@ -34,6 +34,7 @@ jobs:
           CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
           auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth_header"
           tmp_repo="$RUNNER_TEMP/claude-config-fetch"
           mkdir -p "$tmp_repo"
           git init -q "$tmp_repo"

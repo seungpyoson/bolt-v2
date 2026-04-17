@@ -436,6 +436,20 @@ pub(crate) fn spawn_selector_refresh_task(
 ) -> Result<PolymarketSelectorRefreshGuard, Box<dyn std::error::Error>> {
     let raw_client = PolymarketGammaRawHttpClient::new(None, timeout_secs)
         .context("failed to build gamma raw client for selector refresh")?;
+    Ok(spawn_selector_refresh_task_with_client(
+        selector_state,
+        prefix_discoveries,
+        interval_secs,
+        raw_client,
+    ))
+}
+
+fn spawn_selector_refresh_task_with_client(
+    selector_state: PolymarketSelectorState,
+    prefix_discoveries: Vec<PolymarketPrefixDiscovery>,
+    interval_secs: u64,
+    raw_client: PolymarketGammaRawHttpClient,
+) -> PolymarketSelectorRefreshGuard {
     let cancellation = CancellationToken::new();
     let task_cancellation = cancellation.clone();
     let join_handle = tokio::spawn(async move {
@@ -448,12 +462,14 @@ pub(crate) fn spawn_selector_refresh_task(
                 _ = ticker.tick() => {}
             }
 
-            match resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
-                &prefix_discoveries,
-                &raw_client,
-            )
-            .await
-            {
+            let fetch_result = tokio::select! {
+                _ = task_cancellation.cancelled() => return,
+                result = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
+                    &prefix_discoveries,
+                    &raw_client,
+                ) => result,
+            };
+            match fetch_result {
                 Ok(event_slugs) => selector_state.upsert_event_slugs_by_discovery(event_slugs),
                 Err(error) => {
                     log::warn!(
@@ -464,10 +480,10 @@ pub(crate) fn spawn_selector_refresh_task(
         }
     });
 
-    Ok(PolymarketSelectorRefreshGuard {
+    PolymarketSelectorRefreshGuard {
         cancellation,
         join_handle,
-    })
+    }
 }
 
 impl PolymarketSelectorRefreshGuard {
@@ -1118,6 +1134,53 @@ mod tests {
         assert!(
             !event_slugs.contains_key(&btc_discovery),
             "failed group must be omitted from best-effort result so upsert preserves prior state"
+        );
+    }
+
+    /// Test server that accepts the TCP connection but never writes a response.
+    /// Simulates a Gamma backend hang so we can verify shutdown preempts the fetch.
+    async fn spawn_hanging_test_server() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    // Hold the connection open indefinitely. Drop only when the
+                    // outer test task ends.
+                    let _keep = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_task_shutdown_preempts_in_flight_gamma_fetch() {
+        // Regression guard for Fix 5 (PR #183): the refresh task must wrap its
+        // fetch in a tokio::select! against the cancellation token. Previously,
+        // a hanging Gamma backend could stall shutdown for up to timeout_secs.
+        let addr = spawn_hanging_test_server().await;
+        // Generous HTTP timeout so that WITHOUT cancellation preemption, the fetch
+        // would block far past our shutdown budget.
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 30).unwrap();
+        let state =
+            PolymarketSelectorState::new(Vec::<(PolymarketPrefixDiscovery, Vec<String>)>::new());
+        let discoveries = vec![prefix_discovery("bitcoin", "bitcoin-5m", 30, 300)];
+        let guard = spawn_selector_refresh_task_with_client(state, discoveries, 60, client);
+
+        // Give the task a moment to fire its first tick and enter the fetch.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let start = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(2), guard.shutdown())
+            .await
+            .expect("shutdown must return well under the HTTP client timeout");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "shutdown must preempt in-flight fetch; took {elapsed:?} (budget 500ms)"
         );
     }
 

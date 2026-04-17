@@ -88,17 +88,15 @@ impl PolymarketSelectorState {
     /// surface that keeps the tightened catalog narrowing test in
     /// `tests/polymarket_catalog.rs` compilable.
     ///
-    /// Rationale for keeping `pub` (rather than feature-gating behind
-    /// `#[cfg(any(test, feature = "test-utils"))]`): the local CI path invokes
-    /// tests through an externally owned `rust_verification_owner` wrapper
-    /// whose `run test` subcommand does not accept a `--features` flag, so
-    /// feature-gating this helper would require a coordinated change outside
-    /// this repository. The doc-comment trail records the decision so a later
-    /// reviewer reading the code (or re-auditing this PR) can see that the
-    /// visibility choice was deliberate, not oversight.
+    /// Gated behind `#[cfg(any(test, feature = "test-utils"))]` so the symbol
+    /// is absent from production binaries. The `managed-test` and
+    /// `managed-clippy` recipes in the justfile pass `--features test-utils`,
+    /// so the verification pipeline sees it while `cargo build --release`
+    /// (without the feature) does not.
     ///
     /// Reviewers: if you see this being called from non-`tests/` code (i.e.
     /// anywhere under `src/`), reject the diff.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn for_testing(
         event_slugs_by_ruleset: Vec<(&RulesetConfig, Vec<String>)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {

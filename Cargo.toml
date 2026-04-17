@@ -5,6 +5,12 @@ edition = "2024"
 rust-version = "1.94.1"
 publish = false
 
+[features]
+# Opt-in exposure of test-only seams (e.g. `PolymarketSelectorState::for_testing`)
+# to integration tests under `tests/`. Enabled by the `managed-test` and
+# `managed-clippy` just recipes; never enabled for production binaries.
+test-utils = []
+
 [dependencies]
 anyhow = "1"
 arc-swap = "1"

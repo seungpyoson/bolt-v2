@@ -64,11 +64,11 @@ deny-advisories: check-workspace require-rust-verification-owner
 
 [private]
 managed-clippy: check-workspace
-    cargo clippy --locked -- -D warnings
+    cargo clippy --locked --features test-utils -- -D warnings
 
 [private]
 managed-test: check-workspace
-    cargo nextest run --locked
+    cargo nextest run --locked --features test-utils
 
 [private]
 managed-build: check-workspace

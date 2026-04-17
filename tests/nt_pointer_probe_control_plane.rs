@@ -623,6 +623,26 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must not retain any empty token-in-URL fallback"
     );
     assert!(
+        !workflow.contains("CLAUDE_CONFIG_READ_TOKEN}@"),
+        "workflow must not interpolate the token into any URL userinfo form"
+    );
+    assert!(
+        !workflow.contains("$CLAUDE_CONFIG_READ_TOKEN@"),
+        "workflow must not use a bare-variable token-in-URL form"
+    );
+    assert!(
+        !workflow.contains("secrets.CLAUDE_CONFIG_READ_TOKEN }}@"),
+        "workflow must not expand the secret directly into URL userinfo"
+    );
+    assert!(
+        !workflow.contains("chmod +x"),
+        "workflow must not mark the validator executable (it is invoked via python3)"
+    );
+    assert!(
+        workflow.contains("echo \"::add-mask::$b64_auth\""),
+        "workflow must mask the base64 auth material on its own, not only the concatenated header"
+    );
+    assert!(
         workflow.contains("echo \"::add-mask::$auth_header\""),
         "workflow must mask the derived auth header before use"
     );

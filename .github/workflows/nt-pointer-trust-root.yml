@@ -33,7 +33,9 @@ jobs:
         env:
           CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+          b64_auth="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$b64_auth"
+          auth_header="AUTHORIZATION: basic $b64_auth"
           echo "::add-mask::$auth_header"
           tmp_repo="$RUNNER_TEMP/claude-config-fetch"
           mkdir -p "$tmp_repo"
@@ -49,7 +51,6 @@ jobs:
 
           git -C "$tmp_repo" show "FETCH_HEAD:lib/bolt_trust_root_validator.py" > "$RUNNER_TEMP/bolt_trust_root_validator.py"
           git -C "$tmp_repo" show "FETCH_HEAD:config/bolt-v2-trust-root-policy.json" > "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"
-          chmod +x "$RUNNER_TEMP/bolt_trust_root_validator.py"
 
       - name: Materialize protected files from PR head
         shell: bash

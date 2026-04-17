@@ -30,22 +30,15 @@ struct PolymarketStartupValidationTargets {
     configured_instrument_ids: Vec<String>,
 }
 
-pub fn validate_polymarket_startup(cfg: &Config) -> AppResult {
-    let Some(targets) = collect_polymarket_startup_validation_targets(cfg)? else {
-        return Ok(());
-    };
-
-    validate_polymarket_startup_with_targets(cfg, targets)
-}
-
 pub fn validate_polymarket_startup_with_prefix_event_slugs(
     cfg: &Config,
     resolved_prefix_event_slugs: Vec<String>,
 ) -> AppResult {
-    let Some(targets) = collect_polymarket_startup_validation_targets_with_prefix_event_slugs(
-        cfg,
-        resolved_prefix_event_slugs,
-    )?
+    let Some(targets) =
+        collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slugs(
+            cfg,
+            resolved_prefix_event_slugs,
+        )?
     else {
         return Ok(());
     };
@@ -103,6 +96,7 @@ fn validate_polymarket_startup_with_targets(
     validate_polymarket_startup_results(&targets, &discovered_instrument_ids)
 }
 
+#[cfg(test)]
 fn collect_polymarket_startup_validation_targets(
     cfg: &Config,
 ) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>> {
@@ -112,16 +106,7 @@ fn collect_polymarket_startup_validation_targets(
     )
 }
 
-fn collect_polymarket_startup_validation_targets_with_prefix_event_slugs(
-    cfg: &Config,
-    resolved_prefix_event_slugs: Vec<String>,
-) -> Result<Option<PolymarketStartupValidationTargets>, Box<dyn std::error::Error>> {
-    collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slugs(
-        cfg,
-        resolved_prefix_event_slugs,
-    )
-}
-
+#[cfg(test)]
 fn collect_polymarket_startup_validation_targets_with_resolver<F>(
     cfg: &Config,
     resolve_event_slugs: F,
@@ -225,6 +210,18 @@ fn collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slug
 
         for event_slug in resolved_prefix_event_slugs {
             event_slugs.insert(event_slug);
+        }
+
+        let has_prefix_selectors = selectors.iter().any(|s| s.event_slug_prefix.is_some());
+        if has_prefix_selectors && event_slugs.is_empty() {
+            let prefix_count = selectors
+                .iter()
+                .filter(|s| s.event_slug_prefix.is_some())
+                .count();
+            return Err(std::io::Error::other(format!(
+                "Polymarket startup validation found {prefix_count} prefix-based ruleset selector(s) configured, but Gamma discovery resolved zero event slugs; this indicates misconfigured prefix patterns, no matching live markets, or a Gamma outage. Failing closed until selector refresh succeeds."
+            ))
+            .into());
         }
     } else {
         for client in &cfg.data_clients {
@@ -413,20 +410,43 @@ mod tests {
     }
 
     #[test]
+    fn startup_validation_fails_closed_when_prefix_selectors_but_zero_discovered_events() {
+        let mut cfg = test_config(vec![], vec![]);
+        cfg.rulesets.push(polymarket_prefix_ruleset(
+            "PREFIX-ONLY",
+            "bitcoin",
+            "nonexistent-prefix",
+        ));
+        let err = collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slugs(
+            &cfg,
+            vec![],
+        )
+        .expect_err("should fail closed when prefix selectors exist but zero events resolved");
+        let message = err.to_string();
+        assert!(
+            message.contains("prefix-based ruleset selector"),
+            "got: {message}"
+        );
+        assert!(message.contains("zero event slugs"), "got: {message}");
+        assert!(message.contains("selector refresh"), "got: {message}");
+    }
+
+    #[test]
     fn startup_validation_can_use_pre_resolved_prefix_event_slugs() {
         let mut cfg = test_config(vec!["ethereum"], vec!["alpha.POLYMARKET"]);
         cfg.rulesets
             .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
 
-        let targets = collect_polymarket_startup_validation_targets_with_prefix_event_slugs(
-            &cfg,
-            vec![
-                "bitcoin-5m-alpha".to_string(),
-                "bitcoin-5m-beta".to_string(),
-            ],
-        )
-        .expect("targets should collect")
-        .expect("polymarket targets should exist");
+        let targets =
+            collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slugs(
+                &cfg,
+                vec![
+                    "bitcoin-5m-alpha".to_string(),
+                    "bitcoin-5m-beta".to_string(),
+                ],
+            )
+            .expect("targets should collect")
+            .expect("polymarket targets should exist");
 
         assert_eq!(targets.tag_slugs, vec!["ethereum"]);
         assert_eq!(

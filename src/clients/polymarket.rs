@@ -189,7 +189,7 @@ fn map_signature_type(value: u8) -> Result<SignatureType, Box<dyn std::error::Er
     }
 }
 
-pub fn build_data_client(
+pub(crate) fn build_data_client(
     raw: &Value,
     selectors: &[PolymarketRulesetSelector],
     selector_state: Option<PolymarketSelectorState>,
@@ -239,14 +239,13 @@ pub fn build_data_client(
     let has_prefix_selectors = selectors
         .iter()
         .any(|selector| selector.event_slug_prefix.is_some());
-    let new_market_filter = None;
 
     let config = PolymarketDataClientConfig {
         subscribe_new_markets: common_input.subscribe_new_markets && !has_prefix_selectors,
         update_instruments_interval_mins: common_input.update_instruments_interval_mins,
         ws_max_subscriptions: common_input.ws_max_subscriptions,
         filters,
-        new_market_filter,
+        new_market_filter: None,
         ..Default::default()
     };
 
@@ -304,18 +303,19 @@ pub fn polymarket_ruleset_selectors(
     Ok(selectors)
 }
 
-/// Enforce that a single Polymarket data_client's selectors are uniformly either
-/// tag-only (`event_slug_prefix = None`) or prefix-based (`event_slug_prefix = Some(_)`).
+/// Enforce that ALL Polymarket rulesets uniformly use either tag-only selectors
+/// (event_slug_prefix = None) or prefix-based selectors (event_slug_prefix = Some(_)).
+///
+/// All Polymarket rulesets feed a single shared PolymarketRulesetSetup that is reused
+/// across every Polymarket data_client in the runtime. The same flattened selector
+/// list is applied to all polymarket data_clients, so this invariant operates at the
+/// ruleset (global) level, not per data_client.
 ///
 /// Mixing is rejected fail-closed before any selector state is built: the NT adapter
 /// combines `InstrumentFilter`s additively on fetch, so a tag-only selector sharing a
 /// data_client with a prefix selector would fetch the entire tag regardless of the
 /// sibling prefix selector's narrowing intent, producing end-to-end over-admission.
-///
-/// All Polymarket rulesets feed the single `PolymarketRulesetSetup` that is shared
-/// across every Polymarket data_client in the runtime, so the selector scope checked
-/// here is per-data_client by construction.
-fn reject_mixed_polymarket_selector_scope(
+fn reject_mixed_polymarket_rulesets_global_scope(
     selectors: &[PolymarketRulesetSelector],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tag_only: Vec<&PolymarketRulesetSelector> = selectors
@@ -340,7 +340,7 @@ fn reject_mixed_polymarket_selector_scope(
             })
             .collect();
         return Err(format!(
-            "polymarket data_client has {} tag-only selector(s) [{}] mixed with {} prefix selector(s) [{}]; all selectors on a single data_client must be uniformly tag-only or uniformly prefix-based",
+            "all Polymarket rulesets must be uniformly tag-only or uniformly prefix-based; found {} tag-only ruleset selector(s) [{}] mixed with {} prefix-based ruleset selector(s) [{}]",
             tag_only.len(),
             tag_only_tags.join(", "),
             prefix_based.len(),
@@ -433,7 +433,7 @@ pub(crate) fn spawn_selector_refresh_task(
                 _ = ticker.tick() => {}
             }
 
-            match resolve_event_slugs_for_selectors_with_gamma_client(
+            match resolve_event_slugs_for_prefix_discoveries_with_gamma_client(
                 &prefix_discoveries,
                 &raw_client,
             )
@@ -466,7 +466,7 @@ impl PolymarketRulesetSetup {
         timeout_secs: u64,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let selectors = polymarket_ruleset_selectors(rulesets)?;
-        reject_mixed_polymarket_selector_scope(&selectors)?;
+        reject_mixed_polymarket_rulesets_global_scope(&selectors)?;
         let prefix_discoveries = polymarket_ruleset_prefix_discoveries(rulesets)?;
         let selector_state = build_selector_state(&prefix_discoveries, timeout_secs)?;
         Ok(Self {
@@ -562,10 +562,9 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
         .enable_all()
         .build()?;
 
-    runtime.block_on(resolve_event_slugs_for_selectors_with_gamma_client(
-        discoveries,
-        &raw_client,
-    ))
+    runtime.block_on(
+        resolve_event_slugs_for_prefix_discoveries_with_gamma_client(discoveries, &raw_client),
+    )
 }
 
 pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_client(
@@ -657,7 +656,7 @@ async fn resolve_matching_events_by_discovery_with_gamma_client(
     Ok(matched_events_by_discovery)
 }
 
-pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
+pub(crate) async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client(
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>, Box<dyn std::error::Error>> {
@@ -850,13 +849,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn resolve_event_slugs_for_selectors_with_gamma_client_filters_prefixes() {
+    async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client_filters_prefixes() {
         let (addr, requests) = spawn_test_server().await;
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let discoveries = vec![prefix_discovery("bitcoin", "bitcoin-5m", 30, 300)];
 
         let event_slugs =
-            resolve_event_slugs_for_selectors_with_gamma_client(&discoveries, &client)
+            resolve_event_slugs_for_prefix_discoveries_with_gamma_client(&discoveries, &client)
                 .await
                 .unwrap();
 
@@ -898,7 +897,7 @@ mod tests {
         ];
 
         let event_slugs =
-            resolve_event_slugs_for_selectors_with_gamma_client(&discoveries, &client)
+            resolve_event_slugs_for_prefix_discoveries_with_gamma_client(&discoveries, &client)
                 .await
                 .unwrap();
 
@@ -1066,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mixed_tag_only_and_prefix_selectors_on_one_data_client() {
+    fn rejects_mixed_tag_only_and_prefix_polymarket_rulesets_globally() {
         let rulesets = vec![
             tag_only_ruleset("ETH-TAG", "ethereum"),
             prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"),
@@ -1077,12 +1076,12 @@ mod tests {
         let message = err.to_string();
 
         assert!(
-            message.contains("tag-only selector"),
-            "error should name tag-only selectors: {message}"
+            message.contains("tag-only ruleset selector"),
+            "error should name tag-only ruleset selectors: {message}"
         );
         assert!(
-            message.contains("prefix selector"),
-            "error should name prefix selectors: {message}"
+            message.contains("prefix-based ruleset selector"),
+            "error should name prefix-based ruleset selectors: {message}"
         );
         assert!(
             message.contains("ethereum"),
@@ -1099,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_all_tag_only_selectors_on_one_data_client() {
+    fn accepts_all_tag_only_polymarket_rulesets_globally() {
         let rulesets = vec![
             tag_only_ruleset("ETH-TAG", "ethereum"),
             tag_only_ruleset("BTC-TAG", "bitcoin"),
@@ -1113,20 +1112,19 @@ mod tests {
     }
 
     #[test]
-    fn accepts_all_prefix_selectors_on_one_data_client() {
-        // Two prefix rulesets sharing a tag_slug so discovery deduplicates to a single
-        // Gamma fetch; use the in-process test server to avoid live network.
+    fn accepts_all_prefix_polymarket_rulesets_invariant_passes() {
+        // Pure unit-level check that the invariant accepts an all-prefix ruleset set.
+        // This does not exercise the full from_rulesets path (which would require
+        // live Gamma HTTP for prefix discovery); instead it directly verifies the
+        // validation step that gates everything downstream.
         let rulesets = vec![
             prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"),
             prefix_ruleset("BTC-15M", "bitcoin", "bitcoin-15m"),
         ];
 
-        // Verify the invariant check itself passes (the pure validation step before
-        // any HTTP happens). We re-invoke the private helper directly via the public
-        // code path stops before build_selector_state only on Err.
         let selectors = polymarket_ruleset_selectors(&rulesets)
             .expect("selectors should parse for all-prefix rulesets");
-        reject_mixed_polymarket_selector_scope(&selectors)
+        reject_mixed_polymarket_rulesets_global_scope(&selectors)
             .expect("all-prefix selectors must pass the mixed-scope check");
 
         let prefix_discoveries = polymarket_ruleset_prefix_discoveries(&rulesets)
@@ -1136,6 +1134,32 @@ mod tests {
             prefix_discoveries
                 .iter()
                 .all(|d| d.selector.event_slug_prefix.is_some())
+        );
+    }
+
+    #[test]
+    fn from_rulesets_rejects_mixed_selectors_before_attempting_gamma_http() {
+        // Proves the invariant is enforced BEFORE any Gamma HTTP call is attempted.
+        // If the invariant were checked after build_selector_state (which issues HTTP
+        // with the configured timeout), rejection would take at least timeout_secs*1000
+        // ms. We pass timeout_secs=1 and assert the error returns in well under that
+        // bound, guaranteeing the ordering.
+        let rulesets = vec![
+            tag_only_ruleset("ETH-TAG", "ethereum"),
+            prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"),
+        ];
+        let start = std::time::Instant::now();
+        let err = PolymarketRulesetSetup::from_rulesets(&rulesets, 1)
+            .expect_err("mixed selectors should be rejected");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 200,
+            "rejection must be pre-HTTP; took {}ms (invariant may have been checked after HTTP)",
+            elapsed.as_millis()
+        );
+        assert!(
+            err.to_string().contains("uniformly"),
+            "error should mention uniformity requirement: {err}"
         );
     }
 }

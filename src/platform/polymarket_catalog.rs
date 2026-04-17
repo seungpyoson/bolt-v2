@@ -131,12 +131,12 @@ async fn load_events_for_selector(
         .map_err(|error| anyhow::anyhow!(error.to_string()))?
         .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
 
-    Ok(resolve_matching_events_for_prefix_discoveries_with_gamma_client(
+    resolve_matching_events_for_prefix_discoveries_with_gamma_client(
         std::slice::from_ref(&prefix_discovery),
         client,
     )
     .await
-    .map_err(|error| anyhow::anyhow!(error.to_string()))?)
+    .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 async fn load_events_by_event_slugs(
@@ -698,7 +698,9 @@ mod tests {
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let ruleset = ruleset_with_prefix("bitcoin-5m");
         let selector_state = PolymarketSelectorState::new(vec![(
-            polymarket_prefix_discovery_for_ruleset(&ruleset).unwrap().unwrap(),
+            polymarket_prefix_discovery_for_ruleset(&ruleset)
+                .unwrap()
+                .unwrap(),
             vec!["bitcoin-5m-alpha".to_string()],
         )]);
 
@@ -732,7 +734,9 @@ mod tests {
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let ruleset = ruleset_with_prefix("bitcoin-5m");
         let selector_state = PolymarketSelectorState::new(vec![(
-            polymarket_prefix_discovery_for_ruleset(&ruleset).unwrap().unwrap(),
+            polymarket_prefix_discovery_for_ruleset(&ruleset)
+                .unwrap()
+                .unwrap(),
             vec![],
         )]);
 

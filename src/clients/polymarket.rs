@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use nautilus_polymarket::{
     common::enums::SignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
-    filters::{EventParamsFilter, EventSlugFilter, InstrumentFilter, NewMarketPredicateFilter},
+    filters::{EventParamsFilter, EventSlugFilter, InstrumentFilter},
     http::{
         clob::PolymarketClobHttpClient, gamma::PolymarketGammaRawHttpClient, models::GammaEvent,
     },
@@ -54,7 +54,7 @@ struct PolymarketDataClientCommonInput {
     ws_max_subscriptions: usize,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
 pub struct PolymarketRulesetSelector {
     pub tag_slug: String,
@@ -62,7 +62,7 @@ pub struct PolymarketRulesetSelector {
     pub event_slug_prefix: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PolymarketPrefixDiscovery {
     pub selector: PolymarketRulesetSelector,
     pub min_time_to_expiry_secs: u64,
@@ -71,64 +71,81 @@ pub(crate) struct PolymarketPrefixDiscovery {
 
 #[derive(Clone, Debug)]
 pub struct PolymarketSelectorState {
-    prefix_selectors: Vec<PolymarketRulesetSelector>,
-    event_slugs: Arc<RwLock<Vec<String>>>,
+    event_slugs_by_discovery: Arc<RwLock<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>>>,
 }
 
 impl PolymarketSelectorState {
-    pub(crate) fn new(
-        prefix_selectors: Vec<PolymarketRulesetSelector>,
-        event_slugs: Vec<String>,
-    ) -> Self {
+    pub(crate) fn new<I>(event_slugs_by_discovery: I) -> Self
+    where
+        I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
+    {
         Self {
-            prefix_selectors,
-            event_slugs: Arc::new(RwLock::new(event_slugs)),
+            event_slugs_by_discovery: Arc::new(RwLock::new(
+                event_slugs_by_discovery
+                    .into_iter()
+                    .map(|(discovery, event_slugs)| {
+                        (
+                            discovery,
+                            event_slugs
+                                .into_iter()
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            )),
         }
     }
 
     fn current_event_slugs(&self) -> Vec<String> {
-        self.event_slugs
+        self.event_slugs_by_discovery
             .read()
             .expect("selector event slugs lock poisoned")
-            .clone()
+            .values()
+            .flat_map(|event_slugs| event_slugs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
-    fn replace_event_slugs(&self, event_slugs: Vec<String>) {
-        *self
-            .event_slugs
+    fn replace_event_slugs<I>(&self, event_slugs_by_discovery: I)
+    where
+        I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
+    {
+        let mut state = self
+            .event_slugs_by_discovery
             .write()
-            .expect("selector event slugs lock poisoned") = event_slugs;
-    }
+            .expect("selector event slugs lock poisoned");
 
-    pub(crate) fn event_slugs_for_selector(
-        &self,
-        selector: &PolymarketRulesetSelector,
-    ) -> Vec<String> {
-        let event_slugs = self.current_event_slugs();
-        match selector.event_slug_prefix.as_deref() {
-            Some(prefix) => event_slugs
+        for (discovery, event_slugs) in event_slugs_by_discovery {
+            let unique_event_slugs: Vec<String> = event_slugs
                 .into_iter()
-                .filter(|event_slug| event_slug.starts_with(prefix))
-                .collect(),
-            None => event_slugs,
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if unique_event_slugs.is_empty() {
+                log::warn!(
+                    "selector refresh returned no event slugs for tag_slug={} prefix={:?}; preserving previous selector state",
+                    discovery.selector.tag_slug,
+                    discovery.selector.event_slug_prefix.as_deref()
+                );
+                continue;
+            }
+            state.insert(discovery, unique_event_slugs);
         }
     }
 
-    fn accepts_new_market_slug(&self, slug: &str) -> bool {
-        if self
-            .current_event_slugs()
-            .iter()
-            .any(|event_slug| event_slug == slug)
-        {
-            return true;
-        }
-
-        self.prefix_selectors.iter().any(|selector| {
-            selector
-                .event_slug_prefix
-                .as_deref()
-                .is_some_and(|prefix| slug.starts_with(prefix))
-        })
+    pub(crate) fn event_slugs_for_discovery(
+        &self,
+        discovery: &PolymarketPrefixDiscovery,
+    ) -> Vec<String> {
+        self.event_slugs_by_discovery
+            .read()
+            .expect("selector event slugs lock poisoned")
+            .get(discovery)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -219,22 +236,13 @@ pub fn build_data_client(
         filters
     };
 
-    let has_tag_only_selectors = selectors
+    let has_prefix_selectors = selectors
         .iter()
-        .any(|selector| selector.event_slug_prefix.is_none());
-    let new_market_filter = if has_tag_only_selectors {
-        None
-    } else {
-        selector_state.map(|selector_state| {
-            Arc::new(NewMarketPredicateFilter::new(
-                "ruleset-selector-prefix",
-                move |new_market| selector_state.accepts_new_market_slug(&new_market.slug),
-            )) as Arc<dyn InstrumentFilter>
-        })
-    };
+        .any(|selector| selector.event_slug_prefix.is_some());
+    let new_market_filter = None;
 
     let config = PolymarketDataClientConfig {
-        subscribe_new_markets: common_input.subscribe_new_markets,
+        subscribe_new_markets: common_input.subscribe_new_markets && !has_prefix_selectors,
         update_instruments_interval_mins: common_input.update_instruments_interval_mins,
         ws_max_subscriptions: common_input.ws_max_subscriptions,
         filters,
@@ -352,14 +360,9 @@ pub(crate) fn build_selector_state(
         return Ok(None);
     }
 
-    let event_slugs = resolve_event_slugs_for_prefix_discoveries(prefix_discoveries, timeout_secs)?;
-    Ok(Some(PolymarketSelectorState::new(
-        prefix_discoveries
-            .iter()
-            .map(|discovery| discovery.selector.clone())
-            .collect(),
-        event_slugs,
-    )))
+    let event_slugs_by_discovery =
+        resolve_event_slugs_for_prefix_discoveries(prefix_discoveries, timeout_secs)?;
+    Ok(Some(PolymarketSelectorState::new(event_slugs_by_discovery)))
 }
 
 pub(crate) fn spawn_selector_refresh_task(
@@ -503,7 +506,7 @@ pub(crate) fn gamma_event_params_for_prefix_discovery(
 pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
     discoveries: &[PolymarketPrefixDiscovery],
     timeout_secs: u64,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>, Box<dyn std::error::Error>> {
     let raw_client = PolymarketGammaRawHttpClient::new(None, timeout_secs)
         .context("failed to build gamma raw client")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -520,8 +523,29 @@ pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_cl
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<Vec<GammaEvent>, Box<dyn std::error::Error>> {
+    let matched_events_by_discovery =
+        resolve_matching_events_by_discovery_with_gamma_client(discoveries, client).await?;
     let mut matched_events = Vec::new();
     let mut seen_event_slugs = HashSet::new();
+
+    for events in matched_events_by_discovery.into_values() {
+        for event in events {
+            let Some(event_slug) = event.slug.as_deref() else {
+                continue;
+            };
+            if seen_event_slugs.insert(event_slug.to_string()) {
+                matched_events.push(event);
+            }
+        }
+    }
+
+    Ok(matched_events)
+}
+
+async fn resolve_matching_events_by_discovery_with_gamma_client(
+    discoveries: &[PolymarketPrefixDiscovery],
+    client: &PolymarketGammaRawHttpClient,
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
     let now = Utc::now();
     let mut grouped_discoveries: BTreeMap<
         (String, String, String),
@@ -542,40 +566,66 @@ pub(crate) async fn resolve_matching_events_for_prefix_discoveries_with_gamma_cl
             .or_insert_with(|| (params, vec![discovery]));
     }
 
+    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
+        discoveries
+            .iter()
+            .cloned()
+            .map(|discovery| (discovery, Vec::new()))
+            .collect();
+
     for (_, (params, discoveries)) in grouped_discoveries {
         let events = fetch_gamma_events_paginated(client, params).await?;
+        let mut grouped_matches: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = discoveries
+            .iter()
+            .map(|discovery| ((*discovery).clone(), Vec::new()))
+            .collect();
 
         for event in events {
             let Some(event_slug) = event.slug.as_deref() else {
                 continue;
             };
-            if discoveries.iter().any(|discovery| {
-                discovery
+
+            for discovery in &discoveries {
+                if discovery
                     .selector
                     .event_slug_prefix
                     .as_deref()
                     .is_some_and(|prefix| event_slug.starts_with(prefix))
-            }) && seen_event_slugs.insert(event_slug.to_string())
-            {
-                matched_events.push(event);
+                {
+                    grouped_matches
+                        .get_mut(*discovery)
+                        .expect("grouped discovery should have an output bucket")
+                        .push(event.clone());
+                }
             }
+        }
+
+        for (discovery, matched_events) in grouped_matches {
+            matched_events_by_discovery.insert(discovery, matched_events);
         }
     }
 
-    Ok(matched_events)
+    Ok(matched_events_by_discovery)
 }
 
 pub(crate) async fn resolve_event_slugs_for_selectors_with_gamma_client(
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    Ok(
-        resolve_matching_events_for_prefix_discoveries_with_gamma_client(discoveries, client)
-            .await?
-            .into_iter()
-            .filter_map(|event| event.slug)
-            .collect(),
-    )
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>, Box<dyn std::error::Error>> {
+    let matched_events_by_discovery =
+        resolve_matching_events_by_discovery_with_gamma_client(discoveries, client).await?;
+    Ok(matched_events_by_discovery
+        .into_iter()
+        .map(|(discovery, events)| {
+            let event_slugs = events
+                .into_iter()
+                .filter_map(|event| event.slug)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            (discovery, event_slugs)
+        })
+        .collect())
 }
 
 pub(crate) async fn fetch_gamma_events_paginated(
@@ -761,7 +811,10 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(event_slugs, vec!["bitcoin-5m-alpha".to_string()]);
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([(discoveries[0].clone(), vec!["bitcoin-5m-alpha".to_string()])])
+        );
 
         let recorded_requests = requests.lock().unwrap();
         assert_eq!(recorded_requests.len(), 1);
@@ -802,10 +855,10 @@ mod tests {
 
         assert_eq!(
             event_slugs,
-            vec![
-                "bitcoin-5m-alpha".to_string(),
-                "bitcoin-15m-beta".to_string()
-            ]
+            BTreeMap::from([
+                (discoveries[0].clone(), vec!["bitcoin-5m-alpha".to_string()]),
+                (discoveries[1].clone(), vec!["bitcoin-15m-beta".to_string()]),
+            ])
         );
         assert_eq!(requests.lock().unwrap().len(), 1);
     }
@@ -833,10 +886,10 @@ mod tests {
             tag_slug: "bitcoin".to_string(),
             event_slug_prefix: Some("bitcoin-5m".to_string()),
         }];
-        let selector_state = Some(PolymarketSelectorState::new(
-            selectors.clone(),
+        let selector_state = Some(PolymarketSelectorState::new(vec![(
+            prefix_discovery("bitcoin", "bitcoin-5m", 30, 300),
             vec!["bitcoin-5m-alpha".to_string()],
-        ));
+        )]));
         let raw = toml::toml! {
             subscribe_new_markets = true
             update_instruments_interval_mins = 60
@@ -849,7 +902,8 @@ mod tests {
         let debug = format!("{config:?}");
 
         assert!(debug.contains("EventSlugFilter"), "{debug}");
-        assert!(debug.contains("new_market_filter"), "{debug}");
+        assert!(config.new_market_filter.is_none());
+        assert!(!config.subscribe_new_markets);
     }
 
     #[test]
@@ -885,10 +939,10 @@ mod tests {
                 event_slug_prefix: None,
             },
         ];
-        let selector_state = Some(PolymarketSelectorState::new(
-            vec![selectors[0].clone()],
+        let selector_state = Some(PolymarketSelectorState::new(vec![(
+            prefix_discovery("bitcoin", "bitcoin-5m", 30, 300),
             vec!["bitcoin-5m-alpha".to_string()],
-        ));
+        )]));
         let raw = toml::toml! {
             subscribe_new_markets = true
             update_instruments_interval_mins = 60
@@ -902,24 +956,25 @@ mod tests {
 
         assert!(debug.contains("EventParamsFilter"), "{debug}");
         assert!(debug.contains("EventSlugFilter"), "{debug}");
-        assert!(
-            config.new_market_filter.is_none(),
-            "mixed selectors should fail open for WS new-market discovery"
-        );
+        assert!(config.new_market_filter.is_none());
+        assert!(!config.subscribe_new_markets);
     }
 
     #[test]
-    fn selector_state_accepts_exact_and_prefix_new_market_slugs() {
-        let selector_state = PolymarketSelectorState::new(
-            vec![PolymarketRulesetSelector {
-                tag_slug: "bitcoin".to_string(),
-                event_slug_prefix: Some("bitcoin-5m".to_string()),
-            }],
+    fn selector_state_returns_exact_discovery_owned_slugs() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let selector_state = PolymarketSelectorState::new(vec![(
+            discovery.clone(),
             vec!["bitcoin-1m-alpha".to_string()],
-        );
+        )]);
 
-        assert!(selector_state.accepts_new_market_slug("bitcoin-1m-alpha"));
-        assert!(selector_state.accepts_new_market_slug("bitcoin-5m-beta"));
-        assert!(!selector_state.accepts_new_market_slug("ethereum-5m-gamma"));
+        assert_eq!(
+            selector_state.event_slugs_for_discovery(&discovery),
+            vec!["bitcoin-1m-alpha".to_string()]
+        );
+        assert!(selector_state
+            .event_slugs_for_discovery(&prefix_discovery("bitcoin", "bitcoin-15m", 30, 300))
+            .is_empty());
     }
+
 }

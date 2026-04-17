@@ -112,7 +112,10 @@ async fn load_events_for_selector(
     }
 
     if let Some(selector_state) = selector_state {
-        let event_slugs = selector_state.event_slugs_for_selector(selector);
+        let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+            .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
+        let event_slugs = selector_state.event_slugs_for_discovery(&prefix_discovery);
         if !event_slugs.is_empty() {
             return load_events_by_event_slugs(&event_slugs, client).await;
         }
@@ -128,12 +131,12 @@ async fn load_events_for_selector(
         .map_err(|error| anyhow::anyhow!(error.to_string()))?
         .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
 
-    resolve_matching_events_for_prefix_discoveries_with_gamma_client(
+    Ok(resolve_matching_events_for_prefix_discoveries_with_gamma_client(
         std::slice::from_ref(&prefix_discovery),
         client,
     )
     .await
-    .map_err(|error| anyhow::anyhow!(error.to_string()))
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?)
 }
 
 async fn load_events_by_event_slugs(
@@ -403,7 +406,7 @@ fn seconds_to_end(now: DateTime<Utc>, end_date: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::polymarket::{PolymarketRulesetSelector, PolymarketSelectorState};
+    use crate::clients::polymarket::PolymarketSelectorState;
     use crate::config::RulesetVenueKind;
     use chrono::Duration as ChronoDuration;
     use serde_json::json;
@@ -694,13 +697,10 @@ mod tests {
         .await;
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let ruleset = ruleset_with_prefix("bitcoin-5m");
-        let selector_state = PolymarketSelectorState::new(
-            vec![PolymarketRulesetSelector {
-                tag_slug: "bitcoin".to_string(),
-                event_slug_prefix: Some("bitcoin-5m".to_string()),
-            }],
+        let selector_state = PolymarketSelectorState::new(vec![(
+            polymarket_prefix_discovery_for_ruleset(&ruleset).unwrap().unwrap(),
             vec!["bitcoin-5m-alpha".to_string()],
-        );
+        )]);
 
         let markets = load_candidate_markets_for_ruleset_with_gamma_client(
             &ruleset,
@@ -731,13 +731,10 @@ mod tests {
         .await;
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let ruleset = ruleset_with_prefix("bitcoin-5m");
-        let selector_state = PolymarketSelectorState::new(
-            vec![PolymarketRulesetSelector {
-                tag_slug: "bitcoin".to_string(),
-                event_slug_prefix: Some("bitcoin-5m".to_string()),
-            }],
+        let selector_state = PolymarketSelectorState::new(vec![(
+            polymarket_prefix_discovery_for_ruleset(&ruleset).unwrap().unwrap(),
             vec![],
-        );
+        )]);
 
         let err = load_candidate_markets_for_ruleset_with_gamma_client(
             &ruleset,

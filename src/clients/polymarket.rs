@@ -294,6 +294,14 @@ pub(crate) fn build_data_client(
 
     let has_prefix_selectors = has_any_prefix_selector(selectors);
 
+    if common_input.subscribe_new_markets && has_prefix_selectors {
+        log::warn!(
+            "polymarket data_client: operator set subscribe_new_markets = true but at least one ruleset uses event_slug_prefix; \
+             the setting is overridden to false to prevent over-admission (see #175). \
+             Real-time prefix-aware admission is tracked on #188."
+        );
+    }
+
     let config = PolymarketDataClientConfig {
         subscribe_new_markets: common_input.subscribe_new_markets && !has_prefix_selectors,
         update_instruments_interval_mins: common_input.update_instruments_interval_mins,
@@ -1633,6 +1641,118 @@ mod tests {
         assert!(
             total_observations > 0,
             "readers should have made at least one observation; got 0"
+        );
+    }
+
+    // --- Capturing logger for warn-log assertions -----------------------------
+    //
+    // `log` crate permits exactly one global logger per process, so all tests in
+    // this module share a single capturing sink. Installation is idempotent via
+    // `OnceLock`; each test filters captured records by a message-specific
+    // substring so parallel tests emitting unrelated log records do not confuse
+    // assertions.
+    struct CapturingLogger {
+        records: Mutex<Vec<(log::Level, String)>>,
+    }
+
+    impl log::Log for CapturingLogger {
+        fn enabled(&self, _metadata: &log::Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                let mut guard = self.records.lock().expect("log buffer poisoned");
+                guard.push((record.level(), format!("{}", record.args())));
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
+        std::sync::OnceLock::new();
+
+    fn install_capturing_logger() -> &'static CapturingLogger {
+        CAPTURING_LOGGER.get_or_init(|| {
+            let logger: &'static CapturingLogger = Box::leak(Box::new(CapturingLogger {
+                records: Mutex::new(Vec::new()),
+            }));
+            log::set_logger(logger).expect("capturing logger must install");
+            log::set_max_level(log::LevelFilter::Trace);
+            logger
+        })
+    }
+
+    fn captured_records_matching(
+        logger: &'static CapturingLogger,
+        needle: &str,
+    ) -> Vec<(log::Level, String)> {
+        logger
+            .records
+            .lock()
+            .expect("log buffer poisoned")
+            .iter()
+            .filter(|(_, msg)| msg.contains(needle))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn warns_when_subscribe_new_markets_is_overridden_by_prefix_selector_presence() {
+        let logger = install_capturing_logger();
+        // Use a unique needle that only this specific warn emits.
+        let needle = "subscribe_new_markets = true but at least one ruleset uses event_slug_prefix";
+        // Snapshot the count of matching records before we trigger the warn, so
+        // if another test somehow produces the same message we still assert
+        // that *this* invocation emitted exactly one new record.
+        let before = captured_records_matching(logger, needle).len();
+
+        let selectors = vec![PolymarketRulesetSelector {
+            tag_slug: "bitcoin".to_string(),
+            event_slug_prefix: Some("bitcoin-5m".to_string()),
+        }];
+        let selector_state = Some(PolymarketSelectorState::new(vec![(
+            prefix_discovery("bitcoin", "bitcoin-5m", 30, 300),
+            vec!["bitcoin-5m-alpha".to_string()],
+        )]));
+        let raw = toml::toml! {
+            subscribe_new_markets = true
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 45
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let (_, config) = build_data_client(&raw, &selectors, selector_state)
+            .expect("build_data_client should succeed with prefix selector state");
+        assert!(
+            !config.subscribe_new_markets,
+            "override to false must still apply; only the observability changes"
+        );
+
+        let after = captured_records_matching(logger, needle);
+        let emitted: Vec<_> = after.into_iter().skip(before).collect();
+        assert_eq!(
+            emitted.len(),
+            1,
+            "exactly one warn must be emitted for the override; got {}: {:?}",
+            emitted.len(),
+            emitted
+        );
+        let (level, message) = &emitted[0];
+        assert_eq!(
+            *level,
+            log::Level::Warn,
+            "override log must be at WARN level, got {level:?}: {message}"
+        );
+        assert!(
+            message.contains("subscribe_new_markets"),
+            "warn message must name the overridden setting: {message}"
+        );
+        assert!(
+            message.contains("overridden"),
+            "warn message must describe the override: {message}"
         );
     }
 

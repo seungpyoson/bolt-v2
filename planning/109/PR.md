@@ -1,5 +1,12 @@
 # Draft PR Body
 
+## Published Draft
+
+- PR: `#191`
+- URL: `https://github.com/seungpyoson/bolt-v2/pull/191`
+- Base branch: `issue-109-pre109-base-codex`
+- Head branch: `issue-109-resolution-basis-generalization`
+
 ## Scope
 
 This PR is an isolated pre-#109 implementation slice for issue `#109` only. It generalizes the resolution-basis parsing and selector seam so ETH and other assets in the same family pattern do not require asset-specific selector literals.

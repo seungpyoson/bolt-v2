@@ -29,6 +29,7 @@ pub mod fees;
 pub use fees::{FeeProvider, PolymarketClobFeeProvider};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolymarketDataClientInput {
     #[serde(default)]
     pub subscribe_new_markets: bool,
@@ -43,6 +44,7 @@ pub struct PolymarketDataClientInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PolymarketDataClientCommonInput {
     #[serde(default)]
     subscribe_new_markets: bool,
@@ -111,20 +113,14 @@ impl PolymarketSelectorState {
 
     /// Insert or overwrite the event-slug list for each discovery in the input.
     ///
-    /// This function operates per-discovery: every `(discovery, event_slugs)` entry
-    /// in the iterator inserts into `event_slugs_by_discovery`, overwriting any prior
-    /// value for that discovery. Discoveries NOT present in the input iterator are
-    /// left untouched — this is NOT a whole-map replace despite the name.
-    ///
-    /// The only caller today (`resolve_event_slugs_for_prefix_discoveries_with_gamma_client`)
-    /// pre-seeds every configured discovery with an empty vec before populating, so the
-    /// input always covers every known discovery. Any future caller that passes a subset
-    /// must be aware that absent entries retain their prior value.
+    /// Per-discovery upsert semantics: every `(discovery, event_slugs)` entry in the
+    /// iterator inserts into `event_slugs_by_discovery`, overwriting any prior value for
+    /// that discovery. Discoveries NOT present in the input iterator are left untouched.
     ///
     /// Empty `event_slugs` for a given discovery overwrites with an empty list and emits
     /// a warn log naming the discovery (see commit `a79bbc5` and #180 for the empty-response
     /// semantics trade-off).
-    fn replace_event_slugs<I>(&self, event_slugs_by_discovery: I)
+    fn upsert_event_slugs_by_discovery<I>(&self, event_slugs_by_discovery: I)
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
     {
@@ -455,7 +451,7 @@ pub(crate) fn spawn_selector_refresh_task(
             )
             .await
             {
-                Ok(event_slugs) => selector_state.replace_event_slugs(event_slugs),
+                Ok(event_slugs) => selector_state.upsert_event_slugs_by_discovery(event_slugs),
                 Err(error) => {
                     log::warn!("failed refreshing polymarket selector event slugs: {error}");
                 }
@@ -1056,7 +1052,7 @@ mod tests {
             vec!["bitcoin-5m-alpha".to_string()]
         );
 
-        selector_state.replace_event_slugs(vec![(discovery.clone(), Vec::new())]);
+        selector_state.upsert_event_slugs_by_discovery(vec![(discovery.clone(), Vec::new())]);
 
         assert!(
             selector_state
@@ -1210,6 +1206,27 @@ mod tests {
         assert!(
             err.to_string().contains("uniformly"),
             "error should mention uniformity requirement: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_field_in_polymarket_data_client_config() {
+        // Regression guard: a typo like `gamma_refresh_interval_sec` (missing trailing `s`)
+        // must be rejected rather than silently falling back to the default value.
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_sec = 60
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let result = build_data_client(&raw, &[], None);
+        let err = result.expect_err("unknown field should be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("gamma_refresh_interval_sec"),
+            "error should name the unknown field: {message}"
         );
     }
 }

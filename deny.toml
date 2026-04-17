@@ -1,0 +1,22 @@
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[advisories]
+ignore = [
+    # Transitive dep from NautilusTrader (alloy-primitives, datafusion-common).
+    # "Unmaintained" notice — repo archived, not a security vulnerability.
+    # Remove when NT upstream replaces paste with pastey.
+    "RUSTSEC-2024-0436", # paste
+
+    # Transitive dep from NautilusTrader (nautilus-network).
+    # "Unmaintained" notice — repo archived, functionality moved to rustls-pki-types.
+    # Remove when NT upstream drops rustls-pemfile.
+    "RUSTSEC-2025-0134", # rustls-pemfile
+]

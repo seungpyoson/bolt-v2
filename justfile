@@ -1,0 +1,754 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+# bolt-v2 build commands — single source of truth.
+# CI and local both call these recipes. No raw cargo build/check commands in workflow YAML.
+
+nextest_version := "0.9.132"
+deny_version := "0.19.0"
+zigbuild_version := "0.22.1"
+zig_version := "0.15.2"
+
+target := "aarch64-unknown-linux-gnu"
+worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
+live_input := "config/live.local.toml"
+live_input_example := "config/live.local.example.toml"
+live_config := "config/live.toml"
+repo_root := justfile_directory()
+rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
+rust_verification_source_repo := "seungpyoson/claude-config"
+rust_verification_source_sha := "50a8b4fb40d5ec4a83de2fa545083355970a7c78"
+rust_verification_require_script := "scripts/require_rust_verification_owner.sh"
+rust_verification_ci_install_script := "scripts/install_ci_rust_verification_owner.sh"
+
+[private]
+check-workspace:
+    #!/usr/bin/env bash
+    project_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s\n' '{{justfile_directory()}}')"
+    dir="$(dirname "$project_root")"
+
+    while true; do
+        candidate="$dir/Cargo.toml"
+        if [ -f "$candidate" ] && grep -q '^\[workspace\]' "$candidate"; then
+            echo "ERROR: Foreign Cargo workspace detected at $candidate"
+            echo "This checkout sits under an unrelated Cargo workspace."
+            echo "Fix: recreate with 'just worktree <branch-name>' under {{worktree_root}}"
+            exit 1
+        fi
+
+        if [ "$dir" = "/" ]; then
+            break
+        fi
+
+        parent="$(dirname "$dir")"
+        if [ "$parent" = "$dir" ]; then
+            break
+        fi
+        dir="$parent"
+    done
+
+[private]
+require-rust-verification-owner:
+    RUST_VERIFICATION_SOURCE_REPO="{{rust_verification_source_repo}}" RUST_VERIFICATION_SOURCE_SHA="{{rust_verification_source_sha}}" bash "{{rust_verification_require_script}}" "{{rust_verification_owner}}"
+
+fmt-check: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
+
+fmt: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt
+
+deny: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check bans
+
+deny-advisories: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- deny check advisories
+
+[private]
+managed-clippy: check-workspace
+    cargo clippy --locked -- -D warnings
+
+[private]
+managed-test: check-workspace
+    cargo nextest run --locked
+
+[private]
+managed-build: check-workspace
+    cargo zigbuild --release --target {{target}} --locked
+
+clippy: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" clippy
+
+test: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test
+
+build: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
+
+check-aarch64: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
+
+live-generate: check-workspace require-rust-verification-owner
+    #!/usr/bin/env bash
+    # Generate the runtime artifact from the human-edited local source of truth.
+    if [ ! -f "{{live_input}}" ]; then
+        echo "Missing {{live_input}}"
+        echo "Create it from {{live_input_example}}, then rerun."
+        exit 1
+    fi
+
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
+
+# Canonical repo-local operator lane for bolt-v2 from this checkout.
+live: live-generate
+    # Run with the generated runtime config artifact.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_config}}
+
+# Optional diagnostics for the live operator config.
+live-check: live-generate
+    # Validate secret-config completeness only; do not resolve secrets.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_config}}
+
+live-resolve: live-generate
+    # Perform actual secret resolution against the generated runtime config.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
+
+ci-lint-workflow:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    workflow_files=()
+    action_files=()
+
+    [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
+    [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
+    [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
+
+    github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
+    rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
+
+    if [ "${#github_automation_files[@]}" -eq 0 ]; then
+        echo "No workflow or action files found — skipping"
+    fi
+
+    failed=0
+    pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
+    bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64)([^[:alnum:]_]|$)'
+    setup_action_literal='uses: ./.github/actions/setup-environment'
+    setup_lint_literal='lint-workflow-contract:'
+    setup_lint_true_literal='lint-workflow-contract: "true"'
+    setup_token_literal='claude-config-read-token:'
+    setup_token_source_literal='secrets.CLAUDE_CONFIG_READ_TOKEN'
+    setup_just_version_literal='just-version:'
+    setup_just_version_source_literal='env.JUST_VERSION'
+    setup_deny_version_literal='include-deny-version: "true"'
+    setup_nextest_version_literal='include-nextest-version: "true"'
+    setup_build_values_literal='include-build-values: "true"'
+    setup_rustfmt_literal='toolchain-components: rustfmt'
+    setup_clippy_literal='toolchain-components: clippy'
+    setup_default_target_literal='use-default-target: "true"'
+    managed_binary_path_literal='binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+    deny_output_literal='steps.setup.outputs.deny_version'
+    nextest_output_literal='steps.setup.outputs.nextest_version'
+    zig_version_output_literal='steps.setup.outputs.zig_version'
+    zigbuild_version_output_literal='steps.setup.outputs.zigbuild_version'
+    repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
+    just_target='{{target}}'
+    managed_build_profile='release'
+    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
+    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    action_file='.github/actions/setup-environment/action.yml'
+    action_lint_line=0
+    action_shared_line=0
+    action_owner_line=0
+    action_toolchain_line=0
+    action_required_literals=(
+        "inputs.just-version"
+        "inputs.include-deny-version"
+        "inputs.include-nextest-version"
+        "inputs.include-build-values"
+        "inputs.lint-workflow-contract"
+        "CLAUDE_CONFIG_READ_TOKEN:"
+        "inputs.claude-config-read-token"
+        "just ci-lint-workflow"
+        "awk -F'\\\"' '/^channel = / {print \$2}' rust-toolchain.toml"
+        "just --evaluate deny_version"
+        "just --evaluate nextest_version"
+        "just --evaluate target"
+        "just --evaluate zig_version"
+        "just --evaluate zigbuild_version"
+        "just --evaluate rust_verification_owner"
+        "just --evaluate rust_verification_source_repo"
+        "just --evaluate rust_verification_source_sha"
+        "just --evaluate rust_verification_ci_install_script"
+    )
+    action_output_names=(
+        "rust_toolchain"
+        "deny_version"
+        "nextest_version"
+        "target"
+        "zig_version"
+        "zigbuild_version"
+        "rust_verification_owner"
+        "rust_verification_source_repo"
+        "rust_verification_source_sha"
+        "rust_verification_ci_install_script"
+    )
+
+    for f in "${github_automation_files[@]}"; do
+        if grep -En "$pattern" "$f"; then
+            echo "ERROR: Raw cargo commands found in $f"
+            failed=1
+        fi
+    done
+
+    for f in "${workflow_files[@]}"; do
+        while IFS='|' read -r job_name reason; do
+            [ -n "$job_name" ] || continue
+            case "$reason" in
+                setup-action)
+                    echo "ERROR: Managed CI setup action missing in $f job '$job_name'"
+                    ;;
+                setup-token)
+                    echo "ERROR: Managed CI setup token wiring missing in $f job '$job_name'"
+                    ;;
+                setup-lint)
+                    echo "ERROR: Managed CI workflow lint wiring missing in $f job '$job_name'"
+                    ;;
+                setup-lint-true)
+                    echo "ERROR: Managed CI workflow lint must be enabled in $f job '$job_name'"
+                    ;;
+                setup-deny-version)
+                    echo "ERROR: Managed CI deny-version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-nextest-version)
+                    echo "ERROR: Managed CI nextest-version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-build-values)
+                    echo "ERROR: Managed CI build-values wiring missing in $f job '$job_name'"
+                    ;;
+                setup-rustfmt)
+                    echo "ERROR: Managed CI rustfmt component wiring missing in $f job '$job_name'"
+                    ;;
+                setup-clippy)
+                    echo "ERROR: Managed CI clippy component wiring missing in $f job '$job_name'"
+                    ;;
+                setup-default-target)
+                    echo "ERROR: Managed CI default target wiring missing in $f job '$job_name'"
+                    ;;
+                setup-just-version)
+                    echo "ERROR: Managed CI just version wiring missing in $f job '$job_name'"
+                    ;;
+                setup-just-version-source)
+                    echo "ERROR: Managed CI just version source must come from env.JUST_VERSION in $f job '$job_name'"
+                    ;;
+                setup-token-source)
+                    echo "ERROR: Managed CI token source must come from secrets.CLAUDE_CONFIG_READ_TOKEN in $f job '$job_name'"
+                    ;;
+            esac
+            failed=1
+        done < <(
+            awk -v lane_pattern="$just_lane_pattern" \
+                -v setup_action_literal="$setup_action_literal" \
+                -v setup_lint_literal="$setup_lint_literal" \
+                -v setup_lint_true_literal="$setup_lint_true_literal" \
+                -v setup_token_literal="$setup_token_literal" \
+                -v setup_token_source_literal="$setup_token_source_literal" \
+                -v setup_just_version_literal="$setup_just_version_literal" \
+                -v setup_just_version_source_literal="$setup_just_version_source_literal" \
+                -v setup_deny_version_literal="$setup_deny_version_literal" \
+                -v setup_nextest_version_literal="$setup_nextest_version_literal" \
+                -v setup_build_values_literal="$setup_build_values_literal" \
+                -v setup_rustfmt_literal="$setup_rustfmt_literal" \
+                -v setup_clippy_literal="$setup_clippy_literal" \
+                -v setup_default_target_literal="$setup_default_target_literal" \
+                -v deny_output_literal="$deny_output_literal" \
+                -v nextest_output_literal="$nextest_output_literal" \
+                -v zig_version_output_literal="$zig_version_output_literal" \
+                -v zigbuild_version_output_literal="$zigbuild_version_output_literal" '
+                BEGIN {
+                    in_jobs = 0
+                    current = ""
+                    has_lane = 0
+                    has_setup_step = 0
+                    has_setup_lint = 0
+                    has_setup_lint_true = 0
+                    has_setup_token = 0
+                    has_setup_token_source = 0
+                    has_setup_just_version = 0
+                    has_setup_just_version_source = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
+                }
+
+                function flush_step() {
+                    if (step_has_setup) {
+                        has_setup_step = 1
+                        if (step_has_lint) {
+                            has_setup_lint = 1
+                        }
+                        if (step_has_lint_true) {
+                            has_setup_lint_true = 1
+                        }
+                        if (step_has_token) {
+                            has_setup_token = 1
+                        }
+                        if (step_has_token_source) {
+                            has_setup_token_source = 1
+                        }
+                        if (step_has_just_version) {
+                            has_setup_just_version = 1
+                        }
+                        if (step_has_just_version_source) {
+                            has_setup_just_version_source = 1
+                        }
+                        if (step_has_deny_version) {
+                            has_setup_deny_version = 1
+                        }
+                        if (step_has_nextest_version) {
+                            has_setup_nextest_version = 1
+                        }
+                        if (step_has_build_values) {
+                            has_setup_build_values = 1
+                        }
+                        if (step_has_rustfmt) {
+                            has_setup_rustfmt = 1
+                        }
+                        if (step_has_clippy) {
+                            has_setup_clippy = 1
+                        }
+                        if (step_has_default_target) {
+                            has_setup_default_target = 1
+                        }
+                    }
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
+                }
+
+                function flush_job() {
+                    flush_step()
+                    if (current == "" || !has_lane) {
+                        return
+                    }
+                    if (!has_setup_step) {
+                        print current "|setup-action"
+                    }
+                    if (current == "gate" && has_setup_step && !has_setup_lint) {
+                        print current "|setup-lint"
+                    }
+                    if (current == "gate" && has_setup_step && !has_setup_lint_true) {
+                        print current "|setup-lint-true"
+                    }
+                    if (has_setup_step && !has_setup_token) {
+                        print current "|setup-token"
+                    }
+                    if (has_setup_step && !has_setup_token_source) {
+                        print current "|setup-token-source"
+                    }
+                    if (has_setup_step && !has_setup_just_version) {
+                        print current "|setup-just-version"
+                    }
+                    if (has_setup_step && !has_setup_just_version_source) {
+                        print current "|setup-just-version-source"
+                    }
+                    if ((current == "gate" || current == "advisories") && has_setup_step && !has_setup_deny_version) {
+                        print current "|setup-deny-version"
+                    }
+                    if (current == "test" && has_setup_step && !has_setup_nextest_version) {
+                        print current "|setup-nextest-version"
+                    }
+                    if (current == "build" && has_setup_step && !has_setup_build_values) {
+                        print current "|setup-build-values"
+                    }
+                    if (current == "gate" && has_setup_step && !has_setup_rustfmt) {
+                        print current "|setup-rustfmt"
+                    }
+                    if (current == "clippy" && has_setup_step && !has_setup_clippy) {
+                        print current "|setup-clippy"
+                    }
+                    if (current == "build" && has_setup_step && !has_setup_default_target) {
+                        print current "|setup-default-target"
+                    }
+                    if ((current == "gate" || current == "advisories") && !has_deny_output) {
+                        print current "|setup-deny-version"
+                    }
+                    if (current == "test" && !has_nextest_output) {
+                        print current "|setup-nextest-version"
+                    }
+                    if (current == "build" && (!has_zig_version_output || !has_zigbuild_version_output)) {
+                        print current "|setup-build-values"
+                    }
+                }
+
+                /^jobs:/ {
+                    in_jobs = 1
+                    next
+                }
+
+                in_jobs && /^[^[:space:]]/ {
+                    flush_job()
+                    in_jobs = 0
+                    current = ""
+                    has_lane = 0
+                    has_setup_step = 0
+                    has_setup_lint = 0
+                    has_setup_lint_true = 0
+                    has_setup_token = 0
+                    has_setup_token_source = 0
+                    has_setup_just_version = 0
+                    has_setup_just_version_source = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
+                    next
+                }
+
+                in_jobs && /^  [A-Za-z0-9_-]+:/ {
+                    flush_job()
+                    current = $0
+                    sub(/^  /, "", current)
+                    sub(/:.*/, "", current)
+                    has_lane = 0
+                    has_setup_step = 0
+                    has_setup_lint = 0
+                    has_setup_lint_true = 0
+                    has_setup_token = 0
+                    has_setup_token_source = 0
+                    has_setup_just_version = 0
+                    has_setup_just_version_source = 0
+                    has_setup_deny_version = 0
+                    has_setup_nextest_version = 0
+                    has_setup_build_values = 0
+                    has_setup_rustfmt = 0
+                    has_setup_clippy = 0
+                    has_setup_default_target = 0
+                    has_deny_output = 0
+                    has_nextest_output = 0
+                    has_zig_version_output = 0
+                    has_zigbuild_version_output = 0
+                    step_has_setup = 0
+                    step_has_lint = 0
+                    step_has_lint_true = 0
+                    step_has_token = 0
+                    step_has_token_source = 0
+                    step_has_just_version = 0
+                    step_has_just_version_source = 0
+                    step_has_deny_version = 0
+                    step_has_nextest_version = 0
+                    step_has_build_values = 0
+                    step_has_rustfmt = 0
+                    step_has_clippy = 0
+                    step_has_default_target = 0
+                    next
+                }
+
+                current != "" {
+                    if ($0 ~ /^      - /) {
+                        flush_step()
+                    }
+                    if ($0 ~ lane_pattern) {
+                        has_lane = 1
+                    }
+                    if (index($0, setup_action_literal) > 0) {
+                        step_has_setup = 1
+                    }
+                    if (index($0, setup_lint_literal) > 0) {
+                        step_has_lint = 1
+                    }
+                    if (index($0, setup_lint_true_literal) > 0) {
+                        step_has_lint_true = 1
+                    }
+                    if (index($0, setup_token_literal) > 0) {
+                        step_has_token = 1
+                    }
+                    if (index($0, setup_token_source_literal) > 0) {
+                        step_has_token_source = 1
+                    }
+                    if (index($0, setup_just_version_literal) > 0) {
+                        step_has_just_version = 1
+                    }
+                    if (index($0, setup_just_version_source_literal) > 0) {
+                        step_has_just_version_source = 1
+                    }
+                    if (index($0, setup_deny_version_literal) > 0) {
+                        step_has_deny_version = 1
+                    }
+                    if (index($0, setup_nextest_version_literal) > 0) {
+                        step_has_nextest_version = 1
+                    }
+                    if (index($0, setup_build_values_literal) > 0) {
+                        step_has_build_values = 1
+                    }
+                    if (index($0, setup_rustfmt_literal) > 0) {
+                        step_has_rustfmt = 1
+                    }
+                    if (index($0, setup_clippy_literal) > 0) {
+                        step_has_clippy = 1
+                    }
+                    if (index($0, setup_default_target_literal) > 0) {
+                        step_has_default_target = 1
+                    }
+                    if (index($0, deny_output_literal) > 0) {
+                        has_deny_output = 1
+                    }
+                    if (index($0, nextest_output_literal) > 0) {
+                        has_nextest_output = 1
+                    }
+                    if (index($0, zig_version_output_literal) > 0) {
+                        has_zig_version_output = 1
+                    }
+                    if (index($0, zigbuild_version_output_literal) > 0) {
+                        has_zigbuild_version_output = 1
+                    }
+                }
+
+                END {
+                    flush_job()
+                }
+            ' "$f"
+        )
+    done
+
+    if [ ! -f "$action_file" ]; then
+        echo "ERROR: Managed CI setup action missing at $action_file"
+        failed=1
+    else
+        action_lint_line="$(grep -n 'name: Lint workflow contract' "$action_file" | cut -d: -f1 | head -1)"
+        action_shared_line="$(grep -n 'name: Read shared values' "$action_file" | cut -d: -f1 | head -1)"
+        action_owner_line="$(grep -n 'name: Install managed Rust owner' "$action_file" | cut -d: -f1 | head -1)"
+        action_toolchain_line="$(grep -n 'name: Setup Rust toolchain' "$action_file" | cut -d: -f1 | head -1)"
+
+        if [ -z "$action_lint_line" ] || [ -z "$action_shared_line" ] || [ -z "$action_owner_line" ] || [ -z "$action_toolchain_line" ]; then
+            echo "ERROR: Managed CI setup action missing required ordered steps"
+            failed=1
+        elif [ "$action_lint_line" -ge "$action_shared_line" ] || [ "$action_shared_line" -ge "$action_owner_line" ] || [ "$action_owner_line" -ge "$action_toolchain_line" ]; then
+            echo "ERROR: Managed CI setup action step order drifted"
+            failed=1
+        fi
+
+        for literal in "${action_required_literals[@]}"; do
+            if ! grep -Fq "$literal" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing expected literal '$literal'"
+                failed=1
+            fi
+        done
+
+        for output_name in "${action_output_names[@]}"; do
+            if ! grep -Eq "^  ${output_name}:" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing exported output '$output_name'"
+                failed=1
+            fi
+            if ! grep -Fq "steps.shared.outputs.${output_name}" "$action_file"; then
+                echo "ERROR: Managed CI setup action missing output mapping for '$output_name'"
+                failed=1
+            fi
+        done
+    fi
+
+    for f in "${workflow_files[@]}"; do
+        if grep -Eq "$repo_local_artifact_pattern" "$f"; then
+            echo "ERROR: Repo-local build artifact path found in $f"
+            failed=1
+        fi
+
+        while IFS= read -r job_name; do
+            [ -n "$job_name" ] || continue
+            echo "ERROR: Managed build artifact staging missing in $f job '$job_name'"
+            failed=1
+        done < <(
+            awk -v binary_path_literal="$managed_binary_path_literal" '
+                BEGIN {
+                    in_jobs = 0
+                    current = ""
+                    has_binary_path = 0
+                }
+
+                function flush_job() {
+                    if (current == "build" && !has_binary_path) {
+                        print current
+                    }
+                }
+
+                /^jobs:/ {
+                    in_jobs = 1
+                    next
+                }
+
+                in_jobs && /^[^[:space:]]/ {
+                    flush_job()
+                    in_jobs = 0
+                    current = ""
+                    has_binary_path = 0
+                    next
+                }
+
+                in_jobs && /^  [A-Za-z0-9_-]+:/ {
+                    flush_job()
+                    current = $0
+                    sub(/^  /, "", current)
+                    sub(/:.*/, "", current)
+                    has_binary_path = 0
+                    next
+                }
+
+                current != "" && index($0, binary_path_literal) > 0 {
+                    has_binary_path = 1
+                }
+
+                END {
+                    flush_job()
+                }
+            ' "$f"
+        )
+    done
+
+    for f in "${rust_invocation_files[@]}"; do
+        if grep -En "$bypass_pattern" "$f"; then
+            echo "ERROR: Rust wrapper bypass found in $f"
+            failed=1
+        fi
+    done
+
+    if [ "$toml_target" != "$just_target" ]; then
+        echo "ERROR: justfile target ($just_target) does not match .claude/rust-verification.toml build target ($toml_target)"
+        failed=1
+    fi
+
+    if [ "$toml_profile" != "$managed_build_profile" ]; then
+        echo "ERROR: managed-build profile ($managed_build_profile) does not match .claude/rust-verification.toml build profile ($toml_profile)"
+        failed=1
+    fi
+
+    if [ "$failed" -ne 0 ]; then
+        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, repo-local managed build artifact paths, and justfile/TOML build drift."
+        exit 1
+    fi
+
+    if [ "${#github_automation_files[@]}" -eq 0 ]; then
+        echo "OK: No workflow or action files found; automation-specific checks skipped"
+    else
+        echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
+    fi
+
+worktree branch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="{{worktree_root}}/{{branch}}"
+    mkdir -p "$(dirname "$dest")"
+
+    if git show-ref --verify --quiet "refs/heads/{{branch}}"; then
+        git worktree add "$dest" "{{branch}}"
+    elif git show-ref --verify --quiet "refs/remotes/origin/{{branch}}"; then
+        git worktree add --track -b "{{branch}}" "$dest" "origin/{{branch}}"
+    elif git ls-remote --exit-code --heads origin "refs/heads/{{branch}}" >/dev/null 2>&1; then
+        git fetch origin "refs/heads/{{branch}}:refs/remotes/origin/{{branch}}"
+        git worktree add --track -b "{{branch}}" "$dest" "origin/{{branch}}"
+    else
+        git worktree add "$dest" -b "{{branch}}"
+    fi
+
+    echo "Created worktree at $dest"
+
+worktree-remove branch:
+    #!/usr/bin/env bash
+    dest="{{worktree_root}}/{{branch}}"
+    git worktree remove "$dest"
+    git worktree prune
+    echo "Removed worktree at $dest"
+
+setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Setting git hooks path..."
+    git config core.hooksPath .githooks
+
+    echo "Adding {{target}} target..."
+    rustup target add {{target}}
+
+    if command -v cargo-nextest >/dev/null 2>&1 && cargo-nextest --version | grep -Eq "^cargo-nextest {{nextest_version}}([[:space:]]|$)"; then
+        echo "cargo-nextest {{nextest_version}} already installed"
+    else
+        echo "Installing cargo-nextest {{nextest_version}}..."
+        cargo install cargo-nextest --version {{nextest_version}} --locked
+    fi
+
+    if command -v cargo-deny >/dev/null 2>&1 && cargo-deny --version | grep -Eq "^cargo-deny {{deny_version}}([[:space:]]|$)"; then
+        echo "cargo-deny {{deny_version}} already installed"
+    else
+        echo "Installing cargo-deny {{deny_version}}..."
+        cargo install cargo-deny --version {{deny_version}} --locked
+    fi
+
+    if command -v cargo-zigbuild >/dev/null 2>&1 && cargo-zigbuild --version | grep -Eq "^cargo-zigbuild {{zigbuild_version}}([[:space:]]|$)"; then
+        echo "cargo-zigbuild {{zigbuild_version}} already installed"
+    else
+        echo "Installing cargo-zigbuild {{zigbuild_version}}..."
+        cargo install cargo-zigbuild --version {{zigbuild_version}} --locked
+    fi
+
+    if ! command -v zig >/dev/null 2>&1; then
+        echo "ERROR: Zig {{zig_version}} is required for just build"
+        echo "Install it locally with 'brew install zig'"
+        exit 1
+    fi
+
+    if [ "$(zig version)" != "{{zig_version}}" ]; then
+        echo "ERROR: Zig {{zig_version}} is required for just build"
+        echo "Found Zig $(zig version)"
+        exit 1
+    fi
+
+    echo "Zig {{zig_version}} already installed"
+
+    echo "Setup complete."

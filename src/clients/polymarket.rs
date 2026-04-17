@@ -626,100 +626,164 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
     )
 }
 
-/// (tag_slug, end_date_min, end_date_max) tuple identifying a Gamma fetch group.
-type GammaFetchGroupKey = (String, String, String);
-
-/// Param-grouped fetch plan for a list of prefix discoveries.
-type GroupedPrefixDiscoveries<'a> =
-    BTreeMap<GammaFetchGroupKey, (GetGammaEventsParams, Vec<&'a PolymarketPrefixDiscovery>)>;
-
-/// Build the param-grouped fetch plan for a list of prefix discoveries.
-///
-/// Multiple discoveries that share the same (tag_slug, end_date_min, end_date_max)
-/// collapse into one Gamma query and then split their matches by prefix post-hoc.
-fn group_prefix_discoveries(
-    discoveries: &[PolymarketPrefixDiscovery],
-    now: DateTime<Utc>,
-) -> Result<GroupedPrefixDiscoveries<'_>, Box<dyn std::error::Error>> {
-    let mut grouped_discoveries: GroupedPrefixDiscoveries<'_> = BTreeMap::new();
-
-    for discovery in discoveries {
-        let params = gamma_event_params_for_prefix_discovery(discovery, now)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let key = (
-            params.tag_slug.clone().unwrap_or_default(),
-            params.end_date_min.clone().unwrap_or_default(),
-            params.end_date_max.clone().unwrap_or_default(),
-        );
-        grouped_discoveries
-            .entry(key)
-            .and_modify(|(_, bucket)| bucket.push(discovery))
-            .or_insert_with(|| (params, vec![discovery]));
-    }
-
-    Ok(grouped_discoveries)
+struct CanonicalQueryGroup {
+    canonical_params: GetGammaEventsParams,
+    canonical_min_secs: u64,
+    canonical_max_secs: u64,
+    member_discoveries: Vec<PolymarketPrefixDiscovery>,
 }
 
-fn split_events_by_prefix_discovery(
-    events: Vec<GammaEvent>,
-    discoveries: &[&PolymarketPrefixDiscovery],
-) -> BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> {
-    let mut grouped_matches: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = discoveries
-        .iter()
-        .map(|discovery| ((*discovery).clone(), Vec::new()))
-        .collect();
+fn group_discoveries_by_canonical_query(
+    discoveries: &[PolymarketPrefixDiscovery],
+    now: DateTime<Utc>,
+) -> Result<Vec<CanonicalQueryGroup>, Box<dyn std::error::Error>> {
+    let mut by_tag: BTreeMap<String, Vec<PolymarketPrefixDiscovery>> = BTreeMap::new();
+    for discovery in discoveries {
+        by_tag
+            .entry(discovery.selector.tag_slug.clone())
+            .or_default()
+            .push(discovery.clone());
+    }
 
-    for event in events {
-        let Some(event_slug) = event.slug.as_deref() else {
+    let mut groups = Vec::new();
+    for (_, mut tag_discoveries) in by_tag {
+        tag_discoveries.sort_by(|a, b| {
+            a.min_time_to_expiry_secs
+                .cmp(&b.min_time_to_expiry_secs)
+                .then(a.max_time_to_expiry_secs.cmp(&b.max_time_to_expiry_secs))
+                .then(a.selector.cmp(&b.selector))
+        });
+
+        let mut iter = tag_discoveries.into_iter();
+        let Some(first) = iter.next() else {
             continue;
         };
+        let mut current_min = first.min_time_to_expiry_secs;
+        let mut current_max = first.max_time_to_expiry_secs;
+        let mut current_members = vec![first];
 
-        for discovery in discoveries {
-            if discovery
-                .selector
-                .event_slug_prefix
-                .as_deref()
-                .is_some_and(|prefix| event_slug.starts_with(prefix))
-            {
-                grouped_matches
-                    .get_mut(*discovery)
-                    .expect("grouped discovery should have an output bucket")
+        for discovery in iter {
+            if discovery.min_time_to_expiry_secs <= current_max {
+                current_max = current_max.max(discovery.max_time_to_expiry_secs);
+                current_members.push(discovery);
+            } else {
+                let canonical_discovery = PolymarketPrefixDiscovery {
+                    selector: PolymarketRulesetSelector {
+                        tag_slug: current_members[0].selector.tag_slug.clone(),
+                        event_slug_prefix: None,
+                    },
+                    min_time_to_expiry_secs: current_min,
+                    max_time_to_expiry_secs: current_max,
+                };
+                groups.push(CanonicalQueryGroup {
+                    canonical_params: gamma_event_params_for_prefix_discovery(
+                        &canonical_discovery,
+                        now,
+                    )
+                    .map_err(|error| std::io::Error::other(error.to_string()))?,
+                    canonical_min_secs: current_min,
+                    canonical_max_secs: current_max,
+                    member_discoveries: std::mem::take(&mut current_members),
+                });
+
+                current_min = discovery.min_time_to_expiry_secs;
+                current_max = discovery.max_time_to_expiry_secs;
+                current_members.push(discovery);
+            }
+        }
+
+        let canonical_discovery = PolymarketPrefixDiscovery {
+            selector: PolymarketRulesetSelector {
+                tag_slug: current_members[0].selector.tag_slug.clone(),
+                event_slug_prefix: None,
+            },
+            min_time_to_expiry_secs: current_min,
+            max_time_to_expiry_secs: current_max,
+        };
+        groups.push(CanonicalQueryGroup {
+            canonical_params: gamma_event_params_for_prefix_discovery(&canonical_discovery, now)
+                .map_err(|error| std::io::Error::other(error.to_string()))?,
+            canonical_min_secs: current_min,
+            canonical_max_secs: current_max,
+            member_discoveries: current_members,
+        });
+    }
+
+    Ok(groups)
+}
+
+fn matches_time_bounds(
+    event: &GammaEvent,
+    discovery: &PolymarketPrefixDiscovery,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(end_date) = event.end_date.as_deref() else {
+        return false;
+    };
+    let Ok(end_at) = DateTime::parse_from_rfc3339(end_date) else {
+        return false;
+    };
+    let end_at = end_at.with_timezone(&Utc);
+    let min_end = now + ChronoDuration::seconds(discovery.min_time_to_expiry_secs as i64);
+    let max_end = now + ChronoDuration::seconds(discovery.max_time_to_expiry_secs as i64);
+    end_at >= min_end && end_at <= max_end
+}
+
+async fn resolve_matching_events_by_discovery_with_gamma_client(
+    discoveries: &[PolymarketPrefixDiscovery],
+    client: &PolymarketGammaRawHttpClient,
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
+    let now = Utc::now();
+    let unique_discoveries: Vec<PolymarketPrefixDiscovery> = discoveries
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let groups = group_discoveries_by_canonical_query(&unique_discoveries, now)?;
+
+    let mut out: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = unique_discoveries
+        .iter()
+        .cloned()
+        .map(|d| (d, Vec::new()))
+        .collect();
+
+    for group in groups {
+        let events = fetch_gamma_events_paginated(client, group.canonical_params).await?;
+        for event in events {
+            let Some(event_slug) = event.slug.as_deref() else {
+                continue;
+            };
+            for discovery in &group.member_discoveries {
+                let prefix_match = discovery
+                    .selector
+                    .event_slug_prefix
+                    .as_deref()
+                    .is_some_and(|p| event_slug.starts_with(p));
+                if !prefix_match {
+                    continue;
+                }
+                let discovery_matches_canonical = discovery.min_time_to_expiry_secs
+                    == group.canonical_min_secs
+                    && discovery.max_time_to_expiry_secs == group.canonical_max_secs;
+                if !discovery_matches_canonical && !matches_time_bounds(&event, discovery, now) {
+                    continue;
+                }
+                out.get_mut(discovery)
+                    .expect("deduped discovery must have bucket")
                     .push(event.clone());
             }
         }
     }
 
-    grouped_matches
+    Ok(out)
 }
 
-/// Strict variant: any per-group Gamma error aborts the whole resolution.
-///
-/// Used at startup (`build_selector_state`) where missing state must fail-closed
-/// rather than seed the runtime with an incomplete selector snapshot.
 async fn resolve_matching_events_by_discovery_with_gamma_client_strict(
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
-    let now = Utc::now();
-    let grouped_discoveries = group_prefix_discoveries(discoveries, now)?;
-
-    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
-        discoveries
-            .iter()
-            .cloned()
-            .map(|discovery| (discovery, Vec::new()))
-            .collect();
-
-    for (_, (params, discoveries)) in grouped_discoveries {
-        let events = fetch_gamma_events_paginated(client, params).await?;
-        let grouped_matches = split_events_by_prefix_discovery(events, &discoveries);
-
-        for (discovery, matched_events) in grouped_matches {
-            matched_events_by_discovery.insert(discovery, matched_events);
-        }
-    }
-
-    Ok(matched_events_by_discovery)
+    resolve_matching_events_by_discovery_with_gamma_client(discoveries, client).await
 }
 
 /// Best-effort variant: per-group Gamma errors are logged as warnings and the
@@ -734,18 +798,46 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
     let now = Utc::now();
-    let grouped_discoveries = group_prefix_discoveries(discoveries, now)?;
+    let unique_discoveries: Vec<PolymarketPrefixDiscovery> = discoveries
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let groups = group_discoveries_by_canonical_query(&unique_discoveries, now)?;
 
-    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
-        BTreeMap::new();
+    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = BTreeMap::new();
 
-    for (_, (params, discoveries)) in grouped_discoveries {
-        let tag_slug = params.tag_slug.clone().unwrap_or_default();
-        match fetch_gamma_events_paginated(client, params).await {
+    for group in groups {
+        let tag_slug = group.canonical_params.tag_slug.clone().unwrap_or_default();
+        match fetch_gamma_events_paginated(client, group.canonical_params).await {
             Ok(events) => {
-                let grouped_matches = split_events_by_prefix_discovery(events, &discoveries);
-                for (discovery, matched_events) in grouped_matches {
-                    matched_events_by_discovery.insert(discovery, matched_events);
+                for event in events {
+                    let Some(event_slug) = event.slug.as_deref() else {
+                        continue;
+                    };
+                    for discovery in &group.member_discoveries {
+                        let prefix_match = discovery
+                            .selector
+                            .event_slug_prefix
+                            .as_deref()
+                            .is_some_and(|p| event_slug.starts_with(p));
+                        if !prefix_match {
+                            continue;
+                        }
+                        let discovery_matches_canonical = discovery.min_time_to_expiry_secs
+                            == group.canonical_min_secs
+                            && discovery.max_time_to_expiry_secs == group.canonical_max_secs;
+                        if !discovery_matches_canonical
+                            && !matches_time_bounds(&event, discovery, now)
+                        {
+                            continue;
+                        }
+                        matched_events_by_discovery
+                            .entry(discovery.clone())
+                            .or_default()
+                            .push(event.clone());
+                    }
                 }
             }
             Err(error) => {

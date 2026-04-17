@@ -126,11 +126,10 @@ impl PolymarketSelectorState {
                 .collect();
             if unique_event_slugs.is_empty() {
                 log::warn!(
-                    "selector refresh returned no event slugs for tag_slug={} prefix={:?}; preserving previous selector state",
+                    "selector refresh returned no event slugs for tag_slug={} prefix={:?}; clearing previous selector state",
                     discovery.selector.tag_slug,
                     discovery.selector.event_slug_prefix.as_deref()
                 );
-                continue;
             }
             state.insert(discovery, unique_event_slugs);
         }
@@ -1026,6 +1025,29 @@ mod tests {
             selector_state
                 .event_slugs_for_discovery(&prefix_discovery("bitcoin", "bitcoin-15m", 30, 300))
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn selector_state_clears_discovery_when_refresh_returns_empty_slugs() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let selector_state = PolymarketSelectorState::new(vec![(
+            discovery.clone(),
+            vec!["bitcoin-5m-alpha".to_string()],
+        )]);
+
+        assert_eq!(
+            selector_state.event_slugs_for_discovery(&discovery),
+            vec!["bitcoin-5m-alpha".to_string()]
+        );
+
+        selector_state.replace_event_slugs(vec![(discovery.clone(), Vec::new())]);
+
+        assert!(
+            selector_state
+                .event_slugs_for_discovery(&discovery)
+                .is_empty(),
+            "empty Gamma refresh response must clear previous selector state, not preserve it"
         );
     }
 

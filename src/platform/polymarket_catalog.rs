@@ -46,17 +46,6 @@ struct SlugParam<'a> {
     slug: &'a str,
 }
 
-pub async fn load_candidate_markets_for_ruleset(
-    ruleset: &RulesetConfig,
-    timeout_secs: u64,
-    selector_state: Option<PolymarketSelectorState>,
-) -> anyhow::Result<Vec<CandidateMarket>> {
-    let raw_client = PolymarketGammaRawHttpClient::new(None, timeout_secs)
-        .context("failed to build gamma raw client")?;
-    load_candidate_markets_for_ruleset_with_gamma_client(ruleset, &raw_client, None, selector_state)
-        .await
-}
-
 pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
     ruleset: &RulesetConfig,
     client: &PolymarketGammaRawHttpClient,

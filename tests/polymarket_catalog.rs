@@ -195,6 +195,17 @@ fn parses_chainlink_basis_from_structured_resolution_source() {
 }
 
 #[test]
+fn parses_chainlink_linkusd_from_structured_resolution_source() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            Some("https://www.chain.link/streams/link-usd"),
+            Some("ignored"),
+        ),
+        Some("chainlink_linkusd".to_string())
+    );
+}
+
+#[test]
 fn parses_binance_basis_from_structured_resolution_source() {
     assert_eq!(
         parse_declared_resolution_basis(
@@ -259,6 +270,19 @@ fn rejects_ambiguous_chainlink_description_without_symbol_pair() {
         parse_declared_resolution_basis(
             None,
             Some("The resolution source for this market is Chainlink data."),
+        ),
+        None
+    );
+}
+
+#[test]
+fn rejects_description_with_multiple_distinct_symbol_pairs() {
+    assert_eq!(
+        parse_declared_resolution_basis(
+            None,
+            Some(
+                "The resolution source for this market is information from Chainlink BTC/USD and ETH/USD feeds."
+            ),
         ),
         None
     );

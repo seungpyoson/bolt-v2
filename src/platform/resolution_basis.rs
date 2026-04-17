@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::config::ReferenceVenueKind;
 
 const SUPPORTED_FAMILIES: &[&str] = &[
@@ -12,7 +14,6 @@ const SUPPORTED_FAMILIES: &[&str] = &[
 ];
 
 const SYMBOL_STOPWORDS: &[&str] = &[
-    "chain",
     "com",
     "data",
     "en",
@@ -24,7 +25,6 @@ const SYMBOL_STOPWORDS: &[&str] = &[
     "https",
     "information",
     "is",
-    "link",
     "market",
     "markets",
     "price",
@@ -138,7 +138,7 @@ fn detect_family(input: &str) -> Option<&'static str> {
 
 fn extract_symbol_pair(input: &str) -> Option<String> {
     let chars: Vec<char> = input.chars().collect();
-    let mut last_candidate = None;
+    let mut candidates = BTreeSet::new();
 
     for (index, ch) in chars.iter().enumerate() {
         if !matches!(ch, '/' | '_' | '-') {
@@ -156,14 +156,18 @@ fn extract_symbol_pair(input: &str) -> Option<String> {
             continue;
         }
 
-        last_candidate = Some(format!(
+        candidates.insert(format!(
             "{}{}",
             left.to_ascii_lowercase(),
             right.to_ascii_lowercase()
         ));
     }
 
-    last_candidate
+    if candidates.len() == 1 {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
 }
 
 fn left_symbol_token(chars: &[char], separator_index: usize) -> Option<String> {

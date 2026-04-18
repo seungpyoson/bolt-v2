@@ -124,6 +124,7 @@ where
     let mut event_slugs = BTreeSet::new();
 
     let selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
+    polymarket::reject_mixed_polymarket_rulesets_global_scope(&selectors)?;
     let prefix_discoveries = polymarket::polymarket_ruleset_prefix_discoveries(&cfg.rulesets)?;
     if !selectors.is_empty() {
         for selector in &selectors {
@@ -201,6 +202,7 @@ fn collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slug
     let mut event_slugs = BTreeSet::new();
 
     let selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
+    polymarket::reject_mixed_polymarket_rulesets_global_scope(&selectors)?;
     if !selectors.is_empty() {
         for selector in &selectors {
             if selector.event_slug_prefix.is_none() {
@@ -362,8 +364,8 @@ mod tests {
     }
 
     #[test]
-    fn startup_validation_collects_prefix_targets_without_live_gamma_and_reports_mixed_scope() {
-        let mut cfg = test_config(vec!["ethereum"], vec!["alpha.POLYMARKET"]);
+    fn startup_validation_collects_prefix_targets_without_live_gamma() {
+        let mut cfg = test_config(vec![], vec!["alpha.POLYMARKET"]);
         cfg.rulesets
             .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
 
@@ -388,7 +390,7 @@ mod tests {
             .expect("targets should collect")
             .expect("polymarket targets should exist");
 
-        assert_eq!(targets.tag_slugs, vec!["ethereum"]);
+        assert!(targets.tag_slugs.is_empty());
         assert_eq!(
             targets.event_slugs,
             vec![
@@ -401,12 +403,10 @@ mod tests {
             .expect_err("validation should fail when nothing resolves")
             .to_string();
 
-        assert!(err.contains("tag slugs [ethereum]"), "{err}");
         assert!(
             err.contains("event slugs [bitcoin-5m-alpha, bitcoin-5m-beta]"),
             "{err}"
         );
-        assert!(err.contains(" and "), "{err}");
     }
 
     #[test]
@@ -455,6 +455,24 @@ mod tests {
                 "bitcoin-5m-alpha".to_string(),
                 "bitcoin-5m-beta".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn startup_validation_rejects_mixed_selectors_even_with_pre_resolved_event_slugs() {
+        let mut cfg = test_config(vec!["ethereum"], vec!["alpha.POLYMARKET"]);
+        cfg.rulesets
+            .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
+
+        let err = collect_polymarket_startup_validation_targets_with_resolved_prefix_event_slugs(
+            &cfg,
+            vec!["bitcoin-5m-alpha".to_string()],
+        )
+        .expect_err("mixed selectors should be rejected inside startup validation");
+
+        assert!(
+            err.to_string()
+                .contains("uniformly tag-only or uniformly prefix-based")
         );
     }
 

@@ -237,36 +237,43 @@ pub(crate) fn build_data_client(
         event_slugs,
     } = raw.clone().try_into()?;
 
-    let filters: Vec<Arc<dyn InstrumentFilter>> = if selectors.is_empty() {
-        if event_slugs.is_empty() {
-            vec![]
-        } else {
-            vec![Arc::new(EventSlugFilter::from_slugs(event_slugs))]
-        }
-    } else {
-        let mut filters: Vec<Arc<dyn InstrumentFilter>> = selectors
-            .iter()
-            .filter(|selector| selector_state.is_none() || selector.event_slug_prefix.is_none())
-            .map(|selector| {
-                Arc::new(EventParamsFilter::new(GetGammaEventsParams {
-                    tag_slug: Some(selector.tag_slug.clone()),
-                    ..Default::default()
-                })) as Arc<dyn InstrumentFilter>
-            })
-            .collect();
-
-        if let Some(selector_state) = selector_state.clone() {
-            filters.push(Arc::new(EventSlugFilter::new(move || {
-                selector_state.current_event_slugs()
-            })));
-        }
-
-        filters
-    };
+    reject_mixed_polymarket_rulesets_global_scope(selectors)?;
 
     let has_prefix_selectors = selectors
         .iter()
         .any(|selector| selector.event_slug_prefix.is_some());
+
+    let filters: Vec<Arc<dyn InstrumentFilter>> = if selectors.is_empty() {
+        if event_slugs.is_empty() {
+            return Err(
+                "data_clients[].config.event_slugs must contain at least one slug when rulesets are disabled"
+                    .into(),
+            );
+        }
+
+        vec![Arc::new(EventSlugFilter::from_slugs(event_slugs))]
+    } else {
+        if has_prefix_selectors {
+            let selector_state = selector_state.ok_or_else(|| {
+                std::io::Error::other(
+                    "polymarket ruleset validation: prefix selectors require selector_state; build the data client through PolymarketRulesetSetup::from_rulesets",
+                )
+            })?;
+            vec![Arc::new(EventSlugFilter::new(move || {
+                selector_state.current_event_slugs()
+            }))]
+        } else {
+            selectors
+                .iter()
+                .map(|selector| {
+                    Arc::new(EventParamsFilter::new(GetGammaEventsParams {
+                        tag_slug: Some(selector.tag_slug.clone()),
+                        ..Default::default()
+                    })) as Arc<dyn InstrumentFilter>
+                })
+                .collect()
+        }
+    };
 
     let config = PolymarketDataClientConfig {
         subscribe_new_markets: subscribe_new_markets && !has_prefix_selectors,
@@ -343,7 +350,7 @@ pub fn polymarket_ruleset_selectors(
 /// combines `InstrumentFilter`s additively on fetch, so a tag-only selector sharing a
 /// data_client with a prefix selector would fetch the entire tag regardless of the
 /// sibling prefix selector's narrowing intent, producing end-to-end over-admission.
-fn reject_mixed_polymarket_rulesets_global_scope(
+pub(crate) fn reject_mixed_polymarket_rulesets_global_scope(
     selectors: &[PolymarketRulesetSelector],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tag_only: Vec<&PolymarketRulesetSelector> = selectors
@@ -1277,6 +1284,44 @@ mod tests {
     }
 
     #[test]
+    fn build_data_client_rejects_empty_event_slugs_without_rulesets() {
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 45
+            ws_max_subscriptions = 200
+            event_slugs = []
+        }
+        .into();
+
+        let err = build_data_client(&raw, &[], None)
+            .expect_err("legacy mode without event slugs should be rejected");
+        assert!(err.to_string().contains("must contain at least one slug"));
+    }
+
+    #[test]
+    fn build_data_client_rejects_prefix_selectors_without_selector_state() {
+        let selectors = vec![PolymarketRulesetSelector {
+            tag_slug: "bitcoin".to_string(),
+            event_slug_prefix: Some("bitcoin-5m".to_string()),
+        }];
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 45
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let err = build_data_client(&raw, &selectors, None)
+            .expect_err("prefix selectors without selector state should be rejected");
+        assert!(
+            err.to_string()
+                .contains("prefix selectors require selector_state")
+        );
+    }
+
+    #[test]
     fn build_data_client_skips_new_market_filter_for_mixed_selectors() {
         let selectors = vec![
             PolymarketRulesetSelector {
@@ -1300,13 +1345,12 @@ mod tests {
         }
         .into();
 
-        let (_, config) = build_data_client(&raw, &selectors, selector_state).unwrap();
-        let debug = format!("{config:?}");
-
-        assert!(debug.contains("EventParamsFilter"), "{debug}");
-        assert!(debug.contains("EventSlugFilter"), "{debug}");
-        assert!(config.new_market_filter.is_none());
-        assert!(!config.subscribe_new_markets);
+        let err = build_data_client(&raw, &selectors, selector_state)
+            .expect_err("mixed selectors should be rejected at the build_data_client boundary");
+        assert!(
+            err.to_string()
+                .contains("uniformly tag-only or uniformly prefix-based")
+        );
     }
 
     #[test]

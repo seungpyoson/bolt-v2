@@ -154,7 +154,13 @@ jobs:
         with:
           cache-on-failure: true
           cache-targets: false
-          cache-directories: ${{ steps.managed_target.outputs.dir }}
+
+      - name: Restore managed test target cache
+        id: managed_test_target_cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.managed_target.outputs.dir }}
+          key: test-managed-target-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', '**/*.rs') }}
 
       - name: Install cargo-nextest
         run: |
@@ -162,6 +168,13 @@ jobs:
 
       - name: test
         run: just test
+
+      - name: Save managed test target cache
+        if: ${{ success() && steps.managed_test_target_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.managed_target.outputs.dir }}
+          key: test-managed-target-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', '**/*.rs') }}
 
   build:
     name: build

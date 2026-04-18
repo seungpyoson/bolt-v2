@@ -652,6 +652,21 @@ mod tests {
             .1;
         assert!(reason.contains("invalid endDate"), "{reason}");
     }
+
+    #[test]
+    fn extract_price_to_beat_prefers_axis_values_before_thresholds() {
+        let market = RawGammaMarket {
+            id: "market-good".to_string(),
+            x_axis_value: Some("3100.25".to_string()),
+            y_axis_value: Some("3200.50".to_string()),
+            lower_bound: Some("100.0".to_string()),
+            upper_bound: Some("200.0".to_string()),
+            group_item_threshold: Some("300.0".to_string()),
+        };
+
+        assert_eq!(extract_price_to_beat(&market), Some(3100.25));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prefix_selector_catalog_uses_selector_state_event_slugs_in_hot_path() {
         let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
@@ -690,18 +705,15 @@ mod tests {
         let markets = load_candidate_markets_for_ruleset_with_gamma_client(
             &ruleset,
             &client,
-            None,
+            Some(&format!("http://{addr}")),
             Some(selector_state),
         )
         .await
         .unwrap();
 
-        // This unit test routes the selector-slug lookup through the in-process
-        // test server, but does not override raw_base_url for the preserved
-        // price_to_beat fetch path. The local server therefore observes exactly
-        // one request here: the slug lookup proving we did not rediscover by
-        // tag_slug.
-        assert_eq!(request_count.load(Ordering::Relaxed), 1);
+        // Both requests now stay hermetic: one selector-slug fetch plus one
+        // raw-anchor fetch against the same local test server.
+        assert_eq!(request_count.load(Ordering::Relaxed), 2);
         assert_eq!(markets.len(), 1);
         assert_eq!(markets[0].market_id, "market-prefix-hit");
     }

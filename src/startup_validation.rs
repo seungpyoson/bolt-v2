@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn startup_validation_can_use_pre_resolved_prefix_event_slugs() {
-        let mut cfg = test_config(vec!["ethereum"], vec!["alpha.POLYMARKET"]);
+        let mut cfg = test_config(vec![], vec!["alpha.POLYMARKET"]);
         cfg.rulesets
             .push(polymarket_prefix_ruleset("BTC-5M", "bitcoin", "bitcoin-5m"));
 
@@ -448,7 +448,7 @@ mod tests {
             .expect("targets should collect")
             .expect("polymarket targets should exist");
 
-        assert_eq!(targets.tag_slugs, vec!["ethereum"]);
+        assert!(targets.tag_slugs.is_empty());
         assert_eq!(
             targets.event_slugs,
             vec![

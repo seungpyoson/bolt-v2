@@ -44,8 +44,14 @@ pub struct PolymarketDataClientInput {
     pub event_slugs: Vec<String>,
 }
 
+/// Subset of `PolymarketDataClientInput` holding fields shared between the
+/// legacy event-slug path and the ruleset path. Deserialized from the same
+/// raw TOML value as `PolymarketDataClientInput`, so it MUST NOT carry
+/// `#[serde(deny_unknown_fields)]` — the parent surface (Input) owns typo
+/// rejection for the full schema, including `event_slugs`. Adding
+/// `deny_unknown_fields` here would reject legitimate fields that the parent
+/// handles, breaking the legacy `event_slugs=[...]` configuration path.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PolymarketDataClientCommonInput {
     #[serde(default)]
     subscribe_new_markets: bool,
@@ -1703,6 +1709,42 @@ mod tests {
         assert!(
             message.contains("gamma_refresh_interval_sec"),
             "error should name the unknown field: {message}"
+        );
+    }
+
+    #[test]
+    fn legacy_event_slugs_config_builds_client_without_rulesets() {
+        // Regression guard for PR #183 (issue #175): a legacy operator config that
+        // carries `event_slugs = [...]` on `data_clients[].config` with no rulesets
+        // must still deserialize and build a data client. `build_data_client`
+        // deserializes `PolymarketDataClientCommonInput` from the raw TOML before
+        // branching on `selectors.is_empty()`; if Common ever re-acquires
+        // `#[serde(deny_unknown_fields)]`, Common will reject the legacy
+        // `event_slugs` field (which lives on `PolymarketDataClientInput`, not
+        // Common) and break every existing Polymarket operator config. This test
+        // exercises the public entry point an operator's config actually traverses
+        // (`PolymarketRulesetSetup::from_rulesets(&[], _).build_data_client(...)`).
+        let raw = toml::toml! {
+            event_slugs = ["eth-updown-5m-2026-04-18"]
+            subscribe_new_markets = false
+        }
+        .into();
+
+        let setup = PolymarketRulesetSetup::from_rulesets(&[], 5)
+            .expect("legacy setup with zero rulesets must construct");
+        let result = setup.build_data_client(&raw);
+        let (_, config) = result.expect("legacy event_slugs config must build a data client");
+
+        assert!(!config.subscribe_new_markets);
+        assert_eq!(
+            config.filters.len(),
+            1,
+            "legacy event_slugs path must install exactly one filter (EventSlugFilter)"
+        );
+        let debug = format!("{:?}", config.filters);
+        assert!(
+            debug.contains("EventSlugFilter"),
+            "installed filter must be EventSlugFilter, got: {debug}"
         );
     }
 }

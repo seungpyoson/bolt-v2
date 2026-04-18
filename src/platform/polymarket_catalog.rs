@@ -566,8 +566,9 @@ mod tests {
 
     #[test]
     fn translate_market_result_accepts_valid_market() {
-        let candidate = translate_market_result(parse_market(valid_market_json()), None, Utc::now())
-            .expect("valid market should translate");
+        let candidate =
+            translate_market_result(parse_market(valid_market_json()), None, Utc::now())
+                .expect("valid market should translate");
         assert_eq!(candidate.market_id, "market-good");
         assert_eq!(candidate.instrument_id, "0xcondition1-111.POLYMARKET");
     }

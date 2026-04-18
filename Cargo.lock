@@ -1384,6 +1384,7 @@ dependencies = [
  "nautilus-system",
  "nautilus-trading",
  "parquet",
+ "regex",
  "rust_decimal",
  "serde",
  "serde_json",

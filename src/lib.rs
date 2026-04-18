@@ -1,6 +1,10 @@
 pub mod clients;
 pub mod config;
 pub mod execution_state;
+pub mod issue_contract;
+pub mod issue_process;
+pub mod issue_replay;
+pub mod issue_shape;
 pub mod lake_batch;
 mod live_config;
 pub mod live_node_setup;

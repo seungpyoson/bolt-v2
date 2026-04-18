@@ -24,8 +24,8 @@ permissions:
   contents: read
 
 jobs:
-  gate:
-    name: gate
+  detector:
+    name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
     runs-on: ubuntu-latest
@@ -70,6 +70,32 @@ jobs:
             echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
+  fmt-check:
+    name: fmt-check
+    needs: detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+          toolchain-components: rustfmt
+
+      - name: fmt-check
+        run: just fmt-check
+
+  deny:
+    name: deny
+    needs: detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Setup environment
         id: setup
         uses: ./.github/actions/setup-environment
@@ -77,22 +103,23 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
-          lint-workflow-contract: "true"
-          toolchain-components: rustfmt
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-targets: false
+          key: cargo-deny
 
       - name: Install cargo-deny
         run: |
           cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
-
-      - name: fmt-check
-        run: just fmt-check
 
       - name: deny
         run: just deny
 
   clippy:
     name: clippy
-    needs: gate
+    needs: detector
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -107,11 +134,6 @@ jobs:
           include-build-values: "true"
           use-default-target: "true"
 
-      - name: Resolve managed cargo target
-        id: managed_target
-        run: |
-          echo "dir=$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")" >> "$GITHUB_OUTPUT"
-
       - name: Install aarch64 cross compiler
         run: |
           sudo apt-get update
@@ -121,7 +143,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-targets: false
-          cache-directories: ${{ steps.managed_target.outputs.dir }}
+          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
           key: clippy-dual-target
 
       - name: check-aarch64
@@ -132,7 +154,7 @@ jobs:
 
   test:
     name: test
-    needs: gate
+    needs: detector
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -145,16 +167,12 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
 
-      - name: Resolve managed cargo target
-        id: managed_target
-        run: |
-          echo "dir=$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")" >> "$GITHUB_OUTPUT"
-
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
           cache-targets: false
-          cache-directories: ${{ steps.managed_target.outputs.dir }}
+          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
+          key: nextest
 
       - name: Install cargo-nextest
         run: |
@@ -165,8 +183,8 @@ jobs:
 
   build:
     name: build
-    needs: gate
-    if: needs.gate.outputs.build_required == 'true'
+    needs: detector
+    if: needs.detector.outputs.build_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -180,16 +198,11 @@ jobs:
           include-build-values: "true"
           use-default-target: "true"
 
-      - name: Resolve managed cargo target
-        id: managed_target
-        run: |
-          echo "dir=$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")" >> "$GITHUB_OUTPUT"
-
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
           cache-targets: false
-          cache-directories: ${{ steps.managed_target.outputs.dir }}
+          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
           key: cross-aarch64
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -230,9 +243,51 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
           retention-days: 30
 
+  gate:
+    name: gate
+    needs: [detector, fmt-check, deny, clippy, test, build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required lanes
+        shell: bash
+        run: |
+          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            echo "detector did not succeed"
+            exit 1
+          fi
+          if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
+            echo "fmt-check did not succeed"
+            exit 1
+          fi
+          if [[ "${{ needs.deny.result }}" != "success" ]]; then
+            echo "deny did not succeed"
+            exit 1
+          fi
+          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
+            echo "clippy did not succeed"
+            exit 1
+          fi
+          if [[ "${{ needs.test.result }}" != "success" ]]; then
+            echo "test did not succeed"
+            exit 1
+          fi
+
+          build_required="${{ needs.detector.outputs.build_required }}"
+          build_result="${{ needs.build.result }}"
+          if [[ "$build_required" == "true" ]]; then
+            if [[ "$build_result" != "success" ]]; then
+              echo "build did not succeed when build_required=true"
+              exit 1
+            fi
+          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            echo "build produced unexpected result '$build_result' when build_required=false"
+            exit 1
+          fi
+
   deploy:
     name: deploy
-    needs: [gate, clippy, test, build]
+    needs: [gate, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

@@ -1349,6 +1349,21 @@ fn validate_runtime_with_registry(
                 "must be an integer".to_string(),
             );
         }
+        if !config.rulesets.is_empty()
+            && client.kind == "polymarket"
+            && client
+                .config
+                .get("gamma_event_fetch_max_concurrent")
+                .is_none()
+        {
+            push_error(
+                &mut errors,
+                &format!("data_clients[{i}].config.gamma_event_fetch_max_concurrent"),
+                "missing_gamma_event_fetch_max_concurrent",
+                "must be present when rulesets are enabled; platform runtime consumes this field"
+                    .to_string(),
+            );
+        }
         if let Some(gamma_event_fetch_max_concurrent) = client
             .config
             .get("gamma_event_fetch_max_concurrent")

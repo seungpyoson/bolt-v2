@@ -722,8 +722,14 @@ fn matches_time_bounds(
         return false;
     };
     let end_at = end_at.with_timezone(&Utc);
-    let min_end = now + ChronoDuration::seconds(discovery.min_time_to_expiry_secs as i64);
-    let max_end = now + ChronoDuration::seconds(discovery.max_time_to_expiry_secs as i64);
+    let Ok(min_offset_secs) = i64::try_from(discovery.min_time_to_expiry_secs) else {
+        return false;
+    };
+    let Ok(max_offset_secs) = i64::try_from(discovery.max_time_to_expiry_secs) else {
+        return false;
+    };
+    let min_end = now + ChronoDuration::seconds(min_offset_secs);
+    let max_end = now + ChronoDuration::seconds(max_offset_secs);
     end_at >= min_end && end_at <= max_end
 }
 
@@ -811,6 +817,11 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
         let tag_slug = group.canonical_params.tag_slug.clone().unwrap_or_default();
         match fetch_gamma_events_paginated(client, group.canonical_params).await {
             Ok(events) => {
+                for discovery in &group.member_discoveries {
+                    matched_events_by_discovery
+                        .entry(discovery.clone())
+                        .or_default();
+                }
                 for event in events {
                     let Some(event_slug) = event.slug.as_deref() else {
                         continue;
@@ -1310,6 +1321,67 @@ mod tests {
             state.event_slugs_for_discovery(&eth_discovery),
             vec!["ethereum-5m-alpha".to_string()],
             "healthy group must be overwritten with fresh slugs"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_task_best_effort_clears_prior_state_when_successful_group_has_no_matches() {
+        let bodies = HashMap::from([(
+            "bitcoin".to_string(),
+            json!([{"id":"b1","slug":"bitcoin-15m-alpha","markets":[]}]),
+        )]);
+        let addr = spawn_test_server_with_failing_tags(bodies, Vec::new()).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let state = PolymarketSelectorState::new(vec![(
+            discovery.clone(),
+            vec!["bitcoin-5m-prior".to_string()],
+        )]);
+
+        let refresh = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
+            std::slice::from_ref(&discovery),
+            &client,
+        )
+        .await
+        .unwrap();
+        state.upsert_event_slugs_by_discovery(refresh);
+
+        assert!(
+            state.event_slugs_for_discovery(&discovery).is_empty(),
+            "successful best-effort refresh with zero matches must clear stale selector state"
+        );
+    }
+
+    #[test]
+    fn matches_time_bounds_returns_false_when_expiry_offsets_overflow_i64() {
+        let now = DateTime::parse_from_rfc3339("2026-04-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", u64::MAX, u64::MAX);
+        let event = GammaEvent {
+            id: "e1".to_string(),
+            slug: Some("bitcoin-5m-alpha".to_string()),
+            title: None,
+            description: None,
+            start_date: None,
+            end_date: Some("2026-04-18T23:59:59Z".to_string()),
+            active: None,
+            closed: None,
+            archived: None,
+            markets: Vec::new(),
+            liquidity: None,
+            volume: None,
+            open_interest: None,
+            volume_24hr: None,
+            category: None,
+            neg_risk: None,
+            neg_risk_market_id: None,
+            featured: None,
+        };
+
+        assert!(
+            !matches_time_bounds(&event, &discovery, now),
+            "overflowing expiry offsets must fail closed"
         );
     }
 

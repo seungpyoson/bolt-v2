@@ -71,29 +71,58 @@ runs:
     - name: Install just
       shell: bash
       run: |
-        case "$RUNNER_ARCH" in
-          X64)
-            just_target_arch="x86_64"
-            ;;
-          ARM64)
-            just_target_arch="aarch64"
-            ;;
-          *)
-            echo "Unsupported runner architecture for just install: $RUNNER_ARCH" >&2
-            exit 1
-            ;;
-        esac
+        download_with_retry() {
+          local url="$1"
+          local output="$2"
+          local label="$3"
 
-        archive="just-${{ inputs.just-version }}-${just_target_arch}-unknown-linux-musl.tar.gz"
-        base_url="https://github.com/casey/just/releases/download/${{ inputs.just-version }}"
-        curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$archive" "$base_url/$archive"
-        curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/SHA256SUMS" "$base_url/SHA256SUMS"
-        (
-          cd "$RUNNER_TEMP"
-          grep "  $archive\$" SHA256SUMS | sha256sum -c -
-        )
-        tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" just
-        sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
+          echo "Downloading $label from $url"
+          curl \
+            --retry 10 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            --fail \
+            --show-error \
+            --silent \
+            --location \
+            --output "$output" \
+            "$url"
+        }
+
+        install_just_from_release() {
+          local just_target_arch archive base_url
+
+          case "$RUNNER_ARCH" in
+            X64)
+              just_target_arch="x86_64"
+              ;;
+            ARM64)
+              just_target_arch="aarch64"
+              ;;
+            *)
+              echo "Unsupported runner architecture for just install: $RUNNER_ARCH" >&2
+              return 1
+              ;;
+          esac
+
+          archive="just-${{ inputs.just-version }}-${just_target_arch}-unknown-linux-musl.tar.gz"
+          base_url="https://github.com/casey/just/releases/download/${{ inputs.just-version }}"
+          download_with_retry "$base_url/$archive" "$RUNNER_TEMP/$archive" "$archive"
+          download_with_retry "$base_url/SHA256SUMS" "$RUNNER_TEMP/SHA256SUMS" "SHA256SUMS"
+          (
+            cd "$RUNNER_TEMP"
+            grep "  $archive\$" SHA256SUMS | sha256sum -c -
+          )
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" just
+          sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
+        }
+
+        if command -v just >/dev/null 2>&1 && just --version | grep -Eq "^just ${{ inputs.just-version }}([[:space:]]|$)"; then
+          echo "just ${{ inputs.just-version }} already installed"
+          exit 0
+        fi
+
+        install_just_from_release
 
     - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}

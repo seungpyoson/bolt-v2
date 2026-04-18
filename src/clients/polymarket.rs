@@ -249,6 +249,7 @@ fn selector_snapshot_is_live(
     now <= expires_at
 }
 
+#[derive(Debug)]
 pub struct PolymarketSelectorRefreshGuard {
     cancellation: CancellationToken,
     join_handle: JoinHandle<()>,
@@ -639,15 +640,42 @@ impl PolymarketRulesetSetup {
         let Some(selector_state) = self.selector_state.clone() else {
             return Ok(None);
         };
+        let refresh_interval_secs = gamma_refresh_interval_secs(raw)?;
+        ensure_refresh_interval_fits_prefix_discoveries(
+            &self.prefix_discoveries,
+            refresh_interval_secs,
+        )?;
 
         spawn_selector_refresh_task(
             selector_state,
             self.prefix_discoveries.clone(),
-            gamma_refresh_interval_secs(raw)?,
+            refresh_interval_secs,
             timeout_secs,
         )
         .map(Some)
     }
+}
+
+fn ensure_refresh_interval_fits_prefix_discoveries(
+    prefix_discoveries: &[PolymarketPrefixDiscovery],
+    refresh_interval_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(min_max_expiry_secs) = prefix_discoveries
+        .iter()
+        .map(|discovery| discovery.max_time_to_expiry_secs)
+        .min()
+    else {
+        return Ok(());
+    };
+
+    if refresh_interval_secs > min_max_expiry_secs {
+        return Err(format!(
+            "data_clients[].config.gamma_refresh_interval_secs ({refresh_interval_secs}) must be <= the smallest prefix ruleset max_time_to_expiry_secs ({min_max_expiry_secs}) so selector snapshots do not age out between refreshes"
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
 fn gamma_selector_datetime_after_seconds(
@@ -704,6 +732,8 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
 
 struct CanonicalQueryGroup {
     canonical_params: GetGammaEventsParams,
+    canonical_min_secs: u64,
+    canonical_max_secs: u64,
     member_discoveries: Vec<PolymarketPrefixDiscovery>,
 }
 
@@ -754,6 +784,8 @@ fn group_discoveries_by_canonical_query(
                         &canonical_discovery,
                         now,
                     )?,
+                    canonical_min_secs: current_min,
+                    canonical_max_secs: current_max,
                     member_discoveries: std::mem::take(&mut current_members),
                 });
 
@@ -773,6 +805,8 @@ fn group_discoveries_by_canonical_query(
         };
         groups.push(CanonicalQueryGroup {
             canonical_params: gamma_event_params_for_prefix_discovery(&canonical_discovery, now)?,
+            canonical_min_secs: current_min,
+            canonical_max_secs: current_max,
             member_discoveries: current_members,
         });
     }
@@ -811,6 +845,7 @@ fn matches_time_bounds(
 fn discovery_matches_event(
     event: &GammaEvent,
     discovery: &PolymarketPrefixDiscovery,
+    canonical_bounds: (u64, u64),
     now: DateTime<Utc>,
 ) -> bool {
     let Some(event_slug) = event.slug.as_deref() else {
@@ -821,18 +856,24 @@ fn discovery_matches_event(
         .event_slug_prefix
         .as_deref()
         .is_some_and(|prefix| event_slug.starts_with(prefix));
-    prefix_match && matches_time_bounds(event, discovery, now)
+    if !prefix_match {
+        return false;
+    }
+    let discovery_matches_canonical = discovery.min_time_to_expiry_secs == canonical_bounds.0
+        && discovery.max_time_to_expiry_secs == canonical_bounds.1;
+    discovery_matches_canonical || matches_time_bounds(event, discovery, now)
 }
 
 fn partition_events_by_discovery(
     out: &mut BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>,
+    canonical_bounds: (u64, u64),
     discoveries: &[PolymarketPrefixDiscovery],
     events: Vec<GammaEvent>,
     now: DateTime<Utc>,
 ) {
     for event in events {
         for discovery in discoveries {
-            if !discovery_matches_event(&event, discovery, now) {
+            if !discovery_matches_event(&event, discovery, canonical_bounds, now) {
                 continue;
             }
             out.get_mut(discovery)
@@ -862,8 +903,20 @@ async fn resolve_matching_events_by_discovery_with_gamma_client(
         .collect();
 
     for group in groups {
-        let events = fetch_gamma_events_paginated(client, group.canonical_params).await?;
-        partition_events_by_discovery(&mut out, &group.member_discoveries, events, now);
+        let CanonicalQueryGroup {
+            canonical_params,
+            canonical_min_secs,
+            canonical_max_secs,
+            member_discoveries,
+        } = group;
+        let events = fetch_gamma_events_paginated(client, canonical_params).await?;
+        partition_events_by_discovery(
+            &mut out,
+            (canonical_min_secs, canonical_max_secs),
+            &member_discoveries,
+            events,
+            now,
+        );
     }
 
     Ok(out)
@@ -903,17 +956,24 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
         BTreeMap::new();
 
     for group in groups {
-        let tag_slug = group.canonical_params.tag_slug.clone().unwrap_or_default();
-        match fetch_gamma_events_paginated(client, group.canonical_params).await {
+        let CanonicalQueryGroup {
+            canonical_params,
+            canonical_min_secs,
+            canonical_max_secs,
+            member_discoveries,
+        } = group;
+        let tag_slug = canonical_params.tag_slug.clone().unwrap_or_default();
+        match fetch_gamma_events_paginated(client, canonical_params).await {
             Ok(events) => {
-                for discovery in &group.member_discoveries {
+                for discovery in &member_discoveries {
                     matched_events_by_discovery
                         .entry(discovery.clone())
                         .or_default();
                 }
                 partition_events_by_discovery(
                     &mut matched_events_by_discovery,
-                    &group.member_discoveries,
+                    (canonical_min_secs, canonical_max_secs),
+                    &member_discoveries,
                     events,
                     now,
                 );
@@ -1273,6 +1333,40 @@ mod tests {
         (addr, requests)
     }
 
+    async fn spawn_missing_end_date_test_server() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+
+                    let body = if path == "/events"
+                        && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
+                    {
+                        json!([
+                            {"id":"1","slug":"bitcoin-5m-alpha","markets":[]}
+                        ])
+                        .to_string()
+                    } else {
+                        "[]".to_string()
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        addr
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client_filters_prefixes() {
         let (addr, requests) = spawn_test_server().await;
@@ -1414,6 +1508,26 @@ mod tests {
             ])
         );
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canonical_window_members_accept_missing_end_date_on_prefix_match() {
+        let addr = spawn_missing_end_date_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            std::slice::from_ref(&discovery),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])]),
+            "canonical-window members should keep the pre-existing prefix-match behavior when Gamma omits endDate"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2011,6 +2125,36 @@ mod tests {
                 .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(301))
                 .is_empty(),
             "omitted failed-group snapshots must age out instead of staying live forever"
+        );
+    }
+
+    #[test]
+    fn refresh_interval_must_fit_within_smallest_prefix_expiry_window() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let setup = PolymarketRulesetSetup {
+            selectors: vec![discovery.selector.clone()],
+            prefix_discoveries: vec![discovery.clone()],
+            selector_state: Some(PolymarketSelectorState::new(vec![(
+                discovery.clone(),
+                vec!["bitcoin-5m-alpha".to_string()],
+            )])),
+        };
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 301
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let err = setup
+            .spawn_selector_refresh_task_if_configured(&raw, 5)
+            .expect_err(
+                "refresh interval longer than the discovery max-expiry window should be rejected",
+            );
+        assert!(
+            err.to_string()
+                .contains("gamma_refresh_interval_secs (301) must be <=")
         );
     }
 

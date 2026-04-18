@@ -29,7 +29,12 @@ pub mod fees;
 
 pub use fees::{FeeProvider, PolymarketClobFeeProvider};
 
+/// Single schema boundary for `data_clients[].config` in both legacy event-slug
+/// mode and ruleset mode. Ruleset mode forbids the presence of `event_slugs`
+/// separately in `build_data_client`, but typo rejection belongs on the full
+/// operator-facing schema rather than on a subset parser.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolymarketDataClientInput {
     #[serde(default)]
     pub subscribe_new_markets: bool,
@@ -41,18 +46,6 @@ pub struct PolymarketDataClientInput {
     pub ws_max_subscriptions: usize,
     #[serde(default)]
     pub event_slugs: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PolymarketDataClientCommonInput {
-    #[serde(default)]
-    subscribe_new_markets: bool,
-    #[serde(default = "default_update_instruments_interval_mins")]
-    update_instruments_interval_mins: u64,
-    #[serde(default = "default_gamma_refresh_interval_secs")]
-    gamma_refresh_interval_secs: u64,
-    #[serde(default = "default_ws_max_subscriptions")]
-    ws_max_subscriptions: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -236,14 +229,19 @@ pub(crate) fn build_data_client(
         );
     }
 
-    let common_input: PolymarketDataClientCommonInput = raw.clone().try_into()?;
+    let PolymarketDataClientInput {
+        subscribe_new_markets,
+        update_instruments_interval_mins,
+        gamma_refresh_interval_secs: _,
+        ws_max_subscriptions,
+        event_slugs,
+    } = raw.clone().try_into()?;
 
     let filters: Vec<Arc<dyn InstrumentFilter>> = if selectors.is_empty() {
-        let input: PolymarketDataClientInput = raw.clone().try_into()?;
-        if input.event_slugs.is_empty() {
+        if event_slugs.is_empty() {
             vec![]
         } else {
-            vec![Arc::new(EventSlugFilter::from_slugs(input.event_slugs))]
+            vec![Arc::new(EventSlugFilter::from_slugs(event_slugs))]
         }
     } else {
         let mut filters: Vec<Arc<dyn InstrumentFilter>> = selectors
@@ -271,9 +269,9 @@ pub(crate) fn build_data_client(
         .any(|selector| selector.event_slug_prefix.is_some());
 
     let config = PolymarketDataClientConfig {
-        subscribe_new_markets: common_input.subscribe_new_markets && !has_prefix_selectors,
-        update_instruments_interval_mins: common_input.update_instruments_interval_mins,
-        ws_max_subscriptions: common_input.ws_max_subscriptions,
+        subscribe_new_markets: subscribe_new_markets && !has_prefix_selectors,
+        update_instruments_interval_mins,
+        ws_max_subscriptions,
         filters,
         new_market_filter: None,
         ..Default::default()
@@ -426,7 +424,7 @@ pub(crate) fn polymarket_prefix_discovery_for_ruleset(
 }
 
 pub fn gamma_refresh_interval_secs(raw: &Value) -> Result<u64, Box<dyn std::error::Error>> {
-    let input: PolymarketDataClientCommonInput = raw.clone().try_into()?;
+    let input: PolymarketDataClientInput = raw.clone().try_into()?;
     Ok(input.gamma_refresh_interval_secs)
 }
 

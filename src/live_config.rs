@@ -61,6 +61,10 @@ fn default_gamma_refresh_interval_secs() -> u64 {
     60
 }
 
+fn default_gamma_event_fetch_max_concurrent() -> usize {
+    8
+}
+
 fn default_ws_max_subscriptions() -> usize {
     200
 }
@@ -219,6 +223,8 @@ pub struct LivePolymarketInput {
     pub update_instruments_interval_mins: u64,
     #[serde(default = "default_gamma_refresh_interval_secs")]
     pub gamma_refresh_interval_secs: u64,
+    #[serde(default = "default_gamma_event_fetch_max_concurrent")]
+    pub gamma_event_fetch_max_concurrent: usize,
     #[serde(default = "default_ws_max_subscriptions")]
     pub ws_max_subscriptions: usize,
 }
@@ -235,6 +241,7 @@ impl Default for LivePolymarketInput {
             subscribe_new_markets: false,
             update_instruments_interval_mins: default_update_instruments_interval_mins(),
             gamma_refresh_interval_secs: default_gamma_refresh_interval_secs(),
+            gamma_event_fetch_max_concurrent: default_gamma_event_fetch_max_concurrent(),
             ws_max_subscriptions: default_ws_max_subscriptions(),
         }
     }
@@ -417,6 +424,7 @@ struct RenderedDataClientConfig {
     subscribe_new_markets: bool,
     update_instruments_interval_mins: u64,
     gamma_refresh_interval_secs: u64,
+    gamma_event_fetch_max_concurrent: usize,
     ws_max_subscriptions: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     event_slugs: Option<Vec<String>>,
@@ -625,6 +633,7 @@ fn render_runtime_config(
                 subscribe_new_markets: input.polymarket.subscribe_new_markets,
                 update_instruments_interval_mins: input.polymarket.update_instruments_interval_mins,
                 gamma_refresh_interval_secs: input.polymarket.gamma_refresh_interval_secs,
+                gamma_event_fetch_max_concurrent: input.polymarket.gamma_event_fetch_max_concurrent,
                 ws_max_subscriptions: input.polymarket.ws_max_subscriptions,
                 event_slugs: if platform_enabled {
                     None
@@ -1111,6 +1120,12 @@ mod tests {
                 .as_integer()
                 .expect("gamma_refresh_interval_secs should exist"),
             input.polymarket.gamma_refresh_interval_secs as i64
+        );
+        assert_eq!(
+            cfg.data_clients[0].config["gamma_event_fetch_max_concurrent"]
+                .as_integer()
+                .expect("gamma_event_fetch_max_concurrent should exist"),
+            input.polymarket.gamma_event_fetch_max_concurrent as i64
         );
         assert_eq!(
             cfg.exec_clients[0].config["signature_type"]

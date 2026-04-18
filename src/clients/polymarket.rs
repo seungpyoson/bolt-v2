@@ -42,6 +42,8 @@ pub struct PolymarketDataClientInput {
     pub update_instruments_interval_mins: u64,
     #[serde(default = "default_gamma_refresh_interval_secs")]
     pub gamma_refresh_interval_secs: u64,
+    #[serde(default)]
+    pub gamma_event_fetch_max_concurrent: Option<usize>,
     #[serde(default = "default_ws_max_subscriptions")]
     pub ws_max_subscriptions: usize,
     #[serde(default)]
@@ -233,6 +235,7 @@ pub(crate) fn build_data_client(
         subscribe_new_markets,
         update_instruments_interval_mins,
         gamma_refresh_interval_secs: _,
+        gamma_event_fetch_max_concurrent: _,
         ws_max_subscriptions,
         event_slugs,
     } = raw.clone().try_into()?;
@@ -1277,6 +1280,29 @@ mod tests {
         .into();
 
         let (_, config) = build_data_client(&raw, &selectors, None).unwrap();
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("EventParamsFilter"), "{debug}");
+        assert!(!debug.contains("EventSlugFilter"), "{debug}");
+    }
+
+    #[test]
+    fn build_data_client_accepts_gamma_event_fetch_max_concurrent_in_ruleset_mode() {
+        let selectors = vec![PolymarketRulesetSelector {
+            tag_slug: "bitcoin".to_string(),
+            event_slug_prefix: None,
+        }];
+        let raw = toml::toml! {
+            subscribe_new_markets = true
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 45
+            gamma_event_fetch_max_concurrent = 8
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let (_, config) = build_data_client(&raw, &selectors, None)
+            .expect("schema boundary should accept gamma_event_fetch_max_concurrent");
         let debug = format!("{config:?}");
 
         assert!(debug.contains("EventParamsFilter"), "{debug}");

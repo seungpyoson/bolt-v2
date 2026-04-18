@@ -87,9 +87,13 @@ impl PlatformRuntimeServices {
     pub fn production(
         runtime_strategy_factory: RuntimeStrategyFactory,
         selector_state: Option<PolymarketSelectorState>,
+        gamma_event_fetch_max_concurrent: usize,
     ) -> Self {
         Self {
-            candidate_loader: Arc::new(ProductionCandidateMarketLoader { selector_state }),
+            candidate_loader: Arc::new(ProductionCandidateMarketLoader {
+                selector_state,
+                gamma_event_fetch_max_concurrent,
+            }),
             audit_task_factory: Arc::new(ProductionAuditTaskFactory),
             now_ms: Arc::new(|| {
                 SystemTime::now()
@@ -377,11 +381,38 @@ pub fn wire_platform_runtime(
     runtime_strategy_factory: RuntimeStrategyFactory,
     selector_state: Option<PolymarketSelectorState>,
 ) -> anyhow::Result<PlatformRuntimeGuards> {
+    let gamma_event_fetch_max_concurrent = polymarket_gamma_event_fetch_max_concurrent(cfg)?;
     wire_platform_runtime_with_services(
         node,
         cfg,
-        PlatformRuntimeServices::production(runtime_strategy_factory, selector_state),
+        PlatformRuntimeServices::production(
+            runtime_strategy_factory,
+            selector_state,
+            gamma_event_fetch_max_concurrent,
+        ),
     )
+}
+
+fn polymarket_gamma_event_fetch_max_concurrent(cfg: &Config) -> anyhow::Result<usize> {
+    let raw = cfg
+        .data_clients
+        .iter()
+        .find(|client| client.kind == "polymarket")
+        .ok_or_else(|| anyhow!("missing polymarket data client"))?
+        .config
+        .get("gamma_event_fetch_max_concurrent")
+        .ok_or_else(|| {
+            anyhow!(
+                "polymarket data_client config is missing gamma_event_fetch_max_concurrent; render/validation must populate it"
+            )
+        })?;
+    let value = raw
+        .as_integer()
+        .context("gamma_event_fetch_max_concurrent must be an integer")?;
+    if value <= 0 {
+        anyhow::bail!("gamma_event_fetch_max_concurrent must be > 0, got {value}");
+    }
+    usize::try_from(value).context("gamma_event_fetch_max_concurrent exceeds usize range")
 }
 
 pub fn wire_platform_runtime_with_services(
@@ -1002,15 +1033,18 @@ async fn wait_for_node_running(
 
 struct ProductionCandidateMarketLoader {
     selector_state: Option<PolymarketSelectorState>,
+    gamma_event_fetch_max_concurrent: usize,
 }
 
 impl CandidateMarketLoader for ProductionCandidateMarketLoader {
     fn load(&self, ruleset: RulesetConfig) -> CandidateMarketLoadFuture {
         let selector_state = self.selector_state.clone();
+        let gamma_event_fetch_max_concurrent = self.gamma_event_fetch_max_concurrent;
         Box::pin(async move {
             load_candidate_markets_for_ruleset(
                 &ruleset,
                 ruleset.candidate_load_timeout_secs,
+                gamma_event_fetch_max_concurrent,
                 selector_state,
             )
             .await

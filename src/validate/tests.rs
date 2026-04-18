@@ -1398,7 +1398,10 @@ max_local_backlog_bytes = 10485760
 fn valid_phase1_runtime_toml() -> String {
     format!(
         "{}\n{}",
-        valid_runtime_toml(),
+        valid_runtime_toml().replace(
+            "event_slugs = [\"btc-updown-5m\"]\n",
+            "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 8\n",
+        ),
         r#"
 [reference]
 publish_topic = "platform.reference.default"
@@ -1568,6 +1571,47 @@ fn runtime_gamma_refresh_interval_secs_wrong_type_rejected_when_present() {
         &errors,
         "data_clients[0].config.gamma_refresh_interval_secs",
         "wrong_type",
+    );
+}
+
+#[test]
+fn runtime_gamma_event_fetch_max_concurrent_must_be_positive_when_present() {
+    let toml = valid_runtime_toml().replace(
+        "event_slugs = [\"btc-updown-5m\"]",
+        "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.gamma_event_fetch_max_concurrent",
+        "not_positive",
+    );
+}
+
+#[test]
+fn runtime_gamma_event_fetch_max_concurrent_wrong_type_rejected_when_present() {
+    let toml = valid_runtime_toml().replace(
+        "event_slugs = [\"btc-updown-5m\"]",
+        "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = \"wide\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.gamma_event_fetch_max_concurrent",
+        "wrong_type",
+    );
+}
+
+#[test]
+fn runtime_gamma_event_fetch_max_concurrent_required_when_rulesets_are_enabled() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("event_slugs = [\"btc-updown-5m\"]\n", "")
+        .replace("gamma_event_fetch_max_concurrent = 8\n", "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.gamma_event_fetch_max_concurrent",
+        "missing_gamma_event_fetch_max_concurrent",
     );
 }
 
@@ -1979,6 +2023,19 @@ fn phase1_runtime_load_accepts_zero_runtime_templates() {
     file.write_all(toml.as_bytes())
         .expect("runtime temp file should be written");
     Config::load(file.path()).expect("zero-template ruleset config should load");
+}
+
+#[test]
+fn phase1_runtime_load_rejects_missing_gamma_event_fetch_max_concurrent() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("event_slugs = [\"btc-updown-5m\"]\n", "")
+        .replace("gamma_event_fetch_max_concurrent = 8\n", "");
+
+    let error = runtime_load_error_for(&toml);
+    assert!(
+        error.contains("data_clients[0].config.gamma_event_fetch_max_concurrent"),
+        "runtime load error should mention gamma_event_fetch_max_concurrent: {error}"
+    );
 }
 
 #[test]

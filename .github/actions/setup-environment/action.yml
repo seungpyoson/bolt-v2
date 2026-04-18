@@ -117,11 +117,6 @@ runs:
           sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
         }
 
-        if command -v just >/dev/null 2>&1 && just --version | grep -Eq "^just ${{ inputs.just-version }}([[:space:]]|$)"; then
-          echo "just ${{ inputs.just-version }} already installed"
-          exit 0
-        fi
-
         install_just_from_release
 
     - name: Lint workflow contract

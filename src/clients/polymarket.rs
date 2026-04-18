@@ -1447,6 +1447,78 @@ mod tests {
         addr
     }
 
+    async fn spawn_sequenced_refresh_server(
+        failing_request_count: usize,
+    ) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let server_request_count = Arc::clone(&request_count);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let server_request_count = Arc::clone(&server_request_count);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (_, params) = parse_request_target(&request);
+                    let request_number = server_request_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+                    let (status_line, body) = if request_number <= failing_request_count {
+                        ("HTTP/1.1 500 Internal Server Error", "{}".to_string())
+                    } else {
+                        let canonical_min = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_min")
+                                .expect("refresh request should send end_date_min"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+                        let refreshed_end = canonical_min + ChronoDuration::seconds(1);
+                        (
+                            "HTTP/1.1 200 OK",
+                            json!([{
+                                "id":"recovered-event",
+                                "slug":"bitcoin-5m-recovered",
+                                "endDate": refreshed_end.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            }])
+                            .to_string(),
+                        )
+                    };
+
+                    let response = format!(
+                        "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        (addr, request_count)
+    }
+
+    async fn wait_for_request_count(
+        request_count: &std::sync::atomic::AtomicUsize,
+        expected: usize,
+    ) {
+        use std::sync::atomic::Ordering;
+
+        for _ in 0..200 {
+            if request_count.load(Ordering::Relaxed) >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "expected at least {expected} requests, observed {}",
+            request_count.load(Ordering::Relaxed)
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client_filters_prefixes() {
         let (addr, requests) = spawn_test_server().await;
@@ -1588,6 +1660,60 @@ mod tests {
             ])
         );
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_task_end_to_end_preserves_then_ages_out_then_recovers() {
+        use std::sync::atomic::Ordering;
+
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 1, 1);
+        let selector_state = PolymarketSelectorState::new(vec![(
+            discovery.clone(),
+            vec!["bitcoin-5m-startup".to_string()],
+        )]);
+        let (addr, request_count) = spawn_sequenced_refresh_server(2).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let guard = spawn_selector_refresh_task_with_client(
+            selector_state.clone(),
+            vec![discovery.clone()],
+            2,
+            client,
+        );
+
+        wait_for_request_count(&request_count, 1).await;
+        assert_eq!(
+            selector_state.current_event_slugs(),
+            vec!["bitcoin-5m-startup".to_string()]
+        );
+        assert_eq!(
+            selector_state.event_slugs_read_for_discovery(&discovery),
+            SelectorDiscoveryRead::Live(vec!["bitcoin-5m-startup".to_string()])
+        );
+
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        wait_for_request_count(&request_count, 2).await;
+        assert!(
+            selector_state.current_event_slugs().is_empty(),
+            "failed-group snapshot should remain aged out while later refreshes are still failing"
+        );
+        assert_eq!(
+            selector_state.event_slugs_read_for_discovery(&discovery),
+            SelectorDiscoveryRead::AgedOut
+        );
+
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        wait_for_request_count(&request_count, 3).await;
+        assert_eq!(
+            selector_state.current_event_slugs(),
+            vec!["bitcoin-5m-recovered".to_string()]
+        );
+        assert_eq!(
+            selector_state.event_slugs_read_for_discovery(&discovery),
+            SelectorDiscoveryRead::Live(vec!["bitcoin-5m-recovered".to_string()])
+        );
+        assert_eq!(request_count.load(Ordering::Relaxed), 3);
+
+        guard.shutdown().await;
     }
 
     #[tokio::test(flavor = "current_thread")]

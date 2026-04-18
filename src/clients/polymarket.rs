@@ -679,8 +679,7 @@ fn group_discoveries_by_canonical_query(
                     canonical_params: gamma_event_params_for_prefix_discovery(
                         &canonical_discovery,
                         now,
-                    )
-                    .map_err(|error| std::io::Error::other(error.to_string()))?,
+                    )?,
                     canonical_min_secs: current_min,
                     canonical_max_secs: current_max,
                     member_discoveries: std::mem::take(&mut current_members),
@@ -701,8 +700,7 @@ fn group_discoveries_by_canonical_query(
             max_time_to_expiry_secs: current_max,
         };
         groups.push(CanonicalQueryGroup {
-            canonical_params: gamma_event_params_for_prefix_discovery(&canonical_discovery, now)
-                .map_err(|error| std::io::Error::other(error.to_string()))?,
+            canonical_params: gamma_event_params_for_prefix_discovery(&canonical_discovery, now)?,
             canonical_min_secs: current_min,
             canonical_max_secs: current_max,
             member_discoveries: current_members,
@@ -806,7 +804,8 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
         .collect();
     let groups = group_discoveries_by_canonical_query(&unique_discoveries, now)?;
 
-    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = BTreeMap::new();
+    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
+        BTreeMap::new();
 
     for group in groups {
         let tag_slug = group.canonical_params.tag_slug.clone().unwrap_or_default();

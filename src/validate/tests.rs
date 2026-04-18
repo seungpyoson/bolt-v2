@@ -1572,6 +1572,34 @@ fn runtime_gamma_refresh_interval_secs_wrong_type_rejected_when_present() {
 }
 
 #[test]
+fn runtime_gamma_event_fetch_max_concurrent_must_be_positive_when_present() {
+    let toml = valid_runtime_toml().replace(
+        "event_slugs = [\"btc-updown-5m\"]",
+        "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.gamma_event_fetch_max_concurrent",
+        "not_positive",
+    );
+}
+
+#[test]
+fn runtime_gamma_event_fetch_max_concurrent_wrong_type_rejected_when_present() {
+    let toml = valid_runtime_toml().replace(
+        "event_slugs = [\"btc-updown-5m\"]",
+        "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = \"wide\"",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "data_clients[0].config.gamma_event_fetch_max_concurrent",
+        "wrong_type",
+    );
+}
+
+#[test]
 fn runtime_event_slugs_wrong_type_rejected() {
     let toml = valid_runtime_toml().replace(
         "event_slugs = [\"btc-updown-5m\"]",

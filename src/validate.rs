@@ -848,6 +848,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "polymarket.gamma_refresh_interval_secs",
         config.polymarket.gamma_refresh_interval_secs,
     );
+    check_positive_u64(
+        &mut errors,
+        "polymarket.gamma_event_fetch_max_concurrent",
+        config.polymarket.gamma_event_fetch_max_concurrent as u64,
+    );
 
     if !config.strategies.is_empty() && config.rulesets.is_empty() {
         push_error(
@@ -1340,6 +1345,31 @@ fn validate_runtime_with_registry(
             push_error(
                 &mut errors,
                 &format!("data_clients[{i}].config.gamma_refresh_interval_secs"),
+                "wrong_type",
+                "must be an integer".to_string(),
+            );
+        }
+        if let Some(gamma_event_fetch_max_concurrent) = client
+            .config
+            .get("gamma_event_fetch_max_concurrent")
+            .and_then(Value::as_integer)
+        {
+            if gamma_event_fetch_max_concurrent <= 0 {
+                push_error(
+                    &mut errors,
+                    &format!("data_clients[{i}].config.gamma_event_fetch_max_concurrent"),
+                    "not_positive",
+                    format!("must be > 0, got {gamma_event_fetch_max_concurrent}"),
+                );
+            }
+        } else if client
+            .config
+            .get("gamma_event_fetch_max_concurrent")
+            .is_some()
+        {
+            push_error(
+                &mut errors,
+                &format!("data_clients[{i}].config.gamma_event_fetch_max_concurrent"),
                 "wrong_type",
                 "must be an integer".to_string(),
             );

@@ -31,6 +31,8 @@ use tokio::{
 };
 use toml::Value as TomlValue;
 
+const TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT: usize = 8;
+
 fn polymarket_selector(tag_slug: &str) -> TomlValue {
     let mut selector = toml::map::Map::new();
     selector.insert(
@@ -205,6 +207,7 @@ async fn load_markets_from_event_markets(
         &client,
         Some(&format!("http://{addr}")),
         None,
+        TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
     )
     .await
     .unwrap();
@@ -227,6 +230,7 @@ async fn load_markets_from_event_markets_with_raw_base_url(
         &client,
         Some(raw_base_url),
         None,
+        TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
     )
     .await
     .unwrap();
@@ -248,6 +252,7 @@ async fn load_markets_from_event_pages(
         &client,
         Some(&format!("http://{addr}")),
         None,
+        TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
     )
     .await
     .unwrap();
@@ -565,6 +570,7 @@ async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
         &client,
         None,
         Some(selector_state),
+        TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
     )
     .await
     .expect("prefix ruleset with populated selector state must load");
@@ -594,9 +600,15 @@ async fn prefix_selector_without_selector_state_fails_closed_with_greppable_erro
     let client = test_gamma_client(addr);
     let ruleset = ruleset_with_prefix("bitcoin-5m");
 
-    let err = load_candidate_markets_for_ruleset_with_gamma_client(&ruleset, &client, None, None)
-        .await
-        .expect_err("prefix selector with None state must fail closed");
+    let err = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset,
+        &client,
+        None,
+        None,
+        TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
+    )
+    .await
+    .expect_err("prefix selector with None state must fail closed");
 
     let message = format!("{err:#}");
     assert!(

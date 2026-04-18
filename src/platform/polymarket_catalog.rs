@@ -1,6 +1,8 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+use futures_util::TryStreamExt;
 use futures_util::future::join_all;
+use futures_util::stream::StreamExt;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::identifiers::InstrumentId;
 use nautilus_network::http::{HttpClient, Method, USER_AGENT};
@@ -49,12 +51,19 @@ struct SlugParam<'a> {
 pub async fn load_candidate_markets_for_ruleset(
     ruleset: &RulesetConfig,
     timeout_secs: u64,
+    gamma_event_fetch_max_concurrent: usize,
     selector_state: Option<PolymarketSelectorState>,
 ) -> anyhow::Result<Vec<CandidateMarket>> {
     let raw_client = PolymarketGammaRawHttpClient::new(None, timeout_secs)
         .context("failed to build gamma raw client")?;
-    load_candidate_markets_for_ruleset_with_gamma_client(ruleset, &raw_client, None, selector_state)
-        .await
+    load_candidate_markets_for_ruleset_with_gamma_client(
+        ruleset,
+        &raw_client,
+        None,
+        selector_state,
+        gamma_event_fetch_max_concurrent,
+    )
+    .await
 }
 
 pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
@@ -62,15 +71,22 @@ pub async fn load_candidate_markets_for_ruleset_with_gamma_client(
     client: &PolymarketGammaRawHttpClient,
     raw_base_url: Option<&str>,
     selector_state: Option<PolymarketSelectorState>,
+    gamma_event_fetch_max_concurrent: usize,
 ) -> anyhow::Result<Vec<CandidateMarket>> {
     let selector: PolymarketRulesetSelector = ruleset
         .selector
         .clone()
         .try_into()
         .context("failed to parse polymarket selector")?;
-    let events = load_events_for_selector(ruleset, &selector, selector_state.as_ref(), client)
-        .await
-        .context("failed to fetch gamma events")?;
+    let events = load_events_for_selector(
+        ruleset,
+        &selector,
+        selector_state.as_ref(),
+        client,
+        gamma_event_fetch_max_concurrent,
+    )
+    .await
+    .context("failed to fetch gamma events")?;
     let price_to_beat_by_market_id = load_price_to_beat_map_for_events(
         &events,
         raw_base_url,
@@ -97,6 +113,7 @@ async fn load_events_for_selector(
     selector: &PolymarketRulesetSelector,
     selector_state: Option<&PolymarketSelectorState>,
     client: &PolymarketGammaRawHttpClient,
+    gamma_event_fetch_max_concurrent: usize,
 ) -> anyhow::Result<Vec<nautilus_polymarket::http::models::GammaEvent>> {
     if selector.event_slug_prefix.is_none() {
         return fetch_gamma_events_paginated(
@@ -127,7 +144,8 @@ async fn load_events_for_selector(
         .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
     let event_slugs = selector_state.event_slugs_for_discovery(&prefix_discovery);
     if !event_slugs.is_empty() {
-        return load_events_by_event_slugs(&event_slugs, client).await;
+        return load_events_by_event_slugs(&event_slugs, client, gamma_event_fetch_max_concurrent)
+            .await;
     }
 
     anyhow::bail!(
@@ -140,6 +158,7 @@ async fn load_events_for_selector(
 async fn load_events_by_event_slugs(
     event_slugs: &[String],
     client: &PolymarketGammaRawHttpClient,
+    gamma_event_fetch_max_concurrent: usize,
 ) -> anyhow::Result<Vec<nautilus_polymarket::http::models::GammaEvent>> {
     let unique_event_slugs: Vec<String> = event_slugs
         .iter()
@@ -150,20 +169,22 @@ async fn load_events_by_event_slugs(
         .into_iter()
         .collect();
 
-    let requests = unique_event_slugs.iter().map(|event_slug| async move {
-        client
-            .get_gamma_events_by_slug(event_slug)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))
-    });
-
-    let mut events = Vec::new();
-    for result in join_all(requests).await {
-        let mut page = result?;
-        events.append(&mut page);
+    if unique_event_slugs.is_empty() {
+        return Ok(Vec::new());
     }
 
-    Ok(events)
+    let events: Vec<Vec<_>> = futures_util::stream::iter(unique_event_slugs)
+        .map(|event_slug| async move {
+            client
+                .get_gamma_events_by_slug(&event_slug)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+        })
+        .buffer_unordered(gamma_event_fetch_max_concurrent)
+        .try_collect()
+        .await?;
+
+    Ok(events.into_iter().flatten().collect())
 }
 
 async fn load_price_to_beat_map_for_events(
@@ -408,6 +429,8 @@ mod tests {
     use crate::config::RulesetVenueKind;
     use chrono::Duration as ChronoDuration;
     use serde_json::json;
+
+    const TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT: usize = 8;
     use std::collections::HashMap;
     use std::sync::{
         Arc,
@@ -707,6 +730,7 @@ mod tests {
             &client,
             Some(&format!("http://{addr}")),
             Some(selector_state),
+            TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
         )
         .await
         .unwrap();
@@ -745,6 +769,7 @@ mod tests {
             &client,
             None,
             Some(selector_state),
+            TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
         )
         .await
         .expect_err("empty selector state should fail closed");

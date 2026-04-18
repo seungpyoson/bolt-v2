@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use nautilus_model::identifiers::{AccountId, TraderId};
 use nautilus_polymarket::http::query::GetGammaEventsParams;
@@ -74,9 +74,24 @@ struct SelectorStateSnapshot {
 }
 
 #[derive(Clone, Debug)]
+struct CurrentEventSlugsCache {
+    as_of: DateTime<Utc>,
+    event_slugs: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SelectorDiscoveryRead {
+    Missing,
+    AgedOut,
+    EmptyFresh,
+    Live(Vec<String>),
+}
+
+#[derive(Clone, Debug)]
 pub struct PolymarketSelectorState {
     event_slugs_by_discovery:
         Arc<ArcSwap<BTreeMap<PolymarketPrefixDiscovery, SelectorStateSnapshot>>>,
+    current_event_slugs_cache: Arc<ArcSwapOption<CurrentEventSlugsCache>>,
 }
 
 impl PolymarketSelectorState {
@@ -129,6 +144,7 @@ impl PolymarketSelectorState {
                 .collect();
         Self {
             event_slugs_by_discovery: Arc::new(ArcSwap::from_pointee(initial_map)),
+            current_event_slugs_cache: Arc::new(ArcSwapOption::empty()),
         }
     }
 
@@ -137,14 +153,30 @@ impl PolymarketSelectorState {
     }
 
     fn current_event_slugs_at(&self, now: DateTime<Utc>) -> Vec<String> {
-        self.event_slugs_by_discovery
+        let now = normalize_selector_now(now);
+        if let Some(cache) = self.current_event_slugs_cache.load_full() {
+            if cache.as_of == now {
+                return cache.event_slugs.clone();
+            }
+        }
+
+        let event_slugs: Vec<String> = self
+            .event_slugs_by_discovery
             .load()
             .iter()
             .filter(|(discovery, snapshot)| selector_snapshot_is_live(discovery, snapshot, now))
             .flat_map(|(_, snapshot)| snapshot.event_slugs.iter().cloned())
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .collect()
+            .collect();
+
+        self.current_event_slugs_cache
+            .store(Some(Arc::new(CurrentEventSlugsCache {
+                as_of: now,
+                event_slugs: event_slugs.clone(),
+            })));
+
+        event_slugs
     }
 
     /// Insert or overwrite the event-slug list for each discovery in the input.
@@ -200,8 +232,10 @@ impl PolymarketSelectorState {
         }
 
         self.event_slugs_by_discovery.store(Arc::new(next));
+        self.current_event_slugs_cache.store(None);
     }
 
+    #[cfg(test)]
     pub(crate) fn event_slugs_for_discovery(
         &self,
         discovery: &PolymarketPrefixDiscovery,
@@ -209,17 +243,43 @@ impl PolymarketSelectorState {
         self.event_slugs_for_discovery_at(discovery, selector_reference_now())
     }
 
+    pub(crate) fn event_slugs_read_for_discovery(
+        &self,
+        discovery: &PolymarketPrefixDiscovery,
+    ) -> SelectorDiscoveryRead {
+        self.event_slugs_read_for_discovery_at(discovery, selector_reference_now())
+    }
+
+    fn event_slugs_read_for_discovery_at(
+        &self,
+        discovery: &PolymarketPrefixDiscovery,
+        now: DateTime<Utc>,
+    ) -> SelectorDiscoveryRead {
+        let snapshots = self.event_slugs_by_discovery.load();
+        let Some(snapshot) = snapshots.get(discovery) else {
+            return SelectorDiscoveryRead::Missing;
+        };
+        if !selector_snapshot_is_live(discovery, snapshot, now) {
+            return SelectorDiscoveryRead::AgedOut;
+        }
+        if snapshot.event_slugs.is_empty() {
+            return SelectorDiscoveryRead::EmptyFresh;
+        }
+        SelectorDiscoveryRead::Live(snapshot.event_slugs.clone())
+    }
+
+    #[cfg(test)]
     fn event_slugs_for_discovery_at(
         &self,
         discovery: &PolymarketPrefixDiscovery,
         now: DateTime<Utc>,
     ) -> Vec<String> {
-        self.event_slugs_by_discovery
-            .load()
-            .get(discovery)
-            .filter(|snapshot| selector_snapshot_is_live(discovery, snapshot, now))
-            .map(|snapshot| snapshot.event_slugs.clone())
-            .unwrap_or_default()
+        match self.event_slugs_read_for_discovery_at(discovery, now) {
+            SelectorDiscoveryRead::Live(event_slugs) => event_slugs,
+            SelectorDiscoveryRead::Missing
+            | SelectorDiscoveryRead::AgedOut
+            | SelectorDiscoveryRead::EmptyFresh => Vec::new(),
+        }
     }
 }
 
@@ -240,10 +300,10 @@ fn selector_snapshot_is_live(
     let Ok(max_offset_secs) = i64::try_from(discovery.max_time_to_expiry_secs) else {
         return false;
     };
-    let Some(expires_at) = snapshot
-        .refreshed_at
-        .checked_add_signed(ChronoDuration::seconds(max_offset_secs))
-    else {
+    let Some(max_offset) = ChronoDuration::try_seconds(max_offset_secs) else {
+        return false;
+    };
+    let Some(expires_at) = snapshot.refreshed_at.checked_add_signed(max_offset) else {
         return false;
     };
     now <= expires_at
@@ -618,6 +678,10 @@ impl PolymarketRulesetSetup {
         ),
         Box<dyn std::error::Error>,
     > {
+        ensure_refresh_interval_fits_prefix_discoveries(
+            &self.prefix_discoveries,
+            gamma_refresh_interval_secs(raw)?,
+        )?;
         build_data_client(raw, &self.selectors, self.selector_state.clone())
     }
 
@@ -660,6 +724,13 @@ fn ensure_refresh_interval_fits_prefix_discoveries(
     prefix_discoveries: &[PolymarketPrefixDiscovery],
     refresh_interval_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if refresh_interval_secs == 0 {
+        return Err(
+            "data_clients[].config.gamma_refresh_interval_secs must be > 0 for prefix-selector refresh"
+                .into(),
+        );
+    }
+
     let Some(min_max_expiry_secs) = prefix_discoveries
         .iter()
         .map(|discovery| discovery.max_time_to_expiry_secs)
@@ -668,9 +739,9 @@ fn ensure_refresh_interval_fits_prefix_discoveries(
         return Ok(());
     };
 
-    if refresh_interval_secs > min_max_expiry_secs {
+    if refresh_interval_secs >= min_max_expiry_secs {
         return Err(format!(
-            "data_clients[].config.gamma_refresh_interval_secs ({refresh_interval_secs}) must be <= the smallest prefix ruleset max_time_to_expiry_secs ({min_max_expiry_secs}) so selector snapshots do not age out between refreshes"
+            "data_clients[].config.gamma_refresh_interval_secs ({refresh_interval_secs}) must be < the smallest prefix ruleset max_time_to_expiry_secs ({min_max_expiry_secs}) so selector snapshots do not age out between refreshes"
         )
         .into());
     }
@@ -685,8 +756,11 @@ fn gamma_selector_datetime_after_seconds(
     let now = normalize_selector_now(now);
     let offset_secs = i64::try_from(offset_secs)
         .map_err(|_| anyhow::anyhow!("selector expiry bound {offset_secs} exceeds i64::MAX"))?;
+    let offset = ChronoDuration::try_seconds(offset_secs).ok_or_else(|| {
+        anyhow::anyhow!("selector expiry bound {offset_secs} exceeds chrono duration range")
+    })?;
     Ok(now
-        .checked_add_signed(ChronoDuration::seconds(offset_secs))
+        .checked_add_signed(offset)
         .ok_or_else(|| {
             anyhow::anyhow!("selector expiry bound {offset_secs} results in datetime overflow")
         })?
@@ -833,10 +907,16 @@ fn matches_time_bounds(
     let Ok(max_offset_secs) = i64::try_from(discovery.max_time_to_expiry_secs) else {
         return false;
     };
-    let Some(min_end) = now.checked_add_signed(ChronoDuration::seconds(min_offset_secs)) else {
+    let Some(min_offset) = ChronoDuration::try_seconds(min_offset_secs) else {
         return false;
     };
-    let Some(max_end) = now.checked_add_signed(ChronoDuration::seconds(max_offset_secs)) else {
+    let Some(max_offset) = ChronoDuration::try_seconds(max_offset_secs) else {
+        return false;
+    };
+    let Some(min_end) = now.checked_add_signed(min_offset) else {
+        return false;
+    };
+    let Some(max_end) = now.checked_add_signed(max_offset) else {
         return false;
     };
     end_at >= min_end && end_at <= max_end
@@ -2129,7 +2209,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_interval_must_fit_within_smallest_prefix_expiry_window() {
+    fn refresh_interval_must_be_below_smallest_prefix_expiry_window() {
         let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
         let setup = PolymarketRulesetSetup {
             selectors: vec![discovery.selector.clone()],
@@ -2142,19 +2222,45 @@ mod tests {
         let raw = toml::toml! {
             subscribe_new_markets = false
             update_instruments_interval_mins = 60
-            gamma_refresh_interval_secs = 301
+            gamma_refresh_interval_secs = 300
             ws_max_subscriptions = 200
         }
         .into();
 
         let err = setup
-            .spawn_selector_refresh_task_if_configured(&raw, 5)
-            .expect_err(
-                "refresh interval longer than the discovery max-expiry window should be rejected",
-            );
+            .build_data_client(&raw)
+            .expect_err("refresh interval equal to the discovery max-expiry window should be rejected before runtime wiring");
         assert!(
             err.to_string()
-                .contains("gamma_refresh_interval_secs (301) must be <=")
+                .contains("gamma_refresh_interval_secs (300) must be <")
+        );
+    }
+
+    #[test]
+    fn refresh_interval_must_be_positive_for_prefix_refresh() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let setup = PolymarketRulesetSetup {
+            selectors: vec![discovery.selector.clone()],
+            prefix_discoveries: vec![discovery.clone()],
+            selector_state: Some(PolymarketSelectorState::new(vec![(
+                discovery.clone(),
+                vec!["bitcoin-5m-alpha".to_string()],
+            )])),
+        };
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 0
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let err = setup
+            .build_data_client(&raw)
+            .expect_err("zero refresh interval should be rejected explicitly");
+        assert!(
+            err.to_string()
+                .contains("gamma_refresh_interval_secs must be > 0")
         );
     }
 

@@ -1322,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn build_data_client_skips_new_market_filter_for_mixed_selectors() {
+    fn build_data_client_rejects_mixed_selectors() {
         let selectors = vec![
             PolymarketRulesetSelector {
                 tag_slug: "bitcoin".to_string(),

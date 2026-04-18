@@ -160,3 +160,33 @@ fn ruleset_mode_rejects_legacy_event_slugs_during_bootstrap() {
         "ruleset mode error should explain the field is forbidden: {error}"
     );
 }
+
+#[test]
+fn ruleset_mode_rejects_missing_gamma_event_fetch_max_concurrent_during_bootstrap() {
+    let tempdir = TempCaseDir::new("polymarket-bootstrap-missing-gamma-concurrency");
+    let generated_path = tempdir.path().join("live.toml");
+    materialize_live_config(
+        &repo_path("config/live.local.example.toml"),
+        &generated_path,
+    )
+    .expect("tracked template should materialize");
+
+    let mutated = fs::read_to_string(&generated_path)
+        .expect("materialized config should be readable")
+        .replace("gamma_event_fetch_max_concurrent = 8\n", "");
+    let mutated_path = tempdir.path().join("live-mutated.toml");
+    fs::write(&mutated_path, mutated).expect("mutated config should be written");
+
+    let error = Config::load(&mutated_path)
+        .expect_err("ruleset mode should reject missing gamma_event_fetch_max_concurrent")
+        .to_string();
+
+    assert!(
+        error.contains("data_clients[0].config.gamma_event_fetch_max_concurrent"),
+        "ruleset mode error should mention missing gamma_event_fetch_max_concurrent: {error}"
+    );
+    assert!(
+        error.contains("must be present when rulesets are enabled"),
+        "ruleset mode error should explain why the field is required: {error}"
+    );
+}

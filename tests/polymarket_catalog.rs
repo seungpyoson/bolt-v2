@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    time::{Duration, sleep},
 };
 use toml::Value as TomlValue;
 
@@ -187,6 +188,70 @@ async fn spawn_test_server(response_bodies: Vec<Value>) -> (SocketAddr, Arc<Atom
     });
 
     (addr, request_count)
+}
+
+async fn spawn_slug_concurrency_probe_server(
+    responses_by_slug: HashMap<String, Value>,
+    response_delay: Duration,
+) -> (SocketAddr, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let active_requests = Arc::new(AtomicUsize::new(0));
+    let max_inflight = Arc::new(AtomicUsize::new(0));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn({
+        let request_count = Arc::clone(&request_count);
+        let active_requests = Arc::clone(&active_requests);
+        let max_inflight = Arc::clone(&max_inflight);
+        async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let responses_by_slug = responses_by_slug.clone();
+                let request_count = Arc::clone(&request_count);
+                let active_requests = Arc::clone(&active_requests);
+                let max_inflight = Arc::clone(&max_inflight);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+                    request_count.fetch_add(1, Ordering::Relaxed);
+
+                    let active = active_requests.fetch_add(1, Ordering::Relaxed) + 1;
+                    max_inflight.fetch_max(active, Ordering::Relaxed);
+
+                    let (status_line, body) = if path == "/events" {
+                        if let Some(slug) = params.get("slug") {
+                            sleep(response_delay).await;
+                            let body = responses_by_slug
+                                .get(slug)
+                                .cloned()
+                                .unwrap_or_else(|| json!([]));
+                            ("HTTP/1.1 200 OK", body.to_string())
+                        } else {
+                            (
+                                "HTTP/1.1 400 Bad Request",
+                                "expected /events?slug=<event>".to_string(),
+                            )
+                        }
+                    } else {
+                        ("HTTP/1.1 400 Bad Request", "expected /events".to_string())
+                    };
+
+                    active_requests.fetch_sub(1, Ordering::Relaxed);
+
+                    let response = format!(
+                        "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        }
+    });
+
+    (addr, request_count, max_inflight)
 }
 
 fn test_gamma_client(addr: SocketAddr) -> PolymarketGammaRawHttpClient {
@@ -585,6 +650,60 @@ async fn prefix_selector_limits_catalog_candidates_to_matching_event_slugs() {
     assert!(
         total_requests >= 1,
         "at least one slug lookup expected, got {total_requests}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prefix_selector_slug_fetch_respects_gamma_event_fetch_max_concurrent() {
+    let ruleset = ruleset_with_prefix("bitcoin-5m");
+    let event_slugs = vec![
+        "bitcoin-5m-alpha".to_string(),
+        "bitcoin-5m-beta".to_string(),
+        "bitcoin-5m-gamma".to_string(),
+        "bitcoin-5m-delta".to_string(),
+    ];
+    let selector_state =
+        PolymarketSelectorState::for_testing(vec![(&ruleset, event_slugs.clone())]).unwrap();
+
+    let end_date = (Utc::now() + ChronoDuration::minutes(20)).to_rfc3339();
+    let responses_by_slug: HashMap<String, Value> = event_slugs
+        .iter()
+        .enumerate()
+        .map(|(index, slug)| {
+            let event = event_with_slug_and_markets(
+                &format!("event-{index}"),
+                slug,
+                "Bitcoin 5m",
+                vec![valid_market_with(
+                    &format!("market-{index}"),
+                    &format!("[\"{}\",\"{}\"]", index * 2 + 1, index * 2 + 2),
+                    end_date.clone(),
+                )],
+            );
+            (slug.clone(), Value::Array(vec![event]))
+        })
+        .collect();
+    let (addr, request_count, max_inflight) =
+        spawn_slug_concurrency_probe_server(responses_by_slug, Duration::from_millis(100)).await;
+    let client = test_gamma_client(addr);
+    let gamma_event_fetch_max_concurrent = 2;
+
+    let markets = load_candidate_markets_for_ruleset_with_gamma_client(
+        &ruleset,
+        &client,
+        Some("http://127.0.0.1:1"),
+        Some(selector_state),
+        gamma_event_fetch_max_concurrent,
+    )
+    .await
+    .expect("bounded slug fetch should succeed");
+
+    assert_eq!(request_count.load(Ordering::Relaxed), event_slugs.len());
+    assert_eq!(markets.len(), event_slugs.len());
+    assert_eq!(
+        max_inflight.load(Ordering::Relaxed),
+        gamma_event_fetch_max_concurrent,
+        "slug fetch path should saturate the configured concurrency cap without exceeding it",
     );
 }
 

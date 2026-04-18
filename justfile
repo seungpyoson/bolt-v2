@@ -155,6 +155,9 @@ ci-lint-workflow:
     nextest_output_literal='steps.setup.outputs.nextest_version'
     zig_version_output_literal='steps.setup.outputs.zig_version'
     zigbuild_version_output_literal='steps.setup.outputs.zigbuild_version'
+    managed_target_dir_output_literal='steps.setup.outputs.managed_target_dir'
+    gate_if_always_pattern='always\(\)'
+    build_required_output_pattern='needs\.[A-Za-z0-9_-]+\.outputs\.build_required'
     repo_local_artifact_pattern='(^|[^[:alnum:]_./-])target/.*/release/bolt-v2(\.sha256)?([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
@@ -164,6 +167,7 @@ ci-lint-workflow:
     action_lint_line=0
     action_shared_line=0
     action_owner_line=0
+    action_target_dir_line=0
     action_toolchain_line=0
     action_required_literals=(
         "inputs.just-version"
@@ -184,6 +188,7 @@ ci-lint-workflow:
         "just --evaluate rust_verification_source_repo"
         "just --evaluate rust_verification_source_sha"
         "just --evaluate rust_verification_ci_install_script"
+        'target-dir --repo "$GITHUB_WORKSPACE"'
     )
     action_output_names=(
         "rust_toolchain"
@@ -196,6 +201,7 @@ ci-lint-workflow:
         "rust_verification_source_repo"
         "rust_verification_source_sha"
         "rust_verification_ci_install_script"
+        "managed_target_dir"
     )
 
     for f in "${github_automation_files[@]}"; do
@@ -247,6 +253,39 @@ ci-lint-workflow:
                     ;;
                 setup-token-source)
                     echo "ERROR: Managed CI token source must come from secrets.CLAUDE_CONFIG_READ_TOKEN in $f job '$job_name'"
+                    ;;
+                managed-target-dir)
+                    echo "ERROR: Managed CI managed target dir wiring missing in $f job '$job_name'"
+                    ;;
+                cache-key)
+                    echo "ERROR: Managed CI rust-cache key wiring missing in $f job '$job_name'"
+                    ;;
+                gate-always)
+                    echo "ERROR: Managed CI aggregate gate missing always() guard in $f job '$job_name'"
+                    ;;
+                gate-detector-result)
+                    echo "ERROR: Managed CI aggregate gate missing detector result check in $f job '$job_name'"
+                    ;;
+                gate-fmt-result)
+                    echo "ERROR: Managed CI aggregate gate missing fmt-check result check in $f job '$job_name'"
+                    ;;
+                gate-deny-result)
+                    echo "ERROR: Managed CI aggregate gate missing deny result check in $f job '$job_name'"
+                    ;;
+                gate-clippy-result)
+                    echo "ERROR: Managed CI aggregate gate missing clippy result check in $f job '$job_name'"
+                    ;;
+                gate-test-result)
+                    echo "ERROR: Managed CI aggregate gate missing test result check in $f job '$job_name'"
+                    ;;
+                gate-build-result)
+                    echo "ERROR: Managed CI aggregate gate missing build result check in $f job '$job_name'"
+                    ;;
+                gate-build-required)
+                    echo "ERROR: Managed CI aggregate gate missing build_required handling in $f job '$job_name'"
+                    ;;
+                build-required-output)
+                    echo "ERROR: Managed CI build lane missing detector build_required gating in $f job '$job_name'"
                     ;;
             esac
             failed=1
@@ -368,10 +407,10 @@ ci-lint-workflow:
                     if (!has_setup_step) {
                         print current "|setup-action"
                     }
-                    if (current == "gate" && has_setup_step && !has_setup_lint) {
+                    if (current == "fmt-check" && has_setup_step && !has_setup_lint) {
                         print current "|setup-lint"
                     }
-                    if (current == "gate" && has_setup_step && !has_setup_lint_true) {
+                    if (current == "fmt-check" && has_setup_step && !has_setup_lint_true) {
                         print current "|setup-lint-true"
                     }
                     if (has_setup_step && !has_setup_token) {
@@ -386,7 +425,7 @@ ci-lint-workflow:
                     if (has_setup_step && !has_setup_just_version_source) {
                         print current "|setup-just-version-source"
                     }
-                    if ((current == "gate" || current == "advisories") && has_setup_step && !has_setup_deny_version) {
+                    if ((current == "deny" || current == "advisories") && has_setup_step && !has_setup_deny_version) {
                         print current "|setup-deny-version"
                     }
                     if (current == "test" && has_setup_step && !has_setup_nextest_version) {
@@ -395,7 +434,7 @@ ci-lint-workflow:
                     if (current == "build" && has_setup_step && !has_setup_build_values) {
                         print current "|setup-build-values"
                     }
-                    if (current == "gate" && has_setup_step && !has_setup_rustfmt) {
+                    if (current == "fmt-check" && has_setup_step && !has_setup_rustfmt) {
                         print current "|setup-rustfmt"
                     }
                     if (current == "clippy" && has_setup_step && !has_setup_clippy) {
@@ -404,7 +443,7 @@ ci-lint-workflow:
                     if (current == "build" && has_setup_step && !has_setup_default_target) {
                         print current "|setup-default-target"
                     }
-                    if ((current == "gate" || current == "advisories") && !has_deny_output) {
+                    if ((current == "deny" || current == "advisories") && !has_deny_output) {
                         print current "|setup-deny-version"
                     }
                     if (current == "test" && !has_nextest_output) {
@@ -568,15 +607,16 @@ ci-lint-workflow:
         echo "ERROR: Managed CI setup action missing at $action_file"
         failed=1
     else
-        action_lint_line="$(grep -n 'name: Lint workflow contract' "$action_file" | cut -d: -f1 | head -1)"
-        action_shared_line="$(grep -n 'name: Read shared values' "$action_file" | cut -d: -f1 | head -1)"
-        action_owner_line="$(grep -n 'name: Install managed Rust owner' "$action_file" | cut -d: -f1 | head -1)"
-        action_toolchain_line="$(grep -n 'name: Setup Rust toolchain' "$action_file" | cut -d: -f1 | head -1)"
+        action_lint_line="$(grep -n 'name: Lint workflow contract' "$action_file" | cut -d: -f1 | head -1 || true)"
+        action_shared_line="$(grep -n 'name: Read shared values' "$action_file" | cut -d: -f1 | head -1 || true)"
+        action_owner_line="$(grep -n 'name: Install managed Rust owner' "$action_file" | cut -d: -f1 | head -1 || true)"
+        action_target_dir_line="$(grep -n 'name: Resolve managed target dir' "$action_file" | cut -d: -f1 | head -1 || true)"
+        action_toolchain_line="$(grep -n 'name: Setup Rust toolchain' "$action_file" | cut -d: -f1 | head -1 || true)"
 
-        if [ -z "$action_lint_line" ] || [ -z "$action_shared_line" ] || [ -z "$action_owner_line" ] || [ -z "$action_toolchain_line" ]; then
+        if [ -z "$action_lint_line" ] || [ -z "$action_shared_line" ] || [ -z "$action_owner_line" ] || [ -z "$action_target_dir_line" ] || [ -z "$action_toolchain_line" ]; then
             echo "ERROR: Managed CI setup action missing required ordered steps"
             failed=1
-        elif [ "$action_lint_line" -ge "$action_shared_line" ] || [ "$action_shared_line" -ge "$action_owner_line" ] || [ "$action_owner_line" -ge "$action_toolchain_line" ]; then
+        elif [ "$action_lint_line" -ge "$action_shared_line" ] || [ "$action_shared_line" -ge "$action_owner_line" ] || [ "$action_owner_line" -ge "$action_target_dir_line" ] || [ "$action_target_dir_line" -ge "$action_toolchain_line" ]; then
             echo "ERROR: Managed CI setup action step order drifted"
             failed=1
         fi
@@ -593,11 +633,195 @@ ci-lint-workflow:
                 echo "ERROR: Managed CI setup action missing exported output '$output_name'"
                 failed=1
             fi
+            if [ "$output_name" = "managed_target_dir" ]; then
+                if ! grep -Fq "steps.target_dir.outputs.${output_name}" "$action_file"; then
+                    echo "ERROR: Managed CI setup action missing output mapping for '$output_name'"
+                    failed=1
+                fi
+                continue
+            fi
             if ! grep -Fq "steps.shared.outputs.${output_name}" "$action_file"; then
                 echo "ERROR: Managed CI setup action missing output mapping for '$output_name'"
                 failed=1
             fi
         done
+    fi
+
+    if [ -f .github/workflows/ci.yml ]; then
+        while IFS='|' read -r job_name reason; do
+            [ -n "$job_name" ] || continue
+            case "$reason" in
+                managed-target-dir)
+                    echo "ERROR: .github/workflows/ci.yml job '$job_name' must use setup.outputs.managed_target_dir"
+                    ;;
+                cache-key)
+                    echo "ERROR: .github/workflows/ci.yml job '$job_name' must declare an explicit rust-cache key"
+                    ;;
+                gate-always)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must use always()"
+                    ;;
+                gate-detector-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate detector result"
+                    ;;
+                gate-fmt-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate fmt-check result"
+                    ;;
+                gate-deny-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate deny result"
+                    ;;
+                gate-clippy-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate clippy result"
+                    ;;
+                gate-test-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate test result"
+                    ;;
+                gate-build-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate build result"
+                    ;;
+                gate-build-required)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must handle build_required"
+                    ;;
+                build-required-output)
+                    echo "ERROR: .github/workflows/ci.yml build job must gate on detector build_required output"
+                    ;;
+            esac
+            failed=1
+        done < <(
+            awk -v managed_target_dir_output_literal="$managed_target_dir_output_literal" \
+                -v gate_if_always_pattern="$gate_if_always_pattern" \
+                -v build_required_output_pattern="$build_required_output_pattern" '
+                BEGIN {
+                    in_jobs = 0
+                    current = ""
+                    has_managed_target_dir = 0
+                    has_cache_key = 0
+                    has_gate_always = 0
+                    has_gate_detector_result = 0
+                    has_gate_fmt_result = 0
+                    has_gate_deny_result = 0
+                    has_gate_clippy_result = 0
+                    has_gate_test_result = 0
+                    has_gate_build_result = 0
+                    has_gate_build_required = 0
+                    has_build_required_output = 0
+                }
+
+                function flush_job() {
+                    if (current == "clippy" || current == "test" || current == "build") {
+                        if (!has_managed_target_dir) {
+                            print current "|managed-target-dir"
+                        }
+                    }
+                    if (current == "deny" || current == "test" || current == "clippy" || current == "build") {
+                        if (!has_cache_key) {
+                            print current "|cache-key"
+                        }
+                    }
+                    if (current == "gate") {
+                        if (!has_gate_always) {
+                            print current "|gate-always"
+                        }
+                        if (!has_gate_detector_result) {
+                            print current "|gate-detector-result"
+                        }
+                        if (!has_gate_fmt_result) {
+                            print current "|gate-fmt-result"
+                        }
+                        if (!has_gate_deny_result) {
+                            print current "|gate-deny-result"
+                        }
+                        if (!has_gate_clippy_result) {
+                            print current "|gate-clippy-result"
+                        }
+                        if (!has_gate_test_result) {
+                            print current "|gate-test-result"
+                        }
+                        if (!has_gate_build_result) {
+                            print current "|gate-build-result"
+                        }
+                        if (!has_gate_build_required) {
+                            print current "|gate-build-required"
+                        }
+                    }
+                    if (current == "build" && !has_build_required_output) {
+                        print current "|build-required-output"
+                    }
+                }
+
+                /^jobs:/ {
+                    in_jobs = 1
+                    next
+                }
+
+                in_jobs && /^[^[:space:]]/ {
+                    flush_job()
+                    in_jobs = 0
+                    current = ""
+                    next
+                }
+
+                in_jobs && /^  [A-Za-z0-9_-]+:/ {
+                    flush_job()
+                    current = $0
+                    sub(/^  /, "", current)
+                    sub(/:.*/, "", current)
+                    has_managed_target_dir = 0
+                    has_cache_key = 0
+                    has_gate_always = 0
+                    has_gate_detector_result = 0
+                    has_gate_fmt_result = 0
+                    has_gate_deny_result = 0
+                    has_gate_clippy_result = 0
+                    has_gate_test_result = 0
+                    has_gate_build_result = 0
+                    has_gate_build_required = 0
+                    has_build_required_output = 0
+                    next
+                }
+
+                current != "" {
+                    if (index($0, managed_target_dir_output_literal) > 0) {
+                        has_managed_target_dir = 1
+                    }
+                    if ($0 ~ /key:[[:space:]]*[[:graph:]]+/) {
+                        has_cache_key = 1
+                    }
+                    if (current == "gate") {
+                        if ($0 ~ gate_if_always_pattern) {
+                            has_gate_always = 1
+                        }
+                        if (index($0, "needs.detector.result") > 0) {
+                            has_gate_detector_result = 1
+                        }
+                        if (index($0, "needs.fmt-check.result") > 0) {
+                            has_gate_fmt_result = 1
+                        }
+                        if (index($0, "needs.deny.result") > 0) {
+                            has_gate_deny_result = 1
+                        }
+                        if (index($0, "needs.clippy.result") > 0) {
+                            has_gate_clippy_result = 1
+                        }
+                        if (index($0, "needs.test.result") > 0) {
+                            has_gate_test_result = 1
+                        }
+                        if (index($0, "needs.build.result") > 0) {
+                            has_gate_build_result = 1
+                        }
+                        if (index($0, "needs.detector.outputs.build_required") > 0) {
+                            has_gate_build_required = 1
+                        }
+                    }
+                    if (current == "build" && $0 ~ build_required_output_pattern) {
+                        has_build_required_output = 1
+                    }
+                }
+
+                END {
+                    flush_job()
+                }
+            ' .github/workflows/ci.yml
+        )
     fi
 
     for f in "${workflow_files[@]}"; do

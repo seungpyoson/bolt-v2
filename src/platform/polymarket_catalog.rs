@@ -696,7 +696,12 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(request_count.load(Ordering::Relaxed), 2);
+        // This unit test routes the selector-slug lookup through the in-process
+        // test server, but does not override raw_base_url for the preserved
+        // price_to_beat fetch path. The local server therefore observes exactly
+        // one request here: the slug lookup proving we did not rediscover by
+        // tag_slug.
+        assert_eq!(request_count.load(Ordering::Relaxed), 1);
         assert_eq!(markets.len(), 1);
         assert_eq!(markets[0].market_id, "market-prefix-hit");
     }

@@ -1073,6 +1073,86 @@ mod tests {
         (addr, requests)
     }
 
+    async fn spawn_overlap_partition_test_server()
+    -> (SocketAddr, Arc<Mutex<Vec<HashMap<String, String>>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let server_requests = Arc::clone(&server_requests);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+                    server_requests.lock().unwrap().push(params.clone());
+
+                    let body = if path == "/events"
+                        && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
+                    {
+                        let canonical_min = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_min")
+                                .expect("canonical overlap fetch should send end_date_min"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+                        let canonical_max = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_max")
+                                .expect("canonical overlap fetch should send end_date_max"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+                        let inside_both = canonical_min + ChronoDuration::seconds(120);
+                        let outside_5m_only = canonical_max;
+                        let outside_15m_only = canonical_min;
+
+                        json!([
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-alpha",
+                                "endDate": inside_both.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"2",
+                                "slug":"bitcoin-5m-late",
+                                "endDate": outside_5m_only.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"3",
+                                "slug":"bitcoin-15m-beta",
+                                "endDate": inside_both.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"4",
+                                "slug":"bitcoin-15m-early",
+                                "endDate": outside_15m_only.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            }
+                        ])
+                        .to_string()
+                    } else {
+                        "[]".to_string()
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        (addr, requests)
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_event_slugs_for_prefix_discoveries_with_gamma_client_filters_prefixes() {
         let (addr, requests) = spawn_test_server().await;
@@ -1138,6 +1218,57 @@ mod tests {
             ])
         );
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_event_slugs_coalesces_overlapping_non_identical_discoveries() {
+        let (addr, requests) = spawn_overlap_partition_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery_5m = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let discovery_15m = prefix_discovery("bitcoin", "bitcoin-15m", 60, 600);
+        let discoveries = vec![discovery_5m.clone(), discovery_15m.clone()];
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            &discoveries,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([
+                (discovery_5m.clone(), vec!["bitcoin-5m-alpha".to_string()]),
+                (discovery_15m.clone(), vec!["bitcoin-15m-beta".to_string()]),
+            ])
+        );
+
+        let recorded_requests = requests.lock().unwrap();
+        assert_eq!(
+            recorded_requests.len(),
+            1,
+            "overlapping windows should coalesce into one canonical Gamma fetch"
+        );
+        let params = &recorded_requests[0];
+        assert_eq!(params.get("tag_slug").map(String::as_str), Some("bitcoin"));
+
+        let end_date_min = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_min")
+                .expect("coalesced overlap fetch should send end_date_min"),
+        ))
+        .unwrap();
+        let end_date_max = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_max")
+                .expect("coalesced overlap fetch should send end_date_max"),
+        ))
+        .unwrap();
+        assert_eq!(
+            (end_date_max - end_date_min).num_seconds(),
+            570,
+            "merged overlap query should widen from [30,300] and [60,600] to [30,600]"
+        );
     }
 
     /// Test server that returns 500 for a configured set of tag_slugs and 200

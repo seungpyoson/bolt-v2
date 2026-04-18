@@ -5,19 +5,16 @@ use std::{collections::HashSet, path::PathBuf, rc::Rc};
 use bolt_v2::{
     clients::{chainlink, polymarket},
     config::{Config, ReferenceVenueKind, ensure_runtime_has_active_path},
-    live_node_setup::{
-        DataClientRegistration, ExecClientRegistration, build_live_node, make_live_node_config,
-        make_strategy_build_context,
-    },
     normalized_sink,
     platform::runtime::{
         build_reference_data_client, reference_client_name_for_kind,
         registry_runtime_strategy_factory, wire_platform_runtime,
     },
     secrets, startup_validation,
-    strategies::production_strategy_registry,
+    strategies::{production_strategy_registry, registry::StrategyBuildContext},
 };
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;
 
 type AppResult = Result<(), Box<dyn std::error::Error>>;
@@ -63,7 +60,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bolt_v2::log_sweep::sweep_stale_logs();
             let cfg = Config::load(&config)?;
             ensure_runtime_has_active_path(&cfg)?;
-            startup_validation::validate_polymarket_startup(&cfg)?;
 
             let trader_id = TraderId::from(cfg.node.trader_id.as_str());
             let environment = parse_environment(&cfg.node.environment)?;
@@ -72,36 +68,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fileout_level: parse_log_level(&cfg.logging.file_level)?,
                 ..Default::default()
             };
-            let polymarket_selectors = polymarket::polymarket_ruleset_selectors(&cfg.rulesets)?;
-            let live_node_config = make_live_node_config(&cfg, trader_id, environment, log_config);
-            let mut polymarket_selector_refresh_plan = None;
-            let mut data_client_registrations: Vec<DataClientRegistration> = Vec::new();
-            let mut exec_client_registrations: Vec<ExecClientRegistration> = Vec::new();
+            let polymarket_ruleset_setup = polymarket::PolymarketRulesetSetup::from_rulesets(
+                &cfg.rulesets,
+                cfg.node.timeout_connection_secs,
+            )?;
+            startup_validation::validate_polymarket_startup_with_prefix_event_slugs(
+                &cfg,
+                polymarket_ruleset_setup.resolved_prefix_event_slugs(),
+            )?;
+            let mut polymarket_selector_refresh_raw = None;
+            let mut builder = LiveNode::builder(trader_id, environment)?
+                .with_name(cfg.node.name.clone())
+                .with_logging(log_config)
+                .with_load_state(cfg.node.load_state)
+                .with_save_state(cfg.node.save_state)
+                .with_timeout_connection(cfg.node.timeout_connection_secs)
+                .with_timeout_reconciliation(cfg.node.timeout_reconciliation_secs)
+                .with_timeout_portfolio(cfg.node.timeout_portfolio_secs)
+                .with_timeout_disconnection_secs(cfg.node.timeout_disconnection_secs)
+                .with_delay_post_stop_secs(cfg.node.delay_post_stop_secs)
+                .with_delay_shutdown_secs(cfg.node.delay_shutdown_secs);
 
             for client in &cfg.data_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        let selector_state = polymarket::build_selector_state(
-                            &polymarket_selectors,
-                            cfg.node.timeout_connection_secs,
-                        )?;
-                        if let Some(selector_state) = selector_state.clone() {
-                            polymarket_selector_refresh_plan = Some((
-                                selector_state,
-                                polymarket::gamma_refresh_interval_secs(&client.config)?,
-                                cfg.node.timeout_connection_secs,
-                            ));
-                        }
-                        let (factory, config) = polymarket::build_data_client(
-                            &client.config,
-                            &polymarket_selectors,
-                            selector_state.clone(),
-                        )?;
-                        data_client_registrations.push((
-                            Some(client.name.clone()),
-                            factory,
-                            config,
-                        ));
+                        polymarket_selector_refresh_raw = Some(client.config.clone());
+                        let (factory, config) =
+                            polymarket_ruleset_setup.build_data_client(&client.config)?;
+                        builder =
+                            builder.add_data_client(Some(client.name.clone()), factory, config)?;
                     }
                     other => return Err(format!("Unsupported data client type: {other}").into()),
                 }
@@ -119,19 +114,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ReferenceVenueKind::Chainlink => {
                             let (factory, config) =
                                 chainlink::build_chainlink_reference_data_client(&cfg.reference)?;
-                            data_client_registrations.push((
+                            builder = builder.add_data_client(
                                 Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
                                 factory,
                                 config,
-                            ));
+                            )?;
                         }
                         _ => {
                             let (factory, config) = build_reference_data_client(venue)?;
-                            data_client_registrations.push((
+                            builder = builder.add_data_client(
                                 Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
                                 factory,
                                 config,
-                            ));
+                            )?;
                         }
                     }
                 }
@@ -143,32 +138,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "polymarket" => {
                         let resolved = secrets::resolve_polymarket(&client.secrets)?;
                         if strategy_build_context.is_none() {
-                            strategy_build_context = Some(make_strategy_build_context(
-                                polymarket::build_fee_provider(
+                            strategy_build_context = Some(StrategyBuildContext {
+                                fee_provider: polymarket::build_fee_provider(
                                     &client.config,
                                     &resolved,
                                     cfg.node.timeout_connection_secs,
                                 )?,
-                                cfg.reference.publish_topic.clone(),
-                            ));
+                                reference_publish_topic: cfg.reference.publish_topic.clone(),
+                            });
                         }
                         let (factory, config) =
                             polymarket::build_exec_client(&client.config, trader_id, resolved)?;
-                        exec_client_registrations.push((
-                            Some(client.name.clone()),
-                            factory,
-                            config,
-                        ));
+                        builder =
+                            builder.add_exec_client(Some(client.name.clone()), factory, config)?;
                     }
                     other => return Err(format!("Unsupported exec client type: {other}").into()),
                 }
             }
-            let mut node = build_live_node(
-                cfg.node.name.clone(),
-                live_node_config,
-                data_client_registrations,
-                exec_client_registrations,
-            )?;
             let strategy_registry = production_strategy_registry()?;
             let strategy_build_context = if cfg.strategies.is_empty() && cfg.rulesets.is_empty() {
                 None
@@ -185,16 +171,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build()?;
             let local = tokio::task::LocalSet::new();
             let app: AppFuture = Box::pin(async move {
+                let mut node = builder.build()?;
                 let node_handle = node.handle();
-                let polymarket_selector_refresh_guard = polymarket_selector_refresh_plan
-                    .map(|(selector_state, interval_secs, timeout_secs)| {
-                        polymarket::spawn_selector_refresh_task(
-                            selector_state,
-                            interval_secs,
-                            timeout_secs,
+                let polymarket_selector_refresh_guard = polymarket_selector_refresh_raw
+                    .as_ref()
+                    .map(|raw| {
+                        polymarket_ruleset_setup.spawn_selector_refresh_task_if_configured(
+                            raw,
+                            cfg.node.timeout_connection_secs,
                         )
                     })
-                    .transpose()?;
+                    .transpose()?
+                    .flatten();
                 let normalized_sink_guards = if cfg.streaming.catalog_path.trim().is_empty() {
                     None
                 } else {
@@ -246,6 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut node,
                         &cfg,
                         runtime_strategy_factory,
+                        polymarket_ruleset_setup.selector_state(),
                     )?)
                 };
 

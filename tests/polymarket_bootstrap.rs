@@ -40,7 +40,7 @@ fn builds_live_node_without_pre_registering_runtime_templates_in_ruleset_mode() 
     let config_path = tempdir.path().join("live.toml");
     materialize_live_config(&repo_path("config/live.local.example.toml"), &config_path)
         .expect("tracked template should materialize");
-    let cfg = Config::load(&config_path).expect("materialized config should load");
+    let mut cfg = Config::load(&config_path).expect("materialized config should load");
     assert!(
         !cfg.rulesets.is_empty(),
         "tracked seam config should exercise ruleset mode"
@@ -50,6 +50,15 @@ fn builds_live_node_without_pre_registering_runtime_templates_in_ruleset_mode() 
         "ruleset mode should materialize zero runtime strategy templates"
     );
 
+    // Strip prefix selectors so from_rulesets stays offline (no Gamma HTTP) in this
+    // seam test. The tracked example config uses a prefix selector; replacing it
+    // with the underlying tag_slug preserves the tag-only code path exercised here.
+    for ruleset in &mut cfg.rulesets {
+        if let Some(table) = ruleset.selector.as_table_mut() {
+            table.remove("event_slug_prefix");
+        }
+    }
+
     let trader_id = TraderId::from(cfg.node.trader_id.as_str());
     let environment = Environment::Live;
     let log_config = LoggerConfig {
@@ -58,11 +67,14 @@ fn builds_live_node_without_pre_registering_runtime_templates_in_ruleset_mode() 
         ..Default::default()
     };
 
-    let selector_inputs =
-        polymarket::polymarket_ruleset_selectors(&cfg.rulesets).expect("selectors should parse");
-    let (data_factory, data_config) =
-        polymarket::build_data_client(&cfg.data_clients[0].config, &selector_inputs, None)
-            .expect("data config should translate");
+    let setup = polymarket::PolymarketRulesetSetup::from_rulesets(
+        &cfg.rulesets,
+        cfg.node.timeout_connection_secs,
+    )
+    .expect("ruleset setup should build");
+    let (data_factory, data_config) = setup
+        .build_data_client(&cfg.data_clients[0].config)
+        .expect("data config should translate");
     let data_config_debug = format!("{data_config:?}");
     assert!(
         data_config_debug.contains("EventParamsFilter"),

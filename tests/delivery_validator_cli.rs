@@ -265,3 +265,31 @@ fn review_stage_package_blocks_when_review_rounds_are_missing() {
     );
     assert!(text.contains("review_rounds"), "{text}");
 }
+
+#[test]
+fn review_stage_package_blocks_when_stage_promotion_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let stage_promotion = dst.join("stage_promotion.toml");
+    if stage_promotion.exists() {
+        fs::remove_file(&stage_promotion).expect("stage_promotion should remove");
+    }
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed without stage_promotion.toml; output:\n{text}"
+    );
+    assert!(text.contains("stage_promotion.toml"), "{text}");
+}

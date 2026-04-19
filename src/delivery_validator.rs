@@ -300,6 +300,30 @@ struct ReviewRound {
     status: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct StagePromotion {
+    #[serde(default)]
+    promotions: Vec<StagePromotionRow>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct StagePromotionRow {
+    #[serde(default)]
+    from_stage: String,
+    #[serde(default)]
+    to_stage: String,
+    #[serde(default)]
+    required_artifacts: Vec<String>,
+    #[serde(default)]
+    required_claims: Vec<String>,
+    #[serde(default)]
+    required_evidence: Vec<String>,
+    #[serde(default)]
+    forbidden_open_findings: Vec<String>,
+    #[serde(default)]
+    status: String,
+}
+
 fn load_optional<T: for<'de> Deserialize<'de>>(dir: &Path, file_name: &str) -> Result<Option<T>> {
     let path = dir.join(file_name);
     if !path.exists() {
@@ -351,6 +375,7 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     let claim_enforcement = load_optional::<ClaimEnforcement>(dir, "claim_enforcement.toml")?;
     let assumption_register = load_optional::<AssumptionRegister>(dir, "assumption_register.toml")?;
     let review_rounds = load_review_rounds(dir)?;
+    let stage_promotion = load_optional::<StagePromotion>(dir, "stage_promotion.toml")?;
     let review_target_present = review_target.is_some();
 
     if issue_contract.is_none()
@@ -607,6 +632,70 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                     ),
                     "freeze one authoritative source before proceeding",
                 );
+            }
+        }
+
+        if execution_target.is_some() && ci_surface.is_some() {
+            match &stage_promotion {
+                Some(promotion) => {
+                    let stage_key = match stage {
+                        Stage::Review => "review",
+                        Stage::MergeCandidate => "merge_candidate",
+                        Stage::Intake => "intake",
+                        Stage::SeamLocked => "seam_locked",
+                        Stage::ProofLocked => "proof_locked",
+                    };
+                    match promotion
+                        .promotions
+                        .iter()
+                        .find(|row| row.to_stage == stage_key)
+                    {
+                        Some(row) => {
+                            if row.from_stage.is_empty()
+                                || row.required_artifacts.is_empty()
+                                || row.status.is_empty()
+                            {
+                                report.push(
+                                    Status::Block,
+                                    "scope",
+                                    "stage_promotion.toml",
+                                    format!("stage promotion row for `{stage_key}` is incomplete"),
+                                    "fill from_stage, required_artifacts, and status for the active promotion row",
+                                );
+                            } else {
+                                for artifact in &row.required_artifacts {
+                                    if !dir.join(artifact).exists() {
+                                        report.push(
+                                            Status::Block,
+                                            "scope",
+                                            "stage_promotion.toml",
+                                            format!(
+                                                "promotion to `{stage_key}` requires missing artifact `{artifact}`"
+                                            ),
+                                            "either add the artifact or remove it from the required_artifacts list",
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        None => report.push(
+                            Status::Block,
+                            "scope",
+                            "stage_promotion.toml",
+                            format!(
+                                "stage_promotion.toml does not define a promotion row for `{stage_key}`"
+                            ),
+                            "add a promotion row for the current deliverable stage",
+                        ),
+                    }
+                }
+                None => report.push(
+                    Status::Block,
+                    "schema",
+                    "stage_promotion.toml",
+                    "review-stage package is missing stage_promotion.toml",
+                    "add stage_promotion.toml to declare how this deliverable entered the current stage",
+                ),
             }
         }
     }

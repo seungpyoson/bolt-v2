@@ -1,7 +1,11 @@
 [[promotions]]
 from_stage = "proof_locked"
 to_stage = "review"
-required_artifacts = [
+promotion_gate_id = "review_validator_gate"
+promotion_gate_kind = "review_round_bound_to_exact_head"
+promotion_gate_ref = "review_rounds/pr-210-r2.toml"
+promotion_gate_status = "pass"
+supporting_artifacts = [
   "issue_contract.toml",
   "seam_contract.toml",
   "proof_plan.toml",

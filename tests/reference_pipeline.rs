@@ -1,4 +1,8 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs,
+    sync::{Mutex, OnceLock},
+};
 
 use bolt_v2::{
     clients::chainlink::build_chainlink_reference_data_client_with_secrets,
@@ -16,10 +20,93 @@ use nautilus_kraken::config::KrakenDataClientConfig;
 use nautilus_okx::config::OKXDataClientConfig;
 use nautilus_system::factories::ClientConfig;
 use serde::Deserialize;
+use tempfile::tempdir;
 
 #[derive(Deserialize)]
 struct ReferenceOnlyConfig {
     reference: ReferenceConfig,
+}
+
+fn env_lock() -> &'static Mutex<()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn synthetic_ed25519_pkcs8_base64() -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+
+    let mut der = vec![0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03];
+    der.extend_from_slice(&[0x2B, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+    der.extend(0_u8..32);
+    BASE64_STANDARD.encode(der)
+}
+
+fn with_fake_binance_aws<R>(api_secret: &str, f: impl FnOnce() -> R) -> R {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = env_lock().lock().expect("env lock should not be poisoned");
+    let tempdir = tempdir().expect("tempdir should be created");
+    let aws_path = tempdir.path().join("aws");
+    fs::write(
+        &aws_path,
+        r#"#!/bin/sh
+name=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--name" ]; then
+    name="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+case "$name" in
+  /bolt/binance/api-key)
+    printf '%s\n' "binance-api-key"
+    ;;
+  /bolt/binance/api-secret)
+    printf '%s\n' "$BINANCE_TEST_API_SECRET"
+    ;;
+  *)
+    printf '%s\n' "unexpected aws request: $name" >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .expect("fake aws script should be written");
+    let mut perms = fs::metadata(&aws_path)
+        .expect("metadata should load")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&aws_path, perms).expect("permissions should be set");
+
+    let old_path = std::env::var_os("PATH");
+    let new_path = match &old_path {
+        Some(path) => format!("{}:{}", tempdir.path().display(), path.to_string_lossy()),
+        None => tempdir.path().display().to_string(),
+    };
+
+    // SAFETY: tests serialize PATH/env mutation behind a global mutex.
+    unsafe {
+        std::env::set_var("PATH", new_path);
+        std::env::set_var("BINANCE_TEST_API_SECRET", api_secret);
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+    // SAFETY: tests serialize PATH/env mutation behind a global mutex.
+    unsafe {
+        match old_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+        std::env::remove_var("BINANCE_TEST_API_SECRET");
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 fn venue(kind: ReferenceVenueKind) -> ReferenceVenueEntry {
@@ -39,8 +126,8 @@ fn assert_wrapper<C: ClientConfig + 'static>(
     expected_factory_name: &str,
     expected_config_type: &str,
 ) {
-    let (factory, config) =
-        build_reference_data_client(&venue(kind)).expect("wrapper should build successfully");
+    let (factory, config) = build_reference_data_client(&ReferenceConfig::default(), &venue(kind))
+        .expect("wrapper should build successfully");
 
     assert_eq!(factory.name(), expected_factory_name);
     assert_eq!(factory.config_type(), expected_config_type);
@@ -76,12 +163,73 @@ fn builds_reference_data_client_wrappers_for_supported_public_kinds() {
 }
 
 #[test]
-fn binance_reference_wrapper_rejects_anonymous_builder_path() {
-    let error = build_reference_data_client(&venue(ReferenceVenueKind::Binance))
-        .expect_err("binance wrapper should reject the anonymous builder path")
-        .to_string();
+fn binance_reference_wrapper_requires_shared_binance_config() {
+    let error = build_reference_data_client(
+        &ReferenceConfig::default(),
+        &venue(ReferenceVenueKind::Binance),
+    )
+    .expect_err("binance wrapper should reject missing shared config")
+    .to_string();
 
-    assert!(error.contains("binance reference client requires shared auth config"));
+    assert!(error.contains("missing shared binance config"));
+}
+
+#[test]
+fn binance_reference_builder_uses_shared_auth_config_from_reference() {
+    let runtime_toml = r#"
+[reference]
+publish_topic = "platform.reference.test.binance"
+min_publish_interval_ms = 100
+
+[reference.binance]
+region = "eu-west-1"
+api_key = "/bolt/binance/api-key"
+api_secret = "/bolt/binance/api-secret"
+environment = "Mainnet"
+product_types = ["SPOT"]
+instrument_status_poll_secs = 3600
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 1.0
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#;
+    let config: ReferenceOnlyConfig =
+        toml::from_str(runtime_toml).expect("runtime toml should parse");
+    let secret = synthetic_ed25519_pkcs8_base64();
+
+    with_fake_binance_aws(&secret, || {
+        let (factory, config) = build_reference_data_client(
+            &config.reference,
+            config
+                .reference
+                .venues
+                .first()
+                .expect("binance venue should exist"),
+        )
+        .expect("shared binance wrapper should build successfully");
+
+        assert_eq!(factory.name(), "BINANCE");
+        assert_eq!(factory.config_type(), "BinanceDataClientConfig");
+        let cfg = config
+            .as_any()
+            .downcast_ref::<nautilus_binance::config::BinanceDataClientConfig>()
+            .expect("config should downcast to BinanceDataClientConfig");
+        assert_eq!(cfg.api_key.as_deref(), Some("binance-api-key"));
+        assert_eq!(cfg.api_secret.as_deref(), Some(secret.as_str()));
+        assert_eq!(
+            cfg.environment,
+            nautilus_binance::common::enums::BinanceEnvironment::Mainnet
+        );
+        assert_eq!(
+            cfg.product_types,
+            vec![nautilus_binance::common::enums::BinanceProductType::Spot]
+        );
+        assert_eq!(cfg.instrument_status_poll_secs, 3600);
+    });
 }
 
 fn reference_venue(

@@ -283,6 +283,79 @@ region = "eu-west-1"
 }
 
 #[test]
+fn secrets_resolve_surfaces_binance_ssm_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = write_generated_runtime_config();
+    let tempdir = tempdir().expect("tempdir should be created");
+    let aws_path = tempdir.path().join("aws");
+    fs::write(
+        &aws_path,
+        r#"#!/bin/sh
+name=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--name" ]; then
+    name="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+case "$name" in
+  /bolt/binance/api-key)
+    printf '%s\n' "binance-api-key"
+    ;;
+  /bolt/binance/api-secret)
+    printf '%s\n' "simulated binance ssm failure" >&2
+    exit 1
+    ;;
+  *)
+    printf '%s\n' "unexpected aws request: $name" >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .expect("fake aws script should be written");
+    let mut perms = fs::metadata(&aws_path)
+        .expect("metadata should load")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&aws_path, perms).expect("permissions should be set");
+
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "secrets",
+            "resolve",
+            "--config",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tempdir.path().display(),
+                path_var.to_string_lossy()
+            ),
+        )
+        .output()
+        .expect("secrets resolve should run");
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("/bolt/binance/api-secret"),
+        "expected failing Binance SSM path in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("simulated binance ssm failure"),
+        "expected underlying fake aws failure in stderr, got: {stderr}"
+    );
+}
+
+#[test]
 fn secrets_resolve_fails_when_runtime_has_no_active_path() {
     let path = write_temp_config(
         r#"

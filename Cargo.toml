@@ -10,6 +10,7 @@ anyhow = "1"
 arc-swap = "1"
 arrow = "58.1.0"
 async-trait = "0.1"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 chainlink-data-streams-report = "1.2.1"

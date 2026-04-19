@@ -257,14 +257,55 @@ fn check_chainlink_ws_origins(errors: &mut Vec<ValidationError>, field: &str, va
     }
 }
 
+fn check_shared_reference_config<T>(
+    errors: &mut Vec<ValidationError>,
+    field_prefix: &str,
+    shared: Option<&T>,
+    has_venues: bool,
+    venue_kind: &'static str,
+    missing_code: &'static str,
+    orphaned_code: &'static str,
+    validate_fields: impl FnOnce(&mut Vec<ValidationError>, &str, &T),
+) {
+    match (has_venues, shared) {
+        (true, Some(shared)) => {
+            validate_fields(errors, field_prefix, shared);
+        }
+        (true, None) => push_error(
+            errors,
+            field_prefix,
+            missing_code,
+            format!(
+                "{field_prefix} must be configured when any reference venue kind is {venue_kind}"
+            ),
+        ),
+        (false, Some(_)) => push_error(
+            errors,
+            field_prefix,
+            orphaned_code,
+            format!(
+                "{field_prefix} must not be configured unless a {venue_kind} reference venue is enabled"
+            ),
+        ),
+        (false, None) => {}
+    }
+}
+
 fn check_chainlink_shared_config(
     errors: &mut Vec<ValidationError>,
     field_prefix: &str,
     shared: Option<&crate::config::ChainlinkSharedConfig>,
     has_chainlink_venues: bool,
 ) {
-    match (has_chainlink_venues, shared) {
-        (true, Some(shared)) => {
+    check_shared_reference_config(
+        errors,
+        field_prefix,
+        shared,
+        has_chainlink_venues,
+        "chainlink",
+        "missing_chainlink_config",
+        "orphaned_chainlink_config",
+        |errors, field_prefix, shared| {
             check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
             check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
             check_ssm_path(
@@ -278,23 +319,8 @@ fn check_chainlink_shared_config(
                 &format!("{field_prefix}.ws_reconnect_alert_threshold"),
                 shared.ws_reconnect_alert_threshold,
             );
-        }
-        (true, None) => push_error(
-            errors,
-            field_prefix,
-            "missing_chainlink_config",
-            format!("{field_prefix} must be configured when any reference venue kind is chainlink"),
-        ),
-        (false, Some(_)) => push_error(
-            errors,
-            field_prefix,
-            "orphaned_chainlink_config",
-            format!(
-                "{field_prefix} must not be configured unless a chainlink reference venue is enabled"
-            ),
-        ),
-        (false, None) => {}
-    }
+        },
+    );
 }
 
 fn check_binance_shared_config(
@@ -303,8 +329,15 @@ fn check_binance_shared_config(
     shared: Option<&crate::config::BinanceSharedConfig>,
     has_binance_venues: bool,
 ) {
-    match (has_binance_venues, shared) {
-        (true, Some(shared)) => {
+    check_shared_reference_config(
+        errors,
+        field_prefix,
+        shared,
+        has_binance_venues,
+        "binance",
+        "missing_binance_config",
+        "orphaned_binance_config",
+        |errors, field_prefix, shared| {
             check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
             check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
             check_ssm_path(
@@ -312,23 +345,31 @@ fn check_binance_shared_config(
                 &format!("{field_prefix}.api_secret"),
                 &shared.api_secret,
             );
-        }
-        (true, None) => push_error(
-            errors,
-            field_prefix,
-            "missing_binance_config",
-            format!("{field_prefix} must be configured when any reference venue kind is binance"),
-        ),
-        (false, Some(_)) => push_error(
-            errors,
-            field_prefix,
-            "orphaned_binance_config",
-            format!(
-                "{field_prefix} must not be configured unless a binance reference venue is enabled"
-            ),
-        ),
-        (false, None) => {}
-    }
+            if shared.product_types.is_empty() {
+                push_error(
+                    errors,
+                    &format!("{field_prefix}.product_types"),
+                    "empty",
+                    format!("{field_prefix}.product_types must not be empty"),
+                );
+            }
+            check_positive_u64(
+                errors,
+                &format!("{field_prefix}.instrument_status_poll_secs"),
+                shared.instrument_status_poll_secs,
+            );
+            if let Some(base_url_http) = shared.base_url_http.as_deref() {
+                check_non_empty(
+                    errors,
+                    &format!("{field_prefix}.base_url_http"),
+                    base_url_http,
+                );
+            }
+            if let Some(base_url_ws) = shared.base_url_ws.as_deref() {
+                check_non_empty(errors, &format!("{field_prefix}.base_url_ws"), base_url_ws);
+            }
+        },
+    );
 }
 
 fn check_chainlink_reference_config(

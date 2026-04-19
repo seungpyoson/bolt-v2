@@ -1,3 +1,5 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+
 use crate::config::{ChainlinkSharedConfig, ExecClientSecrets};
 
 #[derive(Debug)]
@@ -118,6 +120,49 @@ fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
     String::from_utf8(output.stdout)
         .map(|s| s.trim().to_string())
         .map_err(|e| SecretError(format!("Invalid UTF-8 from SSM for {ssm_path}: {e}")))
+}
+
+fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), SecretError> {
+    if api_secret.trim().is_empty() {
+        return Err(SecretError(
+            "resolved Binance api_secret is empty".to_string(),
+        ));
+    }
+
+    if api_secret.contains("ENCRYPTED") {
+        return Err(SecretError(
+            "resolved Binance api_secret appears to be an encrypted PEM key; only unencrypted Ed25519 PEM/base64 keys are supported"
+                .to_string(),
+        ));
+    }
+
+    let stripped = api_secret
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect::<String>();
+    let encoded = if stripped.is_empty() {
+        api_secret.trim()
+    } else {
+        stripped.trim()
+    };
+    let decoded = BASE64_STANDARD.decode(encoded).map_err(|error| {
+        SecretError(format!(
+            "resolved Binance api_secret is not valid base64/PEM key material: {error}"
+        ))
+    })?;
+
+    const ED25519_PKCS8_OID: &[u8] = &[0x2B, 0x65, 0x70];
+    if !decoded
+        .windows(ED25519_PKCS8_OID.len())
+        .any(|window| window == ED25519_PKCS8_OID)
+    {
+        return Err(SecretError(
+            "resolved Binance api_secret does not look like an Ed25519 PKCS#8 PEM/base64 key"
+                .to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn pad_base64(mut secret: String) -> String {
@@ -245,9 +290,12 @@ pub fn resolve_binance(
     api_key_path: &str,
     api_secret_path: &str,
 ) -> Result<ResolvedBinanceSecrets, SecretError> {
+    let api_secret = resolve_secret(region, api_secret_path)?;
+    validate_binance_api_secret_shape(&api_secret)?;
+
     Ok(ResolvedBinanceSecrets {
         api_key: resolve_secret(region, api_key_path)?,
-        api_secret: resolve_secret(region, api_secret_path)?,
+        api_secret,
     })
 }
 
@@ -255,7 +303,16 @@ pub fn resolve_binance(
 mod tests {
     use super::{
         ResolvedBinanceSecrets, ResolvedChainlinkSecrets, ResolvedPolymarketSecrets, pad_base64,
+        validate_binance_api_secret_shape,
     };
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+
+    fn synthetic_ed25519_pkcs8_base64() -> String {
+        let mut der = vec![0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03];
+        der.extend_from_slice(&[0x2B, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+        der.extend(0_u8..32);
+        BASE64_STANDARD.encode(der)
+    }
 
     #[test]
     fn debug_redacts_resolved_polymarket_secrets() {
@@ -338,5 +395,27 @@ mod tests {
         assert_eq!(pad_base64("abcd".to_string()), "abcd");
         assert_eq!(pad_base64("abc".to_string()), "abc=");
         assert_eq!(pad_base64("ab".to_string()), "ab==");
+    }
+
+    #[test]
+    fn validate_binance_api_secret_shape_accepts_base64_pkcs8_ed25519() {
+        let secret = synthetic_ed25519_pkcs8_base64();
+        validate_binance_api_secret_shape(&secret).expect("synthetic ed25519 base64 should pass");
+    }
+
+    #[test]
+    fn validate_binance_api_secret_shape_accepts_pem_wrapped_pkcs8_ed25519() {
+        let secret = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+            synthetic_ed25519_pkcs8_base64()
+        );
+        validate_binance_api_secret_shape(&secret).expect("synthetic ed25519 pem should pass");
+    }
+
+    #[test]
+    fn validate_binance_api_secret_shape_rejects_non_key_material() {
+        let error = validate_binance_api_secret_shape("not-a-valid-binance-secret")
+            .expect_err("plain invalid string should fail");
+        assert!(error.to_string().contains("base64/PEM"));
     }
 }

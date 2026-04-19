@@ -124,6 +124,9 @@ fn runtime_config_parses_ruleset_selector_table() {
         region = "eu-west-1"
         api_key = "/bolt/binance/api-key"
         api_secret = "/bolt/binance/api-secret"
+        environment = "Mainnet"
+        product_types = ["SPOT"]
+        instrument_status_poll_secs = 3600
 
         [[reference.venues]]
         name = "BINANCE-BTC"
@@ -366,6 +369,9 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         region = "eu-west-1"
         api_key = "/bolt/binance/api-key"
         api_secret = "/bolt/binance/api-secret"
+        environment = "Mainnet"
+        product_types = ["SPOT"]
+        instrument_status_poll_secs = 3600
 
         [[reference.venues]]
         name = "BINANCE-BTC"

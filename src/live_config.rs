@@ -1190,6 +1190,9 @@ publish_topic = "platform.reference.default"
 region = "eu-west-1"
 api_key = "/bolt/binance/api-key"
 api_secret = "/bolt/binance/api-secret"
+environment = "Mainnet"
+product_types = ["SPOT"]
+instrument_status_poll_secs = 3600
 
 [[reference.venues]]
 name = "BINANCE-BTC"
@@ -1236,6 +1239,15 @@ max_local_backlog_bytes = 10485760
         assert_eq!(binance.region, "eu-west-1");
         assert_eq!(binance.api_key, "/bolt/binance/api-key");
         assert_eq!(binance.api_secret, "/bolt/binance/api-secret");
+        assert_eq!(
+            binance.environment,
+            nautilus_binance::common::enums::BinanceEnvironment::Mainnet
+        );
+        assert_eq!(
+            binance.product_types,
+            vec![nautilus_binance::common::enums::BinanceProductType::Spot]
+        );
+        assert_eq!(binance.instrument_status_poll_secs, 3600);
     }
 
     #[test]

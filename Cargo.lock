@@ -1360,6 +1360,7 @@ dependencies = [
  "arc-swap",
  "arrow",
  "async-trait",
+ "base64",
  "chainlink-data-streams-report",
  "chrono",
  "clap",

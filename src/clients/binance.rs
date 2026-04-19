@@ -2,7 +2,7 @@ use nautilus_binance::{config::BinanceDataClientConfig, factories::BinanceDataCl
 
 use crate::{
     clients::ReferenceDataClientParts,
-    config::ReferenceConfig,
+    config::{BinanceSharedConfig, ReferenceConfig},
     secrets::{ResolvedBinanceSecrets, resolve_binance},
 };
 
@@ -15,18 +15,23 @@ pub fn build_reference_data_client_with_reference(
         )
     })?;
     let secrets = resolve_binance(&shared.region, &shared.api_key, &shared.api_secret)?;
-    Ok(build_reference_data_client_with_secrets(secrets))
+    Ok(build_reference_data_client_with_secrets(shared, secrets))
 }
 
 pub fn build_reference_data_client_with_secrets(
+    shared: &BinanceSharedConfig,
     secrets: ResolvedBinanceSecrets,
 ) -> ReferenceDataClientParts {
     (
         Box::new(BinanceDataClientFactory::new()),
         Box::new(BinanceDataClientConfig {
+            product_types: shared.product_types.clone(),
+            environment: shared.environment,
+            base_url_http: shared.base_url_http.clone(),
+            base_url_ws: shared.base_url_ws.clone(),
             api_key: Some(secrets.api_key),
             api_secret: Some(secrets.api_secret),
-            ..Default::default()
+            instrument_status_poll_secs: shared.instrument_status_poll_secs,
         }),
     )
 }
@@ -37,11 +42,21 @@ mod tests {
 
     #[test]
     fn build_reference_data_client_with_secrets_populates_auth_fields() {
+        let shared = BinanceSharedConfig {
+            region: "eu-west-1".to_string(),
+            api_key: "/bolt/binance/api-key".to_string(),
+            api_secret: "/bolt/binance/api-secret".to_string(),
+            environment: Default::default(),
+            product_types: vec![nautilus_binance::common::enums::BinanceProductType::Spot],
+            instrument_status_poll_secs: 3600,
+            base_url_http: None,
+            base_url_ws: None,
+        };
         let secrets = ResolvedBinanceSecrets {
             api_key: "api-key".to_string(),
             api_secret: "api-secret".to_string(),
         };
-        let (_, config) = build_reference_data_client_with_secrets(secrets.clone());
+        let (_, config) = build_reference_data_client_with_secrets(&shared, secrets.clone());
         let config = config
             .as_any()
             .downcast_ref::<BinanceDataClientConfig>()
@@ -52,5 +67,8 @@ mod tests {
             config.api_secret.as_deref(),
             Some(secrets.api_secret.as_str())
         );
+        assert_eq!(config.product_types, shared.product_types);
+        assert_eq!(config.environment, shared.environment);
+        assert_eq!(config.instrument_status_poll_secs, 3600);
     }
 }

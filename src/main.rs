@@ -3,7 +3,7 @@ use log::LevelFilter;
 use std::{collections::HashSet, path::PathBuf, rc::Rc};
 
 use bolt_v2::{
-    clients::{binance, chainlink, polymarket},
+    clients::polymarket,
     config::{Config, ReferenceVenueKind, ensure_runtime_has_active_path},
     normalized_sink,
     platform::runtime::{
@@ -111,28 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     match venue.kind {
                         ReferenceVenueKind::Polymarket => {}
-                        ReferenceVenueKind::Binance => {
-                            let (factory, config) =
-                                binance::build_reference_data_client_with_reference(
-                                    &cfg.reference,
-                                )?;
-                            builder = builder.add_data_client(
-                                Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
-                                factory,
-                                config,
-                            )?;
-                        }
-                        ReferenceVenueKind::Chainlink => {
-                            let (factory, config) =
-                                chainlink::build_chainlink_reference_data_client(&cfg.reference)?;
-                            builder = builder.add_data_client(
-                                Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
-                                factory,
-                                config,
-                            )?;
-                        }
                         _ => {
-                            let (factory, config) = build_reference_data_client(venue)?;
+                            let (factory, config) =
+                                build_reference_data_client(&cfg.reference, venue)?;
                             builder = builder.add_data_client(
                                 Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
                                 factory,

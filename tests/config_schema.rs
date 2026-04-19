@@ -244,6 +244,9 @@ min_publish_interval_ms = 100
 region = "eu-west-1"
 api_key = "/bolt/binance/api-key"
 api_secret = "/bolt/binance/api-secret"
+environment = "Mainnet"
+product_types = ["SPOT"]
+instrument_status_poll_secs = 3600
 
 [[reference.venues]]
 name = "BINANCE-BTC"
@@ -360,6 +363,9 @@ min_publish_interval_ms = 100
 region = "eu-west-1"
 api_key = "/bolt/binance/api-key"
 api_secret = "/bolt/binance/api-secret"
+environment = "Mainnet"
+product_types = ["SPOT"]
+instrument_status_poll_secs = 3600
 
 [[reference.venues]]
 name = "BINANCE-BTC"

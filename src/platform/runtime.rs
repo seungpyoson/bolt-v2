@@ -28,7 +28,7 @@ use toml::Value;
 
 use crate::{
     clients::{self, ReferenceDataClientParts, polymarket::PolymarketSelectorState},
-    config::{Config, ReferenceVenueEntry, ReferenceVenueKind, RulesetConfig},
+    config::{Config, ReferenceConfig, ReferenceVenueEntry, ReferenceVenueKind, RulesetConfig},
     platform::{
         audit::{
             AuditReceiver, AuditRecord, AuditSender, AuditSpoolConfig, AwsCliUploader,
@@ -362,14 +362,17 @@ impl PlatformRuntimeGuards {
 }
 
 pub fn build_reference_data_client(
+    reference: &ReferenceConfig,
     venue: &ReferenceVenueEntry,
 ) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
     match &venue.kind {
-        ReferenceVenueKind::Binance => Err(
-            "binance reference client requires shared auth config; build it through binance::build_reference_data_client_with_reference"
-                .into(),
-        ),
+        ReferenceVenueKind::Binance => {
+            clients::binance::build_reference_data_client_with_reference(reference)
+        }
         ReferenceVenueKind::Bybit => Ok(clients::bybit::build_reference_data_client()),
+        ReferenceVenueKind::Chainlink => {
+            clients::chainlink::build_chainlink_reference_data_client(reference)
+        }
         ReferenceVenueKind::Deribit => Ok(clients::deribit::build_reference_data_client()),
         ReferenceVenueKind::Hyperliquid => Ok(clients::hyperliquid::build_reference_data_client()),
         ReferenceVenueKind::Kraken => Ok(clients::kraken::build_reference_data_client()),

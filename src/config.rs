@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use nautilus_binance::common::enums::{BinanceEnvironment, BinanceProductType};
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
@@ -186,6 +187,16 @@ pub struct BinanceSharedConfig {
     pub region: String,
     pub api_key: String,
     pub api_secret: String,
+    #[serde(default)]
+    pub environment: BinanceEnvironment,
+    #[serde(default = "default_binance_product_types")]
+    pub product_types: Vec<BinanceProductType>,
+    #[serde(default = "default_binance_instrument_status_poll_secs")]
+    pub instrument_status_poll_secs: u64,
+    #[serde(default)]
+    pub base_url_http: Option<String>,
+    #[serde(default)]
+    pub base_url_ws: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,6 +228,14 @@ pub struct AuditConfig {
 
 pub(crate) fn default_raw_capture_output_dir() -> String {
     "var/raw".to_string()
+}
+
+fn default_binance_product_types() -> Vec<BinanceProductType> {
+    vec![BinanceProductType::Spot]
+}
+
+fn default_binance_instrument_status_poll_secs() -> u64 {
+    3600
 }
 
 pub fn ensure_runtime_has_active_path(config: &Config) -> Result<(), Box<dyn std::error::Error>> {

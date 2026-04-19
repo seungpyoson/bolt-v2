@@ -64,6 +64,9 @@ outputs:
   rust_verification_ci_install_script:
     description: Managed Rust owner install script path.
     value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
+  managed_target_dir:
+    description: Canonical managed cargo target directory for the repository.
+    value: ${{ steps.target_dir.outputs.managed_target_dir }}
 
 runs:
   using: composite
@@ -152,6 +155,12 @@ runs:
         CLAUDE_CONFIG_READ_TOKEN: ${{ inputs.claude-config-read-token }}
       run: |
         bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
+
+    - name: Resolve managed cargo target
+      id: target_dir
+      shell: bash
+      run: |
+        echo "managed_target_dir=$(python3 "${{ steps.shared.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")" >> "$GITHUB_OUTPUT"
 
     - name: Setup Rust toolchain
       if: ${{ inputs.toolchain-components == '' && inputs.use-default-target != 'true' }}

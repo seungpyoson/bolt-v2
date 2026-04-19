@@ -161,7 +161,7 @@ jobs:
         run: |
           python3 scripts/ci_tracked_mtime_manifest.py restore \
             --repo "$GITHUB_WORKSPACE" \
-            --manifest "${{ steps.managed_target.outputs.dir }}/.ci-test-tracked-mtimes.json"
+            --manifest "${{ steps.setup.outputs.managed_target_dir }}/.ci-test-tracked-mtimes.json"
 
       - name: Install cargo-nextest
         run: |
@@ -175,7 +175,7 @@ jobs:
         run: |
           python3 scripts/ci_tracked_mtime_manifest.py capture \
             --repo "$GITHUB_WORKSPACE" \
-            --manifest "${{ steps.managed_target.outputs.dir }}/.ci-test-tracked-mtimes.json"
+            --manifest "${{ steps.setup.outputs.managed_target_dir }}/.ci-test-tracked-mtimes.json"
 
   build:
     name: build

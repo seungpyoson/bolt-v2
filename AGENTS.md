@@ -30,5 +30,6 @@ These repo-level rules are in addition to any higher-level agent instructions.
 ## Review Bar
 
 - Every unique substantive issue counts as a finding regardless of severity. Do not downgrade real issues into “just notes” or treat “tracked” as “resolved” unless the finding is actually fixed or the user explicitly waives it.
-- Do not ask for or frame external red-team review while the branch has uncommitted changes, unpushed commits, unresolved findings, or failing checks.
+- Do not ask for or frame external red-team review while the branch has uncommitted changes, unpushed commits, unresolved findings, unanswered review comments, or failing checks.
+- Do not ask for external review until the exact PR head's CI is confirmed green.
 - If the only remaining local delta is a fix or cleanup already made locally, commit and push it before further review discussion instead of pausing in a half-finished state.

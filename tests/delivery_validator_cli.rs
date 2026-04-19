@@ -182,6 +182,17 @@ rule_version = "v1"
 "#,
     );
     write_file(
+        &dst.join("orchestration_reachability_summary.toml"),
+        r#"
+stage = "review"
+reachability_status = "pass"
+unreachable_required_job_count = 0
+out_of_surface_required_job_count = 0
+incomplete_case_count = 0
+status = "frozen"
+"#,
+    );
+    write_file(
         &dst.join("stage_promotion.toml"),
         r#"
 [[promotions]]
@@ -330,6 +341,42 @@ comparator_kind = "string_eq"
 left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
 right_ref = ""
 right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "orchestration_reachability_summary.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#stage"
+right_ref = ""
+right_literal = "review"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#reachability_status"
+right_ref = ""
+right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#out_of_surface_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#incomplete_case_count"
+right_ref = ""
+right_literal = "0"
 "#,
     );
     write_file(
@@ -491,6 +538,42 @@ comparator_kind = "string_eq"
 left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
 right_ref = ""
 right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "orchestration_reachability_summary.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#stage"
+right_ref = ""
+right_literal = "review"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#reachability_status"
+right_ref = ""
+right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#out_of_surface_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#incomplete_case_count"
+right_ref = ""
+right_literal = "0"
 "#,
     );
 }
@@ -609,6 +692,42 @@ comparator_kind = "string_eq"
 left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
 right_ref = ""
 right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "orchestration_reachability_summary.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#stage"
+right_ref = ""
+right_literal = "merge_candidate"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#reachability_status"
+right_ref = ""
+right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#out_of_surface_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#incomplete_case_count"
+right_ref = ""
+right_literal = "0"
 "#,
     );
 }
@@ -785,6 +904,17 @@ status = "covered"
 "#,
             );
             write_file(
+                &dst.join("orchestration_reachability_summary.toml"),
+                r#"
+stage = "review"
+reachability_status = "pass"
+unreachable_required_job_count = 0
+out_of_surface_required_job_count = 0
+incomplete_case_count = 0
+status = "frozen"
+"#,
+            );
+            write_file(
                 &dst.join("review_rounds/review-r1.toml"),
                 r#"
 round_id = "review-r1"
@@ -845,6 +975,17 @@ required_reachable_jobs = ["job-merge"]
 forbidden_job_results = ["failure"]
 proof_ref = "gate-1"
 status = "covered"
+"#,
+            );
+            write_file(
+                &dst.join("orchestration_reachability_summary.toml"),
+                r#"
+stage = "merge_candidate"
+reachability_status = "pass"
+unreachable_required_job_count = 0
+out_of_surface_required_job_count = 0
+incomplete_case_count = 0
+status = "frozen"
 "#,
             );
             write_merge_candidate_ci_gate(dst);
@@ -1755,6 +1896,102 @@ fn synthetic_review_package_blocks_when_claim_enforcement_coverage_status_is_emp
         "review package must fail closed when claim_enforcement_coverage status is empty through the gate; output:\n{text}"
     );
     assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_reachability_summary_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    fs::remove_file(dst.join("orchestration_reachability_summary.toml"))
+        .expect("orchestration_reachability_summary should remove");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when orchestration_reachability_summary is missing through the gate; output:\n{text}"
+    );
+    assert!(
+        text.contains("orchestration_reachability_summary.toml") || text.contains("invalid"),
+        "{text}"
+    );
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_reachability_summary_verdict_is_block() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let summary = dst.join("orchestration_reachability_summary.toml");
+    let original =
+        fs::read_to_string(&summary).expect("orchestration_reachability_summary should read");
+    fs::write(
+        &summary,
+        original.replace(
+            "reachability_status = \"pass\"",
+            "reachability_status = \"block\"",
+        ),
+    )
+    .expect("mutated orchestration_reachability_summary should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when orchestration_reachability_summary verdict is block through the gate; output:\n{text}"
+    );
+    assert!(
+        text.contains("reachability_status") || text.contains("clause"),
+        "{text}"
+    );
+}
+
+#[test]
+fn synthetic_merge_candidate_blocks_when_reachability_summary_stage_is_wrong() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-merge-candidate");
+    write_minimal_stage_package(&dst, "merge_candidate");
+    let summary = dst.join("orchestration_reachability_summary.toml");
+    let original =
+        fs::read_to_string(&summary).expect("orchestration_reachability_summary should read");
+    fs::write(
+        &summary,
+        original.replace("stage = \"merge_candidate\"", "stage = \"review\""),
+    )
+    .expect("mutated orchestration_reachability_summary should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("merge_candidate")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "merge_candidate must fail closed when orchestration_reachability_summary stage is wrong through the gate; output:\n{text}"
+    );
+    assert!(text.contains("clause"), "{text}");
 }
 
 #[test]

@@ -1534,17 +1534,43 @@ mod tests {
         expected: usize,
     ) {
         use std::sync::atomic::Ordering;
+        const REQUEST_COUNT_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+        const REQUEST_COUNT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-        for _ in 0..200 {
-            if request_count.load(Ordering::Relaxed) >= expected {
-                return;
+        let wait_result = tokio::time::timeout(REQUEST_COUNT_WAIT_TIMEOUT, async {
+            loop {
+                if request_count.load(Ordering::Relaxed) >= expected {
+                    return;
+                }
+                tokio::time::sleep(REQUEST_COUNT_POLL_INTERVAL).await;
             }
-            tokio::task::yield_now().await;
+        })
+        .await;
+
+        if wait_result.is_ok() {
+            return;
         }
+
         panic!(
             "expected at least {expected} requests, observed {}",
             request_count.load(Ordering::Relaxed)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_for_request_count_tolerates_real_time_progress() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let delayed_request_count = Arc::clone(&request_count);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            delayed_request_count.store(1, Ordering::Relaxed);
+        });
+
+        wait_for_request_count(&request_count, 1).await;
+        assert_eq!(request_count.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

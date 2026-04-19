@@ -100,8 +100,8 @@ jobs:
             exit 0
           fi
 
-          source_count="$(
-            jq '
+          selected_run="$(
+            jq -c '
               [
                 .workflow_runs[]
                 | select(.head_sha == env.GITHUB_SHA)
@@ -110,27 +110,20 @@ jobs:
                 | select(.name == "CI")
                 | select(.conclusion == "success")
                 | select(.id != (env.CURRENT_RUN_ID | tonumber))
-              ] | length
+              ] as $runs
+              | {
+                  count: ($runs | length),
+                  id: ($runs[0].id // empty)
+                }
             ' "$runs_json"
           )"
+          source_count="$(jq -r '.count' <<<"$selected_run")"
           if [[ "$source_count" != "1" ]]; then
             echo "No reusable proof: expected exactly one eligible main-push CI run, found $source_count"
             exit 0
           fi
 
-          SOURCE_RUN_ID="$(
-            jq -r '
-              [
-                .workflow_runs[]
-                | select(.head_sha == env.GITHUB_SHA)
-                | select(.head_branch == "main")
-                | select(.event == "push")
-                | select(.name == "CI")
-                | select(.conclusion == "success")
-                | select(.id != (env.CURRENT_RUN_ID | tonumber))
-              ][0].id
-            ' "$runs_json"
-          )"
+          SOURCE_RUN_ID="$(jq -r '.id' <<<"$selected_run")"
           artifact_dir="$RUNNER_TEMP/reused-bolt-v2-binary"
           rm -rf "$artifact_dir"
           mkdir -p "$artifact_dir"
@@ -140,6 +133,8 @@ jobs:
           fi
           if ! (
             cd "$artifact_dir"
+            # This is corruption detection, not a separate trust root: both the
+            # binary and digest come from the same GitHub artifact bundle.
             sha256sum -c bolt-v2.sha256
           ); then
             echo "No reusable proof: reused artifact digest verification failed for run $SOURCE_RUN_ID"

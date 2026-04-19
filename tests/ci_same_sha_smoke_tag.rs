@@ -99,6 +99,13 @@ fn run_step(job: &Mapping, job_name: &str, step_name: &str) -> String {
         .unwrap_or_else(|| panic!("{job_name} job must define a {step_name} run step"))
 }
 
+fn run_steps(job: &Mapping, job_name: &str) -> Vec<String> {
+    job_steps(job, job_name)
+        .into_iter()
+        .filter_map(|step| step_field(&step, "run").map(ToOwned::to_owned))
+        .collect()
+}
+
 #[test]
 fn ci_workflow_defines_same_sha_proof_job_without_skipping_non_tag_runs() {
     let jobs = ci_jobs();
@@ -135,19 +142,24 @@ fn ci_workflow_defines_same_sha_proof_job_without_skipping_non_tag_runs() {
 
 #[test]
 fn same_sha_proof_job_selects_exact_successful_main_push_run_for_same_sha() {
-    let workflow = ci_workflow();
+    let same_sha_proof = ci_job("same_sha_proof");
+    let run_scripts = run_steps(&same_sha_proof, "same_sha_proof");
     assert!(
-        workflow.contains(
+        run_scripts.iter().any(|run| run.contains(
             "actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${GITHUB_SHA}"
-        ),
+        )),
         "same_sha_proof must query main-push CI runs for the exact GITHUB_SHA"
     );
     assert!(
-        workflow.contains("&status=success") || workflow.contains(".conclusion == \"success\""),
+        run_scripts
+            .iter()
+            .any(|run| run.contains("&status=success") || run.contains(".conclusion == \"success\"")),
         "same_sha_proof must restrict reuse to successful source runs"
     );
     assert!(
-        workflow.contains("expected exactly one eligible main-push CI run"),
+        run_scripts
+            .iter()
+            .any(|run| run.contains("expected exactly one eligible main-push CI run")),
         "same_sha_proof must fail closed unless there is exactly one eligible successful main-push CI run for the SHA"
     );
 }
@@ -203,20 +215,22 @@ fn same_sha_proof_job_downloads_and_verifies_reused_artifact() {
 
 #[test]
 fn tag_fast_path_skips_duplicate_heavy_lanes_only_when_reuse_is_ready() {
-    let test = ci_job("test");
+    for job_name in ["fmt-check", "deny", "clippy", "test"] {
+        let job = ci_job(job_name);
+        assert!(
+            job_needs(&job, job_name)
+                .iter()
+                .any(|need| need == "same_sha_proof"),
+            "{job_name} must depend on same_sha_proof to participate in the reuse fast-path"
+        );
+        assert!(
+            job_if(&job, job_name).contains("needs.same_sha_proof.outputs.reuse_available != 'true'"),
+            "{job_name} must only skip when same_sha_proof reports reuse_available=true"
+        );
+    }
+
     let build = ci_job("build");
     let gate = ci_job("gate");
-
-    assert!(
-        job_needs(&test, "test")
-            .iter()
-            .any(|need| need == "same_sha_proof"),
-        "test must depend on same_sha_proof before deciding whether a duplicate tag lane can skip"
-    );
-    assert!(
-        job_if(&test, "test").contains("needs.same_sha_proof.outputs.reuse_available"),
-        "test must only skip on tag pushes when same_sha_proof reports reuse_available"
-    );
 
     assert!(
         job_needs(&build, "build")
@@ -230,8 +244,8 @@ fn tag_fast_path_skips_duplicate_heavy_lanes_only_when_reuse_is_ready() {
         "build must keep its existing build_required detector gate"
     );
     assert!(
-        build_if.contains("needs.same_sha_proof.outputs.reuse_available"),
-        "build must only skip duplicate tag work when same_sha_proof reports reuse_available"
+        build_if.contains("needs.same_sha_proof.outputs.reuse_available != 'true'"),
+        "build must only skip duplicate tag work when same_sha_proof reports reuse_available=true"
     );
 
     assert!(
@@ -253,7 +267,6 @@ fn tag_fast_path_skips_duplicate_heavy_lanes_only_when_reuse_is_ready() {
 
 #[test]
 fn deploy_keeps_tag_on_main_and_idempotency_guards() {
-    let workflow = ci_workflow();
     let deploy = ci_job("deploy");
     let deploy_if = job_if(&deploy, "deploy");
     assert!(
@@ -278,8 +291,11 @@ fn deploy_keeps_tag_on_main_and_idempotency_guards() {
         idempotency_step.contains("aws s3 ls \"$S3_DEPLOY_PATH/$TAG/bolt-v2\" >/dev/null 2>&1"),
         "deploy must keep the existing idempotency guard before upload"
     );
+    let deploy_steps = run_steps(&deploy, "deploy");
     assert!(
-        workflow.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\""),
+        deploy_steps
+            .iter()
+            .any(|run| run.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\"")),
         "deploy must keep the idempotency output contract for already-published tags"
     );
 }

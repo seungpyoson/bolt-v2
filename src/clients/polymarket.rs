@@ -1560,6 +1560,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn wait_for_request_count_tolerates_real_time_progress() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let start = std::time::Instant::now();
 
         let request_count = Arc::new(AtomicUsize::new(0));
         let delayed_request_count = Arc::clone(&request_count);
@@ -1570,7 +1571,17 @@ mod tests {
         });
 
         wait_for_request_count(&request_count, 1).await;
-        assert_eq!(request_count.load(Ordering::Relaxed), 1);
+        assert!(
+            start.elapsed() >= Duration::from_millis(20),
+            "helper returned before delayed progress became observable"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[should_panic(expected = "expected at least 1 requests, observed 0")]
+    async fn wait_for_request_count_panics_when_counter_never_advances() {
+        let request_count = std::sync::atomic::AtomicUsize::new(0);
+        wait_for_request_count(&request_count, 1).await;
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,0 +1,107 @@
+[[rows]]
+claim_id = "C205-1"
+enforcement_kind = "evidence"
+enforced_at = "review package exact-head evidence"
+test_ref = ""
+ci_ref = "main push run 24623219988 + smoke tag run 24623274722"
+evidence_required = [
+  "E205-1",
+  "E205-2",
+  "E205-3",
+  "E205-5",
+]
+status = "bound"
+
+[[rows]]
+claim_id = "C205-2"
+enforcement_kind = "evidence"
+enforced_at = "review package exact-head evidence"
+test_ref = ""
+ci_ref = "smoke tag run 24623274722"
+evidence_required = [
+  "E205-3",
+  "E205-4",
+  "E205-6",
+]
+status = "bound"
+
+[[rows]]
+claim_id = "C205-3"
+enforcement_kind = "workflow"
+enforced_at = ".github/workflows/ci.yml"
+test_ref = "cargo test --test ci_same_sha_smoke_tag -- --nocapture"
+ci_ref = "PR #210 CI"
+evidence_required = [
+  "E205-2",
+  "E205-3",
+  "E205-6",
+  "E205-7",
+]
+status = "bound"
+
+[[rows]]
+claim_id = "C205-4"
+enforcement_kind = "workflow"
+enforced_at = ".github/workflows/ci.yml"
+test_ref = "cargo test --test ci_same_sha_smoke_tag -- --nocapture"
+ci_ref = "PR #210 CI"
+evidence_required = [
+  "E205-2",
+  "E205-3",
+  "E205-6",
+  "E205-7",
+]
+status = "bound"
+
+[[rows]]
+claim_id = "C205-5"
+enforcement_kind = "workflow"
+enforced_at = ".github/workflows/ci.yml"
+test_ref = "cargo test --test ci_same_sha_smoke_tag -- --nocapture"
+ci_ref = "PR #210 CI"
+evidence_required = [
+  "E205-2",
+  "E205-3",
+  "E205-6",
+  "E205-7",
+]
+status = "bound"
+
+[[rows]]
+claim_id = "C205-6"
+enforcement_kind = "test"
+enforced_at = "tests/ci_same_sha_smoke_tag.rs"
+test_ref = "cargo test --test ci_same_sha_smoke_tag -- --nocapture"
+ci_ref = "PR #210 CI"
+evidence_required = [
+  "E205-7",
+  "E205-8",
+  "E205-9",
+  "E205-10",
+]
+status = "bound"
+
+[[rows]]
+claim_id = "C205-7"
+enforcement_kind = "review_target"
+enforced_at = "review_target.toml + ci_surface.toml"
+test_ref = ""
+ci_ref = "PR #210 exact-head CI"
+evidence_required = [
+  "E205-13",
+  "E205-14",
+]
+status = "bound"
+
+[[rows]]
+claim_id = "C205-8"
+enforcement_kind = "review"
+enforced_at = "review_round ingestion + implementation head"
+test_ref = "cargo test --test ci_same_sha_smoke_tag -- --nocapture"
+ci_ref = "PR #210 exact-head CI"
+evidence_required = [
+  "E205-15",
+  "E205-16",
+  "E205-17",
+]
+status = "bound"

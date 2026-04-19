@@ -1,0 +1,9 @@
+[[assumptions]]
+assumption_id = "A205-1"
+impact_class = "trust_boundary"
+subject = "artifact_trust_model"
+description = "sha256sum -c bolt-v2.sha256 is corruption detection only because both the binary and digest are sourced from the same GitHub artifact bundle."
+trust_root = "GitHub artifact access control plus exact run selection metadata"
+monitor = "external review and future provenance-hardening changes to the CI workflow"
+expiry_trigger = "any requirement for independent artifact provenance or artifact signing"
+status = "accepted"

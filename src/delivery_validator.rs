@@ -173,6 +173,8 @@ struct MergeClaims {
 #[derive(Debug, Deserialize, Default)]
 struct MergeClaim {
     #[serde(default)]
+    claim_id: String,
+    #[serde(default)]
     value: bool,
     #[serde(default)]
     supported_by: Vec<String>,
@@ -222,6 +224,56 @@ struct CiSurface {
     terminal_ci_required_stages: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct ClaimEnforcement {
+    #[serde(default)]
+    rows: Vec<ClaimEnforcementRow>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ClaimEnforcementRow {
+    #[serde(default)]
+    claim_id: String,
+    #[serde(default)]
+    enforcement_kind: String,
+    #[serde(default)]
+    enforced_at: String,
+    #[serde(default)]
+    test_ref: String,
+    #[serde(default)]
+    ci_ref: String,
+    #[serde(default)]
+    evidence_required: Vec<String>,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AssumptionRegister {
+    #[serde(default)]
+    assumptions: Vec<AssumptionRow>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AssumptionRow {
+    #[serde(default)]
+    assumption_id: String,
+    #[serde(default)]
+    impact_class: String,
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    trust_root: String,
+    #[serde(default)]
+    monitor: String,
+    #[serde(default)]
+    expiry_trigger: String,
+    #[serde(default)]
+    status: String,
+}
+
 fn load_optional<T: for<'de> Deserialize<'de>>(dir: &Path, file_name: &str) -> Result<Option<T>> {
     let path = dir.join(file_name);
     if !path.exists() {
@@ -247,6 +299,8 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     let review_target = load_optional::<ReviewTarget>(dir, "review_target.toml")?;
     let execution_target = load_optional::<ExecutionTarget>(dir, "execution_target.toml")?;
     let ci_surface = load_optional::<CiSurface>(dir, "ci_surface.toml")?;
+    let claim_enforcement = load_optional::<ClaimEnforcement>(dir, "claim_enforcement.toml")?;
+    let assumption_register = load_optional::<AssumptionRegister>(dir, "assumption_register.toml")?;
     let review_target_present = review_target.is_some();
 
     if issue_contract.is_none()
@@ -416,6 +470,64 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                 "add ci_surface.toml to define the exact CI proof surface for this deliverable",
             ),
         }
+
+        match &claim_enforcement {
+            Some(enforcement) => {
+                if enforcement.rows.is_empty() {
+                    report.push(
+                        Status::Block,
+                        "schema",
+                        "claim_enforcement.toml",
+                        "claim_enforcement.toml is present but empty",
+                        "add enforcement rows for the claims this package asserts as true",
+                    );
+                } else if let Some(merge) = &merge_claims {
+                    let rows_by_claim: BTreeMap<_, _> = enforcement
+                        .rows
+                        .iter()
+                        .filter(|row| !row.claim_id.is_empty())
+                        .map(|row| (row.claim_id.as_str(), row))
+                        .collect();
+                    for claim in &merge.claims {
+                        if claim.value {
+                            match rows_by_claim.get(claim.claim_id.as_str()) {
+                                Some(row)
+                                    if !row.enforcement_kind.is_empty()
+                                        && !row.enforced_at.is_empty()
+                                        && !row.status.is_empty() => {}
+                                Some(_) => report.push(
+                                    Status::Block,
+                                    "proof",
+                                    "claim_enforcement.toml",
+                                    format!(
+                                        "claim enforcement row for `{}` is incomplete",
+                                        claim.claim_id
+                                    ),
+                                    "fill enforcement_kind, enforced_at, and status for every true claim",
+                                ),
+                                None => report.push(
+                                    Status::Block,
+                                    "proof",
+                                    "claim_enforcement.toml",
+                                    format!(
+                                        "true merge claim `{}` has no enforcement row",
+                                        claim.claim_id
+                                    ),
+                                    "bind every asserted true claim to a concrete enforcement locus",
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+            None => report.push(
+                Status::Block,
+                "schema",
+                "claim_enforcement.toml",
+                "review-stage package is missing claim_enforcement.toml",
+                "add claim_enforcement.toml to bind true claims to real enforcement loci",
+            ),
+        }
     }
 
     if let Some(contract) = &seam_contract {
@@ -535,6 +647,78 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     }
 
     if let Some(ledger) = &finding_ledger {
+        let has_environment_assumption = ledger
+            .findings
+            .iter()
+            .any(|finding| finding.kind == "environment_assumption");
+
+        if has_environment_assumption {
+            match &assumption_register {
+                Some(register) => {
+                    if register.assumptions.is_empty() {
+                        report.push(
+                            Status::Block,
+                            "schema",
+                            "assumption_register.toml",
+                            "assumption_register.toml is present but empty",
+                            "add assumption rows for environment or trust-boundary findings",
+                        );
+                    } else {
+                        let subjects: BTreeSet<_> = register
+                            .assumptions
+                            .iter()
+                            .map(|row| row.subject.as_str())
+                            .collect();
+                        for finding in &ledger.findings {
+                            if finding.kind == "environment_assumption" {
+                                if !subjects.contains(finding.subject.as_str()) {
+                                    report.push(
+                                        Status::Block,
+                                        "evidence",
+                                        "assumption_register.toml",
+                                        format!(
+                                            "environment assumption `{}` has no matching register row",
+                                            finding.subject
+                                        ),
+                                        "add an assumption row with the same subject and trust metadata",
+                                    );
+                                }
+                            }
+                        }
+                        for row in &register.assumptions {
+                            if row.assumption_id.is_empty()
+                                || row.impact_class.is_empty()
+                                || row.subject.is_empty()
+                                || row.description.is_empty()
+                                || row.trust_root.is_empty()
+                                || row.monitor.is_empty()
+                                || row.expiry_trigger.is_empty()
+                                || row.status.is_empty()
+                            {
+                                report.push(
+                                    Status::Block,
+                                    "schema",
+                                    "assumption_register.toml",
+                                    format!(
+                                        "assumption row for `{}` is incomplete",
+                                        row.subject
+                                    ),
+                                    "fill all required assumption fields before proceeding",
+                                );
+                            }
+                        }
+                    }
+                }
+                None => report.push(
+                    Status::Block,
+                    "schema",
+                    "assumption_register.toml",
+                    "finding ledger includes environment assumptions but assumption_register.toml is missing",
+                    "add assumption_register.toml to hold trust-boundary assumptions in structured state",
+                ),
+            }
+        }
+
         for finding in &ledger.findings {
             if finding.status == "resolved" && finding.resolution_kind.is_empty() {
                 report.push(

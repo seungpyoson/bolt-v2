@@ -834,8 +834,6 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
 
 struct CanonicalQueryGroup {
     canonical_params: GetGammaEventsParams,
-    canonical_min_secs: u64,
-    canonical_max_secs: u64,
     member_discoveries: Vec<PolymarketPrefixDiscovery>,
 }
 
@@ -886,8 +884,6 @@ fn group_discoveries_by_canonical_query(
                         &canonical_discovery,
                         now,
                     )?,
-                    canonical_min_secs: current_min,
-                    canonical_max_secs: current_max,
                     member_discoveries: std::mem::take(&mut current_members),
                 });
 
@@ -907,8 +903,6 @@ fn group_discoveries_by_canonical_query(
         };
         groups.push(CanonicalQueryGroup {
             canonical_params: gamma_event_params_for_prefix_discovery(&canonical_discovery, now)?,
-            canonical_min_secs: current_min,
-            canonical_max_secs: current_max,
             member_discoveries: current_members,
         });
     }
@@ -953,7 +947,6 @@ fn matches_time_bounds(
 fn discovery_matches_event(
     event: &GammaEvent,
     discovery: &PolymarketPrefixDiscovery,
-    canonical_bounds: (u64, u64),
     now: DateTime<Utc>,
 ) -> bool {
     let Some(event_slug) = event.slug.as_deref() else {
@@ -967,21 +960,18 @@ fn discovery_matches_event(
     if !prefix_match {
         return false;
     }
-    let discovery_matches_canonical = discovery.min_time_to_expiry_secs == canonical_bounds.0
-        && discovery.max_time_to_expiry_secs == canonical_bounds.1;
-    discovery_matches_canonical || matches_time_bounds(event, discovery, now)
+    matches_time_bounds(event, discovery, now)
 }
 
 fn partition_events_by_discovery(
     out: &mut BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>,
-    canonical_bounds: (u64, u64),
     discoveries: &[PolymarketPrefixDiscovery],
     events: Vec<GammaEvent>,
     now: DateTime<Utc>,
 ) {
     for event in events {
         for discovery in discoveries {
-            if !discovery_matches_event(&event, discovery, canonical_bounds, now) {
+            if !discovery_matches_event(&event, discovery, now) {
                 continue;
             }
             out.get_mut(discovery)
@@ -1013,18 +1003,11 @@ async fn resolve_matching_events_by_discovery_with_gamma_client(
     for group in groups {
         let CanonicalQueryGroup {
             canonical_params,
-            canonical_min_secs,
-            canonical_max_secs,
             member_discoveries,
+            ..
         } = group;
         let events = fetch_gamma_events_paginated(client, canonical_params).await?;
-        partition_events_by_discovery(
-            &mut out,
-            (canonical_min_secs, canonical_max_secs),
-            &member_discoveries,
-            events,
-            now,
-        );
+        partition_events_by_discovery(&mut out, &member_discoveries, events, now);
     }
 
     Ok(out)
@@ -1066,9 +1049,8 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
     for group in groups {
         let CanonicalQueryGroup {
             canonical_params,
-            canonical_min_secs,
-            canonical_max_secs,
             member_discoveries,
+            ..
         } = group;
         let tag_slug = canonical_params.tag_slug.clone().unwrap_or_default();
         match fetch_gamma_events_paginated(client, canonical_params).await {
@@ -1080,7 +1062,6 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
                 }
                 partition_events_by_discovery(
                     &mut matched_events_by_discovery,
-                    (canonical_min_secs, canonical_max_secs),
                     &member_discoveries,
                     events,
                     now,
@@ -1441,7 +1422,7 @@ mod tests {
         (addr, requests)
     }
 
-    async fn spawn_missing_end_date_test_server() -> SocketAddr {
+    async fn spawn_out_of_window_test_server() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1457,7 +1438,12 @@ mod tests {
                         && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
                     {
                         json!([
-                            {"id":"1","slug":"bitcoin-5m-alpha","markets":[]}
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-stale",
+                                "endDate":"2025-12-20T01:35:00Z",
+                                "markets":[]
+                            }
                         ])
                         .to_string()
                     } else {
@@ -1731,7 +1717,7 @@ mod tests {
     async fn refresh_task_end_to_end_preserves_then_ages_out_then_recovers() {
         use std::sync::atomic::Ordering;
 
-        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 1, 1);
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 0, 1);
         let selector_state = PolymarketSelectorState::new(vec![(
             discovery.clone(),
             vec!["bitcoin-5m-startup".to_string()],
@@ -1782,8 +1768,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn canonical_window_members_accept_missing_end_date_on_prefix_match() {
-        let addr = spawn_missing_end_date_test_server().await;
+    async fn canonical_window_members_reject_out_of_window_prefix_matches() {
+        let addr = spawn_out_of_window_test_server().await;
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
 
@@ -1796,8 +1782,7 @@ mod tests {
 
         assert_eq!(
             event_slugs,
-            BTreeMap::from([(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])]),
-            "canonical-window members should keep the pre-existing prefix-match behavior when Gamma omits endDate"
+            BTreeMap::from([(discovery.clone(), Vec::new())])
         );
     }
 

@@ -297,6 +297,40 @@ fn check_chainlink_shared_config(
     }
 }
 
+fn check_binance_shared_config(
+    errors: &mut Vec<ValidationError>,
+    field_prefix: &str,
+    shared: Option<&crate::config::BinanceSharedConfig>,
+    has_binance_venues: bool,
+) {
+    match (has_binance_venues, shared) {
+        (true, Some(shared)) => {
+            check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
+            check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
+            check_ssm_path(
+                errors,
+                &format!("{field_prefix}.api_secret"),
+                &shared.api_secret,
+            );
+        }
+        (true, None) => push_error(
+            errors,
+            field_prefix,
+            "missing_binance_config",
+            format!("{field_prefix} must be configured when any reference venue kind is binance"),
+        ),
+        (false, Some(_)) => push_error(
+            errors,
+            field_prefix,
+            "orphaned_binance_config",
+            format!(
+                "{field_prefix} must not be configured unless a binance reference venue is enabled"
+            ),
+        ),
+        (false, None) => {}
+    }
+}
+
 fn check_chainlink_reference_config(
     errors: &mut Vec<ValidationError>,
     field_prefix: &str,
@@ -935,6 +969,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         let default_reference = LiveReferenceInput::default();
         if !config.reference.publish_topic.trim().is_empty()
             || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || config.reference.binance.is_some()
             || config.reference.chainlink.is_some()
             || !config.reference.venues.is_empty()
         {
@@ -984,6 +1019,17 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         .venues
         .iter()
         .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+    let has_binance_reference = config
+        .reference
+        .venues
+        .iter()
+        .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+    check_binance_shared_config(
+        &mut errors,
+        "reference.binance",
+        config.reference.binance.as_ref(),
+        has_binance_reference,
+    );
     check_chainlink_shared_config(
         &mut errors,
         "reference.chainlink",
@@ -1584,6 +1630,7 @@ fn validate_runtime_with_registry(
         let default_reference = ReferenceConfig::default();
         if !config.reference.publish_topic.trim().is_empty()
             || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || config.reference.binance.is_some()
             || config.reference.chainlink.is_some()
             || !config.reference.venues.is_empty()
         {
@@ -1651,6 +1698,17 @@ fn validate_runtime_with_registry(
         .venues
         .iter()
         .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+    let has_binance_reference = config
+        .reference
+        .venues
+        .iter()
+        .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+    check_binance_shared_config(
+        &mut errors,
+        "reference.binance",
+        config.reference.binance.as_ref(),
+        has_binance_reference,
+    );
     check_chainlink_shared_config(
         &mut errors,
         "reference.chainlink",

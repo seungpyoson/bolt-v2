@@ -131,6 +131,8 @@ pub struct ReferenceConfig {
     pub publish_topic: String,
     pub min_publish_interval_ms: u64,
     #[serde(default)]
+    pub binance: Option<BinanceSharedConfig>,
+    #[serde(default)]
     pub chainlink: Option<ChainlinkSharedConfig>,
     #[serde(default)]
     pub venues: Vec<ReferenceVenueEntry>,
@@ -141,6 +143,7 @@ impl Default for ReferenceConfig {
         Self {
             publish_topic: String::new(),
             min_publish_interval_ms: 100,
+            binance: None,
             chainlink: None,
             venues: Vec::new(),
         }
@@ -175,6 +178,14 @@ pub struct ChainlinkSharedConfig {
     pub api_secret: String,
     pub ws_url: String,
     pub ws_reconnect_alert_threshold: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BinanceSharedConfig {
+    pub region: String,
+    pub api_key: String,
+    pub api_secret: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

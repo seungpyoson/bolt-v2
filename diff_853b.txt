@@ -1,0 +1,115 @@
+commit 853b79621d979b98359c735b3c6ac8654275e638
+Author: SP Son <1376128+seungpyoson@users.noreply.github.com>
+Date:   Sun Apr 19 22:07:36 2026 +0900
+
+    Isolate chainlink runtime validation fixtures
+
+diff --git a/src/validate/tests.rs b/src/validate/tests.rs
+index 92b4e8e..bca1733 100644
+--- a/src/validate/tests.rs
++++ b/src/validate/tests.rs
+@@ -46,6 +46,15 @@ fn replace(base: &str, old: &str, new: &str) -> String {
+     base.replacen(old, new, 1)
+ }
+ 
++fn strip_block(base: &str, block: &str) -> String {
++    let count = base.matches(block).count();
++    assert_eq!(
++        count, 1,
++        "test helper: block must appear exactly once in base config (found {count})"
++    );
++    base.replacen(block, "", 1)
++}
++
+ fn parse(toml: &str) -> LiveLocalConfig {
+     toml::from_str(toml).expect("test config should parse")
+ }
+@@ -2635,7 +2644,7 @@ subscribe_new_markets = false
+ #[test]
+ fn phase1_runtime_chainlink_requires_shared_reference_block() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"
+@@ -2662,6 +2671,7 @@ price_scale = 8
+     );
+     let errors = runtime_errors_for(&toml);
+     assert_has_error(&errors, "reference.chainlink", "missing_chainlink_config");
++    assert_lacks_error(&errors, "reference.binance", "orphaned_binance_config");
+ }
+ 
+ #[test]
+@@ -2728,7 +2738,7 @@ price_scale = 8
+ #[test]
+ fn phase1_runtime_chainlink_price_scale_must_be_positive_and_bounded() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"
+@@ -2768,7 +2778,7 @@ price_scale = 19
+ #[test]
+ fn phase1_runtime_chainlink_price_scale_must_be_positive() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"
+@@ -2808,7 +2818,7 @@ price_scale = 0
+ #[test]
+ fn phase1_runtime_chainlink_feed_id_must_be_strict_hex() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"
+@@ -2849,7 +2859,7 @@ price_scale = 8
+ fn phase1_runtime_chainlink_feed_ids_must_be_unique() {
+     let toml = format!(
+         "{}\n{}",
+-        valid_phase1_runtime_toml(),
++        strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"
+ [[reference.venues]]
+ name = "CHAINLINK-ETH"
+@@ -2899,7 +2909,7 @@ price_scale = 8
+ #[test]
+ fn phase1_runtime_chainlink_shared_ws_reconnect_alert_threshold_must_be_positive() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"
+@@ -2942,7 +2952,7 @@ price_scale = 8
+ #[test]
+ fn phase1_runtime_chainlink_shared_ws_url_must_be_wss() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"
+@@ -2981,7 +2991,7 @@ price_scale = 8
+ #[test]
+ fn phase1_runtime_chainlink_shared_ws_url_rejects_insecure_fallback_origin() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"
+@@ -3020,7 +3030,7 @@ price_scale = 8
+ #[test]
+ fn phase1_runtime_chainlink_shared_ws_url_must_include_host() {
+     let toml = replace(
+-        &valid_phase1_runtime_toml(),
++        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
+         r#"[[reference.venues]]
+ name = "BINANCE-BTC"
+ type = "binance"

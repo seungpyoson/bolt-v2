@@ -1,0 +1,202 @@
+6cbbc52 Deduplicate orphaned reference validation (7 minutes ago) <SP Son>
+src/validate.rs       | 92 +++++++++++++++++++++++++++------------------------
+ src/validate/tests.rs | 80 ++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 128 insertions(+), 44 deletions(-)
+
+src/validate.rs
+  @@ -1014,28 +1014,30 @@
+  -    let has_chainlink_reference = config
+  -        .reference
+  -        .venues
+  -        .iter()
+  -        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+  -    let has_binance_reference = config
+  -        .reference
+  -        .venues
+  -        .iter()
+  -        .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+  -    check_binance_shared_config(
+  -        &mut errors,
+  -        "reference.binance",
+  -        config.reference.binance.as_ref(),
+  -        has_binance_reference,
+  -    );
+  -    check_chainlink_shared_config(
+  -        &mut errors,
+  -        "reference.chainlink",
+  -        config.reference.chainlink.as_ref(),
+  -        has_chainlink_reference,
+  -    );
+  +    if !config.rulesets.is_empty() {
+  +        let has_chainlink_reference = config
+  +            .reference
+  +            .venues
+  +            .iter()
+  +            .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+  +        let has_binance_reference = config
+  +            .reference
+  +            .venues
+  +            .iter()
+  +            .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+  +        check_binance_shared_config(
+  +            &mut errors,
+  +            "reference.binance",
+  +            config.reference.binance.as_ref(),
+  +            has_binance_reference,
+  +        );
+  +        check_chainlink_shared_config(
+  +            &mut errors,
+  +            "reference.chainlink",
+  +            config.reference.chainlink.as_ref(),
+  +            has_chainlink_reference,
+  +        );
+  +    }
+   
+       let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();
+       for (i, ruleset) in config.rulesets.iter().enumerate() {
+  @@ -1693,28 +1695,30 @@
+  -    let has_chainlink_reference = config
+  -        .reference
+  -        .venues
+  -        .iter()
+  -        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+  -    let has_binance_reference = config
+  -        .reference
+  -        .venues
+  -        .iter()
+  -        .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+  -    check_binance_shared_config(
+  -        &mut errors,
+  -        "reference.binance",
+  -        config.reference.binance.as_ref(),
+  -        has_binance_reference,
+  -    );
+  -    check_chainlink_shared_config(
+  -        &mut errors,
+  -        "reference.chainlink",
+  -        config.reference.chainlink.as_ref(),
+  -        has_chainlink_reference,
+  -    );
+  +    if !config.rulesets.is_empty() {
+  +        let has_chainlink_reference = config
+  +            .reference
+  +            .venues
+  +            .iter()
+  +            .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+  +        let has_binance_reference = config
+  +            .reference
+  +            .venues
+  +            .iter()
+  +            .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+  +        check_binance_shared_config(
+  +            &mut errors,
+  +            "reference.binance",
+  +            config.reference.binance.as_ref(),
+  +            has_binance_reference,
+  +        );
+  +        check_chainlink_shared_config(
+  +            &mut errors,
+  +            "reference.chainlink",
+  +            config.reference.chainlink.as_ref(),
+  +            has_chainlink_reference,
+  +        );
+  +    }
+   
+       let mut reference_name_indices: HashMap<&str, usize> = HashMap::new();
+       let mut chainlink_feed_id_indices: HashMap<&str, usize> = HashMap::new();
+  +48 -44
+
+src/validate/tests.rs
+  @@ -68,6 +68,13 @@
+  +fn assert_lacks_error(errors: &[ValidationError], field: &str, code: &str) {
+  +    assert!(
+  +        !errors.iter().any(|e| e.field == field && e.code == code),
+  +        "expected no error field={field} code={code}, got: {errors:?}"
+  +    );
+  +}
+  +
+   fn assert_error_message_contains(
+       errors: &[ValidationError],
+       field: &str,
+  @@ -897,6 +904,42 @@
+  +#[test]
+  +fn phase1_live_local_orphaned_reference_binance_reports_only_top_level_error_without_rulesets() {
+  +    let toml = valid_phase1_toml()
+  +        .replace("[[rulesets]]\n", "")
+  +        .replace("id = \"PRIMARY\"\n", "")
+  +        .replace("venue = \"polymarket\"\n", "")
+  +        .replace("[rulesets.selector]\n", "")
+  +        .replace("tag_slug = \"bitcoin\"\n", "")
+  +        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
+  +        .replace("min_time_to_expiry_secs = 60\n", "")
+  +        .replace("max_time_to_expiry_secs = 900\n", "")
+  +        .replace("min_liquidity_num = 1000\n", "")
+  +        .replace("require_accepting_orders = true\n", "")
+  +        .replace("freeze_before_end_secs = 90\n", "")
+  +        .replace("selector_poll_interval_ms = 1000\n", "")
+  +        .replace("candidate_load_timeout_secs = 30\n", "")
+  +        .replace("[[reference.venues]]\n", "")
+  +        .replace("name = \"BINANCE-BTC\"\n", "")
+  +        .replace("type = \"binance\"\n", "")
+  +        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
+  +        .replace("base_weight = 0.35\n", "")
+  +        .replace("stale_after_ms = 1500\n", "")
+  +        .replace("disable_after_ms = 5000\n", "")
+  +        .replace("[audit]\n", "")
+  +        .replace("local_dir = \"var/audit\"\n", "")
+  +        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
+  +        .replace("ship_interval_secs = 30\n", "")
+  +        .replace("upload_attempt_timeout_secs = 30\n", "")
+  +        .replace("roll_max_bytes = 1048576\n", "")
+  +        .replace("roll_max_secs = 300\n", "")
+  +        .replace("max_local_backlog_bytes = 10485760\n", "");
+  +    let errors = errors_for(&toml);
+  +    assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+  +    assert_lacks_error(&errors, "reference.binance", "orphaned_binance_config");
+  +}
+  +
+   #[test]
+   fn phase1_audit_rejected_when_rulesets_are_missing() {
+       let toml = valid_phase1_toml()
+  @@ -2316,6 +2359,43 @@
+  +#[test]
+  +fn phase1_runtime_orphaned_reference_binance_reports_only_top_level_error_without_rulesets() {
+  +    let toml = valid_phase1_runtime_toml()
+  +        .replace("[[rulesets]]\n", "")
+  +        .replace("id = \"PRIMARY\"\n", "")
+  +        .replace("venue = \"polymarket\"\n", "")
+  +        .replace("[rulesets.selector]\n", "")
+  +        .replace("tag_slug = \"bitcoin\"\n", "")
+  +        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
+  +        .replace("min_time_to_expiry_secs = 60\n", "")
+  +        .replace("max_time_to_expiry_secs = 900\n", "")
+  +        .replace("min_liquidity_num = 1000\n", "")
+  +        .replace("require_accepting_orders = true\n", "")
+  +        .replace("freeze_before_end_secs = 90\n", "")
+  +        .replace("selector_poll_interval_ms = 1000\n", "")
+  +        .replace("candidate_load_timeout_secs = 30\n", "")
+  +        .replace("event_slugs = [\"btc-updown-5m\"]\n", "")
+  +        .replace("[[reference.venues]]\n", "")
+  +        .replace("name = \"BINANCE-BTC\"\n", "")
+  +        .replace("type = \"binance\"\n", "")
+  +        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
+  +        .replace("base_weight = 0.35\n", "")
+  +        .replace("stale_after_ms = 1500\n", "")
+  +        .replace("disable_after_ms = 5000\n", "")
+  +        .replace("[audit]\n", "")
+  +        .replace("local_dir = \"var/audit\"\n", "")
+  +        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
+  +        .replace("ship_interval_secs = 30\n", "")
+  +        .replace("upload_attempt_timeout_secs = 30\n", "")
+  +        .replace("roll_max_bytes = 1048576\n", "")
+  +        .replace("roll_max_secs = 300\n", "")
+  +        .replace("max_local_backlog_bytes = 10485760\n", "");
+  +    let errors = runtime_errors_for(&toml);
+  +    assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+  +    assert_lacks_error(&errors, "reference.binance", "orphaned_binance_config");
+  +}
+  +
+   #[test]
+   fn phase1_runtime_rejects_empty_reference_venue_name() {
+       let toml = replace(
+  +80 -0

@@ -355,13 +355,28 @@ fn workflow_step_run<'a>(step: &'a serde_yaml::Mapping) -> &'a str {
 }
 
 fn uses_non_persisted_header_authenticated_fetch(run_script: &str) -> bool {
+    let uses_ephemeral_extraheader = (run_script.contains("GIT_CONFIG_KEY_0=http.extraheader")
+        && run_script.contains(r#"GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header""#))
+        || run_script.contains(r#"-c http.extraheader="AUTHORIZATION: basic $auth_header""#);
+
     run_script.contains(
         r#"auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')""#,
     ) && run_script.contains(
         r#"git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git""#,
-    ) && run_script.contains("GIT_CONFIG_KEY_0=http.extraheader")
-        && run_script.contains(r#"GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header""#)
+    ) && uses_ephemeral_extraheader
         && !run_script.contains("x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com")
+}
+
+fn materializes_protected_files_from_exact_head_sha(run_script: &str) -> bool {
+    run_script.contains(
+        r#"jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do"#,
+    )
+        && run_script.contains(
+            r#"file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}""#,
+        )
+        && run_script.contains(r#"curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url""#)
+        && !run_script.contains("${HEAD_REF}")
+        && !run_script.contains("github.event.pull_request.head.ref")
 }
 
 #[test]
@@ -591,6 +606,12 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
             .expect("trust-root workflow should load");
     let yaml: YamlValue =
         serde_yaml::from_str(&workflow).expect("trust-root workflow should parse as YAML");
+    let materialize_step = workflow_job_step(
+        &yaml,
+        "trust_root",
+        "Materialize protected files from PR head",
+    );
+    let materialize_run = workflow_step_run(materialize_step);
 
     let triggers = yaml
         .get(YamlValue::String("on".to_string()))
@@ -651,8 +672,36 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "workflow must not reference head.ref at all in the no-checkout design"
     );
     assert!(
-        workflow.contains("HEAD_SHA: ${{ github.event.pull_request.head.sha }}"),
-        "workflow must source head.sha through an environment variable"
+        workflow_step_env_value(materialize_step, "HEAD_REPO_FULL_NAME")
+            == Some("${{ github.event.pull_request.head.repo.full_name }}"),
+        "trust-root materialization must source the PR head repository through a scoped step env"
+    );
+    assert!(
+        workflow_step_env_value(materialize_step, "HEAD_SHA")
+            == Some("${{ github.event.pull_request.head.sha }}"),
+        "trust-root materialization must source the exact PR head SHA through a scoped step env"
+    );
+    assert!(
+        materializes_protected_files_from_exact_head_sha(materialize_run),
+        "trust-root materialization must fetch protected files from HEAD_REPO_FULL_NAME at the exact HEAD_SHA"
+    );
+}
+
+#[test]
+fn trust_root_workflow_materialization_matcher_accepts_exact_head_sha_raw_urls() {
+    let exact_sha_materialization_run = r#"repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
+mkdir -p "$repo_root"
+jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
+  target_path="$repo_root/$relative_path"
+  mkdir -p "$(dirname "$target_path")"
+  file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}"
+  curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url"
+done
+printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path""#;
+
+    assert!(
+        materializes_protected_files_from_exact_head_sha(exact_sha_materialization_run),
+        "materialization should accept exact-SHA raw URLs rooted at HEAD_REPO_FULL_NAME"
     );
 }
 
@@ -735,6 +784,36 @@ GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" \
     assert!(
         !uses_non_persisted_header_authenticated_fetch(tokenized_remote_run),
         "tokenized remote URLs must not count as the approved trust-root private fetch path"
+    );
+}
+
+#[test]
+fn trust_root_workflow_authenticated_fetch_matcher_accepts_git_c_extraheader_form() {
+    let git_c_extraheader_run = r#"auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+git -C "$source_repo" -c http.extraheader="AUTHORIZATION: basic $auth_header" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA""#;
+
+    assert!(
+        uses_non_persisted_header_authenticated_fetch(git_c_extraheader_run),
+        "equivalent anonymous-remote fetches with ephemeral http.extraheader auth should count as valid"
+    );
+}
+
+#[test]
+fn trust_root_workflow_materialization_matcher_rejects_head_ref_raw_urls() {
+    let head_ref_materialization_run = r#"repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
+mkdir -p "$repo_root"
+jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
+  target_path="$repo_root/$relative_path"
+  mkdir -p "$(dirname "$target_path")"
+  file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_REF}/${relative_path}"
+  curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url"
+done
+printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path""#;
+
+    assert!(
+        !materializes_protected_files_from_exact_head_sha(head_ref_materialization_run),
+        "materialization must reject raw URLs that use HEAD_REF instead of the exact head SHA"
     );
 }
 

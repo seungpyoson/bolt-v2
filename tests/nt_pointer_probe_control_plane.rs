@@ -311,6 +311,59 @@ fn nt_pointer_probe_command() -> Command {
     Command::new(env!("CARGO_BIN_EXE_nt_pointer_probe"))
 }
 
+fn workflow_job_step<'a>(
+    yaml: &'a YamlValue,
+    job_name: &str,
+    step_name: &str,
+) -> &'a serde_yaml::Mapping {
+    let jobs = yaml
+        .get(YamlValue::String("jobs".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("workflow should declare jobs");
+    let job = jobs
+        .get(YamlValue::String(job_name.to_string()))
+        .and_then(YamlValue::as_mapping)
+        .expect("workflow should declare the expected job");
+    let steps = job
+        .get(YamlValue::String("steps".to_string()))
+        .and_then(YamlValue::as_sequence)
+        .expect("workflow job should declare steps");
+
+    steps
+        .iter()
+        .find_map(|step| {
+            let step = step.as_mapping()?;
+            let name = step
+                .get(YamlValue::String("name".to_string()))
+                .and_then(YamlValue::as_str)?;
+            (name == step_name).then_some(step)
+        })
+        .expect("workflow should declare the expected step")
+}
+
+fn workflow_step_env_value<'a>(step: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+    step.get(YamlValue::String("env".to_string()))
+        .and_then(YamlValue::as_mapping)
+        .and_then(|env| env.get(YamlValue::String(key.to_string())))
+        .and_then(YamlValue::as_str)
+}
+
+fn workflow_step_run<'a>(step: &'a serde_yaml::Mapping) -> &'a str {
+    step.get(YamlValue::String("run".to_string()))
+        .and_then(YamlValue::as_str)
+        .expect("workflow step should declare a run script")
+}
+
+fn uses_non_persisted_header_authenticated_fetch(run_script: &str) -> bool {
+    run_script.contains(
+        r#"auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')""#,
+    ) && run_script.contains(
+        r#"git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git""#,
+    ) && run_script.contains("GIT_CONFIG_KEY_0=http.extraheader")
+        && run_script.contains(r#"GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header""#)
+        && !run_script.contains("x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com")
+}
+
 #[test]
 fn repo_control_plane_loads_and_validates() {
     let loaded = LoadedControlPlane::load_from_repo_root(&repo_root())
@@ -608,44 +661,81 @@ fn trust_root_workflow_uses_authenticated_private_bundle_fetch_path() {
     let workflow =
         fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-trust-root.yml"))
             .expect("trust-root workflow should load");
+    let yaml: YamlValue =
+        serde_yaml::from_str(&workflow).expect("trust-root workflow should parse as YAML");
+    let fetch_step =
+        workflow_job_step(&yaml, "trust_root", "Fetch external trust-root validator");
+    let fetch_run = workflow_step_run(fetch_step);
 
     assert!(
-        workflow.contains("uses: ./.github/actions/setup-environment"),
-        "trust-root workflow must reuse the managed setup-environment path for private claude-config access"
+        !workflow.contains("uses: ./.github/actions/setup-environment"),
+        "trust-root workflow must not widen the privileged bootstrap boundary through setup-environment"
     );
     assert!(
-        workflow.contains("claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"),
-        "trust-root workflow must wire the private-read token through the managed setup action"
+        !workflow.contains("claude-config-read-token:"),
+        "trust-root workflow must not route the claude-config token through a broad shared bootstrap action"
     );
     assert!(
-        workflow.contains("just-version: ${{ env.JUST_VERSION }}"),
-        "trust-root workflow must satisfy the setup action contract with the pinned just version"
+        !workflow.contains("JUST_VERSION:"),
+        "trust-root workflow must not carry unrelated workflow-level tool bootstrap state"
+    );
+    assert!(
+        !workflow.contains("just-version:"),
+        "trust-root workflow must not satisfy unrelated setup action contracts"
     );
     assert!(
         !workflow.contains("https://raw.githubusercontent.com/${TRUST_ROOT_VALIDATOR_REPO}/${TRUST_ROOT_VALIDATOR_SHA}"),
         "trust-root workflow must not anonymously fetch the private claude-config bundle from raw.githubusercontent.com"
     );
     assert!(
-        workflow.contains("https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"),
-        "trust-root workflow must use the private-read token in the claude-config git fetch path"
+        workflow_step_env_value(fetch_step, "CLAUDE_CONFIG_READ_TOKEN")
+            == Some("${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"),
+        "trust-root workflow must scope the private-read token to the external bundle fetch step"
     );
     assert!(
-        workflow.contains(
+        uses_non_persisted_header_authenticated_fetch(fetch_run),
+        "trust-root workflow must use a plain GitHub remote plus ephemeral AUTHORIZATION-header auth, not a tokenized remote URL"
+    );
+    assert!(
+        fetch_run.contains(
             "git -C \"$source_repo\" fetch --depth=1 --no-tags origin \"$TRUST_ROOT_VALIDATOR_SHA\""
         ),
         "trust-root workflow must fetch the exact pinned trust-root bundle commit"
     );
     assert!(
-        workflow.contains(
+        fetch_run.contains("fetched_sha=\"$(git -C \"$source_repo\" rev-parse FETCH_HEAD)\""),
+        "trust-root workflow must resolve FETCH_HEAD to a concrete commit SHA before using fetched bundle files"
+    );
+    assert!(
+        fetch_run.contains("if [ \"$fetched_sha\" != \"$TRUST_ROOT_VALIDATOR_SHA\" ]; then"),
+        "trust-root workflow must fail closed when FETCH_HEAD does not match the pinned trust-root bundle SHA"
+    );
+    assert!(
+        fetch_run.contains(
             "git -C \"$source_repo\" show \"FETCH_HEAD:lib/bolt_trust_root_validator.py\""
         ),
         "trust-root workflow must read the validator bundle from the fetched pinned commit"
     );
     assert!(
-        workflow.contains(
+        fetch_run.contains(
             "git -C \"$source_repo\" show \"FETCH_HEAD:config/bolt-v2-trust-root-policy.json\""
         ),
         "trust-root workflow must read the policy bundle from the fetched pinned commit"
+    );
+}
+
+#[test]
+fn trust_root_workflow_authenticated_fetch_matcher_rejects_tokenized_remote_urls() {
+    let tokenized_remote_run = r#"auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+git -C "$source_repo" remote add origin "https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=http.extraheader \
+GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" \
+  git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA""#;
+
+    assert!(
+        !uses_non_persisted_header_authenticated_fetch(tokenized_remote_run),
+        "tokenized remote URLs must not count as the approved trust-root private fetch path"
     );
 }
 

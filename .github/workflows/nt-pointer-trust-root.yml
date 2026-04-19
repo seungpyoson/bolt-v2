@@ -8,7 +8,6 @@ permissions:
   contents: read
 
 env:
-  JUST_VERSION: "1.49.0"
   TRUST_ROOT_VALIDATOR_REPO: "seungpyoson/claude-config"
   TRUST_ROOT_VALIDATOR_SHA: ${{ vars.NT_POINTER_TRUST_ROOT_VALIDATOR_SHA }}
 
@@ -21,14 +20,6 @@ jobs:
     name: nt-pointer-trust-root
     runs-on: ubuntu-latest
     steps:
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
-          just-version: ${{ env.JUST_VERSION }}
-          lint-workflow-contract: "true"
-
       - name: Validate trust-root validator SHA pin
         shell: bash
         run: |
@@ -43,10 +34,14 @@ jobs:
           CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
           source_repo="$RUNNER_TEMP/trust-root-source"
+          auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
           rm -rf "$source_repo"
           git init -q "$source_repo"
-          git -C "$source_repo" remote add origin "https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
-          git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA"
+          git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" \
+            git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA"
           fetched_sha="$(git -C "$source_repo" rev-parse FETCH_HEAD)"
           if [ "$fetched_sha" != "$TRUST_ROOT_VALIDATOR_SHA" ]; then
             echo "Fetched trust-root bundle SHA $fetched_sha does not match pinned SHA $TRUST_ROOT_VALIDATOR_SHA" >&2

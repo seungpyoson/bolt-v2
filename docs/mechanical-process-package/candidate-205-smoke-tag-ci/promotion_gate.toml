@@ -17,6 +17,18 @@ right_literal = ""
 
 [[gates.clauses]]
 comparator_kind = "string_eq"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = "execution_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#required_jobs_by_stage.review"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
 left_ref = "review_rounds/pr-210-r2.toml#absorbed_by_head"
 right_ref = "review_target.toml#head_sha"
 right_literal = ""

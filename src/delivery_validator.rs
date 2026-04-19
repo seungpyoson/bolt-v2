@@ -324,6 +324,32 @@ struct StagePromotionRow {
     status: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct OrchestrationReachability {
+    #[serde(default)]
+    cases: Vec<ReachabilityCase>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ReachabilityCase {
+    #[serde(default)]
+    case_id: String,
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    trigger_job: String,
+    #[serde(default)]
+    trigger_result: String,
+    #[serde(default)]
+    required_reachable_jobs: Vec<String>,
+    #[serde(default)]
+    forbidden_job_results: Vec<String>,
+    #[serde(default)]
+    proof_ref: String,
+    #[serde(default)]
+    status: String,
+}
+
 fn load_optional<T: for<'de> Deserialize<'de>>(dir: &Path, file_name: &str) -> Result<Option<T>> {
     let path = dir.join(file_name);
     if !path.exists() {
@@ -376,6 +402,8 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     let assumption_register = load_optional::<AssumptionRegister>(dir, "assumption_register.toml")?;
     let review_rounds = load_review_rounds(dir)?;
     let stage_promotion = load_optional::<StagePromotion>(dir, "stage_promotion.toml")?;
+    let orchestration_reachability =
+        load_optional::<OrchestrationReachability>(dir, "orchestration_reachability.toml")?;
     let review_target_present = review_target.is_some();
 
     if issue_contract.is_none()
@@ -695,6 +723,80 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                     "stage_promotion.toml",
                     "review-stage package is missing stage_promotion.toml",
                     "add stage_promotion.toml to declare how this deliverable entered the current stage",
+                ),
+            }
+        }
+
+        if execution_target.is_some() && ci_surface.is_some() {
+            let stage_key = match stage {
+                Stage::Review => "review",
+                Stage::MergeCandidate => "merge_candidate",
+                Stage::Intake => "intake",
+                Stage::SeamLocked => "seam_locked",
+                Stage::ProofLocked => "proof_locked",
+            };
+            let stage_jobs: BTreeSet<String> = ci_surface
+                .as_ref()
+                .and_then(|surface| surface.required_jobs_by_stage.get(stage_key))
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
+            match &orchestration_reachability {
+                Some(matrix) => {
+                    if matrix.cases.is_empty() {
+                        report.push(
+                            Status::Block,
+                            "proof",
+                            "orchestration_reachability.toml",
+                            "orchestration_reachability.toml is present but contains no cases",
+                            "declare at least one reachability case for the CI-driven deliverable",
+                        );
+                    } else {
+                        for case in &matrix.cases {
+                            if case.case_id.is_empty()
+                                || case.subject.is_empty()
+                                || case.trigger_job.is_empty()
+                                || case.trigger_result.is_empty()
+                                || case.required_reachable_jobs.is_empty()
+                                || case.forbidden_job_results.is_empty()
+                                || case.proof_ref.is_empty()
+                                || case.status.is_empty()
+                            {
+                                report.push(
+                                    Status::Block,
+                                    "proof",
+                                    "orchestration_reachability.toml",
+                                    "reachability case is incomplete",
+                                    "fill case_id, subject, trigger_job, trigger_result, required_reachable_jobs, forbidden_job_results, proof_ref, and status",
+                                );
+                                continue;
+                            }
+
+                            for job in &case.required_reachable_jobs {
+                                if !stage_jobs.contains(job) {
+                                    report.push(
+                                        Status::Block,
+                                        "proof",
+                                        "orchestration_reachability.toml",
+                                        format!(
+                                            "reachability case `{}` references job `{}` outside ci_surface `{}` stage set",
+                                            case.case_id, job, stage_key
+                                        ),
+                                        "keep reachable jobs aligned with the declared CI surface for the current stage",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                None => report.push(
+                    Status::Block,
+                    "proof",
+                    "orchestration_reachability.toml",
+                    "review-stage package is missing orchestration_reachability.toml",
+                    "add orchestration_reachability.toml to declare the critical fallback and fast-path reachability cases",
                 ),
             }
         }

@@ -26,3 +26,9 @@ These repo-level rules are in addition to any higher-level agent instructions.
 6. **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve via `aws ssm get-parameter --with-decryption`. No 1Password CLI, no environment variable fallbacks, no other secret backends.
 7. **GROUP BY CHANGE** — if swapping a wallet, credential set, or venue requires editing more than one config section, the config is wrong. All values that share a lifecycle belong in one section. Test: "if I change X, how many places do I touch?" The answer must be one.
 8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
+
+## Review Bar
+
+- Every unique substantive issue counts as a finding regardless of severity. Do not downgrade real issues into “just notes” or treat “tracked” as “resolved” unless the finding is actually fixed or the user explicitly waives it.
+- Do not ask for or frame external red-team review while the branch has uncommitted changes, unpushed commits, unresolved findings, or failing checks.
+- If the only remaining local delta is a fix or cleanup already made locally, commit and push it before further review discussion instead of pausing in a half-finished state.

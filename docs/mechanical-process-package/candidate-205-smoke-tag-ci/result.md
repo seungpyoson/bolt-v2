@@ -66,7 +66,7 @@ Current exact-head GitHub CI snapshot recorded into the package:
 - `fmt-check`: pass
 - `deny`: pass
 - `clippy`: pass
-- `test`: in progress
+- `test`: pass
 - `build`: in progress
 
 Known unrelated blocker still visible on the PR surface:

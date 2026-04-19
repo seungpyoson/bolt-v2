@@ -101,7 +101,7 @@ duplicates = []
 status = "resolved"
 resolution_kind = "fix_here"
 resolved_by = [
-  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+  "commit 8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b",
 ]
 
 [[findings]]
@@ -117,7 +117,7 @@ duplicates = []
 status = "resolved"
 resolution_kind = "fix_here"
 resolved_by = [
-  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+  "commit 8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b",
 ]
 
 [[findings]]
@@ -133,7 +133,7 @@ duplicates = []
 status = "resolved"
 resolution_kind = "fix_here"
 resolved_by = [
-  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+  "commit 8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b",
 ]
 
 [[findings]]
@@ -149,5 +149,5 @@ duplicates = []
 status = "resolved"
 resolution_kind = "fix_here"
 resolved_by = [
-  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+  "commit 8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b",
 ]

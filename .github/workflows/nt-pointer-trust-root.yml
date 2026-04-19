@@ -8,6 +8,7 @@ permissions:
   contents: read
 
 env:
+  JUST_VERSION: "1.49.0"
   TRUST_ROOT_VALIDATOR_REPO: "seungpyoson/claude-config"
   TRUST_ROOT_VALIDATOR_SHA: ${{ vars.NT_POINTER_TRUST_ROOT_VALIDATOR_SHA }}
 
@@ -20,6 +21,14 @@ jobs:
     name: nt-pointer-trust-root
     runs-on: ubuntu-latest
     steps:
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          lint-workflow-contract: "true"
+
       - name: Validate trust-root validator SHA pin
         shell: bash
         run: |
@@ -30,10 +39,21 @@ jobs:
 
       - name: Fetch external trust-root validator
         shell: bash
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
-          base_url="https://raw.githubusercontent.com/${TRUST_ROOT_VALIDATOR_REPO}/${TRUST_ROOT_VALIDATOR_SHA}"
-          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt_trust_root_validator.py" "$base_url/lib/bolt_trust_root_validator.py"
-          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" "$base_url/config/bolt-v2-trust-root-policy.json"
+          source_repo="$RUNNER_TEMP/trust-root-source"
+          rm -rf "$source_repo"
+          git init -q "$source_repo"
+          git -C "$source_repo" remote add origin "https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+          git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA"
+          fetched_sha="$(git -C "$source_repo" rev-parse FETCH_HEAD)"
+          if [ "$fetched_sha" != "$TRUST_ROOT_VALIDATOR_SHA" ]; then
+            echo "Fetched trust-root bundle SHA $fetched_sha does not match pinned SHA $TRUST_ROOT_VALIDATOR_SHA" >&2
+            exit 1
+          fi
+          git -C "$source_repo" show "FETCH_HEAD:lib/bolt_trust_root_validator.py" > "$RUNNER_TEMP/bolt_trust_root_validator.py"
+          git -C "$source_repo" show "FETCH_HEAD:config/bolt-v2-trust-root-policy.json" > "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"
           chmod +x "$RUNNER_TEMP/bolt_trust_root_validator.py"
 
       - name: Materialize protected files from PR head

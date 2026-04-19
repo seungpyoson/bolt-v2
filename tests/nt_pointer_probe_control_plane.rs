@@ -604,6 +604,52 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
 }
 
 #[test]
+fn trust_root_workflow_uses_authenticated_private_bundle_fetch_path() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/nt-pointer-trust-root.yml"))
+            .expect("trust-root workflow should load");
+
+    assert!(
+        workflow.contains("uses: ./.github/actions/setup-environment"),
+        "trust-root workflow must reuse the managed setup-environment path for private claude-config access"
+    );
+    assert!(
+        workflow.contains("claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"),
+        "trust-root workflow must wire the private-read token through the managed setup action"
+    );
+    assert!(
+        workflow.contains("just-version: ${{ env.JUST_VERSION }}"),
+        "trust-root workflow must satisfy the setup action contract with the pinned just version"
+    );
+    assert!(
+        !workflow.contains("https://raw.githubusercontent.com/${TRUST_ROOT_VALIDATOR_REPO}/${TRUST_ROOT_VALIDATOR_SHA}"),
+        "trust-root workflow must not anonymously fetch the private claude-config bundle from raw.githubusercontent.com"
+    );
+    assert!(
+        workflow.contains("https://x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"),
+        "trust-root workflow must use the private-read token in the claude-config git fetch path"
+    );
+    assert!(
+        workflow.contains(
+            "git -C \"$source_repo\" fetch --depth=1 --no-tags origin \"$TRUST_ROOT_VALIDATOR_SHA\""
+        ),
+        "trust-root workflow must fetch the exact pinned trust-root bundle commit"
+    );
+    assert!(
+        workflow.contains(
+            "git -C \"$source_repo\" show \"FETCH_HEAD:lib/bolt_trust_root_validator.py\""
+        ),
+        "trust-root workflow must read the validator bundle from the fetched pinned commit"
+    );
+    assert!(
+        workflow.contains(
+            "git -C \"$source_repo\" show \"FETCH_HEAD:config/bolt-v2-trust-root-policy.json\""
+        ),
+        "trust-root workflow must read the policy bundle from the fetched pinned commit"
+    );
+}
+
+#[test]
 fn trust_root_workflow_file_is_part_of_external_snapshot_policy() {
     let Some(root) = external_claude_config_root() else {
         return;
@@ -669,6 +715,36 @@ fn ci_lint_workflow_covers_all_nt_pointer_workflows() {
             "ci-lint-workflow must include {workflow}"
         );
     }
+}
+
+#[test]
+fn pre_push_issue_gate_recipe_enforces_formatter_tests_lint_and_validator() {
+    let justfile = fs::read_to_string(repo_root().join("justfile")).expect("justfile should load");
+
+    assert!(
+        justfile.contains(
+            "pre-push-issue-gate delivery_dir stage test_target='delivery_validator_cli':"
+        ),
+        "justfile must define a parameterized pre-push-issue-gate recipe"
+    );
+    assert!(
+        justfile.contains("just fmt-check"),
+        "pre-push-issue-gate must run formatter checks through the canonical just lane"
+    );
+    assert!(
+        justfile.contains("cargo test --test {{test_target}} -- --nocapture"),
+        "pre-push-issue-gate must run the issue-local test target"
+    );
+    assert!(
+        justfile.contains("just ci-lint-workflow"),
+        "pre-push-issue-gate must run the workflow contract lint"
+    );
+    assert!(
+        justfile.contains(
+            "cargo run --quiet --bin process_validator -- --delivery-dir {{delivery_dir}} --stage {{stage}}"
+        ),
+        "pre-push-issue-gate must run the process validator on the declared delivery package and stage"
+    );
 }
 
 #[test]

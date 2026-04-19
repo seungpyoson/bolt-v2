@@ -896,24 +896,7 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
         && matches!(stage, Stage::Review | Stage::MergeCandidate)
     {
         match &execution_target {
-            Some(target) => {
-                if target.repo.is_empty()
-                    || target.branch.is_empty()
-                    || target.base_ref.is_empty()
-                    || target.head_sha.is_empty()
-                    || target.diff_identity.is_empty()
-                    || target.changed_paths.is_empty()
-                    || target.status.is_empty()
-                {
-                    report.push(
-                        Status::Block,
-                        "schema",
-                        "execution_target.toml",
-                        "execution_target.toml is present but incomplete",
-                        "fill all required execution target fields before review-stage validation",
-                    );
-                }
-            }
+            Some(_) => {}
             None => report.push(
                 Status::Block,
                 "schema",
@@ -924,20 +907,7 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
         }
 
         match &ci_surface {
-            Some(surface) => {
-                if surface.workflow.is_empty()
-                    || surface.head_sha.is_empty()
-                    || surface.run_selection_rule.is_empty()
-                {
-                    report.push(
-                        Status::Block,
-                        "schema",
-                        "ci_surface.toml",
-                        "ci_surface.toml is present but missing core selection fields",
-                        "declare workflow, head_sha, and run_selection_rule explicitly",
-                    );
-                }
-            }
+            Some(_) => {}
             None => report.push(
                 Status::Block,
                 "schema",

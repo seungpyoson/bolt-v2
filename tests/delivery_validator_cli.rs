@@ -195,9 +195,69 @@ verdict = "pass"
 status = "frozen"
 
 [[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#repo"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#branch"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#base_ref"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#head_sha"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#diff_identity"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#changed_paths"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
 comparator_kind = "string_eq"
 left_ref = "execution_target.toml#head_sha"
 right_ref = "review_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#workflow"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#run_selection_rule"
+right_ref = ""
 right_literal = ""
 
 [[gates.clauses]]
@@ -378,10 +438,70 @@ verdict = "pass"
 status = "frozen"
 
 [[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#repo"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#branch"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#base_ref"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#head_sha"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#diff_identity"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#changed_paths"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
 comparator_kind = "scalar_eq"
 left_ref = "merge_claims.toml#merge_ready"
 right_ref = ""
 right_literal = "true"
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#workflow"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#run_selection_rule"
+right_ref = ""
+right_literal = ""
 
 [[gates.clauses]]
 comparator_kind = "string_eq"
@@ -1187,6 +1307,66 @@ fn synthetic_review_package_blocks_when_ci_surface_head_mismatches_execution_hea
 }
 
 #[test]
+fn synthetic_review_package_blocks_when_execution_target_repo_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let execution_target = dst.join("execution_target.toml");
+    let original = fs::read_to_string(&execution_target).expect("execution_target should read");
+    fs::write(
+        &execution_target,
+        original.replace("repo = \"seungpyoson/bolt-v2\"", "repo = \"\""),
+    )
+    .expect("mutated execution_target should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when execution_target.repo is empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_ci_surface_workflow_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let ci_surface = dst.join("ci_surface.toml");
+    let original = fs::read_to_string(&ci_surface).expect("ci_surface should read");
+    fs::write(
+        &ci_surface,
+        original.replace("workflow = \"synthetic\"", "workflow = \"\""),
+    )
+    .expect("mutated ci_surface should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when ci_surface.workflow is empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
 fn synthetic_review_package_blocks_when_review_jobs_missing_from_ci_surface() {
     let temp = tempdir().expect("tempdir should create");
     let dst = temp.path().join("synthetic-review-package");
@@ -1244,6 +1424,36 @@ fn synthetic_review_package_blocks_when_review_round_id_mismatches_review_target
         "review package must fail closed when review round id mismatches review target through the all_of gate; output:\n{text}"
     );
     assert!(text.contains("clause"), "{text}");
+}
+
+#[test]
+fn synthetic_merge_candidate_blocks_when_execution_target_repo_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-merge-candidate");
+    write_minimal_stage_package(&dst, "merge_candidate");
+    let execution_target = dst.join("execution_target.toml");
+    let original = fs::read_to_string(&execution_target).expect("execution_target should read");
+    fs::write(
+        &execution_target,
+        original.replace("repo = \"seungpyoson/bolt-v2\"", "repo = \"\""),
+    )
+    .expect("mutated execution_target should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("merge_candidate")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "merge_candidate must fail closed when execution_target.repo is empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
 }
 
 #[test]

@@ -1,22 +1,8 @@
 use nautilus_binance::{config::BinanceDataClientConfig, factories::BinanceDataClientFactory};
 
 use crate::{
-    clients::ReferenceDataClientParts,
-    config::{BinanceSharedConfig, ReferenceConfig},
-    secrets::{ResolvedBinanceSecrets, resolve_binance},
+    clients::ReferenceDataClientParts, config::BinanceSharedConfig, secrets::ResolvedBinanceSecrets,
 };
-
-pub fn build_reference_data_client_with_reference(
-    reference: &ReferenceConfig,
-) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
-    let shared = reference.binance.as_ref().ok_or_else(|| {
-        std::io::Error::other(
-            "missing shared binance config for configured binance reference venues",
-        )
-    })?;
-    let secrets = resolve_binance(&shared.region, &shared.api_key, &shared.api_secret)?;
-    Ok(build_reference_data_client_with_secrets(shared, secrets))
-}
 
 pub fn build_reference_data_client_with_secrets(
     shared: &BinanceSharedConfig,

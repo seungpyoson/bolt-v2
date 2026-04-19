@@ -34,7 +34,7 @@ Targeted H10 falsification corpus:
   - missing `orchestration_reachability_summary.toml`
   - `reachability_status = "block"`
 - 1 merge-candidate fail fixture:
-  - `stage = "review"` instead of `merge_candidate`
+  - wrong `stage` in the summary
 
 Broader regression evidence:
 
@@ -61,12 +61,8 @@ H10 passes.
 The reachability graph no longer lives in the validator gate logic.
 The validator now consumes a scalarized reachability result and compares that scalar mechanically.
 
-## Remaining Bespoke Boundary
+## Remaining Boundary
 
-The remaining meaningful bespoke logic is now mostly structural/schema-level rather than new admission semantics.
+The remaining important question is no longer whether the gate language needs more power.
 
-The big product question after H10 is no longer “can the gate language absorb more joins?”
-
-It is:
-
-- whether the upstream scalar producers should themselves become first-class validated artifacts
+It is whether these scalar producer artifacts should themselves become first-class validated artifacts with one generic schema.

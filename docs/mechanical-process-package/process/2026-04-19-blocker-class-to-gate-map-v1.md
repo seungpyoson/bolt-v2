@@ -53,6 +53,7 @@ every blocker class should have one primary owning gate.
 - one finding left in ambiguous status
 - invalid vs stale vs duplicate confusion
 - deferred finding with no tracked issue
+- non-correctness review notes that still need canonical handling
 
 ### Merge Gate Owns
 
@@ -70,6 +71,7 @@ Using the selector-path corpus:
 - stale NT-pointer comments on rebuilt selector PR: `Review Target Lock`
 - repeated `join_all` wording from multiple reviewers: `Finding Resolution Gate`
 - merge claim saying "ready" without exact-head proof: `Merge Gate`
+- style / maintainability notes with no clean canonical home: `Finding Resolution Gate`
 
 ## ETH Anchor Example Mapping
 

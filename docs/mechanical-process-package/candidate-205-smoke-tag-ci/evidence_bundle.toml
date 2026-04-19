@@ -154,7 +154,7 @@ evidence_id = "E205-13"
 type = "external_artifact"
 producer = "github_pr"
 subject = "pr_210_exact_review_target"
-artifact_ref = "PR #210 / head 6169428f9d401952b776971ffe7d03963401f7fb / branch issue-205-smoke-tag-proof"
+artifact_ref = "PR #210 / head ccb960824c5d5befbcc1915eeea5da0746128302 / branch issue-205-smoke-tag-proof"
 proves = [
   "exact_review_target_is_frozen_for_issue_205",
 ]
@@ -166,9 +166,45 @@ evidence_id = "E205-14"
 type = "external_artifact"
 producer = "github_actions"
 subject = "pr_210_exact_head_ci_snapshot"
-artifact_ref = "CI run 24627115529 on head 6169428f9d401952b776971ffe7d03963401f7fb: detector/same_sha_proof/fmt-check/deny/clippy/test passed; build in progress"
+artifact_ref = "CI run 24627868409 on head ccb960824c5d5befbcc1915eeea5da0746128302: detector/same_sha_proof passed; remaining lanes pending"
 proves = [
   "exact_head_ci_has_started_and_core_issue_205_lanes_are_green_so_far",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-15"
+type = "external_artifact"
+producer = "github_review"
+subject = "gemini_review_comments_pr210"
+artifact_ref = "PR #210 comments r3106687674, r3106687675, r3106687677"
+proves = [
+  "external_review_found_non_blocking_test_hardening_comments",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-16"
+type = "external_artifact"
+producer = "github_review"
+subject = "greptile_review_comments_pr210"
+artifact_ref = "PR #210 comments r3106711072, r3106711073, r3106711093 and summary review 4135849177"
+proves = [
+  "external_review_found_non_blocking_maintainability_and_trust_model_comments",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-17"
+type = "repo_source_ref"
+producer = "issue-205-smoke-tag-proof"
+subject = "review_comment_absorption_head"
+artifact_ref = "branch issue-205-smoke-tag-proof / commit ccb960824c5d5befbcc1915eeea5da0746128302"
+proves = [
+  "pr_210_non_blocking_review_comments_were_absorbed_on_current_head",
 ]
 contradicts = []
 captured_at = "2026-04-19"

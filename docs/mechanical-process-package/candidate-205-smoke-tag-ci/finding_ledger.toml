@@ -87,3 +87,67 @@ resolution_kind = "fix_here"
 resolved_by = [
   "commit feb88d0f4344dd5116a62a77922157b26e401229",
 ]
+
+[[findings]]
+finding_id = "205|test_gap|workflow_contract_tests|global_search_brittleness|tests/ci_same_sha_smoke_tag.rs"
+kind = "test_gap"
+subject = "workflow_contract_tests"
+predicate = "global_search_brittleness"
+locus = "tests/ci_same_sha_smoke_tag.rs"
+source_refs = [
+  "E205-15",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+]
+
+[[findings]]
+finding_id = "205|test_gap|workflow_contract_tests|missing_fast_path_coverage_fmt_deny_clippy|tests/ci_same_sha_smoke_tag.rs"
+kind = "test_gap"
+subject = "workflow_contract_tests"
+predicate = "missing_fast_path_coverage_fmt_deny_clippy"
+locus = "tests/ci_same_sha_smoke_tag.rs"
+source_refs = [
+  "E205-16",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+]
+
+[[findings]]
+finding_id = "205|maintainability_note|same_sha_proof_job|duplicate_json_filter_logic|.github/workflows/ci.yml"
+kind = "maintainability_note"
+subject = "same_sha_proof_job"
+predicate = "duplicate_json_filter_logic"
+locus = ".github/workflows/ci.yml"
+source_refs = [
+  "E205-16",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+]
+
+[[findings]]
+finding_id = "205|environment_assumption|artifact_trust_model|self_referential_sha256_assumption_documented|.github/workflows/ci.yml"
+kind = "environment_assumption"
+subject = "artifact_trust_model"
+predicate = "self_referential_sha256_assumption_documented"
+locus = ".github/workflows/ci.yml"
+source_refs = [
+  "E205-16",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "commit ccb960824c5d5befbcc1915eeea5da0746128302",
+]

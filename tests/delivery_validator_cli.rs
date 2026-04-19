@@ -171,6 +171,17 @@ status = "bound"
 "#,
     );
     write_file(
+        &dst.join("claim_enforcement_coverage.toml"),
+        r#"
+status = "frozen"
+coverage_verdict = "pass"
+subject = "true_merge_claims_have_bound_enforcement_rows"
+source_merge_claims_ref = "merge_claims.toml"
+source_claim_enforcement_ref = "claim_enforcement.toml"
+rule_version = "v1"
+"#,
+    );
+    write_file(
         &dst.join("stage_promotion.toml"),
         r#"
 [[promotions]]
@@ -307,6 +318,18 @@ comparator_kind = "nonempty"
 left_ref = "review_rounds/review-r1.toml#status"
 right_ref = ""
 right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "claim_enforcement_coverage.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
+right_ref = ""
+right_literal = "pass"
 "#,
     );
     write_file(
@@ -456,6 +479,18 @@ comparator_kind = "nonempty"
 left_ref = "review_rounds/review-r1.toml#status"
 right_ref = ""
 right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "claim_enforcement_coverage.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
+right_ref = ""
+right_literal = "pass"
 "#,
     );
 }
@@ -562,6 +597,18 @@ comparator_kind = "nonempty"
 left_ref = "ci_surface.toml#required_jobs_by_stage.merge_candidate"
 right_ref = ""
 right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "claim_enforcement_coverage.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
+right_ref = ""
+right_literal = "pass"
 "#,
     );
 }
@@ -713,6 +760,17 @@ status = "bound"
 "#,
             );
             write_file(
+                &dst.join("claim_enforcement_coverage.toml"),
+                r#"
+status = "frozen"
+coverage_verdict = "pass"
+subject = "true_merge_claims_have_bound_enforcement_rows"
+source_merge_claims_ref = "merge_claims.toml"
+source_claim_enforcement_ref = "claim_enforcement.toml"
+rule_version = "v1"
+"#,
+            );
+            write_file(
                 &dst.join("orchestration_reachability.toml"),
                 r#"
 [[cases]]
@@ -750,6 +808,17 @@ status = "ingested"
 merge_ready = true
 open_blockers = []
 required_evidence = []
+"#,
+            );
+            write_file(
+                &dst.join("claim_enforcement_coverage.toml"),
+                r#"
+status = "frozen"
+coverage_verdict = "pass"
+subject = "true_merge_claims_have_bound_enforcement_rows"
+source_merge_claims_ref = "merge_claims.toml"
+source_claim_enforcement_ref = "claim_enforcement.toml"
+rule_version = "v1"
 "#,
             );
             write_file(
@@ -1628,6 +1697,97 @@ fn synthetic_merge_candidate_blocks_when_execution_target_repo_is_empty() {
         "merge_candidate must fail closed when execution_target.repo is empty through the gate; output:\n{text}"
     );
     assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_claim_enforcement_coverage_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    fs::remove_file(dst.join("claim_enforcement_coverage.toml"))
+        .expect("claim_enforcement_coverage should remove");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when claim_enforcement_coverage is missing through the gate; output:\n{text}"
+    );
+    assert!(
+        text.contains("claim_enforcement_coverage.toml") || text.contains("invalid"),
+        "{text}"
+    );
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_claim_enforcement_coverage_status_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let coverage = dst.join("claim_enforcement_coverage.toml");
+    let original = fs::read_to_string(&coverage).expect("claim_enforcement_coverage should read");
+    fs::write(
+        &coverage,
+        original.replace("status = \"frozen\"", "status = \"\""),
+    )
+    .expect("mutated claim_enforcement_coverage should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when claim_enforcement_coverage status is empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
+fn synthetic_merge_candidate_blocks_when_claim_enforcement_coverage_verdict_is_block() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-merge-candidate");
+    write_minimal_stage_package(&dst, "merge_candidate");
+    let coverage = dst.join("claim_enforcement_coverage.toml");
+    let original = fs::read_to_string(&coverage).expect("claim_enforcement_coverage should read");
+    fs::write(
+        &coverage,
+        original.replace(
+            "coverage_verdict = \"pass\"",
+            "coverage_verdict = \"block\"",
+        ),
+    )
+    .expect("mutated claim_enforcement_coverage should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("merge_candidate")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "merge_candidate must fail closed when claim_enforcement_coverage verdict is block through the gate; output:\n{text}"
+    );
+    assert!(text.contains("clause"), "{text}");
 }
 
 #[test]

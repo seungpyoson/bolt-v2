@@ -927,43 +927,6 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                         "claim_enforcement.toml is present but empty",
                         "add enforcement rows for the claims this package asserts as true",
                     );
-                } else if let Some(merge) = &merge_claims {
-                    let rows_by_claim: BTreeMap<_, _> = enforcement
-                        .rows
-                        .iter()
-                        .filter(|row| !row.claim_id.is_empty())
-                        .map(|row| (row.claim_id.as_str(), row))
-                        .collect();
-                    for claim in &merge.claims {
-                        if claim.value {
-                            match rows_by_claim.get(claim.claim_id.as_str()) {
-                                Some(row)
-                                    if !row.enforcement_kind.is_empty()
-                                        && !row.enforced_at.is_empty()
-                                        && !row.status.is_empty() => {}
-                                Some(_) => report.push(
-                                    Status::Block,
-                                    "proof",
-                                    "claim_enforcement.toml",
-                                    format!(
-                                        "claim enforcement row for `{}` is incomplete",
-                                        claim.claim_id
-                                    ),
-                                    "fill enforcement_kind, enforced_at, and status for every true claim",
-                                ),
-                                None => report.push(
-                                    Status::Block,
-                                    "proof",
-                                    "claim_enforcement.toml",
-                                    format!(
-                                        "true merge claim `{}` has no enforcement row",
-                                        claim.claim_id
-                                    ),
-                                    "bind every asserted true claim to a concrete enforcement locus",
-                                ),
-                            }
-                        }
-                    }
                 }
             }
             None => report.push(

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
@@ -156,6 +156,10 @@ struct EvidenceBundle {
 struct Evidence {
     #[serde(default)]
     evidence_id: String,
+    #[serde(default, rename = "type")]
+    type_name: String,
+    #[serde(default)]
+    producer: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -274,6 +278,28 @@ struct AssumptionRow {
     status: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct ReviewRound {
+    #[serde(default)]
+    round_id: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    review_target_ref: String,
+    #[serde(default)]
+    raw_comment_refs: Vec<String>,
+    #[serde(default)]
+    ingested_findings: Vec<String>,
+    #[serde(default)]
+    stale_findings: Vec<String>,
+    #[serde(default)]
+    wrong_target_findings: Vec<String>,
+    #[serde(default)]
+    absorbed_by_head: String,
+    #[serde(default)]
+    status: String,
+}
+
 fn load_optional<T: for<'de> Deserialize<'de>>(dir: &Path, file_name: &str) -> Result<Option<T>> {
     let path = dir.join(file_name);
     if !path.exists() {
@@ -283,6 +309,29 @@ fn load_optional<T: for<'de> Deserialize<'de>>(dir: &Path, file_name: &str) -> R
     let value = toml::from_slice(&bytes)
         .with_context(|| format!("failed to parse TOML {}", path.display()))?;
     Ok(Some(value))
+}
+
+fn load_review_rounds(dir: &Path) -> Result<Vec<(PathBuf, ReviewRound)>> {
+    let review_rounds_dir = dir.join("review_rounds");
+    if !review_rounds_dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut rounds = Vec::new();
+    for entry in fs::read_dir(&review_rounds_dir)
+        .with_context(|| format!("failed to read {}", review_rounds_dir.display()))?
+    {
+        let entry = entry.with_context(|| "failed to read review_rounds entry")?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+            continue;
+        }
+        let bytes =
+            fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        let round = toml::from_slice(&bytes)
+            .with_context(|| format!("failed to parse TOML {}", path.display()))?;
+        rounds.push((path, round));
+    }
+    Ok(rounds)
 }
 
 pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
@@ -301,6 +350,7 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     let ci_surface = load_optional::<CiSurface>(dir, "ci_surface.toml")?;
     let claim_enforcement = load_optional::<ClaimEnforcement>(dir, "claim_enforcement.toml")?;
     let assumption_register = load_optional::<AssumptionRegister>(dir, "assumption_register.toml")?;
+    let review_rounds = load_review_rounds(dir)?;
     let review_target_present = review_target.is_some();
 
     if issue_contract.is_none()
@@ -745,6 +795,60 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                             .to_string()
                     },
                 );
+            }
+        }
+    }
+
+    if review_target_present
+        && issue_contract.is_some()
+        && seam_contract.is_some()
+        && proof_plan.is_some()
+        && matches!(stage, Stage::Review | Stage::MergeCandidate)
+    {
+        let has_external_review_evidence = evidence_bundle.as_ref().is_some_and(|bundle| {
+            bundle
+                .evidence
+                .iter()
+                .any(|e| e.type_name == "external_artifact" && e.producer == "github_review")
+        });
+
+        if has_external_review_evidence {
+            if review_rounds.is_empty() {
+                report.push(
+                    Status::Block,
+                    "review_target",
+                    "review_rounds/",
+                    "review-stage package has external review evidence but no review_rounds artifacts",
+                    "add review_rounds/<round_id>.toml to record ingestion of the exact review corpus",
+                );
+            } else if let Some(target) = &review_target {
+                let matching = review_rounds.iter().find(|(_, round)| {
+                    round.round_id == target.round_id && round.absorbed_by_head == target.head_sha
+                });
+                match matching {
+                    Some((path, round))
+                        if !round.source.is_empty()
+                            && !round.review_target_ref.is_empty()
+                            && !round.raw_comment_refs.is_empty()
+                            && !round.status.is_empty() => {}
+                    Some((path, _)) => report.push(
+                        Status::Block,
+                        "review_target",
+                        path.display().to_string(),
+                        "review round exists but is incomplete for the active exact-head review target",
+                        "fill source, review_target_ref, raw_comment_refs, and status for the active round",
+                    ),
+                    None => report.push(
+                        Status::Block,
+                        "review_target",
+                        "review_rounds/",
+                        format!(
+                            "no review round matches active round `{}` on head `{}`",
+                            target.round_id, target.head_sha
+                        ),
+                        "add a review_rounds entry bound to the active exact review target",
+                    ),
+                }
             }
         }
     }

@@ -237,3 +237,31 @@ fn review_stage_package_blocks_when_assumption_register_is_missing() {
     );
     assert!(text.contains("assumption_register.toml"), "{text}");
 }
+
+#[test]
+fn review_stage_package_blocks_when_review_rounds_are_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let review_rounds = dst.join("review_rounds");
+    if review_rounds.exists() {
+        fs::remove_dir_all(&review_rounds).expect("review_rounds should remove");
+    }
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed without review_rounds when external review evidence exists; output:\n{text}"
+    );
+    assert!(text.contains("review_rounds"), "{text}");
+}

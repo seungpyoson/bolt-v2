@@ -1,0 +1,21 @@
+round_id = "pr-210-r2"
+source = "github_pr_review"
+review_target_ref = "PR #210 / head 556d57240b95c00485d3466797980c8dee20241c"
+raw_comment_refs = [
+  "r3106687674",
+  "r3106687675",
+  "r3106687677",
+  "r3106711072",
+  "r3106711073",
+  "r3106711093",
+]
+ingested_findings = [
+  "205|test_gap|workflow_contract_tests|global_search_brittleness|tests/ci_same_sha_smoke_tag.rs",
+  "205|test_gap|workflow_contract_tests|missing_fast_path_coverage_fmt_deny_clippy|tests/ci_same_sha_smoke_tag.rs",
+  "205|maintainability_note|same_sha_proof_job|duplicate_json_filter_logic|.github/workflows/ci.yml",
+  "205|environment_assumption|artifact_trust_model|self_referential_sha256_assumption_documented|.github/workflows/ci.yml",
+]
+stale_findings = []
+wrong_target_findings = []
+absorbed_by_head = "556d57240b95c00485d3466797980c8dee20241c"
+status = "ingested"

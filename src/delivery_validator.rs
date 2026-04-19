@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use toml::Value as TomlValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
@@ -313,21 +314,35 @@ struct StagePromotionRow {
     #[serde(default)]
     to_stage: String,
     #[serde(default)]
-    promotion_gate_id: String,
+    promotion_gate_artifact: String,
     #[serde(default)]
-    promotion_gate_kind: String,
+    status: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PromotionGate {
     #[serde(default)]
-    promotion_gate_ref: String,
+    gates: Vec<PromotionGateRow>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PromotionGateRow {
     #[serde(default)]
-    promotion_gate_status: String,
+    gate_id: String,
     #[serde(default)]
-    supporting_artifacts: Vec<String>,
+    from_stage: String,
     #[serde(default)]
-    required_claims: Vec<String>,
+    to_stage: String,
     #[serde(default)]
-    required_evidence: Vec<String>,
+    comparator_kind: String,
     #[serde(default)]
-    forbidden_open_findings: Vec<String>,
+    left_ref: String,
+    #[serde(default)]
+    right_ref: String,
+    #[serde(default)]
+    right_literal: String,
+    #[serde(default)]
+    verdict: String,
     #[serde(default)]
     status: String,
 }
@@ -372,6 +387,19 @@ fn load_optional<T: for<'de> Deserialize<'de>>(dir: &Path, file_name: &str) -> R
 fn load_from_path<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     toml::from_slice(&bytes).with_context(|| format!("failed to parse TOML {}", path.display()))
+}
+
+fn resolve_toml_string_ref(dir: &Path, ref_spec: &str) -> Result<String> {
+    let (rel_path, field) = ref_spec
+        .split_once('#')
+        .with_context(|| format!("ref `{ref_spec}` must be in `<path>#<field>` form"))?;
+    let path = dir.join(rel_path);
+    let value = load_from_path::<TomlValue>(&path)?;
+    value
+        .get(field)
+        .and_then(TomlValue::as_str)
+        .map(ToOwned::to_owned)
+        .with_context(|| format!("ref `{ref_spec}` must resolve to a top-level string field"))
 }
 
 fn load_review_rounds(dir: &Path) -> Result<Vec<(PathBuf, ReviewRound)>> {
@@ -676,7 +704,7 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
             }
         }
 
-        if execution_target.is_some() && ci_surface.is_some() {
+        if stage_promotion.is_some() || (execution_target.is_some() && ci_surface.is_some()) {
             match &stage_promotion {
                 Some(promotion) => {
                     let stage_key = match stage {
@@ -703,10 +731,7 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                         ),
                         [row] => {
                             if row.from_stage.is_empty()
-                                || row.promotion_gate_id.is_empty()
-                                || row.promotion_gate_kind.is_empty()
-                                || row.promotion_gate_ref.is_empty()
-                                || row.promotion_gate_status.is_empty()
+                                || row.promotion_gate_artifact.is_empty()
                                 || row.status.is_empty()
                             {
                                 report.push(
@@ -714,92 +739,151 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                                     "scope",
                                     "stage_promotion.toml",
                                     format!("stage promotion row for `{stage_key}` is incomplete"),
-                                    "fill from_stage, promotion_gate_id, promotion_gate_kind, promotion_gate_ref, promotion_gate_status, and status for the active promotion row",
+                                    "fill from_stage, promotion_gate_artifact, and status for the active promotion row",
                                 );
                             } else {
-                                if row.promotion_gate_status != "pass" {
+                                let gate_artifact = dir.join(&row.promotion_gate_artifact);
+                                if !gate_artifact.exists() {
                                     report.push(
                                         Status::Block,
                                         "scope",
                                         "stage_promotion.toml",
                                         format!(
-                                            "promotion to `{stage_key}` is not admitted because promotion_gate_status is `{}`",
-                                            row.promotion_gate_status
+                                            "promotion gate artifact `{}` does not exist for stage `{stage_key}`",
+                                            row.promotion_gate_artifact
                                         ),
-                                        "only one declared promotion gate with status `pass` may advance a stage",
+                                        "bind the stage promotion to one real promotion_gate.toml artifact",
                                     );
-                                }
-                                let gate_path = dir.join(&row.promotion_gate_ref);
-                                if !gate_path.exists() {
-                                    report.push(
-                                        Status::Block,
-                                        "scope",
-                                        "stage_promotion.toml",
-                                        format!(
-                                            "promotion gate ref `{}` does not exist for stage `{stage_key}`",
-                                            row.promotion_gate_ref
-                                        ),
-                                        "bind the promotion gate to one real artifact under the delivery directory",
-                                    );
-                                } else if stage == Stage::Review
-                                    && row.promotion_gate_kind == "review_round_bound_to_exact_head"
-                                {
-                                    match load_from_path::<ReviewRound>(&gate_path) {
-                                        Ok(round) => {
-                                            if round.status != "ingested" {
-                                                report.push(
-                                                    Status::Block,
-                                                    "scope",
-                                                    "stage_promotion.toml",
-                                                    format!(
-                                                        "review-stage promotion gate `{}` is not ingested",
-                                                        row.promotion_gate_ref
-                                                    ),
-                                                    "use an ingested review_round artifact as the review-stage promotion gate",
-                                                );
-                                            }
-                                            if let Some(target) = &review_target {
-                                                if round.round_id != target.round_id
-                                                    || round.absorbed_by_head != target.head_sha
+                                } else {
+                                    match load_from_path::<PromotionGate>(&gate_artifact) {
+                                        Ok(gates) => match gates.gates.as_slice() {
+                                            [] => report.push(
+                                                Status::Block,
+                                                "scope",
+                                                row.promotion_gate_artifact.clone(),
+                                                "promotion gate artifact contains no gates",
+                                                "declare exactly one gate in the promotion gate artifact",
+                                            ),
+                                            [gate] => {
+                                                if gate.gate_id.is_empty()
+                                                    || gate.from_stage.is_empty()
+                                                    || gate.to_stage.is_empty()
+                                                    || gate.comparator_kind.is_empty()
+                                                    || gate.left_ref.is_empty()
+                                                    || (gate.right_ref.is_empty()
+                                                        && gate.right_literal.is_empty())
+                                                    || gate.verdict.is_empty()
+                                                    || gate.status.is_empty()
                                                 {
                                                     report.push(
                                                         Status::Block,
                                                         "scope",
-                                                        "stage_promotion.toml",
-                                                        format!(
-                                                            "review-stage promotion gate `{}` does not match active review target `{}` on head `{}`",
-                                                            row.promotion_gate_ref,
-                                                            target.round_id,
-                                                            target.head_sha
-                                                        ),
-                                                        "bind the review-stage promotion gate to the active exact review round and absorbed head",
+                                                        row.promotion_gate_artifact.clone(),
+                                                        "promotion gate row is incomplete",
+                                                        "fill gate_id, from_stage, to_stage, comparator_kind, left_ref, one right-side expectation, verdict, and status",
                                                     );
+                                                } else {
+                                                    if gate.from_stage != row.from_stage
+                                                        || gate.to_stage != row.to_stage
+                                                    {
+                                                        report.push(
+                                                            Status::Block,
+                                                            "scope",
+                                                            row.promotion_gate_artifact.clone(),
+                                                            format!(
+                                                                "promotion gate `{}` does not match stage transition `{}` -> `{}`",
+                                                                gate.gate_id, row.from_stage, row.to_stage
+                                                            ),
+                                                            "bind the gate to the same stage transition as stage_promotion.toml",
+                                                        );
+                                                    }
+                                                    if gate.verdict != "pass" {
+                                                        report.push(
+                                                            Status::Block,
+                                                            "scope",
+                                                            row.promotion_gate_artifact.clone(),
+                                                            format!(
+                                                                "promotion gate `{}` has verdict `{}`",
+                                                                gate.gate_id, gate.verdict
+                                                            ),
+                                                            "only a promotion gate with verdict `pass` may advance a stage",
+                                                        );
+                                                    }
+                                                    if gate.comparator_kind != "string_eq" {
+                                                        report.push(
+                                                            Status::Block,
+                                                            "scope",
+                                                            row.promotion_gate_artifact.clone(),
+                                                            format!(
+                                                                "promotion gate `{}` uses unsupported comparator_kind `{}`",
+                                                                gate.gate_id, gate.comparator_kind
+                                                            ),
+                                                            "use a supported generic comparator kind",
+                                                        );
+                                                    } else {
+                                                        match resolve_toml_string_ref(dir, &gate.left_ref) {
+                                                            Ok(left_value) => {
+                                                                let right_value = if !gate.right_ref.is_empty() {
+                                                                    resolve_toml_string_ref(dir, &gate.right_ref)
+                                                                } else {
+                                                                    Ok(gate.right_literal.clone())
+                                                                };
+                                                                match right_value {
+                                                                    Ok(right_value) => {
+                                                                        if left_value != right_value {
+                                                                            report.push(
+                                                                                Status::Block,
+                                                                                "scope",
+                                                                                row.promotion_gate_artifact.clone(),
+                                                                                format!(
+                                                                                    "promotion gate `{}` comparator failed: `{}` != `{}`",
+                                                                                    gate.gate_id, left_value, right_value
+                                                                                ),
+                                                                                "fix the subject artifact, expected artifact, or gate binding before advancing the stage",
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                    Err(_) => report.push(
+                                                                        Status::Block,
+                                                                        "scope",
+                                                                        row.promotion_gate_artifact.clone(),
+                                                                        format!(
+                                                                            "promotion gate `{}` right-side reference is invalid",
+                                                                            gate.gate_id
+                                                                        ),
+                                                                        "bind the gate to a valid expected ref or literal",
+                                                                    ),
+                                                                }
+                                                            }
+                                                            Err(_) => report.push(
+                                                                Status::Block,
+                                                                "scope",
+                                                                row.promotion_gate_artifact.clone(),
+                                                                format!(
+                                                                    "promotion gate `{}` left-side reference is invalid",
+                                                                    gate.gate_id
+                                                                ),
+                                                                "bind the gate to a valid subject ref",
+                                                            ),
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
+                                            _ => report.push(
+                                                Status::Block,
+                                                "scope",
+                                                row.promotion_gate_artifact.clone(),
+                                                "promotion gate artifact defines multiple gates",
+                                                "declare exactly one gate in the promotion gate artifact",
+                                            ),
+                                        },
                                         Err(_) => report.push(
                                             Status::Block,
-                                            "scope",
-                                            "stage_promotion.toml",
-                                            format!(
-                                                "review-stage promotion gate `{}` is not a valid review_round artifact",
-                                                row.promotion_gate_ref
-                                            ),
-                                            "bind the review-stage gate to a parseable review_rounds/*.toml artifact",
+                                            "schema",
+                                            row.promotion_gate_artifact.clone(),
+                                            "stage promotion points to an unreadable promotion gate artifact",
+                                            "make the declared promotion gate artifact exist and parse as TOML",
                                         ),
-                                    }
-                                }
-                                for artifact in &row.supporting_artifacts {
-                                    if !dir.join(artifact).exists() {
-                                        report.push(
-                                            Status::Block,
-                                            "scope",
-                                            "stage_promotion.toml",
-                                            format!(
-                                                "promotion to `{stage_key}` requires missing supporting artifact `{artifact}`"
-                                            ),
-                                            "either add the artifact or remove it from the supporting_artifacts list",
-                                        );
                                     }
                                 }
                             }

@@ -54,6 +54,177 @@ fn copy_dir_all(src: &Path, dst: &Path) {
     }
 }
 
+fn write_file(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("parent dir should create");
+    }
+    fs::write(path, contents).expect("file should write");
+}
+
+fn write_minimal_review_package(dst: &Path) {
+    write_file(
+        &dst.join("issue_contract.toml"),
+        r#"
+issue_id = 999
+title = "synthetic promotion gate package"
+repo = "seungpyoson/bolt-v2"
+slice_id = "synthetic-gate"
+status = "frozen"
+problem_statement = "freeze one synthetic review-stage package"
+required_outcomes = ["one stage gate only"]
+non_goals = ["real issue delivery"]
+allowed_surfaces = ["docs/mechanical-process-package/**"]
+forbidden_surfaces = ["src/**"]
+assumptions = []
+semantic_terms = ["synthetic_term"]
+"#,
+    );
+    write_file(
+        &dst.join("seam_contract.toml"),
+        r#"
+status = "locked"
+
+[[seams]]
+seam_id = "SEAM-SYN-1"
+semantic_term = "synthetic_term"
+writer_path = "docs/synthetic"
+writer_symbol = "writer"
+reader_path = "docs/synthetic"
+reader_symbol = "reader"
+storage_field = "synthetic.field"
+authoritative_source = "review_target.toml"
+allowed_sources = ["review_target.toml"]
+forbidden_sources = []
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+"#,
+    );
+    write_file(
+        &dst.join("proof_plan.toml"),
+        r#"
+[[claims]]
+claim_id = "CSYN-1"
+falsified_by = ["FXSYN-1"]
+required_before = "implementation"
+"#,
+    );
+    write_file(
+        &dst.join("finding_ledger.toml"),
+        "status = \"classified\"\n",
+    );
+    write_file(&dst.join("evidence_bundle.toml"), "");
+    write_file(
+        &dst.join("merge_claims.toml"),
+        r#"
+merge_ready = false
+open_blockers = []
+required_evidence = []
+"#,
+    );
+    write_file(
+        &dst.join("review_target.toml"),
+        r#"
+repo = "seungpyoson/bolt-v2"
+pr_number = 999
+base_ref = "main"
+head_sha = "abc123"
+diff_identity = "synthetic-gate"
+round_id = "review-r1"
+status = "frozen"
+"#,
+    );
+    write_file(
+        &dst.join("execution_target.toml"),
+        r#"
+repo = "seungpyoson/bolt-v2"
+branch = "synthetic-branch"
+base_ref = "main"
+head_sha = "abc123"
+diff_identity = "synthetic-gate"
+changed_paths = ["docs/mechanical-process-package/**"]
+status = "frozen"
+"#,
+    );
+    write_file(
+        &dst.join("ci_surface.toml"),
+        r#"
+workflow = "synthetic"
+head_sha = "abc123"
+run_selection_rule = "synthetic"
+
+[required_jobs_by_stage]
+review = ["job-review"]
+"#,
+    );
+    write_file(
+        &dst.join("claim_enforcement.toml"),
+        r#"
+[[rows]]
+claim_id = "CSYN-1"
+enforcement_kind = "synthetic"
+enforced_at = "synthetic"
+test_ref = ""
+ci_ref = ""
+evidence_required = []
+status = "bound"
+"#,
+    );
+    write_file(
+        &dst.join("stage_promotion.toml"),
+        r#"
+[[promotions]]
+from_stage = "proof_locked"
+to_stage = "review"
+promotion_gate_artifact = "promotion_gate.toml"
+status = "satisfied"
+"#,
+    );
+    write_file(
+        &dst.join("promotion_gate.toml"),
+        r#"
+[[gates]]
+gate_id = "gate-1"
+from_stage = "proof_locked"
+to_stage = "review"
+comparator_kind = "string_eq"
+left_ref = "review_rounds/review-r1.toml#absorbed_by_head"
+right_ref = "review_target.toml#head_sha"
+right_literal = ""
+verdict = "pass"
+status = "frozen"
+"#,
+    );
+    write_file(
+        &dst.join("orchestration_reachability.toml"),
+        r#"
+[[cases]]
+case_id = "reach-1"
+subject = "synthetic"
+trigger_job = "job-review"
+trigger_result = "success"
+required_reachable_jobs = ["job-review"]
+forbidden_job_results = ["failure"]
+proof_ref = "gate-1"
+status = "covered"
+"#,
+    );
+    write_file(
+        &dst.join("review_rounds/review-r1.toml"),
+        r#"
+round_id = "review-r1"
+source = "synthetic"
+review_target_ref = "synthetic"
+raw_comment_refs = ["comment-1"]
+ingested_findings = []
+stale_findings = []
+wrong_target_findings = []
+absorbed_by_head = "abc123"
+status = "ingested"
+"#,
+    );
+}
+
 #[test]
 fn eth_anchor_fixture_blocks_with_semantic_and_evidence_failures() {
     let output = run_validator(
@@ -124,6 +295,198 @@ fn candidate_205_package_is_structurally_valid_at_review_stage() {
     let text = combined_output(&output);
     assert!(text.contains("STATUS: PASS"), "{text}");
     assert!(!text.contains("STATUS: BLOCK"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_passes_with_single_promotion_gate() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        output.status.success(),
+        "synthetic review package with one valid promotion gate should pass; output:\n{text}"
+    );
+    assert!(text.contains("STATUS: PASS"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_promotion_gate_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    fs::remove_file(dst.join("promotion_gate.toml")).expect("promotion_gate should remove");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "synthetic review package must fail closed when promotion_gate.toml is missing; output:\n{text}"
+    );
+    assert!(text.contains("promotion_gate.toml"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_promotion_gate_has_zero_gates() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    fs::write(dst.join("promotion_gate.toml"), "gates = []\n")
+        .expect("empty promotion_gate should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "synthetic review package must fail closed when promotion_gate.toml contains zero gates; output:\n{text}"
+    );
+    assert!(text.contains("contains no gates"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_promotion_gate_has_multiple_gates() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let gate_path = dst.join("promotion_gate.toml");
+    let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+    fs::write(&gate_path, format!("{original}\n{original}"))
+        .expect("duplicated promotion_gate should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "synthetic review package must fail closed when promotion_gate.toml defines multiple gates; output:\n{text}"
+    );
+    assert!(text.contains("multiple gates"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_promotion_gate_stage_binding_is_wrong() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let gate_path = dst.join("promotion_gate.toml");
+    let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+    fs::write(
+        &gate_path,
+        original.replace("to_stage = \"review\"", "to_stage = \"merge_candidate\""),
+    )
+    .expect("mutated promotion_gate should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "synthetic review package must fail closed when promotion gate stage binding is wrong; output:\n{text}"
+    );
+    assert!(text.contains("does not match stage transition"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_promotion_gate_verdict_is_not_pass() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let gate_path = dst.join("promotion_gate.toml");
+    let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+    fs::write(
+        &gate_path,
+        original.replace("verdict = \"pass\"", "verdict = \"block\""),
+    )
+    .expect("mutated promotion_gate should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "synthetic review package must fail closed when promotion gate verdict is not pass; output:\n{text}"
+    );
+    assert!(text.contains("verdict"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_promotion_gate_subject_mismatches_expected() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let round_path = dst.join("review_rounds/review-r1.toml");
+    let original = fs::read_to_string(&round_path).expect("review_round should read");
+    fs::write(
+        &round_path,
+        original.replace(
+            "absorbed_by_head = \"abc123\"",
+            "absorbed_by_head = \"wrong-head\"",
+        ),
+    )
+    .expect("mutated review_round should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "synthetic review package must fail closed when promotion gate subject mismatches expected value; output:\n{text}"
+    );
+    assert!(text.contains("comparator failed"), "{text}");
 }
 
 #[test]
@@ -320,68 +683,6 @@ fn review_stage_package_blocks_when_stage_promotion_has_multiple_rows_for_stage(
         "review-stage package must fail closed when multiple promotion rows exist for the same stage; output:\n{text}"
     );
     assert!(text.contains("multiple promotion rows"), "{text}");
-}
-
-#[test]
-fn review_stage_package_blocks_when_stage_promotion_gate_is_not_pass() {
-    let temp = tempdir().expect("tempdir should create");
-    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
-    let dst = temp.path().join("candidate-205-smoke-tag-ci");
-    copy_dir_all(&src, &dst);
-    let stage_promotion = dst.join("stage_promotion.toml");
-    let original = fs::read_to_string(&stage_promotion).expect("stage_promotion should read");
-    let mutated = original.replace(
-        "promotion_gate_status = \"pass\"",
-        "promotion_gate_status = \"block\"",
-    );
-    fs::write(&stage_promotion, mutated).expect("mutated stage_promotion should write");
-
-    let mut command = validator_command();
-    let output = command
-        .current_dir(repo_root())
-        .arg("--delivery-dir")
-        .arg(&dst)
-        .arg("--stage")
-        .arg("review")
-        .output()
-        .expect("validator command should execute");
-    let text = combined_output(&output);
-    assert!(
-        !output.status.success(),
-        "review-stage package must fail closed when the declared promotion gate is not pass; output:\n{text}"
-    );
-    assert!(text.contains("promotion_gate_status"), "{text}");
-}
-
-#[test]
-fn review_stage_package_blocks_when_stage_promotion_gate_ref_is_missing() {
-    let temp = tempdir().expect("tempdir should create");
-    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
-    let dst = temp.path().join("candidate-205-smoke-tag-ci");
-    copy_dir_all(&src, &dst);
-    let stage_promotion = dst.join("stage_promotion.toml");
-    let original = fs::read_to_string(&stage_promotion).expect("stage_promotion should read");
-    let mutated = original.replace(
-        "promotion_gate_ref = \"review_rounds/pr-210-r2.toml\"",
-        "promotion_gate_ref = \"review_rounds/absent.toml\"",
-    );
-    fs::write(&stage_promotion, mutated).expect("mutated stage_promotion should write");
-
-    let mut command = validator_command();
-    let output = command
-        .current_dir(repo_root())
-        .arg("--delivery-dir")
-        .arg(&dst)
-        .arg("--stage")
-        .arg("review")
-        .output()
-        .expect("validator command should execute");
-    let text = combined_output(&output);
-    assert!(
-        !output.status.success(),
-        "review-stage package must fail closed when the declared promotion gate ref is missing; output:\n{text}"
-    );
-    assert!(text.contains("promotion gate ref"), "{text}");
 }
 
 #[test]

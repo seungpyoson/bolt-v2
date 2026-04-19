@@ -1,0 +1,10 @@
+[[gates]]
+gate_id = "review_exact_head_gate"
+from_stage = "proof_locked"
+to_stage = "review"
+comparator_kind = "string_eq"
+left_ref = "review_rounds/pr-210-r2.toml#absorbed_by_head"
+right_ref = "review_target.toml#head_sha"
+right_literal = ""
+verdict = "pass"
+status = "frozen"

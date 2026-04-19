@@ -308,8 +308,6 @@ pub struct LiveReferenceInput {
     #[serde(default = "default_min_publish_interval_ms")]
     pub min_publish_interval_ms: u64,
     #[serde(default)]
-    pub binance: Option<crate::config::BinanceSharedConfig>,
-    #[serde(default)]
     pub chainlink: Option<crate::config::ChainlinkSharedConfig>,
     #[serde(default)]
     pub venues: Vec<LiveReferenceVenueInput>,
@@ -320,7 +318,6 @@ impl Default for LiveReferenceInput {
         Self {
             publish_topic: String::new(),
             min_publish_interval_ms: default_min_publish_interval_ms(),
-            binance: None,
             chainlink: None,
             venues: Vec::new(),
         }
@@ -483,8 +480,6 @@ struct RenderedStreamingConfig {
 struct RenderedReferenceConfig {
     publish_topic: String,
     min_publish_interval_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    binance: Option<crate::config::BinanceSharedConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     chainlink: Option<crate::config::ChainlinkSharedConfig>,
     venues: Vec<RenderedReferenceVenueEntry>,
@@ -694,7 +689,6 @@ fn render_runtime_config(
         reference: platform_enabled.then(|| RenderedReferenceConfig {
             publish_topic: input.reference.publish_topic.clone(),
             min_publish_interval_ms: input.reference.min_publish_interval_ms,
-            binance: input.reference.binance.clone(),
             chainlink: input.reference.chainlink.clone(),
             venues: input
                 .reference
@@ -1162,80 +1156,6 @@ mod tests {
             cfg.exec_clients[0].secrets.passphrase.as_deref(),
             Some(input.secrets.passphrase.as_str())
         );
-    }
-
-    #[test]
-    fn live_reference_binance_shared_config_renders_through_to_runtime() {
-        let raw = r#"
-[node]
-name = "BOLT-V2-TEST"
-trader_id = "BOLT-TEST"
-
-[polymarket]
-event_slug = "btc-updown-5m"
-instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-account_id = "POLYMARKET-001"
-funder = "0xabc"
-
-[secrets]
-pk = "/bolt/poly/pk"
-api_key = "/bolt/poly/key"
-api_secret = "/bolt/poly/secret"
-passphrase = "/bolt/poly/passphrase"
-
-[reference]
-publish_topic = "platform.reference.default"
-
-[reference.binance]
-region = "eu-west-1"
-api_key = "/bolt/binance/api-key"
-api_secret = "/bolt/binance/api-secret"
-
-[[reference.venues]]
-name = "BINANCE-BTC"
-type = "binance"
-instrument_id = "BTCUSDT.BINANCE"
-base_weight = 0.35
-stale_after_ms = 1500
-disable_after_ms = 5000
-
-[[rulesets]]
-id = "PRIMARY"
-venue = "polymarket"
-resolution_basis = "binance_btcusdt_1m"
-min_time_to_expiry_secs = 60
-max_time_to_expiry_secs = 900
-min_liquidity_num = 1000
-require_accepting_orders = true
-freeze_before_end_secs = 90
-selector_poll_interval_ms = 1000
-candidate_load_timeout_secs = 30
-[rulesets.selector]
-tag_slug = "bitcoin"
-
-[audit]
-local_dir = "var/audit"
-s3_uri = "s3://bolt-runtime-history/phase1"
-ship_interval_secs = 30
-upload_attempt_timeout_secs = 30
-roll_max_bytes = 1048576
-roll_max_secs = 300
-max_local_backlog_bytes = 10485760
-"#;
-
-        let input: LiveLocalConfig = toml::from_str(raw).expect("config should parse");
-        let rendered = render_runtime_config(&input, &repo_path("config/live.local.toml"))
-            .expect("config should render");
-        let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
-
-        let binance = cfg
-            .reference
-            .binance
-            .as_ref()
-            .expect("runtime config should include reference.binance");
-        assert_eq!(binance.region, "eu-west-1");
-        assert_eq!(binance.api_key, "/bolt/binance/api-key");
-        assert_eq!(binance.api_secret, "/bolt/binance/api-secret");
     }
 
     #[test]

@@ -70,9 +70,95 @@ jobs:
             echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
+  same_sha_proof:
+    name: same_sha_proof
+    needs: detector
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reuse_available: ${{ steps.resolve.outputs.reuse_available }}
+      source_run_id: ${{ steps.resolve.outputs.source_run_id }}
+    steps:
+      - name: Resolve same-SHA proof record
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          echo "reuse_available=false" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "Non-tag event: same_sha_proof is a no-op"
+            exit 0
+          fi
+          endpoint="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${GITHUB_SHA}&status=success&per_page=100"
+          runs_json="$RUNNER_TEMP/same-sha-main-push-runs.json"
+          if ! gh api "$endpoint" > "$runs_json"; then
+            echo "No reusable proof: failed to query eligible main-push CI runs"
+            exit 0
+          fi
+
+          selected_run="$(
+            jq -c '
+              [
+                .workflow_runs[]
+                | select(.head_sha == env.GITHUB_SHA)
+                | select(.head_branch == "main")
+                | select(.event == "push")
+                | select(.name == "CI")
+                | select(.conclusion == "success")
+                | select(.id != (env.CURRENT_RUN_ID | tonumber))
+              ] as $runs
+              | {
+                  count: ($runs | length),
+                  id: ($runs[0].id // empty)
+                }
+            ' "$runs_json"
+          )"
+          source_count="$(jq -r '.count' <<<"$selected_run")"
+          if [[ "$source_count" != "1" ]]; then
+            echo "No reusable proof: expected exactly one eligible main-push CI run, found $source_count"
+            exit 0
+          fi
+
+          SOURCE_RUN_ID="$(jq -r '.id' <<<"$selected_run")"
+          artifact_dir="$RUNNER_TEMP/reused-bolt-v2-binary"
+          rm -rf "$artifact_dir"
+          mkdir -p "$artifact_dir"
+          if ! gh run download "$SOURCE_RUN_ID" --name bolt-v2-binary --dir "$artifact_dir"; then
+            echo "No reusable proof: failed to download bolt-v2-binary artifact from run $SOURCE_RUN_ID"
+            exit 0
+          fi
+          if ! (
+            cd "$artifact_dir"
+            # This is corruption detection, not a separate trust root: both the
+            # binary and digest come from the same GitHub artifact bundle.
+            sha256sum -c bolt-v2.sha256
+          ); then
+            echo "No reusable proof: reused artifact digest verification failed for run $SOURCE_RUN_ID"
+            exit 0
+          fi
+
+          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
+          echo "reuse_available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload reused artifact
+        if: steps.resolve.outputs.reuse_available == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bolt-v2-binary
+          path: |
+            ${{ steps.resolve.outputs.artifact_dir }}/bolt-v2
+            ${{ steps.resolve.outputs.artifact_dir }}/bolt-v2.sha256
+          retention-days: 30
+
   fmt-check:
     name: fmt-check
-    needs: detector
+    needs: [detector, same_sha_proof]
+    if: needs.same_sha_proof.outputs.reuse_available != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -91,7 +177,8 @@ jobs:
 
   deny:
     name: deny
-    needs: detector
+    needs: [detector, same_sha_proof]
+    if: needs.same_sha_proof.outputs.reuse_available != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -119,7 +206,8 @@ jobs:
 
   clippy:
     name: clippy
-    needs: detector
+    needs: [detector, same_sha_proof]
+    if: needs.same_sha_proof.outputs.reuse_available != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -154,7 +242,8 @@ jobs:
 
   test:
     name: test
-    needs: detector
+    needs: [detector, same_sha_proof]
+    if: needs.same_sha_proof.outputs.reuse_available != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -183,8 +272,8 @@ jobs:
 
   build:
     name: build
-    needs: detector
-    if: needs.detector.outputs.build_required == 'true'
+    needs: [detector, same_sha_proof]
+    if: needs.detector.outputs.build_required == 'true' && needs.same_sha_proof.outputs.reuse_available != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -245,7 +334,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, test, build]
+    needs: [detector, same_sha_proof, fmt-check, deny, clippy, test, build]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -256,6 +345,28 @@ jobs:
             echo "detector did not succeed"
             exit 1
           fi
+
+          reuse_available="${{ needs.same_sha_proof.outputs.reuse_available }}"
+          same_sha_proof_result="${{ needs.same_sha_proof.result }}"
+          if [[ "$reuse_available" == "true" ]]; then
+            if [[ "$same_sha_proof_result" != "success" ]]; then
+              echo "same_sha_proof did not succeed when reuse_available=true"
+              exit 1
+            fi
+            for job_result in \
+              "${{ needs.fmt-check.result }}" \
+              "${{ needs.deny.result }}" \
+              "${{ needs.clippy.result }}" \
+              "${{ needs.test.result }}" \
+              "${{ needs.build.result }}"; do
+              if [[ "$job_result" != "success" && "$job_result" != "skipped" ]]; then
+                echo "duplicate heavy lane produced unexpected result '$job_result' when reuse_available=true"
+                exit 1
+              fi
+            done
+            exit 0
+          fi
+
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
             echo "fmt-check did not succeed"
             exit 1
@@ -287,8 +398,8 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, same_sha_proof, build]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && (needs.build.result == 'success' || needs.same_sha_proof.outputs.reuse_available == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

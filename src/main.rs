@@ -3,7 +3,7 @@ use log::LevelFilter;
 use std::{collections::HashSet, path::PathBuf, rc::Rc};
 
 use bolt_v2::{
-    clients::{binance, chainlink, polymarket},
+    clients::{chainlink, polymarket},
     config::{Config, ReferenceVenueKind, ensure_runtime_has_active_path},
     normalized_sink,
     platform::runtime::{
@@ -111,17 +111,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     match venue.kind {
                         ReferenceVenueKind::Polymarket => {}
-                        ReferenceVenueKind::Binance => {
-                            let (factory, config) =
-                                binance::build_reference_data_client_with_reference(
-                                    &cfg.reference,
-                                )?;
-                            builder = builder.add_data_client(
-                                Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
-                                factory,
-                                config,
-                            )?;
-                        }
                         ReferenceVenueKind::Chainlink => {
                             let (factory, config) =
                                 chainlink::build_chainlink_reference_data_client(&cfg.reference)?;
@@ -330,22 +319,6 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             ensure_runtime_has_active_path(&cfg)?;
             let mut has_errors = false;
 
-            if let Some(binance) = cfg.reference.binance.as_ref() {
-                let check = secrets::check_binance_secret_config(binance);
-                if check.is_complete() {
-                    println!(
-                        "reference.binance: secret config complete ({})",
-                        check.present.join(", ")
-                    );
-                } else {
-                    has_errors = true;
-                    eprintln!(
-                        "reference.binance: missing secret config fields ({})",
-                        check.missing.join(", ")
-                    );
-                }
-            }
-
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
                 let check = secrets::check_chainlink_secret_config(chainlink);
                 if check.is_complete() {
@@ -394,11 +367,6 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
         SecretsCommand::Resolve { config } => {
             let cfg = Config::load(&config)?;
             ensure_runtime_has_active_path(&cfg)?;
-
-            if let Some(binance) = cfg.reference.binance.as_ref() {
-                secrets::resolve_binance(&binance.region, &binance.api_key, &binance.api_secret)?;
-                println!("reference.binance: secrets resolved successfully");
-            }
 
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
                 secrets::resolve_chainlink(

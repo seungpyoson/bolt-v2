@@ -33,12 +33,6 @@ pub struct ResolvedChainlinkSecrets {
     pub api_secret: String,
 }
 
-#[derive(Clone)]
-pub struct ResolvedBinanceSecrets {
-    pub api_key: String,
-    pub api_secret: String,
-}
-
 impl std::fmt::Debug for ResolvedPolymarketSecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let redacted = RedactedDebug;
@@ -57,17 +51,6 @@ impl std::fmt::Debug for ResolvedChainlinkSecrets {
         let redacted = RedactedDebug;
 
         f.debug_struct("ResolvedChainlinkSecrets")
-            .field("api_key", &redacted)
-            .field("api_secret", &redacted)
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for ResolvedBinanceSecrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted = RedactedDebug;
-
-        f.debug_struct("ResolvedBinanceSecrets")
             .field("api_key", &redacted)
             .field("api_secret", &redacted)
             .finish()
@@ -170,27 +153,6 @@ pub fn check_chainlink_secret_config(shared: &ChainlinkSharedConfig) -> SecretCo
     SecretConfigCheck { present, missing }
 }
 
-pub fn check_binance_secret_config(
-    shared: &crate::config::BinanceSharedConfig,
-) -> SecretConfigCheck {
-    let mut present = Vec::new();
-    let mut missing = Vec::new();
-
-    for (field, configured) in [
-        ("region", !shared.region.trim().is_empty()),
-        ("api_key", !shared.api_key.trim().is_empty()),
-        ("api_secret", !shared.api_secret.trim().is_empty()),
-    ] {
-        if configured {
-            present.push(field);
-        } else {
-            missing.push(field);
-        }
-    }
-
-    SecretConfigCheck { present, missing }
-}
-
 pub fn resolve_polymarket(
     secrets: &ExecClientSecrets,
 ) -> Result<ResolvedPolymarketSecrets, SecretError> {
@@ -235,17 +197,6 @@ pub fn resolve_chainlink(
     api_secret_path: &str,
 ) -> Result<ResolvedChainlinkSecrets, SecretError> {
     Ok(ResolvedChainlinkSecrets {
-        api_key: resolve_secret(region, api_key_path)?,
-        api_secret: resolve_secret(region, api_secret_path)?,
-    })
-}
-
-pub fn resolve_binance(
-    region: &str,
-    api_key_path: &str,
-    api_secret_path: &str,
-) -> Result<ResolvedBinanceSecrets, SecretError> {
-    Ok(ResolvedBinanceSecrets {
         api_key: resolve_secret(region, api_key_path)?,
         api_secret: resolve_secret(region, api_secret_path)?,
     })

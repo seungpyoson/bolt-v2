@@ -214,7 +214,6 @@ fn test_config(audit_dir: &Path) -> Config {
                     .as_nanos()
             ),
             min_publish_interval_ms: 0,
-            binance: None,
             chainlink: None,
             venues: vec![ReferenceVenueEntry {
                 name: "BINANCE-BTC".to_string(),

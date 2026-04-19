@@ -354,29 +354,154 @@ fn workflow_step_run<'a>(step: &'a serde_yaml::Mapping) -> &'a str {
         .expect("workflow step should declare a run script")
 }
 
-fn uses_non_persisted_header_authenticated_fetch(run_script: &str) -> bool {
-    let uses_ephemeral_extraheader = (run_script.contains("GIT_CONFIG_KEY_0=http.extraheader")
-        && run_script.contains(r#"GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header""#))
-        || run_script.contains(r#"-c http.extraheader="AUTHORIZATION: basic $auth_header""#);
-
-    run_script.contains(
-        r#"auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')""#,
-    ) && run_script.contains(
-        r#"git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git""#,
-    ) && uses_ephemeral_extraheader
-        && !run_script.contains("x-access-token:${CLAUDE_CONFIG_READ_TOKEN}@github.com")
+fn normalized_shell_script(run_script: &str) -> String {
+    run_script
+        .replace("\\\n", " ")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn materializes_protected_files_from_exact_head_sha(run_script: &str) -> bool {
-    run_script.contains(
-        r#"jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do"#,
-    )
-        && run_script.contains(
-            r#"file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}""#,
-        )
-        && run_script.contains(r#"curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url""#)
-        && !run_script.contains("${HEAD_REF}")
-        && !run_script.contains("github.event.pull_request.head.ref")
+fn script_contains_all(haystack: &str, fragments: &[&str]) -> bool {
+    fragments.iter().all(|fragment| haystack.contains(fragment))
+}
+
+fn script_contains_none(haystack: &str, fragments: &[&str]) -> bool {
+    fragments
+        .iter()
+        .all(|fragment| !haystack.contains(fragment))
+}
+
+fn logical_shell_lines(run_script: &str) -> Vec<String> {
+    let mut logical_lines = Vec::new();
+    let mut current = String::new();
+
+    for raw_line in run_script.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let continued = trimmed.strip_suffix('\\').unwrap_or(trimmed).trim();
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(continued);
+
+        if !trimmed.ends_with('\\') {
+            logical_lines.push(current.trim().to_string());
+            current.clear();
+        }
+    }
+
+    if !current.is_empty() {
+        logical_lines.push(current.trim().to_string());
+    }
+
+    logical_lines
+}
+
+fn split_shell_commands(shell: &str) -> Vec<String> {
+    shell
+        .split("&&")
+        .flat_map(|part| part.split("||"))
+        .flat_map(|part| part.split(';'))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn logical_shell_commands(run_script: &str) -> Vec<String> {
+    logical_shell_lines(run_script)
+        .into_iter()
+        .flat_map(|line| split_shell_commands(&line))
+        .collect()
+}
+
+fn shell_has_command_with_fragments(run_script: &str, fragments: &[&str]) -> bool {
+    logical_shell_commands(run_script)
+        .iter()
+        .any(|command| script_contains_all(command, fragments))
+}
+
+fn shell_command_fetches_exact_pinned_sha(command: &str) -> bool {
+    let tokens = command.split_whitespace().collect::<Vec<_>>();
+    let Some(fetch_index) = tokens.iter().position(|token| *token == "fetch") else {
+        return false;
+    };
+
+    let after_fetch = &tokens[fetch_index + 1..];
+    let Some(origin_index) = after_fetch.iter().position(|token| *token == "origin") else {
+        return false;
+    };
+
+    origin_index == 2
+        && after_fetch.len() == origin_index + 2
+        && after_fetch[origin_index + 1] == r#""$TRUST_ROOT_VALIDATOR_SHA""#
+        && after_fetch[..origin_index].contains(&"--depth=1")
+        && after_fetch[..origin_index].contains(&"--no-tags")
+}
+
+fn fetch_uses_approved_header_auth_for_pinned_sha(run_script: &str) -> bool {
+    logical_shell_commands(run_script).iter().any(|command| {
+        let uses_env_scoped_header_auth = command.contains("GIT_CONFIG_KEY_0=http.extraheader")
+            && command.contains(r#"GIT_CONFIG_VALUE_0="AUTHORIZATION: basic "#);
+        let uses_git_c_header_auth =
+            command.contains(r#"-c http.extraheader="AUTHORIZATION: basic "#);
+
+        shell_command_fetches_exact_pinned_sha(command)
+            && (uses_env_scoped_header_auth || uses_git_c_header_auth)
+    })
+}
+
+fn remote_url_embeds_credentials(run_script: &str) -> bool {
+    logical_shell_commands(run_script)
+        .iter()
+        .any(|command| command.contains("https://") && command.contains("@github.com"))
+}
+
+fn persists_http_extraheader(run_script: &str) -> bool {
+    logical_shell_commands(run_script).iter().any(|command| {
+        command.contains("git config")
+            && command.contains("extraheader")
+            && !command.contains("--unset")
+    })
+}
+
+fn materialization_mentions_head_ref(run_script: &str) -> bool {
+    let script = normalized_shell_script(run_script);
+    script.contains("${HEAD_REF}") || script.contains("github.event.pull_request.head.ref")
+}
+
+fn mismatch_guard_exits_nonzero(run_script: &str) -> bool {
+    let guard_prefix = r#"if [ "$fetched_sha" != "$TRUST_ROOT_VALIDATOR_SHA" ]; then"#;
+    let mut inside_guard = false;
+
+    for line in run_script
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if !inside_guard {
+            if line == guard_prefix {
+                inside_guard = true;
+            }
+            continue;
+        }
+
+        if line == "fi" {
+            return false;
+        }
+
+        if line == "exit 1" || line.starts_with("exit 1 ") {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[test]
@@ -643,8 +768,15 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "trust-root workflow must not checkout the PR head SHA"
     );
     assert!(
-        workflow.contains("jq -r '.protected_entries[].path'"),
-        "trust-root workflow must materialize only the protected files from policy"
+        shell_has_command_with_fragments(
+            materialize_run,
+            &[
+                "jq -r '.protected_entries[].path'",
+                r#""$RUNNER_TEMP/bolt-v2-trust-root-policy.json""#,
+                "while read -r relative_path",
+            ],
+        ),
+        "trust-root workflow must source protected paths from the policy jq query"
     );
     assert!(
         workflow.contains("Validate trust-root validator SHA pin"),
@@ -682,26 +814,49 @@ fn trust_root_workflow_is_pull_request_target_and_pins_external_validator() {
         "trust-root materialization must source the exact PR head SHA through a scoped step env"
     );
     assert!(
-        materializes_protected_files_from_exact_head_sha(materialize_run),
+        shell_has_command_with_fragments(
+            materialize_run,
+            &[
+                "raw.githubusercontent.com",
+                "${HEAD_REPO_FULL_NAME}",
+                "${HEAD_SHA}",
+                "${relative_path}",
+            ],
+        ),
         "trust-root materialization must fetch protected files from HEAD_REPO_FULL_NAME at the exact HEAD_SHA"
+    );
+    assert!(
+        shell_has_command_with_fragments(
+            materialize_run,
+            &["curl", r#""$target_path""#, r#""$file_url""#],
+        ),
+        "trust-root materialization must download the exact HEAD_SHA raw URL into the materialized target path"
+    );
+    assert!(
+        !materialization_mentions_head_ref(materialize_run),
+        "trust-root materialization must not reference HEAD_REF or github.event.pull_request.head.ref"
     );
 }
 
 #[test]
-fn trust_root_workflow_materialization_matcher_accepts_exact_head_sha_raw_urls() {
-    let exact_sha_materialization_run = r#"repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
-mkdir -p "$repo_root"
-jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
-  target_path="$repo_root/$relative_path"
-  mkdir -p "$(dirname "$target_path")"
-  file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}"
-  curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url"
-done
-printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path""#;
+fn shell_fragment_matcher_tracks_logical_commands_across_continuations() {
+    let continued_fetch_line = r#"GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=http.extraheader \
+GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" \
+  git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA""#;
 
     assert!(
-        materializes_protected_files_from_exact_head_sha(exact_sha_materialization_run),
-        "materialization should accept exact-SHA raw URLs rooted at HEAD_REPO_FULL_NAME"
+        shell_has_command_with_fragments(
+            continued_fetch_line,
+            &[
+                "http.extraheader",
+                "AUTHORIZATION: basic",
+                r#"git -C "$source_repo" fetch"#,
+                "--depth=1",
+                r#""$TRUST_ROOT_VALIDATOR_SHA""#,
+            ],
+        ),
+        "shell fragment matcher must treat backslash-continued commands as one logical shell command"
     );
 }
 
@@ -741,34 +896,82 @@ fn trust_root_workflow_uses_authenticated_private_bundle_fetch_path() {
         "trust-root workflow must scope the private-read token to the external bundle fetch step"
     );
     assert!(
-        uses_non_persisted_header_authenticated_fetch(fetch_run),
-        "trust-root workflow must use a plain GitHub remote plus ephemeral AUTHORIZATION-header auth, not a tokenized remote URL"
-    );
-    assert!(
-        fetch_run.contains(
-            "git -C \"$source_repo\" fetch --depth=1 --no-tags origin \"$TRUST_ROOT_VALIDATOR_SHA\""
+        shell_has_command_with_fragments(
+            fetch_run,
+            &[
+                r#"git -C "$source_repo" remote add origin"#,
+                r#""https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git""#,
+            ],
         ),
-        "trust-root workflow must fetch the exact pinned trust-root bundle commit"
+        "trust-root workflow must use a plain GitHub HTTPS remote for the private validator repo"
     );
     assert!(
-        fetch_run.contains("fetched_sha=\"$(git -C \"$source_repo\" rev-parse FETCH_HEAD)\""),
+        !remote_url_embeds_credentials(fetch_run),
+        "trust-root workflow must not embed credentials in the remote URL"
+    );
+    assert!(
+        script_contains_none(
+            &normalized_shell_script(fetch_run),
+            &[
+                "remote set-url origin",
+                "git@github.com:",
+                "ssh://git@github.com",
+                "ssh://github.com",
+            ],
+        ),
+        "trust-root workflow must not rewrite origin away from the plain GitHub HTTPS remote"
+    );
+    assert!(
+        shell_has_command_with_fragments(
+            fetch_run,
+            &["CLAUDE_CONFIG_READ_TOKEN", "x-access-token:%s", "base64"],
+        ),
+        "trust-root workflow must derive the Authorization header value from CLAUDE_CONFIG_READ_TOKEN"
+    );
+    assert!(
+        fetch_uses_approved_header_auth_for_pinned_sha(fetch_run),
+        "trust-root workflow must attach approved fetch-scoped http.extraheader auth to the exact pinned git fetch"
+    );
+    assert!(
+        !persists_http_extraheader(fetch_run),
+        "trust-root workflow must not persist http.extraheader via git config outside the fetch command"
+    );
+    assert!(
+        shell_has_command_with_fragments(fetch_run, &["fetched_sha=", "rev-parse FETCH_HEAD"]),
         "trust-root workflow must resolve FETCH_HEAD to a concrete commit SHA before using fetched bundle files"
     );
     assert!(
-        fetch_run.contains("if [ \"$fetched_sha\" != \"$TRUST_ROOT_VALIDATOR_SHA\" ]; then"),
-        "trust-root workflow must fail closed when FETCH_HEAD does not match the pinned trust-root bundle SHA"
+        mismatch_guard_exits_nonzero(fetch_run),
+        "trust-root workflow must fail closed with exit 1 when FETCH_HEAD does not match the pinned trust-root bundle SHA"
     );
     assert!(
-        fetch_run.contains(
-            "git -C \"$source_repo\" show \"FETCH_HEAD:lib/bolt_trust_root_validator.py\""
+        shell_has_command_with_fragments(
+            fetch_run,
+            &[
+                r#"git -C "$source_repo""#,
+                "show",
+                "FETCH_HEAD:lib/bolt_trust_root_validator.py",
+            ],
         ),
         "trust-root workflow must read the validator bundle from the fetched pinned commit"
     );
     assert!(
-        fetch_run.contains(
-            "git -C \"$source_repo\" show \"FETCH_HEAD:config/bolt-v2-trust-root-policy.json\""
+        shell_has_command_with_fragments(
+            fetch_run,
+            &[
+                r#"git -C "$source_repo""#,
+                "show",
+                "FETCH_HEAD:config/bolt-v2-trust-root-policy.json",
+            ],
         ),
         "trust-root workflow must read the policy bundle from the fetched pinned commit"
+    );
+    assert!(
+        script_contains_none(
+            &normalized_shell_script(fetch_run),
+            &["raw.githubusercontent.com/${TRUST_ROOT_VALIDATOR_REPO}/${TRUST_ROOT_VALIDATOR_SHA}"],
+        ),
+        "trust-root workflow must not anonymously fetch the private bundle from raw.githubusercontent.com"
     );
 }
 
@@ -782,20 +985,33 @@ GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" \
   git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA""#;
 
     assert!(
-        !uses_non_persisted_header_authenticated_fetch(tokenized_remote_run),
-        "tokenized remote URLs must not count as the approved trust-root private fetch path"
+        remote_url_embeds_credentials(tokenized_remote_run),
+        "tokenized remote URLs must remain detectable as a trust-root credential persistence regression"
     );
 }
 
 #[test]
-fn trust_root_workflow_authenticated_fetch_matcher_accepts_git_c_extraheader_form() {
+fn trust_root_workflow_fetch_auth_matcher_accepts_git_c_extraheader_form() {
     let git_c_extraheader_run = r#"auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
 git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
 git -C "$source_repo" -c http.extraheader="AUTHORIZATION: basic $auth_header" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA""#;
 
     assert!(
-        uses_non_persisted_header_authenticated_fetch(git_c_extraheader_run),
-        "equivalent anonymous-remote fetches with ephemeral http.extraheader auth should count as valid"
+        fetch_uses_approved_header_auth_for_pinned_sha(git_c_extraheader_run),
+        "the fetch-auth matcher must accept the equivalent git -c http.extraheader form"
+    );
+}
+
+#[test]
+fn trust_root_workflow_fetch_auth_matcher_rejects_persisted_http_extraheader_config() {
+    let persisted_auth_run = r#"auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+git config --global http.extraheader "AUTHORIZATION: basic $auth_header"
+git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA""#;
+
+    assert!(
+        persists_http_extraheader(persisted_auth_run),
+        "persisted git config http.extraheader state must remain detectable as a trust-root auth-scope regression"
     );
 }
 
@@ -812,7 +1028,7 @@ done
 printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path""#;
 
     assert!(
-        !materializes_protected_files_from_exact_head_sha(head_ref_materialization_run),
+        materialization_mentions_head_ref(head_ref_materialization_run),
         "materialization must reject raw URLs that use HEAD_REF instead of the exact head SHA"
     );
 }

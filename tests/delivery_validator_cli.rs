@@ -1481,6 +1481,73 @@ fn synthetic_review_package_blocks_when_promotion_gate_verdict_is_not_pass() {
 }
 
 #[test]
+fn synthetic_review_package_blocks_when_gate_comparator_kind_is_unknown() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let gate_path = dst.join("promotion_gate.toml");
+    let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+    fs::write(
+        &gate_path,
+        original.replace(
+            "comparator_kind = \"all_of\"",
+            "comparator_kind = \"join_exists\"",
+        ),
+    )
+    .expect("mutated promotion_gate should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when the gate comparator kind is unknown; output:\n{text}"
+    );
+    assert!(text.contains("unsupported comparator_kind"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_gate_clause_comparator_kind_is_unknown() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let gate_path = dst.join("promotion_gate.toml");
+    let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+    fs::write(
+        &gate_path,
+        original.replacen(
+            "comparator_kind = \"nonempty\"",
+            "comparator_kind = \"graph_walk\"",
+            1,
+        ),
+    )
+    .expect("mutated promotion_gate should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when a gate clause comparator kind is unknown; output:\n{text}"
+    );
+    assert!(text.contains("unsupported comparator_kind"), "{text}");
+}
+
+#[test]
 fn synthetic_review_package_blocks_when_promotion_gate_subject_mismatches_expected() {
     let temp = tempdir().expect("tempdir should create");
     let dst = temp.path().join("synthetic-review-package");

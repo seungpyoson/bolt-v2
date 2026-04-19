@@ -617,19 +617,13 @@ fn validate_stage_promotion(
                                 "declare exactly one gate in the promotion gate artifact",
                             ),
                             [gate] => {
-                                let gate_shape_invalid = gate.gate_id.is_empty()
+                                let gate_base_invalid = gate.gate_id.is_empty()
                                     || gate.from_stage.is_empty()
                                     || gate.to_stage.is_empty()
                                     || gate.comparator_kind.is_empty()
                                     || gate.verdict.is_empty()
-                                    || gate.status.is_empty()
-                                    || (gate.comparator_kind == "all_of"
-                                        && gate.clauses.is_empty())
-                                    || (gate.comparator_kind != "all_of"
-                                        && (gate.left_ref.is_empty()
-                                            || (gate.right_ref.is_empty()
-                                                && gate.right_literal.is_empty())));
-                                if gate_shape_invalid {
+                                    || gate.status.is_empty();
+                                if gate_base_invalid {
                                     report.push(
                                         Status::Block,
                                         "scope",
@@ -638,6 +632,60 @@ fn validate_stage_promotion(
                                         "fill gate_id, from_stage, to_stage, comparator_kind, left_ref, one right-side expectation, verdict, and status",
                                     );
                                     return;
+                                }
+                                match gate.comparator_kind.as_str() {
+                                    "all_of" => {
+                                        if gate.clauses.is_empty() {
+                                            report.push(
+                                                Status::Block,
+                                                "scope",
+                                                row.promotion_gate_artifact.clone(),
+                                                "promotion gate row is incomplete",
+                                                "all_of gates must declare at least one clause",
+                                            );
+                                            return;
+                                        }
+                                    }
+                                    "string_eq" | "scalar_eq" => {
+                                        if gate.left_ref.is_empty()
+                                            || (gate.right_ref.is_empty()
+                                                && gate.right_literal.is_empty())
+                                        {
+                                            report.push(
+                                                Status::Block,
+                                                "scope",
+                                                row.promotion_gate_artifact.clone(),
+                                                "promotion gate row is incomplete",
+                                                "string_eq and scalar_eq gates must declare left_ref and one right-side expectation",
+                                            );
+                                            return;
+                                        }
+                                    }
+                                    "nonempty" => {
+                                        if gate.left_ref.is_empty() {
+                                            report.push(
+                                                Status::Block,
+                                                "scope",
+                                                row.promotion_gate_artifact.clone(),
+                                                "promotion gate row is incomplete",
+                                                "nonempty gates must declare left_ref",
+                                            );
+                                            return;
+                                        }
+                                    }
+                                    other => {
+                                        report.push(
+                                            Status::Block,
+                                            "scope",
+                                            row.promotion_gate_artifact.clone(),
+                                            format!(
+                                                "promotion gate `{}` uses unsupported comparator_kind `{}`",
+                                                gate.gate_id, other
+                                            ),
+                                            "use a supported generic comparator kind",
+                                        );
+                                        return;
+                                    }
                                 }
                                 if gate.from_stage != row.from_stage
                                     || gate.to_stage != row.to_stage

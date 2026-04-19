@@ -15,7 +15,7 @@ This is the cleanest current `bolt-v2` issue for the first full end-to-end proce
 
 ## Current Stage
 
-Implementation plan drafted.
+Implementation complete, review-stage package updated.
 
 The package has:
 
@@ -24,5 +24,8 @@ The package has:
 - frozen proof obligations
 - frozen fail-closed design defaults
 - drafted implementation plan
+- concrete implementation on branch `issue-205-smoke-tag-proof`
+- focused verification evidence
+- review findings recorded and resolved
 
-It still does not contain implementation or merge claims.
+It still does not assert `merge_ready = true`.

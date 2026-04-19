@@ -74,3 +74,77 @@ proves = [
 ]
 contradicts = []
 captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-7"
+type = "repo_source_ref"
+producer = "issue-205-smoke-tag-proof"
+subject = "same_sha_proof_workflow_implementation"
+artifact_ref = "branch issue-205-smoke-tag-proof / commit feb88d0f4344dd5116a62a77922157b26e401229 / .github/workflows/ci.yml"
+proves = [
+  "C205-3",
+  "C205-4",
+  "C205-5",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-8"
+type = "test_output"
+producer = "cargo test"
+subject = "same_sha_smoke_tag_contract_suite"
+artifact_ref = "cargo test --test ci_same_sha_smoke_tag -- --nocapture"
+proves = [
+  "same_sha_proof_contract_is_implemented_and_locally_verified",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-9"
+type = "test_output"
+producer = "just"
+subject = "workflow_lint_contract"
+artifact_ref = "just ci-lint-workflow"
+proves = [
+  "workflow_edit_preserves_repo_local_ci_contracts",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-10"
+type = "direct_artifact"
+producer = "git"
+subject = "issue_205_workflow_diff_scope"
+artifact_ref = "git diff --stat a1a6be0..feb88d0"
+proves = [
+  "issue_205_change_scope_is_limited_to_ci_workflow_and_contract_test",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-11"
+type = "direct_artifact"
+producer = "review"
+subject = "deploy_skip_propagation_review_finding"
+artifact_ref = "internal review finding on deploy skip propagation with skipped build dependency"
+proves = [
+  "review_found_real_issue_and_it_was_addressed",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-12"
+type = "direct_artifact"
+producer = "review"
+subject = "run_attempt_overclaim_review_finding"
+artifact_ref = "internal review finding that run_attempt was claimed but not actually enforced"
+proves = [
+  "review_found_real_issue_and_it_was_addressed",
+]
+contradicts = []
+captured_at = "2026-04-19"

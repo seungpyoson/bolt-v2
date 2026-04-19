@@ -97,7 +97,10 @@ Current progress:
 - seam/proof lock completed
 - fail-closed design defaults frozen
 - implementation plan drafted
-- implementation not yet started
+- implementation completed on branch `issue-205-smoke-tag-proof`
+- review-stage package bound to exact implementation head
+- validator passes on the `#205` package at review stage
+- external review and exact-head CI evidence still not folded into the package
 
 ### U2. Thin validator implementation
 

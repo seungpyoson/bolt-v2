@@ -7,6 +7,8 @@ closed_findings = [
   "205|semantic_ambiguity|proof_ownership|same_sha_proof_reuse_boundary_unfrozen|ci.yml",
   "205|semantic_ambiguity|artifact_provenance|deploy_artifact_source_unfrozen|ci.yml",
   "205|missing_proof|required_lane_set|required_safety_lanes_not_frozen|ci.yml",
+  "205|behavior_mismatch|deploy_fast_path|skip_propagation_can_suppress_deploy|.github/workflows/ci.yml",
+  "205|merge_claim|proof_identity|run_attempt_claim_overstated|.github/workflows/ci.yml",
 ]
 required_evidence = [
   "E205-1",
@@ -15,6 +17,12 @@ required_evidence = [
   "E205-4",
   "E205-5",
   "E205-6",
+  "E205-7",
+  "E205-8",
+  "E205-9",
+  "E205-10",
+  "E205-11",
+  "E205-12",
 ]
 
 [[claims]]
@@ -69,7 +77,22 @@ supported_by = [
   "E205-2",
   "E205-3",
   "E205-6",
+  "E205-7",
 ]
 depends_on_closed_findings = [
   "205|missing_proof|required_lane_set|required_safety_lanes_not_frozen|ci.yml",
+]
+
+[[claims]]
+claim_id = "C205-6"
+value = true
+supported_by = [
+  "E205-7",
+  "E205-8",
+  "E205-9",
+  "E205-10",
+]
+depends_on_closed_findings = [
+  "205|behavior_mismatch|deploy_fast_path|skip_propagation_can_suppress_deploy|.github/workflows/ci.yml",
+  "205|merge_claim|proof_identity|run_attempt_claim_overstated|.github/workflows/ci.yml",
 ]

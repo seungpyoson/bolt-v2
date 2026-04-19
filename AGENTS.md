@@ -33,3 +33,10 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Do not ask for or frame external red-team review while the branch has uncommitted changes, unpushed commits, unresolved findings, unanswered review comments, or failing checks.
 - Do not ask for external review until the exact PR head's CI is confirmed green.
 - If the only remaining local delta is a fix or cleanup already made locally, commit and push it before further review discussion instead of pausing in a half-finished state.
+
+## Response Format
+
+- Keep responses concise by default.
+- Prefer short direct answers over broad explanations.
+- Do not write long multi-paragraph replies unless the user explicitly asks for depth.
+- If one short paragraph or a few flat bullets is enough, use that.

@@ -800,4 +800,63 @@ mod tests {
         );
         assert_eq!(request_count.load(Ordering::Relaxed), 0);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prefix_selector_catalog_reports_aged_out_state_distinctly() {
+        let (addr, request_count) = spawn_test_server(vec![json!([])]).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let ruleset = ruleset_with_prefix("bitcoin-5m");
+        let discovery = polymarket_prefix_discovery_for_ruleset(&ruleset)
+            .unwrap()
+            .unwrap();
+        let seeded_at = DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let selector_state = PolymarketSelectorState::new_at_for_testing(
+            vec![(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])],
+            seeded_at,
+        );
+
+        let err = load_candidate_markets_for_ruleset_with_gamma_client(
+            &ruleset,
+            &client,
+            None,
+            Some(selector_state),
+            TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
+        )
+        .await
+        .expect_err("aged-out selector state should fail closed distinctly");
+
+        assert!(
+            format!("{err:#}").contains("selector state aged out"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(request_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prefix_selector_catalog_reports_missing_state_distinctly() {
+        let (addr, request_count) = spawn_test_server(vec![json!([])]).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let ruleset = ruleset_with_prefix("bitcoin-5m");
+        let selector_state =
+            PolymarketSelectorState::for_testing(Vec::<(&RulesetConfig, Vec<String>)>::new())
+                .unwrap();
+
+        let err = load_candidate_markets_for_ruleset_with_gamma_client(
+            &ruleset,
+            &client,
+            None,
+            Some(selector_state),
+            TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
+        )
+        .await
+        .expect_err("missing selector state should fail closed distinctly");
+
+        assert!(
+            format!("{err:#}").contains("selector state missing"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(request_count.load(Ordering::Relaxed), 0);
+    }
 }

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -76,6 +77,7 @@ struct SelectorStateSnapshot {
 #[derive(Clone, Debug)]
 struct CurrentEventSlugsCache {
     as_of: DateTime<Utc>,
+    generation: u64,
     event_slugs: Vec<String>,
 }
 
@@ -92,6 +94,7 @@ pub struct PolymarketSelectorState {
     event_slugs_by_discovery:
         Arc<ArcSwap<BTreeMap<PolymarketPrefixDiscovery, SelectorStateSnapshot>>>,
     current_event_slugs_cache: Arc<ArcSwapOption<CurrentEventSlugsCache>>,
+    snapshot_generation: Arc<AtomicU64>,
 }
 
 impl PolymarketSelectorState {
@@ -145,7 +148,19 @@ impl PolymarketSelectorState {
         Self {
             event_slugs_by_discovery: Arc::new(ArcSwap::from_pointee(initial_map)),
             current_event_slugs_cache: Arc::new(ArcSwapOption::empty()),
+            snapshot_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_at_for_testing<I>(
+        event_slugs_by_discovery: I,
+        refreshed_at: DateTime<Utc>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
+    {
+        Self::new_at(event_slugs_by_discovery, refreshed_at)
     }
 
     fn current_event_slugs(&self) -> Vec<String> {
@@ -154,8 +169,10 @@ impl PolymarketSelectorState {
 
     fn current_event_slugs_at(&self, now: DateTime<Utc>) -> Vec<String> {
         let now = normalize_selector_now(now);
+        let generation = self.snapshot_generation.load(Ordering::Acquire);
         if let Some(cache) = self.current_event_slugs_cache.load_full()
             && cache.as_of == now
+            && cache.generation == generation
         {
             return cache.event_slugs.clone();
         }
@@ -170,11 +187,14 @@ impl PolymarketSelectorState {
             .into_iter()
             .collect();
 
-        self.current_event_slugs_cache
-            .store(Some(Arc::new(CurrentEventSlugsCache {
-                as_of: now,
-                event_slugs: event_slugs.clone(),
-            })));
+        if self.snapshot_generation.load(Ordering::Acquire) == generation {
+            self.current_event_slugs_cache
+                .store(Some(Arc::new(CurrentEventSlugsCache {
+                    as_of: now,
+                    generation,
+                    event_slugs: event_slugs.clone(),
+                })));
+        }
 
         event_slugs
     }
@@ -233,6 +253,7 @@ impl PolymarketSelectorState {
 
         self.event_slugs_by_discovery.store(Arc::new(next));
         self.current_event_slugs_cache.store(None);
+        self.snapshot_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     #[cfg(test)]
@@ -724,13 +745,6 @@ fn ensure_refresh_interval_fits_prefix_discoveries(
     prefix_discoveries: &[PolymarketPrefixDiscovery],
     refresh_interval_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if refresh_interval_secs == 0 {
-        return Err(
-            "data_clients[].config.gamma_refresh_interval_secs must be > 0 for prefix-selector refresh"
-                .into(),
-        );
-    }
-
     let Some(min_max_expiry_secs) = prefix_discoveries
         .iter()
         .map(|discovery| discovery.max_time_to_expiry_secs)
@@ -738,6 +752,13 @@ fn ensure_refresh_interval_fits_prefix_discoveries(
     else {
         return Ok(());
     };
+
+    if refresh_interval_secs == 0 {
+        return Err(
+            "data_clients[].config.gamma_refresh_interval_secs must be > 0 for prefix-selector refresh"
+                .into(),
+        );
+    }
 
     if refresh_interval_secs >= min_max_expiry_secs {
         return Err(format!(
@@ -2302,6 +2323,35 @@ mod tests {
                 .current_event_slugs_at(seeded_at + ChronoDuration::seconds(301))
                 .is_empty(),
             "aged-out snapshots must disappear from the WS filter view too"
+        );
+    }
+
+    #[test]
+    fn stale_generation_cache_entry_is_ignored_after_upsert() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let seeded_at = DateTime::parse_from_rfc3339("2026-04-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let selector_state = PolymarketSelectorState::new_at(
+            vec![(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])],
+            seeded_at,
+        );
+
+        selector_state
+            .current_event_slugs_cache
+            .store(Some(Arc::new(CurrentEventSlugsCache {
+                as_of: seeded_at,
+                generation: 0,
+                event_slugs: vec!["stale-cache-value".to_string()],
+            })));
+        selector_state
+            .snapshot_generation
+            .store(1, Ordering::Release);
+
+        assert_eq!(
+            selector_state.current_event_slugs_at(seeded_at),
+            vec!["bitcoin-5m-alpha".to_string()],
+            "cache entries with an old generation must be ignored and recomputed"
         );
     }
 

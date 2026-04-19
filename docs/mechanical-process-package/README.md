@@ -61,6 +61,10 @@ If you want the next real execution step:
 - read [process/2026-04-19-fresh-issue-candidates-v1.md](/Users/spson/Projects/Claude/bolt-v2/docs/mechanical-process-package/process/2026-04-19-fresh-issue-candidates-v1.md)
 - then read `candidate-205-smoke-tag-ci/`
 
+If you want the concrete V2 follow-up for `#208`:
+
+- read [process/2026-04-19-issue-208-v2-checklist.md](/Users/spson/Projects/Claude/bolt-v2/.worktrees/issue-208-process-validator/docs/mechanical-process-package/process/2026-04-19-issue-208-v2-checklist.md)
+
 ## Short Verdict
 
 This package is no longer just prose.

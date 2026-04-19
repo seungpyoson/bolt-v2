@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
-use arc_swap::ArcSwap;
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use arc_swap::{ArcSwap, ArcSwapOption};
+use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use nautilus_model::identifiers::{AccountId, TraderId};
 use nautilus_polymarket::http::query::GetGammaEventsParams;
 use nautilus_polymarket::{
@@ -42,6 +43,8 @@ pub struct PolymarketDataClientInput {
     pub update_instruments_interval_mins: u64,
     #[serde(default = "default_gamma_refresh_interval_secs")]
     pub gamma_refresh_interval_secs: u64,
+    /// Accepted at the schema boundary for ruleset/runtime wiring. This field is
+    /// not consumed by `build_data_client(...)` itself.
     #[serde(default)]
     pub gamma_event_fetch_max_concurrent: Option<usize>,
     #[serde(default = "default_ws_max_subscriptions")]
@@ -66,8 +69,32 @@ pub(crate) struct PolymarketPrefixDiscovery {
 }
 
 #[derive(Clone, Debug)]
+struct SelectorStateSnapshot {
+    refreshed_at: DateTime<Utc>,
+    event_slugs: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct CurrentEventSlugsCache {
+    as_of: DateTime<Utc>,
+    generation: u64,
+    event_slugs: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SelectorDiscoveryRead {
+    Missing,
+    AgedOut,
+    EmptyFresh,
+    Live(Vec<String>),
+}
+
+#[derive(Clone, Debug)]
 pub struct PolymarketSelectorState {
-    event_slugs_by_discovery: Arc<ArcSwap<BTreeMap<PolymarketPrefixDiscovery, Vec<String>>>>,
+    event_slugs_by_discovery:
+        Arc<ArcSwap<BTreeMap<PolymarketPrefixDiscovery, SelectorStateSnapshot>>>,
+    current_event_slugs_cache: Arc<ArcSwapOption<CurrentEventSlugsCache>>,
+    snapshot_generation: Arc<AtomicU64>,
 }
 
 impl PolymarketSelectorState {
@@ -94,33 +121,84 @@ impl PolymarketSelectorState {
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
     {
-        let initial_map: BTreeMap<PolymarketPrefixDiscovery, Vec<String>> =
+        Self::new_at(event_slugs_by_discovery, selector_reference_now())
+    }
+
+    fn new_at<I>(event_slugs_by_discovery: I, refreshed_at: DateTime<Utc>) -> Self
+    where
+        I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
+    {
+        let initial_map: BTreeMap<PolymarketPrefixDiscovery, SelectorStateSnapshot> =
             event_slugs_by_discovery
                 .into_iter()
                 .map(|(discovery, event_slugs)| {
                     (
                         discovery,
-                        event_slugs
-                            .into_iter()
-                            .collect::<BTreeSet<_>>()
-                            .into_iter()
-                            .collect(),
+                        SelectorStateSnapshot {
+                            refreshed_at,
+                            event_slugs: event_slugs
+                                .into_iter()
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .collect(),
+                        },
                     )
                 })
                 .collect();
         Self {
             event_slugs_by_discovery: Arc::new(ArcSwap::from_pointee(initial_map)),
+            current_event_slugs_cache: Arc::new(ArcSwapOption::empty()),
+            snapshot_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_at_for_testing<I>(
+        event_slugs_by_discovery: I,
+        refreshed_at: DateTime<Utc>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
+    {
+        Self::new_at(event_slugs_by_discovery, refreshed_at)
+    }
+
     fn current_event_slugs(&self) -> Vec<String> {
-        self.event_slugs_by_discovery
+        self.current_event_slugs_at(selector_reference_now())
+    }
+
+    fn current_event_slugs_at(&self, now: DateTime<Utc>) -> Vec<String> {
+        let now = normalize_selector_now(now);
+        let generation = self.snapshot_generation.load(Ordering::Acquire);
+        if let Some(cache) = self.current_event_slugs_cache.load_full()
+            && cache.as_of == now
+            && cache.generation == generation
+            && generation.is_multiple_of(2)
+        {
+            return cache.event_slugs.clone();
+        }
+
+        let event_slugs: Vec<String> = self
+            .event_slugs_by_discovery
             .load()
-            .values()
-            .flat_map(|event_slugs| event_slugs.iter().cloned())
+            .iter()
+            .filter(|(discovery, snapshot)| selector_snapshot_is_live(discovery, snapshot, now))
+            .flat_map(|(_, snapshot)| snapshot.event_slugs.iter().cloned())
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .collect()
+            .collect();
+
+        let current_generation = self.snapshot_generation.load(Ordering::Acquire);
+        if current_generation == generation && current_generation.is_multiple_of(2) {
+            self.current_event_slugs_cache
+                .store(Some(Arc::new(CurrentEventSlugsCache {
+                    as_of: now,
+                    generation: current_generation,
+                    event_slugs: event_slugs.clone(),
+                })));
+        }
+
+        event_slugs
     }
 
     /// Insert or overwrite the event-slug list for each discovery in the input.
@@ -141,6 +219,21 @@ impl PolymarketSelectorState {
     where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
     {
+        self.upsert_event_slugs_by_discovery_at(event_slugs_by_discovery, selector_reference_now());
+    }
+
+    fn upsert_event_slugs_by_discovery_at<I>(
+        &self,
+        event_slugs_by_discovery: I,
+        refreshed_at: DateTime<Utc>,
+    ) where
+        I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
+    {
+        // Seqlock-style writer section:
+        // 1. bump generation to odd to invalidate all existing cache entries
+        // 2. publish the new snapshot + clear cache
+        // 3. bump generation again to even so readers may cache against the new state
+        self.snapshot_generation.fetch_add(1, Ordering::AcqRel);
         let mut next = (**self.event_slugs_by_discovery.load()).clone();
 
         for (discovery, event_slugs) in event_slugs_by_discovery {
@@ -156,24 +249,95 @@ impl PolymarketSelectorState {
                     discovery.selector.event_slug_prefix.as_deref()
                 );
             }
-            next.insert(discovery, unique_event_slugs);
+            next.insert(
+                discovery,
+                SelectorStateSnapshot {
+                    refreshed_at,
+                    event_slugs: unique_event_slugs,
+                },
+            );
         }
 
         self.event_slugs_by_discovery.store(Arc::new(next));
+        self.current_event_slugs_cache.store(None);
+        self.snapshot_generation.fetch_add(1, Ordering::AcqRel);
     }
 
+    #[cfg(test)]
     pub(crate) fn event_slugs_for_discovery(
         &self,
         discovery: &PolymarketPrefixDiscovery,
     ) -> Vec<String> {
-        self.event_slugs_by_discovery
-            .load()
-            .get(discovery)
-            .cloned()
-            .unwrap_or_default()
+        self.event_slugs_for_discovery_at(discovery, selector_reference_now())
+    }
+
+    pub(crate) fn event_slugs_read_for_discovery(
+        &self,
+        discovery: &PolymarketPrefixDiscovery,
+    ) -> SelectorDiscoveryRead {
+        self.event_slugs_read_for_discovery_at(discovery, selector_reference_now())
+    }
+
+    fn event_slugs_read_for_discovery_at(
+        &self,
+        discovery: &PolymarketPrefixDiscovery,
+        now: DateTime<Utc>,
+    ) -> SelectorDiscoveryRead {
+        let snapshots = self.event_slugs_by_discovery.load();
+        let Some(snapshot) = snapshots.get(discovery) else {
+            return SelectorDiscoveryRead::Missing;
+        };
+        if !selector_snapshot_is_live(discovery, snapshot, now) {
+            return SelectorDiscoveryRead::AgedOut;
+        }
+        if snapshot.event_slugs.is_empty() {
+            return SelectorDiscoveryRead::EmptyFresh;
+        }
+        SelectorDiscoveryRead::Live(snapshot.event_slugs.clone())
+    }
+
+    #[cfg(test)]
+    fn event_slugs_for_discovery_at(
+        &self,
+        discovery: &PolymarketPrefixDiscovery,
+        now: DateTime<Utc>,
+    ) -> Vec<String> {
+        match self.event_slugs_read_for_discovery_at(discovery, now) {
+            SelectorDiscoveryRead::Live(event_slugs) => event_slugs,
+            SelectorDiscoveryRead::Missing
+            | SelectorDiscoveryRead::AgedOut
+            | SelectorDiscoveryRead::EmptyFresh => Vec::new(),
+        }
     }
 }
 
+fn selector_reference_now() -> DateTime<Utc> {
+    normalize_selector_now(Utc::now())
+}
+
+fn normalize_selector_now(now: DateTime<Utc>) -> DateTime<Utc> {
+    now.with_nanosecond(0)
+        .expect("zero nanoseconds should always be valid")
+}
+
+fn selector_snapshot_is_live(
+    discovery: &PolymarketPrefixDiscovery,
+    snapshot: &SelectorStateSnapshot,
+    now: DateTime<Utc>,
+) -> bool {
+    let Ok(max_offset_secs) = i64::try_from(discovery.max_time_to_expiry_secs) else {
+        return false;
+    };
+    let Some(max_offset) = ChronoDuration::try_seconds(max_offset_secs) else {
+        return false;
+    };
+    let Some(expires_at) = snapshot.refreshed_at.checked_add_signed(max_offset) else {
+        return false;
+    };
+    now <= expires_at
+}
+
+#[derive(Debug)]
 pub struct PolymarketSelectorRefreshGuard {
     cancellation: CancellationToken,
     join_handle: JoinHandle<()>,
@@ -542,6 +706,10 @@ impl PolymarketRulesetSetup {
         ),
         Box<dyn std::error::Error>,
     > {
+        ensure_refresh_interval_fits_prefix_discoveries(
+            &self.prefix_discoveries,
+            gamma_refresh_interval_secs(raw)?,
+        )?;
         build_data_client(raw, &self.selectors, self.selector_state.clone())
     }
 
@@ -564,25 +732,63 @@ impl PolymarketRulesetSetup {
         let Some(selector_state) = self.selector_state.clone() else {
             return Ok(None);
         };
+        let refresh_interval_secs = gamma_refresh_interval_secs(raw)?;
+        ensure_refresh_interval_fits_prefix_discoveries(
+            &self.prefix_discoveries,
+            refresh_interval_secs,
+        )?;
 
         spawn_selector_refresh_task(
             selector_state,
             self.prefix_discoveries.clone(),
-            gamma_refresh_interval_secs(raw)?,
+            refresh_interval_secs,
             timeout_secs,
         )
         .map(Some)
     }
 }
 
+fn ensure_refresh_interval_fits_prefix_discoveries(
+    prefix_discoveries: &[PolymarketPrefixDiscovery],
+    refresh_interval_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(min_max_expiry_secs) = prefix_discoveries
+        .iter()
+        .map(|discovery| discovery.max_time_to_expiry_secs)
+        .min()
+    else {
+        return Ok(());
+    };
+
+    if refresh_interval_secs == 0 {
+        return Err(
+            "data_clients[].config.gamma_refresh_interval_secs must be > 0 for prefix-selector refresh"
+                .into(),
+        );
+    }
+
+    if refresh_interval_secs >= min_max_expiry_secs {
+        return Err(format!(
+            "data_clients[].config.gamma_refresh_interval_secs ({refresh_interval_secs}) must be < the smallest prefix ruleset max_time_to_expiry_secs ({min_max_expiry_secs}) so selector snapshots do not age out between refreshes"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 fn gamma_selector_datetime_after_seconds(
     now: DateTime<Utc>,
     offset_secs: u64,
 ) -> anyhow::Result<String> {
+    let now = normalize_selector_now(now);
     let offset_secs = i64::try_from(offset_secs)
         .map_err(|_| anyhow::anyhow!("selector expiry bound {offset_secs} exceeds i64::MAX"))?;
+    let offset = ChronoDuration::try_seconds(offset_secs).ok_or_else(|| {
+        anyhow::anyhow!("selector expiry bound {offset_secs} exceeds chrono duration range")
+    })?;
     Ok(now
-        .checked_add_signed(ChronoDuration::seconds(offset_secs))
+        .checked_add_signed(offset)
         .ok_or_else(|| {
             anyhow::anyhow!("selector expiry bound {offset_secs} results in datetime overflow")
         })?
@@ -626,100 +832,211 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
     )
 }
 
-/// (tag_slug, end_date_min, end_date_max) tuple identifying a Gamma fetch group.
-type GammaFetchGroupKey = (String, String, String);
+struct CanonicalQueryGroup {
+    canonical_params: GetGammaEventsParams,
+    canonical_min_secs: u64,
+    canonical_max_secs: u64,
+    member_discoveries: Vec<PolymarketPrefixDiscovery>,
+}
 
-/// Param-grouped fetch plan for a list of prefix discoveries.
-type GroupedPrefixDiscoveries<'a> =
-    BTreeMap<GammaFetchGroupKey, (GetGammaEventsParams, Vec<&'a PolymarketPrefixDiscovery>)>;
-
-/// Build the param-grouped fetch plan for a list of prefix discoveries.
-///
-/// Multiple discoveries that share the same (tag_slug, end_date_min, end_date_max)
-/// collapse into one Gamma query and then split their matches by prefix post-hoc.
-fn group_prefix_discoveries(
+fn group_discoveries_by_canonical_query(
     discoveries: &[PolymarketPrefixDiscovery],
     now: DateTime<Utc>,
-) -> Result<GroupedPrefixDiscoveries<'_>, Box<dyn std::error::Error>> {
-    let mut grouped_discoveries: GroupedPrefixDiscoveries<'_> = BTreeMap::new();
-
+) -> Result<Vec<CanonicalQueryGroup>, Box<dyn std::error::Error>> {
+    let mut by_tag: BTreeMap<String, Vec<PolymarketPrefixDiscovery>> = BTreeMap::new();
     for discovery in discoveries {
-        let params = gamma_event_params_for_prefix_discovery(discovery, now)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let key = (
-            params.tag_slug.clone().unwrap_or_default(),
-            params.end_date_min.clone().unwrap_or_default(),
-            params.end_date_max.clone().unwrap_or_default(),
-        );
-        grouped_discoveries
-            .entry(key)
-            .and_modify(|(_, bucket)| bucket.push(discovery))
-            .or_insert_with(|| (params, vec![discovery]));
+        by_tag
+            .entry(discovery.selector.tag_slug.clone())
+            .or_default()
+            .push(discovery.clone());
     }
 
-    Ok(grouped_discoveries)
-}
+    let mut groups = Vec::new();
+    for (_, mut tag_discoveries) in by_tag {
+        tag_discoveries.sort_by(|a, b| {
+            a.min_time_to_expiry_secs
+                .cmp(&b.min_time_to_expiry_secs)
+                .then(a.max_time_to_expiry_secs.cmp(&b.max_time_to_expiry_secs))
+                .then(a.selector.cmp(&b.selector))
+        });
 
-fn split_events_by_prefix_discovery(
-    events: Vec<GammaEvent>,
-    discoveries: &[&PolymarketPrefixDiscovery],
-) -> BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> {
-    let mut grouped_matches: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = discoveries
-        .iter()
-        .map(|discovery| ((*discovery).clone(), Vec::new()))
-        .collect();
-
-    for event in events {
-        let Some(event_slug) = event.slug.as_deref() else {
+        let mut iter = tag_discoveries.into_iter();
+        let Some(first) = iter.next() else {
             continue;
         };
+        let mut current_min = first.min_time_to_expiry_secs;
+        let mut current_max = first.max_time_to_expiry_secs;
+        let mut current_members = vec![first];
 
-        for discovery in discoveries {
-            if discovery
-                .selector
-                .event_slug_prefix
-                .as_deref()
-                .is_some_and(|prefix| event_slug.starts_with(prefix))
-            {
-                grouped_matches
-                    .get_mut(*discovery)
-                    .expect("grouped discovery should have an output bucket")
-                    .push(event.clone());
+        for discovery in iter {
+            if discovery.min_time_to_expiry_secs <= current_max {
+                current_max = current_max.max(discovery.max_time_to_expiry_secs);
+                current_members.push(discovery);
+            } else {
+                let canonical_discovery = PolymarketPrefixDiscovery {
+                    selector: PolymarketRulesetSelector {
+                        tag_slug: current_members[0].selector.tag_slug.clone(),
+                        event_slug_prefix: None,
+                    },
+                    min_time_to_expiry_secs: current_min,
+                    max_time_to_expiry_secs: current_max,
+                };
+                groups.push(CanonicalQueryGroup {
+                    canonical_params: gamma_event_params_for_prefix_discovery(
+                        &canonical_discovery,
+                        now,
+                    )?,
+                    canonical_min_secs: current_min,
+                    canonical_max_secs: current_max,
+                    member_discoveries: std::mem::take(&mut current_members),
+                });
+
+                current_min = discovery.min_time_to_expiry_secs;
+                current_max = discovery.max_time_to_expiry_secs;
+                current_members.push(discovery);
             }
         }
+
+        let canonical_discovery = PolymarketPrefixDiscovery {
+            selector: PolymarketRulesetSelector {
+                tag_slug: current_members[0].selector.tag_slug.clone(),
+                event_slug_prefix: None,
+            },
+            min_time_to_expiry_secs: current_min,
+            max_time_to_expiry_secs: current_max,
+        };
+        groups.push(CanonicalQueryGroup {
+            canonical_params: gamma_event_params_for_prefix_discovery(&canonical_discovery, now)?,
+            canonical_min_secs: current_min,
+            canonical_max_secs: current_max,
+            member_discoveries: current_members,
+        });
     }
 
-    grouped_matches
+    Ok(groups)
 }
 
-/// Strict variant: any per-group Gamma error aborts the whole resolution.
-///
-/// Used at startup (`build_selector_state`) where missing state must fail-closed
-/// rather than seed the runtime with an incomplete selector snapshot.
+fn matches_time_bounds(
+    event: &GammaEvent,
+    discovery: &PolymarketPrefixDiscovery,
+    now: DateTime<Utc>,
+) -> bool {
+    let now = normalize_selector_now(now);
+    let Some(end_date) = event.end_date.as_deref() else {
+        return false;
+    };
+    let Ok(end_at) = DateTime::parse_from_rfc3339(end_date) else {
+        return false;
+    };
+    let end_at = end_at.with_timezone(&Utc);
+    let Ok(min_offset_secs) = i64::try_from(discovery.min_time_to_expiry_secs) else {
+        return false;
+    };
+    let Ok(max_offset_secs) = i64::try_from(discovery.max_time_to_expiry_secs) else {
+        return false;
+    };
+    let Some(min_offset) = ChronoDuration::try_seconds(min_offset_secs) else {
+        return false;
+    };
+    let Some(max_offset) = ChronoDuration::try_seconds(max_offset_secs) else {
+        return false;
+    };
+    let Some(min_end) = now.checked_add_signed(min_offset) else {
+        return false;
+    };
+    let Some(max_end) = now.checked_add_signed(max_offset) else {
+        return false;
+    };
+    end_at >= min_end && end_at <= max_end
+}
+
+fn discovery_matches_event(
+    event: &GammaEvent,
+    discovery: &PolymarketPrefixDiscovery,
+    canonical_bounds: (u64, u64),
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(event_slug) = event.slug.as_deref() else {
+        return false;
+    };
+    let prefix_match = discovery
+        .selector
+        .event_slug_prefix
+        .as_deref()
+        .is_some_and(|prefix| event_slug.starts_with(prefix));
+    if !prefix_match {
+        return false;
+    }
+    let discovery_matches_canonical = discovery.min_time_to_expiry_secs == canonical_bounds.0
+        && discovery.max_time_to_expiry_secs == canonical_bounds.1;
+    discovery_matches_canonical || matches_time_bounds(event, discovery, now)
+}
+
+fn partition_events_by_discovery(
+    out: &mut BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>,
+    canonical_bounds: (u64, u64),
+    discoveries: &[PolymarketPrefixDiscovery],
+    events: Vec<GammaEvent>,
+    now: DateTime<Utc>,
+) {
+    for event in events {
+        for discovery in discoveries {
+            if !discovery_matches_event(&event, discovery, canonical_bounds, now) {
+                continue;
+            }
+            out.get_mut(discovery)
+                .expect("discovery bucket should already exist")
+                .push(event.clone());
+        }
+    }
+}
+
+async fn resolve_matching_events_by_discovery_with_gamma_client(
+    discoveries: &[PolymarketPrefixDiscovery],
+    client: &PolymarketGammaRawHttpClient,
+) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
+    let now = selector_reference_now();
+    let unique_discoveries: Vec<PolymarketPrefixDiscovery> = discoveries
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let groups = group_discoveries_by_canonical_query(&unique_discoveries, now)?;
+
+    let mut out: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> = unique_discoveries
+        .iter()
+        .cloned()
+        .map(|d| (d, Vec::new()))
+        .collect();
+
+    for group in groups {
+        let CanonicalQueryGroup {
+            canonical_params,
+            canonical_min_secs,
+            canonical_max_secs,
+            member_discoveries,
+        } = group;
+        let events = fetch_gamma_events_paginated(client, canonical_params).await?;
+        partition_events_by_discovery(
+            &mut out,
+            (canonical_min_secs, canonical_max_secs),
+            &member_discoveries,
+            events,
+            now,
+        );
+    }
+
+    Ok(out)
+}
+
+/// Keep the named strict entrypoint explicit: startup seeding is fail-closed,
+/// even though it currently shares the same core resolver as the strict helper.
 async fn resolve_matching_events_by_discovery_with_gamma_client_strict(
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
-    let now = Utc::now();
-    let grouped_discoveries = group_prefix_discoveries(discoveries, now)?;
-
-    let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
-        discoveries
-            .iter()
-            .cloned()
-            .map(|discovery| (discovery, Vec::new()))
-            .collect();
-
-    for (_, (params, discoveries)) in grouped_discoveries {
-        let events = fetch_gamma_events_paginated(client, params).await?;
-        let grouped_matches = split_events_by_prefix_discovery(events, &discoveries);
-
-        for (discovery, matched_events) in grouped_matches {
-            matched_events_by_discovery.insert(discovery, matched_events);
-        }
-    }
-
-    Ok(matched_events_by_discovery)
+    resolve_matching_events_by_discovery_with_gamma_client(discoveries, client).await
 }
 
 /// Best-effort variant: per-group Gamma errors are logged as warnings and the
@@ -728,29 +1045,50 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_strict(
 /// Used by the selector refresh task so that one tag/time-window outage cannot
 /// stale every other group's selector state at once. Because
 /// `PolymarketSelectorState::upsert_event_slugs_by_discovery` leaves absent keys
-/// untouched, omitted groups keep their prior snapshot until their next refresh.
+/// untouched, omitted groups keep their prior snapshot until their next refresh
+/// or until that snapshot ages out past the discovery max-expiry window.
 async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
     discoveries: &[PolymarketPrefixDiscovery],
     client: &PolymarketGammaRawHttpClient,
 ) -> Result<BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>, Box<dyn std::error::Error>> {
-    let now = Utc::now();
-    let grouped_discoveries = group_prefix_discoveries(discoveries, now)?;
+    let now = selector_reference_now();
+    let unique_discoveries: Vec<PolymarketPrefixDiscovery> = discoveries
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let groups = group_discoveries_by_canonical_query(&unique_discoveries, now)?;
 
     let mut matched_events_by_discovery: BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>> =
         BTreeMap::new();
 
-    for (_, (params, discoveries)) in grouped_discoveries {
-        let tag_slug = params.tag_slug.clone().unwrap_or_default();
-        match fetch_gamma_events_paginated(client, params).await {
+    for group in groups {
+        let CanonicalQueryGroup {
+            canonical_params,
+            canonical_min_secs,
+            canonical_max_secs,
+            member_discoveries,
+        } = group;
+        let tag_slug = canonical_params.tag_slug.clone().unwrap_or_default();
+        match fetch_gamma_events_paginated(client, canonical_params).await {
             Ok(events) => {
-                let grouped_matches = split_events_by_prefix_discovery(events, &discoveries);
-                for (discovery, matched_events) in grouped_matches {
-                    matched_events_by_discovery.insert(discovery, matched_events);
+                for discovery in &member_discoveries {
+                    matched_events_by_discovery
+                        .entry(discovery.clone())
+                        .or_default();
                 }
+                partition_events_by_discovery(
+                    &mut matched_events_by_discovery,
+                    (canonical_min_secs, canonical_max_secs),
+                    &member_discoveries,
+                    events,
+                    now,
+                );
             }
             Err(error) => {
                 log::warn!(
-                    "polymarket ruleset validation: group tag_slug={tag_slug} gamma fetch failed: {error}; preserving prior selector state for that group"
+                    "polymarket ruleset validation: group tag_slug={tag_slug} gamma fetch failed: {error}; preserving prior selector state for that group until refresh succeeds or the snapshot ages out"
                 );
             }
         }
@@ -950,10 +1288,33 @@ mod tests {
                     let body = if path == "/events"
                         && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
                     {
+                        let canonical_min = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_min")
+                                .expect("prefix discovery should send end_date_min"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+                        let inside_range = canonical_min + ChronoDuration::seconds(120);
                         json!([
-                            {"id":"1","slug":"bitcoin-5m-alpha","markets":[]},
-                            {"id":"2","slug":"bitcoin-15m-beta","markets":[]},
-                            {"id":"3","slug":"ethereum-5m-gamma","markets":[]}
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-alpha",
+                                "endDate": inside_range.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"2",
+                                "slug":"bitcoin-15m-beta",
+                                "endDate": inside_range.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"3",
+                                "slug":"ethereum-5m-gamma",
+                                "endDate": inside_range.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            }
                         ])
                         .to_string()
                     } else {
@@ -969,6 +1330,221 @@ mod tests {
             }
         });
         (addr, requests)
+    }
+
+    async fn spawn_recording_empty_server() -> (SocketAddr, Arc<Mutex<Vec<HashMap<String, String>>>>)
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let server_requests = Arc::clone(&server_requests);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (_, params) = parse_request_target(&request);
+                    server_requests.lock().unwrap().push(params);
+
+                    let body = "[]";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        (addr, requests)
+    }
+
+    async fn spawn_overlap_partition_test_server()
+    -> (SocketAddr, Arc<Mutex<Vec<HashMap<String, String>>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let server_requests = Arc::clone(&server_requests);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+                    server_requests.lock().unwrap().push(params.clone());
+
+                    let body = if path == "/events"
+                        && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
+                    {
+                        let canonical_min = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_min")
+                                .expect("canonical overlap fetch should send end_date_min"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+                        let canonical_max = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_max")
+                                .expect("canonical overlap fetch should send end_date_max"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+                        let inside_both = canonical_min + ChronoDuration::seconds(120);
+                        let outside_5m_only = canonical_max;
+                        let outside_15m_only = canonical_min;
+
+                        json!([
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-alpha",
+                                "endDate": inside_both.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"2",
+                                "slug":"bitcoin-5m-late",
+                                "endDate": outside_5m_only.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"3",
+                                "slug":"bitcoin-15m-beta",
+                                "endDate": inside_both.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"4",
+                                "slug":"bitcoin-15m-early",
+                                "endDate": outside_15m_only.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            }
+                        ])
+                        .to_string()
+                    } else {
+                        "[]".to_string()
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        (addr, requests)
+    }
+
+    async fn spawn_missing_end_date_test_server() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+
+                    let body = if path == "/events"
+                        && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
+                    {
+                        json!([
+                            {"id":"1","slug":"bitcoin-5m-alpha","markets":[]}
+                        ])
+                        .to_string()
+                    } else {
+                        "[]".to_string()
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        addr
+    }
+
+    async fn spawn_sequenced_refresh_server(
+        failing_request_count: usize,
+    ) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let server_request_count = Arc::clone(&request_count);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let server_request_count = Arc::clone(&server_request_count);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (_, params) = parse_request_target(&request);
+                    let request_number = server_request_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+                    let (status_line, body) = if request_number <= failing_request_count {
+                        ("HTTP/1.1 500 Internal Server Error", "{}".to_string())
+                    } else {
+                        let canonical_min = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_min")
+                                .expect("refresh request should send end_date_min"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+                        let refreshed_end = canonical_min + ChronoDuration::seconds(1);
+                        (
+                            "HTTP/1.1 200 OK",
+                            json!([{
+                                "id":"recovered-event",
+                                "slug":"bitcoin-5m-recovered",
+                                "endDate": refreshed_end.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            }])
+                            .to_string(),
+                        )
+                    };
+
+                    let response = format!(
+                        "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        (addr, request_count)
+    }
+
+    async fn wait_for_request_count(
+        request_count: &std::sync::atomic::AtomicUsize,
+        expected: usize,
+    ) {
+        use std::sync::atomic::Ordering;
+
+        for _ in 0..200 {
+            if request_count.load(Ordering::Relaxed) >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "expected at least {expected} requests, observed {}",
+            request_count.load(Ordering::Relaxed)
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1038,6 +1614,186 @@ mod tests {
         assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_event_slugs_coalesces_overlapping_non_identical_discoveries() {
+        let (addr, requests) = spawn_overlap_partition_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery_5m = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let discovery_15m = prefix_discovery("bitcoin", "bitcoin-15m", 60, 600);
+        let discoveries = vec![discovery_5m.clone(), discovery_15m.clone()];
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            &discoveries,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([
+                (discovery_5m.clone(), vec!["bitcoin-5m-alpha".to_string()]),
+                (discovery_15m.clone(), vec!["bitcoin-15m-beta".to_string()]),
+            ])
+        );
+
+        let recorded_requests = requests.lock().unwrap();
+        assert_eq!(
+            recorded_requests.len(),
+            1,
+            "overlapping windows should coalesce into one canonical Gamma fetch"
+        );
+        let params = &recorded_requests[0];
+        assert_eq!(params.get("tag_slug").map(String::as_str), Some("bitcoin"));
+
+        let end_date_min = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_min")
+                .expect("coalesced overlap fetch should send end_date_min"),
+        ))
+        .unwrap();
+        let end_date_max = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_max")
+                .expect("coalesced overlap fetch should send end_date_max"),
+        ))
+        .unwrap();
+        assert_eq!(
+            (end_date_max - end_date_min).num_seconds(),
+            570,
+            "merged overlap query should widen from [30,300] and [60,600] to [30,600]"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn best_effort_overlap_path_matches_strict_partitioning() {
+        let (addr, requests) = spawn_overlap_partition_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery_5m = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let discovery_15m = prefix_discovery("bitcoin", "bitcoin-15m", 60, 600);
+        let discoveries = vec![discovery_5m.clone(), discovery_15m.clone()];
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
+            &discoveries,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([
+                (discovery_5m.clone(), vec!["bitcoin-5m-alpha".to_string()]),
+                (discovery_15m.clone(), vec!["bitcoin-15m-beta".to_string()]),
+            ])
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_task_end_to_end_preserves_then_ages_out_then_recovers() {
+        use std::sync::atomic::Ordering;
+
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 1, 1);
+        let selector_state = PolymarketSelectorState::new(vec![(
+            discovery.clone(),
+            vec!["bitcoin-5m-startup".to_string()],
+        )]);
+        let (addr, request_count) = spawn_sequenced_refresh_server(2).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let guard = spawn_selector_refresh_task_with_client(
+            selector_state.clone(),
+            vec![discovery.clone()],
+            2,
+            client,
+        );
+
+        wait_for_request_count(&request_count, 1).await;
+        assert_eq!(
+            selector_state.current_event_slugs(),
+            vec!["bitcoin-5m-startup".to_string()]
+        );
+        assert_eq!(
+            selector_state.event_slugs_read_for_discovery(&discovery),
+            SelectorDiscoveryRead::Live(vec!["bitcoin-5m-startup".to_string()])
+        );
+
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        wait_for_request_count(&request_count, 2).await;
+        assert!(
+            selector_state.current_event_slugs().is_empty(),
+            "failed-group snapshot should remain aged out while later refreshes are still failing"
+        );
+        assert_eq!(
+            selector_state.event_slugs_read_for_discovery(&discovery),
+            SelectorDiscoveryRead::AgedOut
+        );
+
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        wait_for_request_count(&request_count, 3).await;
+        assert_eq!(
+            selector_state.current_event_slugs(),
+            vec!["bitcoin-5m-recovered".to_string()]
+        );
+        assert_eq!(
+            selector_state.event_slugs_read_for_discovery(&discovery),
+            SelectorDiscoveryRead::Live(vec!["bitcoin-5m-recovered".to_string()])
+        );
+        assert_eq!(request_count.load(Ordering::Relaxed), 3);
+
+        guard.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canonical_window_members_accept_missing_end_date_on_prefix_match() {
+        let addr = spawn_missing_end_date_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            std::slice::from_ref(&discovery),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])]),
+            "canonical-window members should keep the pre-existing prefix-match behavior when Gamma omits endDate"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_event_slugs_keeps_non_overlapping_same_tag_discoveries_separate() {
+        let (addr, requests) = spawn_recording_empty_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery_5m = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let discovery_15m = prefix_discovery("bitcoin", "bitcoin-15m", 600, 900);
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            &[discovery_5m.clone(), discovery_15m.clone()],
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([
+                (discovery_5m.clone(), Vec::<String>::new()),
+                (discovery_15m.clone(), Vec::<String>::new()),
+            ])
+        );
+
+        let recorded_requests = requests.lock().unwrap();
+        assert_eq!(
+            recorded_requests.len(),
+            2,
+            "non-overlapping windows should remain separate canonical fetches"
+        );
+    }
+
     /// Test server that returns 500 for a configured set of tag_slugs and 200
     /// with the provided body for all other tag_slugs.
     async fn spawn_test_server_with_failing_tags(
@@ -1063,11 +1819,43 @@ mod tests {
                     let (status_line, body) = if failing_tags.contains(&tag_slug) {
                         ("HTTP/1.1 500 Internal Server Error", "{}".to_string())
                     } else {
-                        let body = success_bodies
+                        let canonical_min = params.get("end_date_min").map(|value| {
+                            DateTime::parse_from_rfc3339(&decode_query_param(value))
+                                .unwrap()
+                                .with_timezone(&Utc)
+                        });
+                        let value = success_bodies
                             .get(&tag_slug)
                             .cloned()
-                            .unwrap_or_else(|| json!([]))
-                            .to_string();
+                            .unwrap_or_else(|| json!([]));
+                        let body = match (canonical_min, value) {
+                            (Some(canonical_min), serde_json::Value::Array(events)) => {
+                                let inside_range = canonical_min + ChronoDuration::seconds(120);
+                                serde_json::Value::Array(
+                                    events
+                                        .into_iter()
+                                        .map(|event| match event {
+                                            serde_json::Value::Object(mut object) => {
+                                                object.entry("endDate".to_string()).or_insert_with(
+                                                    || {
+                                                        serde_json::Value::String(
+                                                            inside_range.to_rfc3339_opts(
+                                                                chrono::SecondsFormat::Secs,
+                                                                true,
+                                                            ),
+                                                        )
+                                                    },
+                                                );
+                                                serde_json::Value::Object(object)
+                                            }
+                                            other => other,
+                                        })
+                                        .collect(),
+                                )
+                                .to_string()
+                            }
+                            (_, value) => value.to_string(),
+                        };
                         ("HTTP/1.1 200 OK", body)
                     };
 
@@ -1219,6 +2007,100 @@ mod tests {
             state.event_slugs_for_discovery(&eth_discovery),
             vec!["ethereum-5m-alpha".to_string()],
             "healthy group must be overwritten with fresh slugs"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_task_best_effort_clears_prior_state_when_successful_group_has_no_matches() {
+        let bodies = HashMap::from([(
+            "bitcoin".to_string(),
+            json!([{"id":"b1","slug":"bitcoin-15m-alpha","markets":[]}]),
+        )]);
+        let addr = spawn_test_server_with_failing_tags(bodies, Vec::new()).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let state = PolymarketSelectorState::new(vec![(
+            discovery.clone(),
+            vec!["bitcoin-5m-prior".to_string()],
+        )]);
+
+        let refresh = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_best_effort(
+            std::slice::from_ref(&discovery),
+            &client,
+        )
+        .await
+        .unwrap();
+        state.upsert_event_slugs_by_discovery(refresh);
+
+        assert!(
+            state.event_slugs_for_discovery(&discovery).is_empty(),
+            "successful best-effort refresh with zero matches must clear stale selector state"
+        );
+    }
+
+    #[test]
+    fn matches_time_bounds_returns_false_when_expiry_offsets_overflow_i64() {
+        let now = DateTime::parse_from_rfc3339("2026-04-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", u64::MAX, u64::MAX);
+        let event = GammaEvent {
+            id: "e1".to_string(),
+            slug: Some("bitcoin-5m-alpha".to_string()),
+            title: None,
+            description: None,
+            start_date: None,
+            end_date: Some("2026-04-18T23:59:59Z".to_string()),
+            active: None,
+            closed: None,
+            archived: None,
+            markets: Vec::new(),
+            liquidity: None,
+            volume: None,
+            open_interest: None,
+            volume_24hr: None,
+            category: None,
+            neg_risk: None,
+            neg_risk_market_id: None,
+            featured: None,
+        };
+
+        assert!(
+            !matches_time_bounds(&event, &discovery, now),
+            "overflowing expiry offsets must fail closed"
+        );
+    }
+
+    #[test]
+    fn matches_time_bounds_accepts_exact_boundary_with_subsecond_now() {
+        let now = DateTime::parse_from_rfc3339("2026-04-19T00:00:00.500Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let event = GammaEvent {
+            id: "e2".to_string(),
+            slug: Some("bitcoin-5m-boundary".to_string()),
+            title: None,
+            description: None,
+            start_date: None,
+            end_date: Some("2026-04-19T00:00:30Z".to_string()),
+            active: None,
+            closed: None,
+            archived: None,
+            markets: Vec::new(),
+            liquidity: None,
+            volume: None,
+            open_interest: None,
+            volume_24hr: None,
+            category: None,
+            neg_risk: None,
+            neg_risk_market_id: None,
+            featured: None,
+        };
+
+        assert!(
+            matches_time_bounds(&event, &discovery, now),
+            "second-aligned boundary events should not be dropped because local now had fractional seconds"
         );
     }
 
@@ -1418,6 +2300,150 @@ mod tests {
                 .event_slugs_for_discovery(&discovery)
                 .is_empty(),
             "empty Gamma refresh response must clear previous selector state, not preserve it"
+        );
+    }
+
+    #[test]
+    fn selector_state_ages_out_snapshots_after_max_expiry_window() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let seeded_at = DateTime::parse_from_rfc3339("2026-04-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let selector_state = PolymarketSelectorState::new_at(
+            vec![(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])],
+            seeded_at,
+        );
+
+        assert_eq!(
+            selector_state
+                .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(299)),
+            vec!["bitcoin-5m-alpha".to_string()]
+        );
+        assert!(
+            selector_state
+                .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(301))
+                .is_empty(),
+            "stale selector snapshots should age out after the discovery max expiry window"
+        );
+        assert!(
+            selector_state
+                .current_event_slugs_at(seeded_at + ChronoDuration::seconds(301))
+                .is_empty(),
+            "aged-out snapshots must disappear from the WS filter view too"
+        );
+    }
+
+    #[test]
+    fn stale_generation_cache_entry_is_ignored_after_upsert() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let seeded_at = DateTime::parse_from_rfc3339("2026-04-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let selector_state = PolymarketSelectorState::new_at(
+            vec![(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])],
+            seeded_at,
+        );
+
+        selector_state
+            .current_event_slugs_cache
+            .store(Some(Arc::new(CurrentEventSlugsCache {
+                as_of: seeded_at,
+                generation: 0,
+                event_slugs: vec!["stale-cache-value".to_string()],
+            })));
+        selector_state
+            .snapshot_generation
+            .store(1, Ordering::Release);
+
+        assert_eq!(
+            selector_state.current_event_slugs_at(seeded_at),
+            vec!["bitcoin-5m-alpha".to_string()],
+            "cache entries with an old generation must be ignored and recomputed"
+        );
+    }
+
+    #[test]
+    fn omitted_failed_group_snapshot_still_ages_out_after_max_expiry_window() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let seeded_at = DateTime::parse_from_rfc3339("2026-04-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let selector_state = PolymarketSelectorState::new_at(
+            vec![(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])],
+            seeded_at,
+        );
+
+        selector_state.upsert_event_slugs_by_discovery_at(
+            Vec::<(PolymarketPrefixDiscovery, Vec<String>)>::new(),
+            seeded_at + ChronoDuration::seconds(60),
+        );
+
+        assert_eq!(
+            selector_state
+                .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(300)),
+            vec!["bitcoin-5m-alpha".to_string()]
+        );
+        assert!(
+            selector_state
+                .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(301))
+                .is_empty(),
+            "omitted failed-group snapshots must age out instead of staying live forever"
+        );
+    }
+
+    #[test]
+    fn refresh_interval_must_be_below_smallest_prefix_expiry_window() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let setup = PolymarketRulesetSetup {
+            selectors: vec![discovery.selector.clone()],
+            prefix_discoveries: vec![discovery.clone()],
+            selector_state: Some(PolymarketSelectorState::new(vec![(
+                discovery.clone(),
+                vec!["bitcoin-5m-alpha".to_string()],
+            )])),
+        };
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 300
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let err = setup
+            .build_data_client(&raw)
+            .expect_err("refresh interval equal to the discovery max-expiry window should be rejected before runtime wiring");
+        assert!(
+            err.to_string()
+                .contains("gamma_refresh_interval_secs (300) must be <")
+        );
+    }
+
+    #[test]
+    fn refresh_interval_must_be_positive_for_prefix_refresh() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let setup = PolymarketRulesetSetup {
+            selectors: vec![discovery.selector.clone()],
+            prefix_discoveries: vec![discovery.clone()],
+            selector_state: Some(PolymarketSelectorState::new(vec![(
+                discovery.clone(),
+                vec!["bitcoin-5m-alpha".to_string()],
+            )])),
+        };
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 0
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let err = setup
+            .build_data_client(&raw)
+            .expect_err("zero refresh interval should be rejected explicitly");
+        assert!(
+            err.to_string()
+                .contains("gamma_refresh_interval_secs must be > 0")
         );
     }
 

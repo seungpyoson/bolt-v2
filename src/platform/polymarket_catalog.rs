@@ -142,17 +142,37 @@ async fn load_events_for_selector(
     let prefix_discovery = polymarket_prefix_discovery_for_ruleset(ruleset)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?
         .ok_or_else(|| anyhow::anyhow!("missing prefix discovery for prefix selector"))?;
-    let event_slugs = selector_state.event_slugs_for_discovery(&prefix_discovery);
-    if !event_slugs.is_empty() {
-        return load_events_by_event_slugs(&event_slugs, client, gamma_event_fetch_max_concurrent)
+    match selector_state.event_slugs_read_for_discovery(&prefix_discovery) {
+        crate::clients::polymarket::SelectorDiscoveryRead::Live(event_slugs) => {
+            return load_events_by_event_slugs(
+                &event_slugs,
+                client,
+                gamma_event_fetch_max_concurrent,
+            )
             .await;
+        }
+        crate::clients::polymarket::SelectorDiscoveryRead::EmptyFresh => {
+            anyhow::bail!(
+                "selector refresh returned zero event slugs for tag_slug={} prefix={:?}; failing closed until selector refresh finds a matching event again",
+                selector.tag_slug,
+                selector.event_slug_prefix.as_deref()
+            );
+        }
+        crate::clients::polymarket::SelectorDiscoveryRead::AgedOut => {
+            anyhow::bail!(
+                "selector state aged out for tag_slug={} prefix={:?}; failing closed until selector refresh repopulates event slugs",
+                selector.tag_slug,
+                selector.event_slug_prefix.as_deref()
+            );
+        }
+        crate::clients::polymarket::SelectorDiscoveryRead::Missing => {
+            anyhow::bail!(
+                "selector state missing for tag_slug={} prefix={:?}; failing closed until selector refresh repopulates event slugs",
+                selector.tag_slug,
+                selector.event_slug_prefix.as_deref()
+            );
+        }
     }
-
-    anyhow::bail!(
-        "selector state empty for tag_slug={} prefix={:?}; failing closed until selector refresh repopulates event slugs",
-        selector.tag_slug,
-        selector.event_slug_prefix.as_deref()
-    );
 }
 
 async fn load_events_by_event_slugs(
@@ -775,7 +795,66 @@ mod tests {
         .expect_err("empty selector state should fail closed");
 
         assert!(
-            format!("{err:#}").contains("selector state empty"),
+            format!("{err:#}").contains("selector refresh returned zero event slugs"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(request_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prefix_selector_catalog_reports_aged_out_state_distinctly() {
+        let (addr, request_count) = spawn_test_server(vec![json!([])]).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let ruleset = ruleset_with_prefix("bitcoin-5m");
+        let discovery = polymarket_prefix_discovery_for_ruleset(&ruleset)
+            .unwrap()
+            .unwrap();
+        let seeded_at = DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let selector_state = PolymarketSelectorState::new_at_for_testing(
+            vec![(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])],
+            seeded_at,
+        );
+
+        let err = load_candidate_markets_for_ruleset_with_gamma_client(
+            &ruleset,
+            &client,
+            None,
+            Some(selector_state),
+            TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
+        )
+        .await
+        .expect_err("aged-out selector state should fail closed distinctly");
+
+        assert!(
+            format!("{err:#}").contains("selector state aged out"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(request_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prefix_selector_catalog_reports_missing_state_distinctly() {
+        let (addr, request_count) = spawn_test_server(vec![json!([])]).await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let ruleset = ruleset_with_prefix("bitcoin-5m");
+        let selector_state =
+            PolymarketSelectorState::for_testing(Vec::<(&RulesetConfig, Vec<String>)>::new())
+                .unwrap();
+
+        let err = load_candidate_markets_for_ruleset_with_gamma_client(
+            &ruleset,
+            &client,
+            None,
+            Some(selector_state),
+            TEST_GAMMA_EVENT_FETCH_MAX_CONCURRENT,
+        )
+        .await
+        .expect_err("missing selector state should fail closed distinctly");
+
+        assert!(
+            format!("{err:#}").contains("selector state missing"),
             "unexpected error: {err:#}"
         );
         assert_eq!(request_count.load(Ordering::Relaxed), 0);

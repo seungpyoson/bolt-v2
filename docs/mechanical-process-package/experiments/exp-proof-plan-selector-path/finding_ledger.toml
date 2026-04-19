@@ -1,0 +1,68 @@
+status = "classified"
+
+[[findings]]
+finding_id = "selector-path-proof|missing_proof|schema_boundary|dual_mode_schema_boundary_unproven|src/clients/polymarket.rs"
+kind = "missing_proof"
+subject = "schema_boundary"
+predicate = "dual_mode_schema_boundary_unproven"
+locus = "src/clients/polymarket.rs"
+source_refs = [
+  "E1",
+  "E2",
+  "E3",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "PP1",
+  "PP2",
+]
+
+[[findings]]
+finding_id = "selector-path-proof|missing_proof|legacy_event_slugs_mode|fail_closed_transition_unproven|src/clients/polymarket.rs"
+kind = "missing_proof"
+subject = "legacy_event_slugs_mode"
+predicate = "fail_closed_transition_unproven"
+locus = "src/clients/polymarket.rs"
+source_refs = [
+  "E4",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "PP3",
+]
+
+[[findings]]
+finding_id = "selector-path-proof|scope_violation|slug_fetch_fanout|base_slice_accepts_unbounded_follow_up_class_without_explicit_tracking|src/platform/polymarket_catalog.rs"
+kind = "scope_violation"
+subject = "slug_fetch_fanout"
+predicate = "base_slice_accepts_unbounded_follow_up_class_without_explicit_tracking"
+locus = "src/platform/polymarket_catalog.rs"
+source_refs = [
+  "E5",
+  "E6",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "defer_tracked"
+resolved_by = [
+  "PP4",
+  "#180 item 1",
+]
+
+[[findings]]
+finding_id = "selector-path-proof|review_target_mismatch|stale_review_artifact|not_a_proof_plan_failure|review"
+kind = "review_target_mismatch"
+subject = "stale_review_artifact"
+predicate = "not_a_proof_plan_failure"
+locus = "review"
+source_refs = []
+duplicates = []
+status = "resolved"
+resolution_kind = "stale"
+resolved_by = [
+  "review_target gate",
+]

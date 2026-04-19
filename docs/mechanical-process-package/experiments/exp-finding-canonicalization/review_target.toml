@@ -1,0 +1,7 @@
+repo = "seungpyoson/bolt-v2"
+pr_number = 192
+base_ref = "origin/main"
+head_sha = "23659d3a5a45681abaee4a0afe20d79ea4455183"
+diff_identity = "selector-path-clean-base-review-round"
+round_id = "selector-path-r1"
+status = "frozen"

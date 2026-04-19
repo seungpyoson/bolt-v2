@@ -1,0 +1,76 @@
+status = "collected"
+
+[[evidence]]
+evidence_id = "E205-1"
+type = "external_artifact"
+producer = "github_issue"
+subject = "issue_205_problem_statement"
+artifact_ref = "https://github.com/seungpyoson/bolt-v2/issues/205"
+proves = [
+  "C205-1",
+  "C205-2",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-5"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "workflow_triggers_and_concurrency_key"
+artifact_ref = ".github/workflows/ci.yml:3-15"
+proves = [
+  "C205-1",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-6"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "current_tag_deploy_guards"
+artifact_ref = ".github/workflows/ci.yml:288-339"
+proves = [
+  "C205-2",
+  "current_tag_deploy_preserves_tag_on_main_and_idempotency_guards",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-2"
+type = "external_artifact"
+producer = "gh_run_view"
+subject = "main_push_ci_run_24623219988"
+artifact_ref = "run 24623219988 / headSha a1a6be0d94e887538ebcd9afced6c94046a557d6 / jobs detector,test,build,clippy,deny,fmt-check,gate,deploy(skipped)"
+proves = [
+  "C205-1",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-3"
+type = "external_artifact"
+producer = "gh_run_view"
+subject = "smoke_tag_ci_run_24623274722"
+artifact_ref = "run 24623274722 / headSha a1a6be0d94e887538ebcd9afced6c94046a557d6 / jobs detector,test,build,clippy,deny,fmt-check,gate,deploy(success)"
+proves = [
+  "C205-1",
+  "C205-2",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-4"
+type = "external_artifact"
+producer = "gh_run_view"
+subject = "tag_run_deploy_step_duration"
+artifact_ref = "run 24623274722 / deploy job 71998186080 / started 07:06:44Z / completed 07:06:56Z"
+proves = [
+  "C205-2",
+]
+contradicts = []
+captured_at = "2026-04-19"

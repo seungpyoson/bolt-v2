@@ -1,0 +1,47 @@
+status = "open"
+
+[[findings]]
+finding_id = "EXP-ETH-ANCHOR-SEMANTICS|semantic_ambiguity|interval_open|mixed-anchor-source|src/strategies/eth_chainlink_taker.rs"
+kind = "semantic_ambiguity"
+subject = "interval_open"
+predicate = "mixed_anchor_source"
+locus = "src/strategies/eth_chainlink_taker.rs:1113-1116"
+source_refs = [
+  "E2",
+  "E3",
+  "E5",
+]
+duplicates = []
+status = "open"
+resolution_kind = "UNSET"
+resolved_by = []
+
+[[findings]]
+finding_id = "EXP-ETH-ANCHOR-SEMANTICS|artifact_mismatch|market-anchor|page-vs-gamma-surface|external"
+kind = "artifact_mismatch"
+subject = "market_anchor_surface"
+predicate = "page_exposes_price_to_beat_but_sampled_gamma_payload_does_not"
+locus = "external"
+source_refs = [
+  "E4",
+  "E5",
+]
+duplicates = []
+status = "open"
+resolution_kind = "UNSET"
+resolved_by = []
+
+[[findings]]
+finding_id = "EXP-ETH-ANCHOR-SEMANTICS|semantic_ambiguity|stale_chainlink_clock|clock-source-unfrozen|src/strategies/eth_chainlink_taker.rs"
+kind = "semantic_ambiguity"
+subject = "stale_chainlink_clock"
+predicate = "clock_source_unfrozen"
+locus = "src/strategies/eth_chainlink_taker.rs:1617-1646"
+source_refs = [
+  "E6",
+  "E7",
+]
+duplicates = []
+status = "open"
+resolution_kind = "UNSET"
+resolved_by = []

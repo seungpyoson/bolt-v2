@@ -1,0 +1,48 @@
+merge_ready = true
+head_scope_hash = "selector-path-review-corpus-only"
+
+open_blockers = []
+
+closed_findings = [
+  "selector-path|behavior_mismatch|slug_fetch_concurrency|unbounded_fanout|src/platform/polymarket_catalog.rs",
+  "selector-path|review_target_mismatch|nt_pointer_scope|comment_targets_absent_diff|src/nt_pointer_probe/control.rs",
+  "selector-path|behavior_mismatch|legacy_event_slugs_schema_boundary|subset_schema_rejects_legacy_field|src/clients/polymarket.rs",
+]
+
+required_evidence = [
+  "E1",
+  "E2",
+  "E3",
+  "E4",
+]
+
+[[claims]]
+claim_id = "FC1"
+value = true
+supported_by = [
+  "E1",
+  "E2",
+]
+depends_on_closed_findings = [
+  "selector-path|behavior_mismatch|slug_fetch_concurrency|unbounded_fanout|src/platform/polymarket_catalog.rs",
+]
+
+[[claims]]
+claim_id = "FC2"
+value = true
+supported_by = [
+  "E3",
+]
+depends_on_closed_findings = [
+  "selector-path|review_target_mismatch|nt_pointer_scope|comment_targets_absent_diff|src/nt_pointer_probe/control.rs",
+]
+
+[[claims]]
+claim_id = "FC3"
+value = true
+supported_by = [
+  "E4",
+]
+depends_on_closed_findings = [
+  "selector-path|behavior_mismatch|legacy_event_slugs_schema_boundary|subset_schema_rejects_legacy_field|src/clients/polymarket.rs",
+]

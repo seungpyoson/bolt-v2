@@ -1,0 +1,96 @@
+status = "locked"
+
+[[claims]]
+claim_id = "C205-1"
+claim_text = "main_push_and_smoke_tag_runs_operated_on_the_same_head_sha"
+claim_kind = "exact_head_identity"
+covered_by = [
+  "E205-1",
+  "E205-2",
+  "E205-3",
+  "E205-5",
+]
+falsified_by = [
+  "FX205-1",
+]
+required_before = "implementation"
+status = "mapped"
+
+[[claims]]
+claim_id = "C205-2"
+claim_text = "the_primary_operator_latency_is_duplicated_heavy_test_build_work_not_deploy_step_time"
+claim_kind = "performance_cause"
+covered_by = [
+  "E205-3",
+  "E205-4",
+  "E205-6",
+]
+falsified_by = [
+  "FX205-2",
+]
+required_before = "implementation"
+status = "mapped"
+
+[[claims]]
+claim_id = "C205-3"
+claim_text = "any_accepted_change_must_preserve_exact_sha_safety_evidence_before_deploy"
+claim_kind = "safety_boundary"
+covered_by = [
+  "E205-1",
+  "E205-2",
+  "E205-6",
+]
+falsified_by = [
+  "FX205-3",
+]
+required_before = "implementation"
+status = "mapped"
+
+[[claims]]
+claim_id = "C205-4"
+claim_text = "any_accepted_change_must_preserve_exact_artifact_provenance_for_the_deployed_binary"
+claim_kind = "artifact_provenance"
+covered_by = [
+  "E205-2",
+  "E205-6",
+]
+falsified_by = [
+  "FX205-4",
+]
+required_before = "implementation"
+status = "mapped"
+
+[[claims]]
+claim_id = "C205-5"
+claim_text = "the_required_lane_set_for_same_sha_smoke_deploy_proof_is_frozen_before_optimization"
+claim_kind = "required_lane_set"
+covered_by = [
+  "E205-1",
+  "E205-2",
+  "E205-6",
+]
+falsified_by = [
+  "FX205-5",
+]
+required_before = "implementation"
+status = "mapped"
+
+[[falsifiers]]
+falsifier_id = "FX205-1"
+description = "The two cited runs point to different head SHAs, making same-SHA duplication an invalid problem statement."
+
+[[falsifiers]]
+falsifier_id = "FX205-2"
+description = "Deploy step duration dominates total latency instead of duplicated heavy lanes."
+
+[[falsifiers]]
+falsifier_id = "FX205-3"
+description = "A proposed optimization allows deploy to proceed without exactly one successful main-push CI run attempt for the same SHA and its successful gate result."
+
+[[falsifiers]]
+falsifier_id = "FX205-4"
+description = "A proposed optimization allows deploy of an artifact not pinned to the exact eligible run attempt by artifact identity and digest."
+
+[[falsifiers]]
+falsifier_id = "FX205-5"
+description = "The optimization reuses partial proof instead of requiring successful gate plus matching build artifact from the exact eligible run attempt, or rerunning heavy lanes fail-closed."

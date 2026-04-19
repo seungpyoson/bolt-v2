@@ -1,0 +1,55 @@
+issue_id = "EXP-PROOF-PLAN-SELECTOR-PATH"
+title = "Test proof-plan adequacy on selector-path late blockers"
+repo = "bolt-v2"
+slice_id = "selector-path-proof-plan"
+status = "evaluating"
+problem_statement = "Selector-path review history produced late blocker classes around schema-boundary behavior, legacy compatibility, and unbounded slug fan-out. The experiment tests whether those classes can be forced into explicit proof obligations before review."
+
+required_outcomes = [
+  "schema-boundary blocker maps to explicit pre-review claims and falsifiers",
+  "legacy compatibility blocker maps to explicit pre-review claims and falsifiers",
+  "unbounded slug fan-out class is assigned to a gate instead of discovered as free-form review churn",
+  "the process distinguishes proof-plan failures from scope-gate or review-target failures",
+]
+
+non_goals = [
+  "no code changes",
+  "no PR updates",
+  "no claim that proof-plan alone solves stale review artifacts",
+]
+
+allowed_surfaces = [
+  "docs/delivery/exp-proof-plan-selector-path/**",
+  "docs/process/**",
+]
+
+forbidden_surfaces = [
+  "src/**",
+  "tests/**",
+  ".github/**",
+]
+
+assumptions = [
+  "The current local selector-path code and tests are acceptable evidence for retrospective analysis",
+  "Review comments from old selector-path PRs are acceptable evidence for blocker classification",
+]
+
+[[semantic_terms]]
+name = "schema_boundary"
+status = "observed_local"
+definition = "The full TOML schema boundary for data_clients[].config across ruleset mode and legacy event_slugs mode."
+
+[[semantic_terms]]
+name = "legacy_event_slugs_mode"
+status = "observed_local"
+definition = "The no-rulesets path where event_slugs in data_clients[].config must still build the data client."
+
+[[semantic_terms]]
+name = "ruleset_mode_typo_rejection"
+status = "observed_local"
+definition = "Ruleset mode must reject unknown config fields instead of silently falling back to defaults."
+
+[[semantic_terms]]
+name = "slug_fetch_fanout"
+status = "observed_local"
+definition = "The number of concurrent slug-based requests emitted by selector-path and raw-anchor fetch paths."

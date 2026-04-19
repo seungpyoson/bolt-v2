@@ -1,0 +1,43 @@
+issue_id = "205"
+title = "avoid duplicating full test+build work when smoke-tagging merged main"
+repo = "bolt-v2"
+slice_id = "fresh-issue-trial-candidate"
+status = "draft"
+problem_statement = "Smoke-tagging immediately after merge currently triggers a second full heavy CI/build path on the same SHA before deploy starts. The problem is duplicated proof work on one commit, not slow deploy itself."
+
+required_outcomes = [
+  "the exact duplicated-work seam is frozen before implementation",
+  "acceptance can be stated in exact workflow/job/evidence terms",
+  "the issue can be carried through the full process as one bounded slice",
+]
+
+non_goals = [
+  "no live deploy changes yet",
+  "no workflow edits yet",
+  "no artifact reuse mechanism chosen yet",
+]
+
+allowed_surfaces = [
+  "docs/delivery/candidate-205-smoke-tag-ci/**",
+  "docs/process/**",
+]
+
+forbidden_surfaces = [
+  "src/**",
+  ".github/**",
+]
+
+assumptions = [
+  "Issue #205 body is the authoritative evidence base for intake",
+  "The first fresh-issue trial should prefer bounded CI/process seams over live trading/runtime seams",
+]
+
+[[semantic_terms]]
+name = "same_sha_duplicate_proof"
+status = "unresolved"
+definition = "The repeated heavy CI/build work performed on the same commit SHA across main push and immediate smoke-tag push."
+
+[[semantic_terms]]
+name = "smoke_tag_deploy_latency"
+status = "unresolved"
+definition = "The end-to-end operator-visible delay before deploy starts after a proof tag is pushed."

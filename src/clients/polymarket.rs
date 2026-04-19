@@ -154,10 +154,10 @@ impl PolymarketSelectorState {
 
     fn current_event_slugs_at(&self, now: DateTime<Utc>) -> Vec<String> {
         let now = normalize_selector_now(now);
-        if let Some(cache) = self.current_event_slugs_cache.load_full() {
-            if cache.as_of == now {
-                return cache.event_slugs.clone();
-            }
+        if let Some(cache) = self.current_event_slugs_cache.load_full()
+            && cache.as_of == now
+        {
+            return cache.event_slugs.clone();
         }
 
         let event_slugs: Vec<String> = self

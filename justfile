@@ -909,6 +909,12 @@ ci-lint-workflow:
         echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
     fi
 
+pre-push-issue-gate delivery_dir stage test_target='delivery_validator_cli': check-workspace
+    just fmt-check
+    cargo test --test {{test_target}} -- --nocapture
+    just ci-lint-workflow
+    cargo run --quiet --bin process_validator -- --delivery-dir {{delivery_dir}} --stage {{stage}}
+
 nt-pointer-probe-forbid-build-injection-surfaces: check-workspace
     #!/usr/bin/env bash
     set -euo pipefail

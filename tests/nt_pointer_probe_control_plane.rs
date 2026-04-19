@@ -672,6 +672,36 @@ fn ci_lint_workflow_covers_all_nt_pointer_workflows() {
 }
 
 #[test]
+fn pre_push_issue_gate_recipe_enforces_formatter_tests_lint_and_validator() {
+    let justfile = fs::read_to_string(repo_root().join("justfile")).expect("justfile should load");
+
+    assert!(
+        justfile.contains(
+            "pre-push-issue-gate delivery_dir stage test_target='delivery_validator_cli':"
+        ),
+        "justfile must define a parameterized pre-push-issue-gate recipe"
+    );
+    assert!(
+        justfile.contains("just fmt-check"),
+        "pre-push-issue-gate must run formatter checks through the canonical just lane"
+    );
+    assert!(
+        justfile.contains("cargo test --test {{test_target}} -- --nocapture"),
+        "pre-push-issue-gate must run the issue-local test target"
+    );
+    assert!(
+        justfile.contains("just ci-lint-workflow"),
+        "pre-push-issue-gate must run the workflow contract lint"
+    );
+    assert!(
+        justfile.contains(
+            "cargo run --quiet --bin process_validator -- --delivery-dir {{delivery_dir}} --stage {{stage}}"
+        ),
+        "pre-push-issue-gate must run the process validator on the declared delivery package and stage"
+    );
+}
+
+#[test]
 fn nt_pin_guard_workflows_route_base_ref_through_environment() {
     for workflow_path in [
         ".github/workflows/nt-pointer-control-plane.yml",

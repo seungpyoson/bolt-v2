@@ -181,3 +181,59 @@ fn review_stage_package_blocks_when_ci_surface_is_missing() {
     );
     assert!(text.contains("ci_surface.toml"), "{text}");
 }
+
+#[test]
+fn review_stage_package_blocks_when_claim_enforcement_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let claim_enforcement = dst.join("claim_enforcement.toml");
+    if claim_enforcement.exists() {
+        fs::remove_file(&claim_enforcement).expect("claim_enforcement should remove");
+    }
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed without claim_enforcement.toml; output:\n{text}"
+    );
+    assert!(text.contains("claim_enforcement.toml"), "{text}");
+}
+
+#[test]
+fn review_stage_package_blocks_when_assumption_register_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let assumption_register = dst.join("assumption_register.toml");
+    if assumption_register.exists() {
+        fs::remove_file(&assumption_register).expect("assumption_register should remove");
+    }
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed without assumption_register.toml when trust assumptions exist; output:\n{text}"
+    );
+    assert!(text.contains("assumption_register.toml"), "{text}");
+}

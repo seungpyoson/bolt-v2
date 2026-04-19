@@ -663,8 +663,7 @@ fn trust_root_workflow_uses_authenticated_private_bundle_fetch_path() {
             .expect("trust-root workflow should load");
     let yaml: YamlValue =
         serde_yaml::from_str(&workflow).expect("trust-root workflow should parse as YAML");
-    let fetch_step =
-        workflow_job_step(&yaml, "trust_root", "Fetch external trust-root validator");
+    let fetch_step = workflow_job_step(&yaml, "trust_root", "Fetch external trust-root validator");
     let fetch_run = workflow_step_run(fetch_step);
 
     assert!(

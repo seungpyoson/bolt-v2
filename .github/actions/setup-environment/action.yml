@@ -156,7 +156,7 @@ runs:
       run: |
         bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
 
-    - name: Resolve managed cargo target
+    - name: Resolve managed target dir
       id: target_dir
       shell: bash
       run: |

@@ -50,6 +50,30 @@ Two real review findings were surfaced and addressed before closeout:
 
 Both were resolved on the implementation branch and recorded in the finding ledger.
 
+## Exact Review Target
+
+The active GitHub review target is now:
+
+- PR `#210`
+- head `6169428f9d401952b776971ffe7d03963401f7fb`
+
+## Exact-Head CI Snapshot
+
+Current exact-head GitHub CI snapshot recorded into the package:
+
+- `same_sha_proof`: pass
+- `detector`: pass
+- `fmt-check`: pass
+- `deny`: pass
+- `clippy`: pass
+- `test`: in progress
+- `build`: in progress
+
+Known unrelated blocker still visible on the PR surface:
+
+- `nt-pointer-trust-root` fails independently as the already-known private-fetch trust-root issue
+- this is not new `#205` logic drift
+
 ## Verdict
 
 This is a stronger process result.
@@ -64,4 +88,7 @@ It:
 
 The fresh-issue trial for `#205` has now crossed from planning into a validator-backed implementation package.
 
-It is still not merge-ready, because exact-head CI and external review have not been recorded into the package yet.
+It is still not merge-ready, because:
+
+1. exact-head CI is not fully complete yet
+2. external review has not been recorded into the package yet

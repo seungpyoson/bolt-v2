@@ -148,3 +148,27 @@ proves = [
 ]
 contradicts = []
 captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-13"
+type = "external_artifact"
+producer = "github_pr"
+subject = "pr_210_exact_review_target"
+artifact_ref = "PR #210 / head 6169428f9d401952b776971ffe7d03963401f7fb / branch issue-205-smoke-tag-proof"
+proves = [
+  "exact_review_target_is_frozen_for_issue_205",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E205-14"
+type = "external_artifact"
+producer = "github_actions"
+subject = "pr_210_exact_head_ci_snapshot"
+artifact_ref = "CI run 24627115529 on head 6169428f9d401952b776971ffe7d03963401f7fb: detector/same_sha_proof/fmt-check/deny/clippy passed; test/build in progress"
+proves = [
+  "exact_head_ci_has_started_and_core_issue_205_lanes_are_green_so_far",
+]
+contradicts = []
+captured_at = "2026-04-19"

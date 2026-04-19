@@ -1,0 +1,34 @@
+workflow = "CI"
+head_sha = "556d57240b95c00485d3466797980c8dee20241c"
+run_selection_rule = "exact_head_sha_on_relevant_ci_workflow"
+
+[required_jobs_by_stage]
+review = [
+  "detector",
+  "same_sha_proof",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "test",
+  "build",
+]
+merge_candidate = [
+  "detector",
+  "same_sha_proof",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "test",
+  "build",
+  "gate",
+]
+
+ignored_jobs = [
+  "nt-pointer-trust-root",
+]
+partial_ci_allowed_stages = [
+  "review",
+]
+terminal_ci_required_stages = [
+  "merge_candidate",
+]

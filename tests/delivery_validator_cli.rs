@@ -1,4 +1,10 @@
-use std::{path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use tempfile::tempdir;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -32,6 +38,20 @@ fn combined_output(output: &std::process::Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("destination dir should create");
+    for entry in fs::read_dir(src).expect("source dir should read") {
+        let entry = entry.expect("dir entry should read");
+        let file_type = entry.file_type().expect("file type should read");
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path);
+        } else {
+            fs::copy(entry.path(), dst_path).expect("file should copy");
+        }
+    }
 }
 
 #[test]
@@ -91,17 +111,73 @@ fn proof_plan_fixture_passes_with_review_target_warning() {
 }
 
 #[test]
-fn candidate_205_package_is_structurally_valid_at_proof_locked_stage() {
+fn candidate_205_package_is_structurally_valid_at_review_stage() {
     let output = run_validator(
         "docs/mechanical-process-package/candidate-205-smoke-tag-ci",
-        "proof_locked",
+        "review",
     );
     assert!(
         output.status.success(),
-        "candidate #205 package should be structurally valid before implementation; output:\n{}",
+        "candidate #205 package should be structurally valid at review stage; output:\n{}",
         combined_output(&output)
     );
     let text = combined_output(&output);
     assert!(text.contains("STATUS: PASS"), "{text}");
     assert!(!text.contains("STATUS: BLOCK"), "{text}");
+}
+
+#[test]
+fn review_stage_package_blocks_when_execution_target_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let execution_target = dst.join("execution_target.toml");
+    if execution_target.exists() {
+        fs::remove_file(&execution_target).expect("execution_target should remove");
+    }
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed without execution_target.toml; output:\n{text}"
+    );
+    assert!(text.contains("execution_target.toml"), "{text}");
+}
+
+#[test]
+fn review_stage_package_blocks_when_ci_surface_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let ci_surface = dst.join("ci_surface.toml");
+    if ci_surface.exists() {
+        fs::remove_file(&ci_surface).expect("ci_surface should remove");
+    }
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed without ci_surface.toml; output:\n{text}"
+    );
+    assert!(text.contains("ci_surface.toml"), "{text}");
 }

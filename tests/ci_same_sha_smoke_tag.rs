@@ -151,9 +151,9 @@ fn same_sha_proof_job_selects_exact_successful_main_push_run_for_same_sha() {
         "same_sha_proof must query main-push CI runs for the exact GITHUB_SHA"
     );
     assert!(
-        run_scripts
-            .iter()
-            .any(|run| run.contains("&status=success") || run.contains(".conclusion == \"success\"")),
+        run_scripts.iter().any(
+            |run| run.contains("&status=success") || run.contains(".conclusion == \"success\"")
+        ),
         "same_sha_proof must restrict reuse to successful source runs"
     );
     assert!(
@@ -224,7 +224,8 @@ fn tag_fast_path_skips_duplicate_heavy_lanes_only_when_reuse_is_ready() {
             "{job_name} must depend on same_sha_proof to participate in the reuse fast-path"
         );
         assert!(
-            job_if(&job, job_name).contains("needs.same_sha_proof.outputs.reuse_available != 'true'"),
+            job_if(&job, job_name)
+                .contains("needs.same_sha_proof.outputs.reuse_available != 'true'"),
             "{job_name} must only skip when same_sha_proof reports reuse_available=true"
         );
     }

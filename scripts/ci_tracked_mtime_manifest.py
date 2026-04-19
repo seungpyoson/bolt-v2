@@ -28,11 +28,31 @@ def tracked_entries(repo: Path) -> list[tuple[str, str]]:
     return entries
 
 
+def dirty_worktree_paths(repo: Path) -> set[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "diff-files", "--name-only", "-z"],
+        check=True,
+        capture_output=True,
+    )
+    return {
+        record.decode("utf-8")
+        for record in proc.stdout.split(b"\0")
+        if record
+    }
+
+
 def load_manifest(path: Path) -> dict[str, dict[str, int | str]]:
     if not path.exists():
         return {}
-    with path.open("r", encoding="utf-8") as fh:
-        payload = json.load(fh)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"Warning: could not read manifest {path}: {exc}; skipping restore",
+            file=sys.stderr,
+        )
+        return {}
     if payload.get("version") != 1:
         raise ValueError(f"unsupported manifest version in {path}")
     return {entry["path"]: entry for entry in payload.get("files", [])}
@@ -72,11 +92,21 @@ def restore(repo: Path, manifest: Path) -> int:
         print(f"No tracked mtime manifest at {manifest}; skipping restore")
         return 0
 
+    try:
+        dirty_paths = dirty_worktree_paths(repo)
+        entries = tracked_entries(repo)
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        print(
+            f"Warning: could not prepare tracked mtime restore for {repo}: {exc}; skipping restore",
+            file=sys.stderr,
+        )
+        return 0
+
     restored = 0
     skipped = 0
-    for rel_path, blob in tracked_entries(repo):
+    for rel_path, blob in entries:
         entry = saved.get(rel_path)
-        if entry is None or entry["blob"] != blob:
+        if entry is None or entry["blob"] != blob or rel_path in dirty_paths:
             skipped += 1
             continue
         full_path = repo / rel_path
@@ -85,7 +115,18 @@ def restore(repo: Path, manifest: Path) -> int:
             continue
         stat_result = full_path.stat()
         mtime_ns = int(entry["mtime_ns"])
-        os.utime(full_path, ns=(stat_result.st_atime_ns, mtime_ns))
+        if stat_result.st_mtime_ns == mtime_ns:
+            skipped += 1
+            continue
+        try:
+            os.utime(full_path, ns=(stat_result.st_atime_ns, mtime_ns))
+        except OSError as exc:
+            print(
+                f"Warning: could not restore mtime for {rel_path}: {exc}",
+                file=sys.stderr,
+            )
+            skipped += 1
+            continue
         restored += 1
 
     print(

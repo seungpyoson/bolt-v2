@@ -157,6 +157,7 @@ jobs:
           cache-directories: ${{ steps.managed_target.outputs.dir }}
 
       - name: Restore tracked source mtimes from cache manifest
+        continue-on-error: true
         run: |
           python3 scripts/ci_tracked_mtime_manifest.py restore \
             --repo "$GITHUB_WORKSPACE" \

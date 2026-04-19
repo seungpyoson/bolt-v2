@@ -342,9 +342,23 @@ struct PromotionGateRow {
     #[serde(default)]
     right_literal: String,
     #[serde(default)]
+    clauses: Vec<PromotionGateClause>,
+    #[serde(default)]
     verdict: String,
     #[serde(default)]
     status: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PromotionGateClause {
+    #[serde(default)]
+    comparator_kind: String,
+    #[serde(default)]
+    left_ref: String,
+    #[serde(default)]
+    right_ref: String,
+    #[serde(default)]
+    right_literal: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -505,15 +519,19 @@ fn validate_stage_promotion(
                                 "declare exactly one gate in the promotion gate artifact",
                             ),
                             [gate] => {
-                                if gate.gate_id.is_empty()
+                                let gate_shape_invalid = gate.gate_id.is_empty()
                                     || gate.from_stage.is_empty()
                                     || gate.to_stage.is_empty()
                                     || gate.comparator_kind.is_empty()
-                                    || gate.left_ref.is_empty()
-                                    || (gate.right_ref.is_empty() && gate.right_literal.is_empty())
                                     || gate.verdict.is_empty()
                                     || gate.status.is_empty()
-                                {
+                                    || (gate.comparator_kind == "all_of"
+                                        && gate.clauses.is_empty())
+                                    || (gate.comparator_kind != "all_of"
+                                        && (gate.left_ref.is_empty()
+                                            || (gate.right_ref.is_empty()
+                                                && gate.right_literal.is_empty())));
+                                if gate_shape_invalid {
                                     report.push(
                                         Status::Block,
                                         "scope",
@@ -549,31 +567,27 @@ fn validate_stage_promotion(
                                         "only a promotion gate with verdict `pass` may advance a stage",
                                     );
                                 }
-                                if gate.comparator_kind != "string_eq"
-                                    && gate.comparator_kind != "scalar_eq"
-                                {
-                                    report.push(
-                                        Status::Block,
-                                        "scope",
-                                        row.promotion_gate_artifact.clone(),
-                                        format!(
-                                            "promotion gate `{}` uses unsupported comparator_kind `{}`",
-                                            gate.gate_id, gate.comparator_kind
-                                        ),
-                                        "use a supported generic comparator kind",
-                                    );
-                                    return;
-                                }
+                                let evaluate_eq = |left_ref: &str,
+                                                   right_ref: &str,
+                                                   right_literal: &str|
+                                 -> Result<(String, String)> {
+                                    let left_value = resolve_toml_scalar_ref(dir, left_ref)?;
+                                    let right_value = if !right_ref.is_empty() {
+                                        resolve_toml_scalar_ref(dir, right_ref)?
+                                    } else {
+                                        right_literal.to_string()
+                                    };
+                                    Ok((left_value, right_value))
+                                };
 
-                                match resolve_toml_scalar_ref(dir, &gate.left_ref) {
-                                    Ok(left_value) => {
-                                        let right_value = if !gate.right_ref.is_empty() {
-                                            resolve_toml_scalar_ref(dir, &gate.right_ref)
-                                        } else {
-                                            Ok(gate.right_literal.clone())
-                                        };
-                                        match right_value {
-                                            Ok(right_value) => {
+                                match gate.comparator_kind.as_str() {
+                                    "string_eq" | "scalar_eq" => {
+                                        match evaluate_eq(
+                                            &gate.left_ref,
+                                            &gate.right_ref,
+                                            &gate.right_literal,
+                                        ) {
+                                            Ok((left_value, right_value)) => {
                                                 if left_value != right_value {
                                                     report.push(
                                                         Status::Block,
@@ -592,22 +606,87 @@ fn validate_stage_promotion(
                                                 "scope",
                                                 row.promotion_gate_artifact.clone(),
                                                 format!(
-                                                    "promotion gate `{}` right-side reference is invalid",
+                                                    "promotion gate `{}` has an invalid scalar reference",
                                                     gate.gate_id
                                                 ),
-                                                "bind the gate to a valid expected ref or literal",
+                                                "bind the gate to valid scalar refs or a literal",
                                             ),
                                         }
                                     }
-                                    Err(_) => report.push(
+                                    "all_of" => {
+                                        for (idx, clause) in gate.clauses.iter().enumerate() {
+                                            if clause.comparator_kind != "string_eq"
+                                                && clause.comparator_kind != "scalar_eq"
+                                            {
+                                                report.push(
+                                                    Status::Block,
+                                                    "scope",
+                                                    row.promotion_gate_artifact.clone(),
+                                                    format!(
+                                                        "promotion gate `{}` clause {} uses unsupported comparator_kind `{}`",
+                                                        gate.gate_id, idx, clause.comparator_kind
+                                                    ),
+                                                    "use only supported generic comparator kinds inside all_of",
+                                                );
+                                                continue;
+                                            }
+                                            if clause.left_ref.is_empty()
+                                                || (clause.right_ref.is_empty()
+                                                    && clause.right_literal.is_empty())
+                                            {
+                                                report.push(
+                                                    Status::Block,
+                                                    "scope",
+                                                    row.promotion_gate_artifact.clone(),
+                                                    format!(
+                                                        "promotion gate `{}` clause {} is incomplete",
+                                                        gate.gate_id, idx
+                                                    ),
+                                                    "fill left_ref and one right-side expectation for every all_of clause",
+                                                );
+                                                continue;
+                                            }
+                                            match evaluate_eq(
+                                                &clause.left_ref,
+                                                &clause.right_ref,
+                                                &clause.right_literal,
+                                            ) {
+                                                Ok((left_value, right_value)) => {
+                                                    if left_value != right_value {
+                                                        report.push(
+                                                            Status::Block,
+                                                            "scope",
+                                                            row.promotion_gate_artifact.clone(),
+                                                            format!(
+                                                                "promotion gate `{}` clause {} failed: `{}` != `{}`",
+                                                                gate.gate_id, idx, left_value, right_value
+                                                            ),
+                                                            "fix the subject artifact, expected artifact, or gate binding before advancing the stage",
+                                                        );
+                                                    }
+                                                }
+                                                Err(_) => report.push(
+                                                    Status::Block,
+                                                    "scope",
+                                                    row.promotion_gate_artifact.clone(),
+                                                    format!(
+                                                        "promotion gate `{}` clause {} has an invalid scalar reference",
+                                                        gate.gate_id, idx
+                                                    ),
+                                                    "bind every all_of clause to valid scalar refs or a literal",
+                                                ),
+                                            }
+                                        }
+                                    }
+                                    other => report.push(
                                         Status::Block,
                                         "scope",
                                         row.promotion_gate_artifact.clone(),
                                         format!(
-                                            "promotion gate `{}` left-side reference is invalid",
-                                            gate.gate_id
+                                            "promotion gate `{}` uses unsupported comparator_kind `{}`",
+                                            gate.gate_id, other
                                         ),
-                                        "bind the gate to a valid subject ref",
+                                        "use a supported generic comparator kind",
                                     ),
                                 }
                             }
@@ -759,20 +838,6 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                         "execution_target.toml is present but incomplete",
                         "fill all required execution target fields before review-stage validation",
                     );
-                }
-                if let Some(review) = &review_target {
-                    if !review.head_sha.is_empty() && target.head_sha != review.head_sha {
-                        report.push(
-                            Status::Block,
-                            "review_target",
-                            "execution_target.toml",
-                            format!(
-                                "execution head `{}` does not match review target head `{}`",
-                                target.head_sha, review.head_sha
-                            ),
-                            "bind the package to one exact head before proceeding",
-                        );
-                    }
                 }
             }
             None => report.push(
@@ -1203,33 +1268,21 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                     "review-stage package has external review evidence but no review_rounds artifacts",
                     "add review_rounds/<round_id>.toml to record ingestion of the exact review corpus",
                 );
-            } else if let Some(target) = &review_target {
-                let matching = review_rounds.iter().find(|(_, round)| {
-                    round.round_id == target.round_id && round.absorbed_by_head == target.head_sha
-                });
-                match matching {
-                    Some((path, round))
-                        if !round.source.is_empty()
-                            && !round.review_target_ref.is_empty()
-                            && !round.raw_comment_refs.is_empty()
-                            && !round.status.is_empty() => {}
-                    Some((path, _)) => report.push(
-                        Status::Block,
-                        "review_target",
-                        path.display().to_string(),
-                        "review round exists but is incomplete for the active exact-head review target",
-                        "fill source, review_target_ref, raw_comment_refs, and status for the active round",
-                    ),
-                    None => report.push(
-                        Status::Block,
-                        "review_target",
-                        "review_rounds/",
-                        format!(
-                            "no review round matches active round `{}` on head `{}`",
-                            target.round_id, target.head_sha
-                        ),
-                        "add a review_rounds entry bound to the active exact review target",
-                    ),
+            } else {
+                for (path, round) in &review_rounds {
+                    if round.source.is_empty()
+                        || round.review_target_ref.is_empty()
+                        || round.raw_comment_refs.is_empty()
+                        || round.status.is_empty()
+                    {
+                        report.push(
+                            Status::Block,
+                            "review_target",
+                            path.display().to_string(),
+                            "review round exists but is incomplete",
+                            "fill source, review_target_ref, raw_comment_refs, and status for every ingested review round",
+                        );
+                    }
                 }
             }
         }

@@ -187,12 +187,30 @@ status = "satisfied"
 gate_id = "gate-1"
 from_stage = "proof_locked"
 to_stage = "review"
+comparator_kind = "all_of"
+left_ref = ""
+right_ref = ""
+right_literal = ""
+verdict = "pass"
+status = "frozen"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "execution_target.toml#head_sha"
+right_ref = "review_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
 comparator_kind = "string_eq"
 left_ref = "review_rounds/review-r1.toml#absorbed_by_head"
 right_ref = "review_target.toml#head_sha"
 right_literal = ""
-verdict = "pass"
-status = "frozen"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "review_rounds/review-r1.toml#round_id"
+right_ref = "review_target.toml#round_id"
+right_literal = ""
 "#,
     );
     write_file(
@@ -989,7 +1007,67 @@ fn synthetic_review_package_blocks_when_promotion_gate_subject_mismatches_expect
         !output.status.success(),
         "synthetic review package must fail closed when promotion gate subject mismatches expected value; output:\n{text}"
     );
-    assert!(text.contains("comparator failed"), "{text}");
+    assert!(text.contains("clause"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_execution_head_mismatches_review_head() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let execution_target = dst.join("execution_target.toml");
+    let original = fs::read_to_string(&execution_target).expect("execution_target should read");
+    fs::write(
+        &execution_target,
+        original.replace("head_sha = \"abc123\"", "head_sha = \"wrong-head\""),
+    )
+    .expect("mutated execution_target should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when execution head mismatches review head through the all_of gate; output:\n{text}"
+    );
+    assert!(text.contains("clause"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_review_round_id_mismatches_review_target() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let round_path = dst.join("review_rounds/review-r1.toml");
+    let original = fs::read_to_string(&round_path).expect("review_round should read");
+    fs::write(
+        &round_path,
+        original.replace("round_id = \"review-r1\"", "round_id = \"review-r2\""),
+    )
+    .expect("mutated review_round should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when review round id mismatches review target through the all_of gate; output:\n{text}"
+    );
+    assert!(text.contains("clause"), "{text}");
 }
 
 #[test]

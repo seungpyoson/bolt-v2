@@ -257,14 +257,18 @@ fn check_chainlink_ws_origins(errors: &mut Vec<ValidationError>, field: &str, va
     }
 }
 
+struct SharedReferenceConfigContract {
+    venue_kind: &'static str,
+    missing_code: &'static str,
+    orphaned_code: &'static str,
+}
+
 fn check_shared_reference_config<T>(
     errors: &mut Vec<ValidationError>,
     field_prefix: &str,
     shared: Option<&T>,
     has_venues: bool,
-    venue_kind: &'static str,
-    missing_code: &'static str,
-    orphaned_code: &'static str,
+    contract: SharedReferenceConfigContract,
     validate_fields: impl FnOnce(&mut Vec<ValidationError>, &str, &T),
 ) {
     match (has_venues, shared) {
@@ -274,17 +278,19 @@ fn check_shared_reference_config<T>(
         (true, None) => push_error(
             errors,
             field_prefix,
-            missing_code,
+            contract.missing_code,
             format!(
-                "{field_prefix} must be configured when any reference venue kind is {venue_kind}"
+                "{field_prefix} must be configured when any reference venue kind is {}",
+                contract.venue_kind
             ),
         ),
         (false, Some(_)) => push_error(
             errors,
             field_prefix,
-            orphaned_code,
+            contract.orphaned_code,
             format!(
-                "{field_prefix} must not be configured unless a {venue_kind} reference venue is enabled"
+                "{field_prefix} must not be configured unless a {} reference venue is enabled",
+                contract.venue_kind
             ),
         ),
         (false, None) => {}
@@ -302,9 +308,11 @@ fn check_chainlink_shared_config(
         field_prefix,
         shared,
         has_chainlink_venues,
-        "chainlink",
-        "missing_chainlink_config",
-        "orphaned_chainlink_config",
+        SharedReferenceConfigContract {
+            venue_kind: "chainlink",
+            missing_code: "missing_chainlink_config",
+            orphaned_code: "orphaned_chainlink_config",
+        },
         |errors, field_prefix, shared| {
             check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
             check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
@@ -334,9 +342,11 @@ fn check_binance_shared_config(
         field_prefix,
         shared,
         has_binance_venues,
-        "binance",
-        "missing_binance_config",
-        "orphaned_binance_config",
+        SharedReferenceConfigContract {
+            venue_kind: "binance",
+            missing_code: "missing_binance_config",
+            orphaned_code: "orphaned_binance_config",
+        },
         |errors, field_prefix, shared| {
             check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
             check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);

@@ -9,7 +9,6 @@ use bolt_v2::{
     },
     secrets::ResolvedChainlinkSecrets,
 };
-use nautilus_binance::config::BinanceDataClientConfig;
 use nautilus_bybit::config::BybitDataClientConfig;
 use nautilus_deribit::config::DeribitDataClientConfig;
 use nautilus_hyperliquid::config::HyperliquidDataClientConfig;
@@ -52,12 +51,7 @@ fn assert_wrapper<C: ClientConfig + 'static>(
 }
 
 #[test]
-fn builds_reference_data_client_wrappers_for_supported_kinds() {
-    assert_wrapper::<BinanceDataClientConfig>(
-        ReferenceVenueKind::Binance,
-        "BINANCE",
-        "BinanceDataClientConfig",
-    );
+fn builds_reference_data_client_wrappers_for_supported_public_kinds() {
     assert_wrapper::<BybitDataClientConfig>(
         ReferenceVenueKind::Bybit,
         "BYBIT",
@@ -79,6 +73,15 @@ fn builds_reference_data_client_wrappers_for_supported_kinds() {
         "KrakenDataClientConfig",
     );
     assert_wrapper::<OKXDataClientConfig>(ReferenceVenueKind::Okx, "OKX", "OKXDataClientConfig");
+}
+
+#[test]
+fn binance_reference_wrapper_rejects_anonymous_builder_path() {
+    let error = build_reference_data_client(&venue(ReferenceVenueKind::Binance))
+        .expect_err("binance wrapper should reject the anonymous builder path")
+        .to_string();
+
+    assert!(error.contains("binance reference client requires shared auth config"));
 }
 
 fn reference_venue(

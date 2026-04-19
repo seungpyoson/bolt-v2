@@ -220,6 +220,11 @@ passphrase = "/bolt/poly/passphrase"
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
 
+[reference.binance]
+region = "eu-west-1"
+api_key = "/bolt/binance/api-key"
+api_secret = "/bolt/binance/api-secret"
+
 [[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -301,6 +306,11 @@ passphrase = "/bolt/poly/passphrase"
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
 
+[reference.binance]
+region = "eu-west-1"
+api_key = "/bolt/binance/api-key"
+api_secret = "/bolt/binance/api-secret"
+
 [[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -374,6 +384,11 @@ passphrase = "/bolt/poly/passphrase"
 [reference]
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
+
+[reference.binance]
+region = "eu-west-1"
+api_key = "/bolt/binance/api-key"
+api_secret = "/bolt/binance/api-secret"
 
 [[reference.venues]]
 name = "BINANCE-BTC"

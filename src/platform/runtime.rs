@@ -365,7 +365,10 @@ pub fn build_reference_data_client(
     venue: &ReferenceVenueEntry,
 ) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
     match &venue.kind {
-        ReferenceVenueKind::Binance => Ok(clients::binance::build_reference_data_client()),
+        ReferenceVenueKind::Binance => Err(
+            "binance reference client requires shared auth config; build it through binance::build_reference_data_client_with_reference"
+                .into(),
+        ),
         ReferenceVenueKind::Bybit => Ok(clients::bybit::build_reference_data_client()),
         ReferenceVenueKind::Deribit => Ok(clients::deribit::build_reference_data_client()),
         ReferenceVenueKind::Hyperliquid => Ok(clients::hyperliquid::build_reference_data_client()),

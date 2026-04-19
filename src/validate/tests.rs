@@ -1398,9 +1398,12 @@ max_local_backlog_bytes = 10485760
 fn valid_phase1_runtime_toml() -> String {
     format!(
         "{}\n{}",
-        valid_runtime_toml().replace(
-            "event_slugs = [\"btc-updown-5m\"]\n",
-            "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 8\n",
+        format!(
+            "{VALID_BINANCE_SHARED_BLOCK}\n{}",
+            valid_runtime_toml().replace(
+                "event_slugs = [\"btc-updown-5m\"]\n",
+                "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 8\n",
+            )
         ),
         r#"
 [reference]
@@ -1447,6 +1450,12 @@ api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
 ws_url = "wss://streams.chain.link"
 ws_reconnect_alert_threshold = 5
+"#;
+
+const VALID_BINANCE_SHARED_BLOCK: &str = r#"[reference.binance]
+region = "eu-west-1"
+api_key = "/bolt/binance/api-key"
+api_secret = "/bolt/binance/api-secret"
 "#;
 
 struct StubRuntimeTemplateBuilder;
@@ -1979,6 +1988,7 @@ tag_slug = "bitcoin-2"
 #[test]
 fn phase1_runtime_requires_reference_venues_when_one_ruleset_is_active() {
     let toml = valid_phase1_runtime_toml()
+        .replace(VALID_BINANCE_SHARED_BLOCK, "")
         .replace("[reference]\n", "")
         .replace("publish_topic = \"platform.reference.default\"\n", "")
         .replace("min_publish_interval_ms = 100\n", "")
@@ -2572,6 +2582,31 @@ price_scale = 8
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference.chainlink", "missing_chainlink_config");
+}
+
+#[test]
+fn phase1_runtime_binance_requires_shared_reference_block() {
+    let toml = valid_phase1_runtime_toml().replace(VALID_BINANCE_SHARED_BLOCK, "");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance", "missing_binance_config");
+}
+
+#[test]
+fn phase1_runtime_binance_shared_paths_must_be_absolute_ssm_paths() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("/bolt/binance/api-key", "bolt/binance/api-key")
+        .replace("/bolt/binance/api-secret", "bolt/binance/api-secret");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.binance.api_key",
+        "missing_leading_slash",
+    );
+    assert_has_error(
+        &errors,
+        "reference.binance.api_secret",
+        "missing_leading_slash",
+    );
 }
 
 #[test]

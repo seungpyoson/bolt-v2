@@ -145,15 +145,15 @@ fn same_sha_proof_job_selects_exact_successful_main_push_run_for_same_sha() {
     let same_sha_proof = ci_job("same_sha_proof");
     let run_scripts = run_steps(&same_sha_proof, "same_sha_proof");
     assert!(
-        run_scripts.iter().any(|run| run.contains(
-            "actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${GITHUB_SHA}"
-        )),
+        run_scripts.iter().any(|run| {
+            run.contains("actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${GITHUB_SHA}")
+        }),
         "same_sha_proof must query main-push CI runs for the exact GITHUB_SHA"
     );
     assert!(
-        run_scripts.iter().any(
-            |run| run.contains("&status=success") || run.contains(".conclusion == \"success\"")
-        ),
+        run_scripts.iter().any(|run| {
+            run.contains("&status=success") || run.contains(".conclusion == \"success\"")
+        }),
         "same_sha_proof must restrict reuse to successful source runs"
     );
     assert!(
@@ -241,12 +241,10 @@ fn tag_fast_path_skips_duplicate_heavy_lanes_only_when_reuse_is_ready() {
     );
     let build_if = job_if(&build, "build");
     assert!(
-        build_if.contains("needs.detector.outputs.build_required"),
-        "build must keep its existing build_required detector gate"
-    );
-    assert!(
-        build_if.contains("needs.same_sha_proof.outputs.reuse_available != 'true'"),
-        "build must only skip duplicate tag work when same_sha_proof reports reuse_available=true"
+        build_if.contains(
+            "needs.detector.outputs.build_required == 'true' && needs.same_sha_proof.outputs.reuse_available != 'true'"
+        ),
+        "build if must combine build_required and reuse_available gates with &&"
     );
 
     assert!(
@@ -294,9 +292,9 @@ fn deploy_keeps_tag_on_main_and_idempotency_guards() {
     );
     let deploy_steps = run_steps(&deploy, "deploy");
     assert!(
-        deploy_steps
-            .iter()
-            .any(|run| run.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\"")),
+        deploy_steps.iter().any(|run| {
+            run.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\"")
+        }),
         "deploy must keep the idempotency output contract for already-published tags"
     );
 }

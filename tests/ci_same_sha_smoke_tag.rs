@@ -121,9 +121,14 @@ fn ci_workflow_defines_same_sha_proof_job_without_skipping_non_tag_runs() {
         );
     }
 
-    let resolve_run = run_step(&same_sha_proof, "same_sha_proof", "Resolve same-SHA proof record");
+    let resolve_run = run_step(
+        &same_sha_proof,
+        "same_sha_proof",
+        "Resolve same-SHA proof record",
+    );
     assert!(
-        resolve_run.contains("if [[ \"$GITHUB_REF\" != refs/tags/v* ]]") || resolve_run.contains("if [[ \"$GITHUB_REF\" != refs/tags/v"),
+        resolve_run.contains("if [[ \"$GITHUB_REF\" != refs/tags/v* ]]")
+            || resolve_run.contains("if [[ \"$GITHUB_REF\" != refs/tags/v"),
         "same_sha_proof must explicitly fast-pass non-tag events inside the resolve step"
     );
 }

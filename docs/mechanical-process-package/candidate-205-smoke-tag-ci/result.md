@@ -55,7 +55,7 @@ Both were resolved on the implementation branch and recorded in the finding ledg
 The active GitHub review target is now:
 
 - PR `#210`
-- head `ccb960824c5d5befbcc1915eeea5da0746128302`
+- head `8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b`
 
 ## Exact-Head CI Snapshot
 
@@ -63,8 +63,11 @@ Current exact-head GitHub CI snapshot recorded into the package:
 
 - `same_sha_proof`: pass
 - `detector`: pass
+- `deny`: pass
+- `fmt-check`: pass
+- `clippy`: pass
 - exact-head CI restarted cleanly after review-absorption updates
-- remaining lanes were still pending at snapshot time
+- `test` and `build` were still pending at snapshot time
 
 Known unrelated blocker still visible on the PR surface:
 
@@ -85,7 +88,7 @@ The comments fit cleanly into two non-blocking categories:
    - duplicate JSON filter logic in `same_sha_proof`
    - self-referential SHA256 check is acceptable only as a documented trust-model assumption
 
-Those comments were absorbed on head `ccb960824c5d5befbcc1915eeea5da0746128302` and recorded as resolved findings in the package.
+Those comments were absorbed on head `8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b` and recorded as resolved findings in the package.
 
 ## Verdict
 

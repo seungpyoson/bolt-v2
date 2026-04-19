@@ -154,7 +154,7 @@ evidence_id = "E205-13"
 type = "external_artifact"
 producer = "github_pr"
 subject = "pr_210_exact_review_target"
-artifact_ref = "PR #210 / head ccb960824c5d5befbcc1915eeea5da0746128302 / branch issue-205-smoke-tag-proof"
+artifact_ref = "PR #210 / head 8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b / branch issue-205-smoke-tag-proof"
 proves = [
   "exact_review_target_is_frozen_for_issue_205",
 ]
@@ -166,7 +166,7 @@ evidence_id = "E205-14"
 type = "external_artifact"
 producer = "github_actions"
 subject = "pr_210_exact_head_ci_snapshot"
-artifact_ref = "CI run 24627868409 on head ccb960824c5d5befbcc1915eeea5da0746128302: detector/same_sha_proof passed; remaining lanes pending"
+artifact_ref = "CI run 24627988437 on head 8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b: detector/same_sha_proof/deny/fmt-check/clippy passed; build/test pending"
 proves = [
   "exact_head_ci_has_started_and_core_issue_205_lanes_are_green_so_far",
 ]
@@ -202,7 +202,7 @@ evidence_id = "E205-17"
 type = "repo_source_ref"
 producer = "issue-205-smoke-tag-proof"
 subject = "review_comment_absorption_head"
-artifact_ref = "branch issue-205-smoke-tag-proof / commit ccb960824c5d5befbcc1915eeea5da0746128302"
+artifact_ref = "branch issue-205-smoke-tag-proof / commit 8e7b3542ce0a7c4b8e1fdd7528d2946ebe90111b"
 proves = [
   "pr_210_non_blocking_review_comments_were_absorbed_on_current_head",
 ]

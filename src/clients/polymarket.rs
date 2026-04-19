@@ -1461,6 +1461,44 @@ mod tests {
         addr
     }
 
+    async fn spawn_missing_end_date_test_server() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+
+                    let body = if path == "/events"
+                        && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
+                    {
+                        json!([
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-no-end-date",
+                                "markets":[]
+                            }
+                        ])
+                        .to_string()
+                    } else {
+                        "[]".to_string()
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        addr
+    }
+
     async fn spawn_sequenced_refresh_server(
         failing_request_count: usize,
     ) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
@@ -1770,6 +1808,25 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn canonical_window_members_reject_out_of_window_prefix_matches() {
         let addr = spawn_out_of_window_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            std::slice::from_ref(&discovery),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([(discovery.clone(), Vec::new())])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canonical_window_members_reject_missing_end_date_prefix_matches() {
+        let addr = spawn_missing_end_date_test_server().await;
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
 

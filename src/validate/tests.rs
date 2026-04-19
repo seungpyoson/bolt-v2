@@ -2610,6 +2610,42 @@ fn phase1_runtime_binance_shared_paths_must_be_absolute_ssm_paths() {
 }
 
 #[test]
+fn phase1_runtime_binance_shared_config_is_venue_driven_not_resolution_basis_driven() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml()
+            .replace("event_slugs = [\"btc-updown-5m\"]\n", "")
+            .replace(
+                "resolution_basis = \"binance_btcusdt_1m\"",
+                "resolution_basis = \"chainlink_btcusd\"",
+            )
+            .replace(
+                "[[reference.venues]]\nname = \"BINANCE-BTC\"",
+                &format!(
+                    "{VALID_CHAINLINK_SHARED_BLOCK}\n[[reference.venues]]\nname = \"BINANCE-BTC\""
+                ),
+            ),
+        r#"
+[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.25
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert!(
+        errors.is_empty(),
+        "a configured Binance reference venue remains valid even when the active ruleset resolves against another source: {errors:#?}"
+    );
+}
+
+#[test]
 fn phase1_runtime_chainlink_price_scale_must_be_positive_and_bounded() {
     let toml = replace(
         &valid_phase1_runtime_toml(),

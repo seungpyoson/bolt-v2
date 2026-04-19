@@ -253,7 +253,9 @@ pub fn resolve_binance(
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedChainlinkSecrets, ResolvedPolymarketSecrets, pad_base64};
+    use super::{
+        ResolvedBinanceSecrets, ResolvedChainlinkSecrets, ResolvedPolymarketSecrets, pad_base64,
+    };
 
     #[test]
     fn debug_redacts_resolved_polymarket_secrets() {
@@ -297,6 +299,28 @@ mod tests {
         let debug = format!("{secrets:?}");
 
         assert!(debug.contains("ResolvedChainlinkSecrets"));
+        assert!(debug.contains("[REDACTED]"));
+        for field in ["api_key", "api_secret"] {
+            assert!(debug.contains(field), "debug output should mention {field}");
+        }
+        for secret in ["api-key-value", "api-secret-value"] {
+            assert!(
+                !debug.contains(secret),
+                "debug output should not contain secret material"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_redacts_resolved_binance_secrets() {
+        let secrets = ResolvedBinanceSecrets {
+            api_key: "api-key-value".to_string(),
+            api_secret: "api-secret-value".to_string(),
+        };
+
+        let debug = format!("{secrets:?}");
+
+        assert!(debug.contains("ResolvedBinanceSecrets"));
         assert!(debug.contains("[REDACTED]"));
         for field in ["api_key", "api_secret"] {
             assert!(debug.contains(field), "debug output should mention {field}");

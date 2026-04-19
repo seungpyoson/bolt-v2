@@ -131,7 +131,7 @@ right_literal = ""
 
 [[gates.clauses]]
 comparator_kind = "string_eq"
-left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
+left_ref = "claim_enforcement_coverage.toml#summary_verdict"
 right_ref = ""
 right_literal = "pass"
 
@@ -149,7 +149,7 @@ right_literal = "review"
 
 [[gates.clauses]]
 comparator_kind = "string_eq"
-left_ref = "orchestration_reachability_summary.toml#reachability_status"
+left_ref = "orchestration_reachability_summary.toml#summary_verdict"
 right_ref = ""
 right_literal = "pass"
 

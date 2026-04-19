@@ -55,3 +55,35 @@ resolved_by = [
   "SEAM-REQUIRED-LANE-SET-RULE",
   "C205-5",
 ]
+
+[[findings]]
+finding_id = "205|behavior_mismatch|deploy_fast_path|skip_propagation_can_suppress_deploy|.github/workflows/ci.yml"
+kind = "behavior_mismatch"
+subject = "deploy_fast_path"
+predicate = "skip_propagation_can_suppress_deploy"
+locus = ".github/workflows/ci.yml"
+source_refs = [
+  "E205-11",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "commit feb88d0f4344dd5116a62a77922157b26e401229",
+]
+
+[[findings]]
+finding_id = "205|merge_claim|proof_identity|run_attempt_claim_overstated|.github/workflows/ci.yml"
+kind = "merge_claim"
+subject = "proof_identity"
+predicate = "run_attempt_claim_overstated"
+locus = ".github/workflows/ci.yml"
+source_refs = [
+  "E205-12",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "commit feb88d0f4344dd5116a62a77922157b26e401229",
+]

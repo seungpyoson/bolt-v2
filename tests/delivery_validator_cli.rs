@@ -202,6 +202,18 @@ right_literal = ""
 
 [[gates.clauses]]
 comparator_kind = "string_eq"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = "execution_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#required_jobs_by_stage.review"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
 left_ref = "review_rounds/review-r1.toml#absorbed_by_head"
 right_ref = "review_target.toml#head_sha"
 right_literal = ""
@@ -279,6 +291,110 @@ verdict = "pass"
 status = "frozen"
 "#
         ),
+    );
+}
+
+fn write_review_ci_gate(dst: &Path) {
+    write_file(
+        &dst.join("stage_promotion.toml"),
+        r#"
+[[promotions]]
+from_stage = "proof_locked"
+to_stage = "review"
+promotion_gate_artifact = "promotion_gate.toml"
+status = "satisfied"
+"#,
+    );
+    write_file(
+        &dst.join("promotion_gate.toml"),
+        r#"
+[[gates]]
+gate_id = "gate-1"
+from_stage = "proof_locked"
+to_stage = "review"
+comparator_kind = "all_of"
+left_ref = ""
+right_ref = ""
+right_literal = ""
+verdict = "pass"
+status = "frozen"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "execution_target.toml#head_sha"
+right_ref = "review_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = "execution_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#required_jobs_by_stage.review"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "review_rounds/review-r1.toml#absorbed_by_head"
+right_ref = "review_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "review_rounds/review-r1.toml#round_id"
+right_ref = "review_target.toml#round_id"
+right_literal = ""
+"#,
+    );
+}
+
+fn write_merge_candidate_ci_gate(dst: &Path) {
+    write_file(
+        &dst.join("stage_promotion.toml"),
+        r#"
+[[promotions]]
+from_stage = "review"
+to_stage = "merge_candidate"
+promotion_gate_artifact = "promotion_gate.toml"
+status = "satisfied"
+"#,
+    );
+    write_file(
+        &dst.join("promotion_gate.toml"),
+        r#"
+[[gates]]
+gate_id = "gate-1"
+from_stage = "review"
+to_stage = "merge_candidate"
+comparator_kind = "all_of"
+left_ref = ""
+right_ref = ""
+right_literal = ""
+verdict = "pass"
+status = "frozen"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "merge_claims.toml#merge_ready"
+right_ref = ""
+right_literal = "true"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = "execution_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#required_jobs_by_stage.merge_candidate"
+right_ref = ""
+right_literal = ""
+"#,
     );
 }
 
@@ -442,14 +558,21 @@ proof_ref = "gate-1"
 status = "covered"
 "#,
             );
-            write_stage_gate_files(
-                dst,
-                "proof_locked",
-                "review",
-                "execution_target.toml#head_sha",
-                "review_target.toml#head_sha",
-                "",
+            write_file(
+                &dst.join("review_rounds/review-r1.toml"),
+                r#"
+round_id = "review-r1"
+source = "synthetic"
+review_target_ref = "synthetic"
+raw_comment_refs = ["comment-1"]
+ingested_findings = []
+stale_findings = []
+wrong_target_findings = []
+absorbed_by_head = "abc123"
+status = "ingested"
+"#,
             );
+            write_review_ci_gate(dst);
         }
         "merge_candidate" => {
             write_minimal_stage_package(dst, "review");
@@ -487,14 +610,7 @@ proof_ref = "gate-1"
 status = "covered"
 "#,
             );
-            write_stage_gate_files(
-                dst,
-                "review",
-                "merge_candidate",
-                "merge_claims.toml#merge_ready",
-                "",
-                "true",
-            );
+            write_merge_candidate_ci_gate(dst);
         }
         other => panic!("unsupported synthetic stage {other}"),
     }
@@ -815,7 +931,7 @@ required_evidence = []
         !output.status.success(),
         "merge_candidate must fail closed when merge_ready is false through the scalar gate; output:\n{text}"
     );
-    assert!(text.contains("comparator failed"), "{text}");
+    assert!(text.contains("clause"), "{text}");
 }
 
 #[test]
@@ -1041,6 +1157,66 @@ fn synthetic_review_package_blocks_when_execution_head_mismatches_review_head() 
 }
 
 #[test]
+fn synthetic_review_package_blocks_when_ci_surface_head_mismatches_execution_head() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let ci_surface = dst.join("ci_surface.toml");
+    let original = fs::read_to_string(&ci_surface).expect("ci_surface should read");
+    fs::write(
+        &ci_surface,
+        original.replace("head_sha = \"abc123\"", "head_sha = \"wrong-head\""),
+    )
+    .expect("mutated ci_surface should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when ci_surface head mismatches execution head through the gate; output:\n{text}"
+    );
+    assert!(text.contains("clause"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_review_jobs_missing_from_ci_surface() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let ci_surface = dst.join("ci_surface.toml");
+    let original = fs::read_to_string(&ci_surface).expect("ci_surface should read");
+    fs::write(
+        &ci_surface,
+        original.replace("review = [\"job-review\"]", "review = []"),
+    )
+    .expect("mutated ci_surface should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when review jobs are missing from ci_surface through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
 fn synthetic_review_package_blocks_when_review_round_id_mismatches_review_target() {
     let temp = tempdir().expect("tempdir should create");
     let dst = temp.path().join("synthetic-review-package");
@@ -1068,6 +1244,36 @@ fn synthetic_review_package_blocks_when_review_round_id_mismatches_review_target
         "review package must fail closed when review round id mismatches review target through the all_of gate; output:\n{text}"
     );
     assert!(text.contains("clause"), "{text}");
+}
+
+#[test]
+fn synthetic_merge_candidate_blocks_when_merge_jobs_missing_from_ci_surface() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-merge-candidate");
+    write_minimal_stage_package(&dst, "merge_candidate");
+    let ci_surface = dst.join("ci_surface.toml");
+    let original = fs::read_to_string(&ci_surface).expect("ci_surface should read");
+    fs::write(
+        &ci_surface,
+        original.replace("merge_candidate = [\"job-merge\"]", "merge_candidate = []"),
+    )
+    .expect("mutated ci_surface should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("merge_candidate")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "merge_candidate must fail closed when merge jobs are missing from ci_surface through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
 }
 
 #[test]

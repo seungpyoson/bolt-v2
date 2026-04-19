@@ -413,23 +413,33 @@ fn stage_key(stage: Stage) -> &'static str {
     }
 }
 
-fn resolve_toml_scalar_ref(dir: &Path, ref_spec: &str) -> Result<String> {
+fn resolve_toml_value_ref(dir: &Path, ref_spec: &str) -> Result<TomlValue> {
     let (rel_path, field) = ref_spec
         .split_once('#')
         .with_context(|| format!("ref `{ref_spec}` must be in `<path>#<field>` form"))?;
     let path = dir.join(rel_path);
     let value = load_from_path::<TomlValue>(&path)?;
-    value
-        .get(field)
-        .and_then(|value| match value {
-            TomlValue::String(s) => Some(s.clone()),
-            TomlValue::Boolean(v) => Some(v.to_string()),
-            TomlValue::Integer(v) => Some(v.to_string()),
-            TomlValue::Float(v) => Some(v.to_string()),
-            TomlValue::Datetime(v) => Some(v.to_string()),
-            _ => None,
-        })
-        .with_context(|| format!("ref `{ref_spec}` must resolve to a top-level scalar field"))
+    let mut current = &value;
+    for segment in field.split('.') {
+        current = current
+            .get(segment)
+            .with_context(|| format!("ref `{ref_spec}` could not resolve segment `{segment}`"))?;
+    }
+    Ok(current.clone())
+}
+
+fn resolve_toml_scalar_ref(dir: &Path, ref_spec: &str) -> Result<String> {
+    let value = resolve_toml_value_ref(dir, ref_spec)?;
+    match value {
+        TomlValue::String(v) => Ok(v),
+        TomlValue::Boolean(v) => Ok(v.to_string()),
+        TomlValue::Integer(v) => Ok(v.to_string()),
+        TomlValue::Float(v) => Ok(v.to_string()),
+        TomlValue::Datetime(v) => Ok(v.to_string()),
+        _ => Err(anyhow::anyhow!(
+            "ref `{ref_spec}` must resolve to a scalar field"
+        )),
+    }
 }
 
 fn load_review_rounds(dir: &Path) -> Result<Vec<(PathBuf, ReviewRound)>> {
@@ -579,6 +589,19 @@ fn validate_stage_promotion(
                                     };
                                     Ok((left_value, right_value))
                                 };
+                                let evaluate_nonempty = |value_ref: &str| -> Result<bool> {
+                                    let value = resolve_toml_value_ref(dir, value_ref)?;
+                                    let is_nonempty = match value {
+                                        TomlValue::String(v) => !v.is_empty(),
+                                        TomlValue::Array(v) => !v.is_empty(),
+                                        TomlValue::Table(v) => !v.is_empty(),
+                                        TomlValue::Boolean(_) => true,
+                                        TomlValue::Integer(_) => true,
+                                        TomlValue::Float(_) => true,
+                                        TomlValue::Datetime(_) => true,
+                                    };
+                                    Ok(is_nonempty)
+                                };
 
                                 match gate.comparator_kind.as_str() {
                                     "string_eq" | "scalar_eq" => {
@@ -613,10 +636,34 @@ fn validate_stage_promotion(
                                             ),
                                         }
                                     }
+                                    "nonempty" => match evaluate_nonempty(&gate.left_ref) {
+                                        Ok(true) => {}
+                                        Ok(false) => report.push(
+                                            Status::Block,
+                                            "scope",
+                                            row.promotion_gate_artifact.clone(),
+                                            format!(
+                                                "promotion gate `{}` nonempty check failed for `{}`",
+                                                gate.gate_id, gate.left_ref
+                                            ),
+                                            "populate the referenced field before advancing the stage",
+                                        ),
+                                        Err(_) => report.push(
+                                            Status::Block,
+                                            "scope",
+                                            row.promotion_gate_artifact.clone(),
+                                            format!(
+                                                "promotion gate `{}` has an invalid nonempty ref",
+                                                gate.gate_id
+                                            ),
+                                            "bind the gate to a valid ref for nonempty checks",
+                                        ),
+                                    },
                                     "all_of" => {
                                         for (idx, clause) in gate.clauses.iter().enumerate() {
                                             if clause.comparator_kind != "string_eq"
                                                 && clause.comparator_kind != "scalar_eq"
+                                                && clause.comparator_kind != "nonempty"
                                             {
                                                 report.push(
                                                     Status::Block,
@@ -632,7 +679,8 @@ fn validate_stage_promotion(
                                             }
                                             if clause.left_ref.is_empty()
                                                 || (clause.right_ref.is_empty()
-                                                    && clause.right_literal.is_empty())
+                                                    && clause.right_literal.is_empty()
+                                                        && clause.comparator_kind != "nonempty")
                                             {
                                                 report.push(
                                                     Status::Block,
@@ -646,35 +694,61 @@ fn validate_stage_promotion(
                                                 );
                                                 continue;
                                             }
-                                            match evaluate_eq(
-                                                &clause.left_ref,
-                                                &clause.right_ref,
-                                                &clause.right_literal,
-                                            ) {
-                                                Ok((left_value, right_value)) => {
-                                                    if left_value != right_value {
-                                                        report.push(
-                                                            Status::Block,
-                                                            "scope",
-                                                            row.promotion_gate_artifact.clone(),
-                                                            format!(
-                                                                "promotion gate `{}` clause {} failed: `{}` != `{}`",
-                                                                gate.gate_id, idx, left_value, right_value
-                                                            ),
-                                                            "fix the subject artifact, expected artifact, or gate binding before advancing the stage",
-                                                        );
+                                            match clause.comparator_kind.as_str() {
+                                                "string_eq" | "scalar_eq" => match evaluate_eq(
+                                                    &clause.left_ref,
+                                                    &clause.right_ref,
+                                                    &clause.right_literal,
+                                                ) {
+                                                    Ok((left_value, right_value)) => {
+                                                        if left_value != right_value {
+                                                            report.push(
+                                                                Status::Block,
+                                                                "scope",
+                                                                row.promotion_gate_artifact.clone(),
+                                                                format!(
+                                                                    "promotion gate `{}` clause {} failed: `{}` != `{}`",
+                                                                    gate.gate_id, idx, left_value, right_value
+                                                                ),
+                                                                "fix the subject artifact, expected artifact, or gate binding before advancing the stage",
+                                                            );
+                                                        }
                                                     }
-                                                }
-                                                Err(_) => report.push(
-                                                    Status::Block,
-                                                    "scope",
-                                                    row.promotion_gate_artifact.clone(),
-                                                    format!(
-                                                        "promotion gate `{}` clause {} has an invalid scalar reference",
-                                                        gate.gate_id, idx
+                                                    Err(_) => report.push(
+                                                        Status::Block,
+                                                        "scope",
+                                                        row.promotion_gate_artifact.clone(),
+                                                        format!(
+                                                            "promotion gate `{}` clause {} has an invalid scalar reference",
+                                                            gate.gate_id, idx
+                                                        ),
+                                                        "bind every all_of clause to valid scalar refs or a literal",
                                                     ),
-                                                    "bind every all_of clause to valid scalar refs or a literal",
-                                                ),
+                                                },
+                                                "nonempty" => match evaluate_nonempty(&clause.left_ref) {
+                                                    Ok(true) => {}
+                                                    Ok(false) => report.push(
+                                                        Status::Block,
+                                                        "scope",
+                                                        row.promotion_gate_artifact.clone(),
+                                                        format!(
+                                                            "promotion gate `{}` clause {} nonempty check failed for `{}`",
+                                                            gate.gate_id, idx, clause.left_ref
+                                                        ),
+                                                        "populate the referenced field before advancing the stage",
+                                                    ),
+                                                    Err(_) => report.push(
+                                                        Status::Block,
+                                                        "scope",
+                                                        row.promotion_gate_artifact.clone(),
+                                                        format!(
+                                                            "promotion gate `{}` clause {} has an invalid nonempty ref",
+                                                            gate.gate_id, idx
+                                                        ),
+                                                        "bind every all_of clause to a valid ref for nonempty checks",
+                                                    ),
+                                                },
+                                                _ => {}
                                             }
                                         }
                                     }
@@ -862,33 +936,6 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                         "ci_surface.toml is present but missing core selection fields",
                         "declare workflow, head_sha, and run_selection_rule explicitly",
                     );
-                }
-                let stage_key = stage_key(stage);
-                match surface.required_jobs_by_stage.get(stage_key) {
-                    Some(jobs) if !jobs.is_empty() => {}
-                    _ => report.push(
-                        Status::Block,
-                        "proof",
-                        "ci_surface.toml",
-                        format!(
-                            "ci_surface.toml does not declare required jobs for stage `{stage_key}`"
-                        ),
-                        "add the exact CI jobs that discharge this stage's proof surface",
-                    ),
-                }
-                if let Some(target) = &execution_target {
-                    if !target.head_sha.is_empty() && surface.head_sha != target.head_sha {
-                        report.push(
-                            Status::Block,
-                            "evidence",
-                            "ci_surface.toml",
-                            format!(
-                                "ci surface head `{}` does not match execution head `{}`",
-                                surface.head_sha, target.head_sha
-                            ),
-                            "bind CI evidence to the same exact head as the execution target",
-                        );
-                    }
                 }
             }
             None => report.push(

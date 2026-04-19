@@ -232,20 +232,32 @@ The process needs a round-based ledger of what was reviewed, what was stale, and
 
 ### Role
 
-Define the single gate that admits a deliverable into a later stage.
+Declare the stage transition and name the one authoritative gate artifact.
 
 ### Required fields
 
 - `from_stage`
 - `to_stage`
-- `promotion_gate_id`
-- `promotion_gate_kind`
-- `promotion_gate_ref`
-- `promotion_gate_status`
-- `supporting_artifacts`
-- `required_claims`
-- `required_evidence`
-- `forbidden_open_findings`
+- `promotion_gate_artifact`
+
+### 8. `promotion_gate.toml`
+
+### Role
+
+Hold the one mechanical exam that can admit the stage transition.
+
+### Required fields
+
+- `gate_id`
+- `from_stage`
+- `to_stage`
+- `comparator_kind`
+- `left_ref`
+- one of:
+  - `right_ref`
+  - `right_literal`
+- `verdict`
+- `status`
 
 ### Why it exists
 
@@ -253,10 +265,10 @@ Stages exist today, but promotion still depends too much on human interpretation
 V2 should make promotion exclusive:
 
 - exactly one promotion row per active stage
-- exactly one declared promotion gate per row
-- the promotion gate must point to one real exam artifact, not a prose token
-- only `promotion_gate_status = pass` may advance the stage
-- supporting artifacts may support the gate, but they do not independently advance the stage
+- `stage_promotion.toml` names exactly one `promotion_gate.toml`
+- `promotion_gate.toml` contains exactly one gate
+- the gate runs one declared comparator against bound artifacts or literals
+- only `verdict = pass` may advance the stage
 
 ## Schema Additions
 
@@ -386,10 +398,11 @@ Failure examples:
 Checks:
 
 - exactly one promotion row exists for the active stage
-- exactly one declared promotion gate exists for that row
-- promotion gate points to one real artifact comparator
-- promotion gate is explicitly `pass`
-- supporting artifacts exist
+- the promotion row names exactly one promotion gate artifact
+- the promotion gate artifact exists
+- the promotion gate artifact contains exactly one gate
+- that gate is bound to the same from/to stage
+- that gate comparator resolves and passes
 - no later-stage artifact exists without required earlier-stage prerequisites
 
 Failure examples:
@@ -449,6 +462,7 @@ Implement V2 in this order:
 7. `just pre-push-issue-gate`
 8. orchestration-reachability validation
 9. `stage_promotion.toml`
+10. `promotion_gate.toml`
 
 ## Short Verdict
 

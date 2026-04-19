@@ -1,52 +1,5 @@
 [[promotions]]
 from_stage = "proof_locked"
 to_stage = "review"
-promotion_gate_id = "review_validator_gate"
-promotion_gate_kind = "review_round_bound_to_exact_head"
-promotion_gate_ref = "review_rounds/pr-210-r2.toml"
-promotion_gate_status = "pass"
-supporting_artifacts = [
-  "issue_contract.toml",
-  "seam_contract.toml",
-  "proof_plan.toml",
-  "finding_ledger.toml",
-  "evidence_bundle.toml",
-  "merge_claims.toml",
-  "review_target.toml",
-  "execution_target.toml",
-  "ci_surface.toml",
-  "claim_enforcement.toml",
-  "assumption_register.toml",
-  "review_rounds/pr-210-r2.toml",
-]
-required_claims = [
-  "C205-1",
-  "C205-2",
-  "C205-3",
-  "C205-4",
-  "C205-5",
-  "C205-6",
-  "C205-7",
-  "C205-8",
-]
-required_evidence = [
-  "E205-1",
-  "E205-2",
-  "E205-3",
-  "E205-4",
-  "E205-5",
-  "E205-6",
-  "E205-7",
-  "E205-8",
-  "E205-9",
-  "E205-10",
-  "E205-11",
-  "E205-12",
-  "E205-13",
-  "E205-14",
-  "E205-15",
-  "E205-16",
-  "E205-17",
-]
-forbidden_open_findings = []
+promotion_gate_artifact = "promotion_gate.toml"
 status = "satisfied"

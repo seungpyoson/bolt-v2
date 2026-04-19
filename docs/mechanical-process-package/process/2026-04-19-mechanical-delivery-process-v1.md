@@ -65,8 +65,8 @@ The process is built on these rules:
    If the process cannot classify, dedupe, prove, or attribute, the state is blocked.
 
 8. One stage, one gate.
-   Stage advancement happens only through one declared gate for that stage.
-   Supporting artifacts may feed the gate, but they do not independently advance the deliverable.
+   Stage advancement happens only through one declared `promotion_gate.toml` artifact for that stage.
+   Other artifacts may feed the gate, but they do not independently advance the deliverable.
 
 ## Process Architecture
 
@@ -74,7 +74,7 @@ Each deliverable owns one directory:
 
 `docs/delivery/<issue-or-slice-id>/`
 
-That directory contains six artifacts:
+That directory contains nine artifacts:
 
 1. `issue_contract.toml`
 2. `seam_contract.toml`
@@ -83,6 +83,8 @@ That directory contains six artifacts:
 5. `evidence_bundle.toml`
 6. `merge_claims.toml`
 7. `review_target.toml`
+8. `stage_promotion.toml`
+9. `promotion_gate.toml`
 
 These artifacts are the only source of truth for closure.
 

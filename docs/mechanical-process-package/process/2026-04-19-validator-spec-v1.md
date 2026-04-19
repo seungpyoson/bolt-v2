@@ -30,6 +30,8 @@ Optional files:
 
 - `README.md`
 - `result.md`
+- `stage_promotion.toml`
+- `promotion_gate.toml`
 
 ## Output Contract
 
@@ -229,16 +231,18 @@ Later stages may not.
 
 Stage advancement must not happen through a loose accumulation of artifacts.
 
-For the active stage, the package must declare exactly one promotion gate.
-That gate may depend on supporting artifacts, but those artifacts do not advance the stage on their own.
+For the active stage, the package must declare exactly one stage-promotion row and exactly one promotion-gate artifact.
+That gate must run one declared comparator against bound artifacts or literals.
 
 The validator must fail if:
 
 - the active stage has zero promotion rows
 - the active stage has more than one promotion row
-- the active promotion row has no single declared gate
-- the declared gate does not resolve to one real exam artifact
-- the declared gate is not explicitly `pass`
+- the active promotion row does not name one gate artifact
+- the gate artifact is missing
+- the gate artifact contains zero or multiple gates
+- the gate comparator cannot resolve its bound refs
+- the declared gate verdict is not explicitly `pass`
 
 ## Success Criterion
 

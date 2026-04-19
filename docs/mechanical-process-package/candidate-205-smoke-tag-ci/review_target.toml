@@ -1,7 +1,7 @@
 repo = "seungpyoson/bolt-v2"
-pr_number = 0
-base_ref = "a1a6be0d94e887538ebcd9afced6c94046a557d6"
-head_sha = "feb88d0f4344dd5116a62a77922157b26e401229"
+pr_number = 210
+base_ref = "main"
+head_sha = "6169428f9d401952b776971ffe7d03963401f7fb"
 diff_identity = "issue-205-same-sha-smoke-tag-proof"
-round_id = "local-review-r1"
+round_id = "pr-210-r1"
 status = "frozen"

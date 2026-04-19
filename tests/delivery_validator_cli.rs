@@ -473,9 +473,9 @@ status = "covered"
                 dst,
                 "review",
                 "merge_candidate",
-                "execution_target.toml#head_sha",
-                "review_target.toml#head_sha",
+                "merge_claims.toml#merge_ready",
                 "",
+                "true",
             );
         }
         other => panic!("unsupported synthetic stage {other}"),
@@ -767,6 +767,37 @@ fn synthetic_stage_packages_block_when_promotion_gate_verdict_is_not_pass_for_al
         );
         assert!(text.contains("verdict"), "{text}");
     }
+}
+
+#[test]
+fn synthetic_merge_candidate_blocks_when_merge_ready_is_false_via_scalar_gate() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-merge-candidate");
+    write_minimal_stage_package(&dst, "merge_candidate");
+    write_file(
+        &dst.join("merge_claims.toml"),
+        r#"
+merge_ready = false
+open_blockers = []
+required_evidence = []
+"#,
+    );
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("merge_candidate")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "merge_candidate must fail closed when merge_ready is false through the scalar gate; output:\n{text}"
+    );
+    assert!(text.contains("comparator failed"), "{text}");
 }
 
 #[test]

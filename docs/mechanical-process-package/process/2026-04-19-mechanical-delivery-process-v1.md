@@ -64,6 +64,10 @@ The process is built on these rules:
 7. Fail-closed by default.
    If the process cannot classify, dedupe, prove, or attribute, the state is blocked.
 
+8. One stage, one gate.
+   Stage advancement happens only through one declared gate for that stage.
+   Supporting artifacts may feed the gate, but they do not independently advance the deliverable.
+
 ## Process Architecture
 
 Each deliverable owns one directory:

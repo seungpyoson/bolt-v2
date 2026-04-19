@@ -295,6 +295,96 @@ fn review_stage_package_blocks_when_stage_promotion_is_missing() {
 }
 
 #[test]
+fn review_stage_package_blocks_when_stage_promotion_has_multiple_rows_for_stage() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let stage_promotion = dst.join("stage_promotion.toml");
+    let original = fs::read_to_string(&stage_promotion).expect("stage_promotion should read");
+    fs::write(&stage_promotion, format!("{original}\n{original}"))
+        .expect("duplicated stage_promotion should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed when multiple promotion rows exist for the same stage; output:\n{text}"
+    );
+    assert!(text.contains("multiple promotion rows"), "{text}");
+}
+
+#[test]
+fn review_stage_package_blocks_when_stage_promotion_gate_is_not_pass() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let stage_promotion = dst.join("stage_promotion.toml");
+    let original = fs::read_to_string(&stage_promotion).expect("stage_promotion should read");
+    let mutated = original.replace(
+        "promotion_gate_status = \"pass\"",
+        "promotion_gate_status = \"block\"",
+    );
+    fs::write(&stage_promotion, mutated).expect("mutated stage_promotion should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed when the declared promotion gate is not pass; output:\n{text}"
+    );
+    assert!(text.contains("promotion_gate_status"), "{text}");
+}
+
+#[test]
+fn review_stage_package_blocks_when_stage_promotion_gate_ref_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let stage_promotion = dst.join("stage_promotion.toml");
+    let original = fs::read_to_string(&stage_promotion).expect("stage_promotion should read");
+    let mutated = original.replace(
+        "promotion_gate_ref = \"review_rounds/pr-210-r2.toml\"",
+        "promotion_gate_ref = \"review_rounds/absent.toml\"",
+    );
+    fs::write(&stage_promotion, mutated).expect("mutated stage_promotion should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed when the declared promotion gate ref is missing; output:\n{text}"
+    );
+    assert!(text.contains("promotion gate ref"), "{text}");
+}
+
+#[test]
 fn review_stage_package_blocks_when_orchestration_reachability_is_missing() {
     let temp = tempdir().expect("tempdir should create");
     let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");

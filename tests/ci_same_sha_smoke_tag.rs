@@ -146,7 +146,9 @@ fn same_sha_proof_job_selects_exact_successful_main_push_run_for_same_sha() {
     let run_scripts = run_steps(&same_sha_proof, "same_sha_proof");
     assert!(
         run_scripts.iter().any(|run| {
-            run.contains("actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${GITHUB_SHA}")
+            run.contains(
+                "actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${GITHUB_SHA}",
+            )
         }),
         "same_sha_proof must query main-push CI runs for the exact GITHUB_SHA"
     );
@@ -292,9 +294,9 @@ fn deploy_keeps_tag_on_main_and_idempotency_guards() {
     );
     let deploy_steps = run_steps(&deploy, "deploy");
     assert!(
-        deploy_steps.iter().any(|run| {
-            run.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\"")
-        }),
+        deploy_steps
+            .iter()
+            .any(|run| { run.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\"") }),
         "deploy must keep the idempotency output contract for already-published tags"
     );
 }

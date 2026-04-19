@@ -156,12 +156,25 @@ jobs:
           cache-targets: false
           cache-directories: ${{ steps.managed_target.outputs.dir }}
 
+      - name: Restore tracked source mtimes from cache manifest
+        run: |
+          python3 scripts/ci_tracked_mtime_manifest.py restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --manifest "${{ steps.managed_target.outputs.dir }}/.ci-test-tracked-mtimes.json"
+
       - name: Install cargo-nextest
         run: |
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
 
       - name: test
         run: just test
+
+      - name: Capture tracked source mtimes for cache manifest
+        if: success()
+        run: |
+          python3 scripts/ci_tracked_mtime_manifest.py capture \
+            --repo "$GITHUB_WORKSPACE" \
+            --manifest "${{ steps.managed_target.outputs.dir }}/.ci-test-tracked-mtimes.json"
 
   build:
     name: build

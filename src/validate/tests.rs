@@ -2570,6 +2570,72 @@ fn phase1_runtime_binance_shared_paths_must_be_absolute_ssm_paths() {
 }
 
 #[test]
+fn phase1_runtime_binance_allows_zero_instrument_status_poll_secs() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600",
+        "instrument_status_poll_secs = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_lacks_error(
+        &errors,
+        "reference.binance.instrument_status_poll_secs",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_runtime_binance_requires_non_empty_product_types() {
+    let toml =
+        valid_phase1_runtime_toml().replace("product_types = [\"SPOT\"]", "product_types = []");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.product_types", "empty");
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_empty_base_url_http() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_http = \"\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.base_url_http", "empty");
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_invalid_base_url_http() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_http = \"not-a-url\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.binance.base_url_http",
+        "invalid_http_url",
+    );
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_empty_base_url_ws() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_ws = \"\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.base_url_ws", "empty");
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_invalid_base_url_ws() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_ws = \"api.binance.com\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.base_url_ws", "invalid_ws_url");
+}
+
+#[test]
 fn phase1_runtime_binance_shared_config_is_venue_driven_not_resolution_basis_driven() {
     let toml = format!(
         "{}\n{}",

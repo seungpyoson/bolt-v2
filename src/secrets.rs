@@ -1,6 +1,5 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-
-use crate::config::{ChainlinkSharedConfig, ExecClientSecrets};
+use crate::config::{BinanceSharedConfig, ChainlinkSharedConfig, ExecClientSecrets};
+use nautilus_binance::common::credential::Ed25519Credential;
 
 #[derive(Debug)]
 pub struct SecretError(String);
@@ -88,6 +87,22 @@ impl SecretConfigCheck {
     }
 }
 
+pub(crate) struct BinanceSecretConfigContract<'a> {
+    pub region: &'a str,
+    pub api_key_path: &'a str,
+    pub api_secret_path: &'a str,
+}
+
+pub(crate) fn binance_secret_config_contract(
+    shared: &BinanceSharedConfig,
+) -> BinanceSecretConfigContract<'_> {
+    BinanceSecretConfigContract {
+        region: &shared.region,
+        api_key_path: &shared.api_key,
+        api_secret_path: &shared.api_secret,
+    }
+}
+
 fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
     let output = std::process::Command::new("aws")
         .args([
@@ -129,40 +144,13 @@ fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), SecretError
         ));
     }
 
-    if api_secret.contains("ENCRYPTED") {
-        return Err(SecretError(
-            "resolved Binance api_secret appears to be an encrypted PEM key; only unencrypted Ed25519 PEM/base64 keys are supported"
-                .to_string(),
-        ));
-    }
-
-    let stripped = api_secret
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect::<String>();
-    let encoded = if stripped.is_empty() {
-        api_secret.trim()
-    } else {
-        stripped.trim()
-    };
-    let decoded = BASE64_STANDARD.decode(encoded).map_err(|error| {
-        SecretError(format!(
-            "resolved Binance api_secret is not valid base64/PEM key material: {error}"
-        ))
-    })?;
-
-    const ED25519_PKCS8_OID: &[u8] = &[0x2B, 0x65, 0x70];
-    if !decoded
-        .windows(ED25519_PKCS8_OID.len())
-        .any(|window| window == ED25519_PKCS8_OID)
-    {
-        return Err(SecretError(
-            "resolved Binance api_secret does not look like an Ed25519 PKCS#8 PEM/base64 key"
-                .to_string(),
-        ));
-    }
-
-    Ok(())
+    Ed25519Credential::new("BINANCE-SHAPE-CHECK".to_string(), api_secret)
+        .map(|_| ())
+        .map_err(|error| {
+            SecretError(format!(
+                "resolved Binance api_secret is not valid Ed25519 key material accepted by the NT Binance adapter: {error}"
+            ))
+        })
 }
 
 fn pad_base64(mut secret: String) -> String {
@@ -215,16 +203,15 @@ pub fn check_chainlink_secret_config(shared: &ChainlinkSharedConfig) -> SecretCo
     SecretConfigCheck { present, missing }
 }
 
-pub fn check_binance_secret_config(
-    shared: &crate::config::BinanceSharedConfig,
-) -> SecretConfigCheck {
+pub fn check_binance_secret_config(shared: &BinanceSharedConfig) -> SecretConfigCheck {
+    let contract = binance_secret_config_contract(shared);
     let mut present = Vec::new();
     let mut missing = Vec::new();
 
     for (field, configured) in [
-        ("region", !shared.region.trim().is_empty()),
-        ("api_key", !shared.api_key.trim().is_empty()),
-        ("api_secret", !shared.api_secret.trim().is_empty()),
+        ("region", !contract.region.trim().is_empty()),
+        ("api_key", !contract.api_key_path.trim().is_empty()),
+        ("api_secret", !contract.api_secret_path.trim().is_empty()),
     ] {
         if configured {
             present.push(field);
@@ -290,11 +277,25 @@ pub fn resolve_binance(
     api_key_path: &str,
     api_secret_path: &str,
 ) -> Result<ResolvedBinanceSecrets, SecretError> {
-    let api_secret = resolve_secret(region, api_secret_path)?;
+    resolve_binance_with(region, api_key_path, api_secret_path, resolve_secret)
+}
+
+pub(crate) fn resolve_binance_with<F>(
+    region: &str,
+    api_key_path: &str,
+    api_secret_path: &str,
+    resolve_secret_fn: F,
+) -> Result<ResolvedBinanceSecrets, SecretError>
+where
+    F: Fn(&str, &str) -> Result<String, SecretError>,
+{
+    // Validate the secret before resolving the companion API key so failures
+    // localize to unusable key material immediately.
+    let api_secret = resolve_secret_fn(region, api_secret_path)?;
     validate_binance_api_secret_shape(&api_secret)?;
 
     Ok(ResolvedBinanceSecrets {
-        api_key: resolve_secret(region, api_key_path)?,
+        api_key: resolve_secret_fn(region, api_key_path)?,
         api_secret,
     })
 }
@@ -404,6 +405,12 @@ mod tests {
     }
 
     #[test]
+    fn validate_binance_api_secret_shape_accepts_raw_32_byte_seed_base64() {
+        let secret = BASE64_STANDARD.encode((0_u8..32).collect::<Vec<_>>());
+        validate_binance_api_secret_shape(&secret).expect("raw 32-byte ed25519 seed should pass");
+    }
+
+    #[test]
     fn validate_binance_api_secret_shape_accepts_pem_wrapped_pkcs8_ed25519() {
         let secret = format!(
             "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
@@ -413,9 +420,35 @@ mod tests {
     }
 
     #[test]
+    fn validate_binance_api_secret_shape_rejects_short_base64_seed() {
+        let secret = BASE64_STANDARD.encode((0_u8..31).collect::<Vec<_>>());
+
+        let error =
+            validate_binance_api_secret_shape(&secret).expect_err("short ed25519 seed should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Ed25519 private key must be 32 bytes")
+        );
+    }
+
+    #[test]
+    fn validate_binance_api_secret_shape_rejects_oid_only_false_positive() {
+        let secret = BASE64_STANDARD.encode([0x2B, 0x65, 0x70]);
+
+        let error = validate_binance_api_secret_shape(&secret)
+            .expect_err("short oid-bearing blob should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Ed25519 private key must be 32 bytes")
+        );
+    }
+
+    #[test]
     fn validate_binance_api_secret_shape_rejects_non_key_material() {
         let error = validate_binance_api_secret_shape("not-a-valid-binance-secret")
             .expect_err("plain invalid string should fail");
-        assert!(error.to_string().contains("base64/PEM"));
+        assert!(error.to_string().contains("valid Ed25519 key material"));
     }
 }

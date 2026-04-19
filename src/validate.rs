@@ -8,6 +8,7 @@ use crate::strategies::{production_strategy_registry, registry::StrategyRegistry
 use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
 use std::collections::{HashMap, hash_map::Entry};
 use toml::Value;
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValidationError {
@@ -257,6 +258,43 @@ fn check_chainlink_ws_origins(errors: &mut Vec<ValidationError>, field: &str, va
     }
 }
 
+fn check_absolute_url_with_schemes(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    value: &str,
+    allowed_schemes: &[&str],
+    code: &'static str,
+) {
+    check_non_empty(errors, field, value);
+    if value.trim().is_empty() {
+        return;
+    }
+
+    match Url::parse(value) {
+        Ok(url) => {
+            if !allowed_schemes.contains(&url.scheme()) {
+                push_error(
+                    errors,
+                    field,
+                    code,
+                    format!(
+                        "must use one of [{}], got \"{value}\"",
+                        allowed_schemes.join(", ")
+                    ),
+                );
+            } else if url.host_str().is_none() {
+                push_error(
+                    errors,
+                    field,
+                    code,
+                    format!("must be an absolute URL with a host, got \"{value}\""),
+                );
+            }
+        }
+        Err(error) => push_error(errors, field, code, error.to_string()),
+    }
+}
+
 struct SharedReferenceConfigContract {
     venue_kind: &'static str,
     missing_code: &'static str,
@@ -348,12 +386,17 @@ fn check_binance_shared_config(
             orphaned_code: "orphaned_binance_config",
         },
         |errors, field_prefix, shared| {
-            check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
-            check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
+            let contract = crate::secrets::binance_secret_config_contract(shared);
+            check_non_empty(errors, &format!("{field_prefix}.region"), contract.region);
+            check_ssm_path(
+                errors,
+                &format!("{field_prefix}.api_key"),
+                contract.api_key_path,
+            );
             check_ssm_path(
                 errors,
                 &format!("{field_prefix}.api_secret"),
-                &shared.api_secret,
+                contract.api_secret_path,
             );
             if shared.product_types.is_empty() {
                 push_error(
@@ -363,20 +406,23 @@ fn check_binance_shared_config(
                     format!("{field_prefix}.product_types must not be empty"),
                 );
             }
-            check_positive_u64(
-                errors,
-                &format!("{field_prefix}.instrument_status_poll_secs"),
-                shared.instrument_status_poll_secs,
-            );
             if let Some(base_url_http) = shared.base_url_http.as_deref() {
-                check_non_empty(
+                check_absolute_url_with_schemes(
                     errors,
                     &format!("{field_prefix}.base_url_http"),
                     base_url_http,
+                    &["http", "https"],
+                    "invalid_http_url",
                 );
             }
             if let Some(base_url_ws) = shared.base_url_ws.as_deref() {
-                check_non_empty(errors, &format!("{field_prefix}.base_url_ws"), base_url_ws);
+                check_absolute_url_with_schemes(
+                    errors,
+                    &format!("{field_prefix}.base_url_ws"),
+                    base_url_ws,
+                    &["ws", "wss"],
+                    "invalid_ws_url",
+                );
             }
         },
     );

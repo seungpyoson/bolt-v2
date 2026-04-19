@@ -293,3 +293,31 @@ fn review_stage_package_blocks_when_stage_promotion_is_missing() {
     );
     assert!(text.contains("stage_promotion.toml"), "{text}");
 }
+
+#[test]
+fn review_stage_package_blocks_when_orchestration_reachability_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root().join("docs/mechanical-process-package/candidate-205-smoke-tag-ci");
+    let dst = temp.path().join("candidate-205-smoke-tag-ci");
+    copy_dir_all(&src, &dst);
+    let reachability = dst.join("orchestration_reachability.toml");
+    if reachability.exists() {
+        fs::remove_file(&reachability).expect("orchestration_reachability should remove");
+    }
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review-stage package must fail closed without orchestration_reachability.toml; output:\n{text}"
+    );
+    assert!(text.contains("orchestration_reachability.toml"), "{text}");
+}

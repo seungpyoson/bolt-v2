@@ -1,0 +1,35 @@
+[[cases]]
+case_id = "R205-1"
+subject = "same_sha_proof_failure_fallback"
+trigger_job = "same_sha_proof"
+trigger_result = "failure"
+required_reachable_jobs = [
+  "fmt-check",
+  "deny",
+  "clippy",
+  "test",
+  "build",
+]
+forbidden_job_results = [
+  "skipped",
+]
+proof_ref = "C205-5 / fail-closed heavy-lane rerun intent"
+status = "declared"
+
+[[cases]]
+case_id = "R205-2"
+subject = "same_sha_proof_success_fast_path"
+trigger_job = "same_sha_proof"
+trigger_result = "success"
+required_reachable_jobs = [
+  "fmt-check",
+  "deny",
+  "clippy",
+  "test",
+  "build",
+]
+forbidden_job_results = [
+  "unexpected_missing_guard",
+]
+proof_ref = "C205-6 / workflow-contract fast-path checks"
+status = "declared"

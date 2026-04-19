@@ -100,7 +100,7 @@ fn run_step(job: &Mapping, job_name: &str, step_name: &str) -> String {
 }
 
 #[test]
-fn ci_workflow_defines_same_sha_proof_job_for_tag_pushes() {
+fn ci_workflow_defines_same_sha_proof_job_without_skipping_non_tag_runs() {
     let jobs = ci_jobs();
     assert!(
         jobs.contains_key(yaml_key("same_sha_proof")),
@@ -108,10 +108,9 @@ fn ci_workflow_defines_same_sha_proof_job_for_tag_pushes() {
     );
 
     let same_sha_proof = ci_job("same_sha_proof");
-    let if_guard = job_if(&same_sha_proof, "same_sha_proof");
     assert!(
-        if_guard.contains("startsWith(github.ref, 'refs/tags/v')"),
-        "same_sha_proof must run only for proof-tag pushes"
+        !same_sha_proof.contains_key(yaml_key("if")),
+        "same_sha_proof must not skip the whole job on non-tag events; it should succeed with reuse_available=false so downstream PR/main lanes still run"
     );
 
     let outputs = job_outputs(&same_sha_proof, "same_sha_proof");
@@ -121,6 +120,12 @@ fn ci_workflow_defines_same_sha_proof_job_for_tag_pushes() {
             "same_sha_proof must expose {output} so downstream tag lanes can reason about reuse"
         );
     }
+
+    let resolve_run = run_step(&same_sha_proof, "same_sha_proof", "Resolve same-SHA proof record");
+    assert!(
+        resolve_run.contains("if [[ \"$GITHUB_REF\" != refs/tags/v* ]]") || resolve_run.contains("if [[ \"$GITHUB_REF\" != refs/tags/v"),
+        "same_sha_proof must explicitly fast-pass non-tag events inside the resolve step"
+    );
 }
 
 #[test]

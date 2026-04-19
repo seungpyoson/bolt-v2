@@ -73,7 +73,6 @@ jobs:
   same_sha_proof:
     name: same_sha_proof
     needs: detector
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,6 +89,10 @@ jobs:
         shell: bash
         run: |
           echo "reuse_available=false" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "Non-tag event: same_sha_proof is a no-op"
+            exit 0
+          fi
           endpoint="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${GITHUB_SHA}&status=success&per_page=100"
           runs_json="$RUNNER_TEMP/same-sha-main-push-runs.json"
           if ! gh api "$endpoint" > "$runs_json"; then

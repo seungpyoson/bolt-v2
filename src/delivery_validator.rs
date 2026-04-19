@@ -403,6 +403,94 @@ fn load_from_path<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     toml::from_slice(&bytes).with_context(|| format!("failed to parse TOML {}", path.display()))
 }
 
+fn scalar_summary_rel_path(ref_spec: &str) -> Option<&str> {
+    let (rel_path, _) = ref_spec.split_once('#')?;
+    (rel_path.ends_with("_summary.toml") || rel_path.ends_with("_coverage.toml"))
+        .then_some(rel_path)
+}
+
+fn validate_scalar_summary_artifact(
+    dir: &Path,
+    rel_path: &str,
+    report: &mut Report,
+    seen: &mut BTreeSet<String>,
+) {
+    if !seen.insert(rel_path.to_string()) {
+        return;
+    }
+    let path = dir.join(rel_path);
+    if !path.exists() {
+        report.push(
+            Status::Block,
+            "schema",
+            rel_path,
+            "scalar summary artifact is missing",
+            "add the scalar summary artifact or remove the broken gate reference",
+        );
+        return;
+    }
+
+    let value = match load_from_path::<TomlValue>(&path) {
+        Ok(value) => value,
+        Err(_) => {
+            report.push(
+                Status::Block,
+                "schema",
+                rel_path,
+                "scalar summary artifact is unreadable",
+                "make the scalar summary artifact parse as TOML",
+            );
+            return;
+        }
+    };
+
+    let require_nonempty_scalar = |field: &str, report: &mut Report| {
+        let Some(field_value) = value.get(field) else {
+            report.push(
+                Status::Block,
+                "schema",
+                rel_path,
+                format!("scalar summary artifact is missing `{field}`"),
+                "fill all required scalar summary fields",
+            );
+            return;
+        };
+        let ok = match field_value {
+            TomlValue::String(v) => !v.is_empty(),
+            TomlValue::Boolean(_) => true,
+            TomlValue::Integer(_) => true,
+            TomlValue::Float(_) => true,
+            TomlValue::Datetime(_) => true,
+            _ => false,
+        };
+        if !ok {
+            report.push(
+                Status::Block,
+                "schema",
+                rel_path,
+                format!("scalar summary field `{field}` is empty or non-scalar"),
+                "keep scalar summary fields scalar and nonempty",
+            );
+        }
+    };
+
+    require_nonempty_scalar("status", report);
+    require_nonempty_scalar("summary_kind", report);
+    require_nonempty_scalar("summary_verdict", report);
+    require_nonempty_scalar("rule_version", report);
+
+    match value.get("source_refs") {
+        Some(TomlValue::Array(items)) if !items.is_empty() => {}
+        _ => report.push(
+            Status::Block,
+            "schema",
+            rel_path,
+            "scalar summary artifact must declare nonempty `source_refs`",
+            "bind the scalar summary artifact to at least one source artifact ref",
+        ),
+    }
+}
+
 fn stage_key(stage: Stage) -> &'static str {
     match stage {
         Stage::Review => "review",
@@ -602,6 +690,32 @@ fn validate_stage_promotion(
                                     };
                                     Ok(is_nonempty)
                                 };
+                                let mut seen_summary_artifacts = BTreeSet::new();
+                                for summary_rel_path in scalar_summary_rel_path(&gate.left_ref)
+                                    .into_iter()
+                                    .chain(scalar_summary_rel_path(&gate.right_ref))
+                                {
+                                    validate_scalar_summary_artifact(
+                                        dir,
+                                        summary_rel_path,
+                                        report,
+                                        &mut seen_summary_artifacts,
+                                    );
+                                }
+                                for clause in &gate.clauses {
+                                    for summary_rel_path in
+                                        scalar_summary_rel_path(&clause.left_ref)
+                                            .into_iter()
+                                            .chain(scalar_summary_rel_path(&clause.right_ref))
+                                    {
+                                        validate_scalar_summary_artifact(
+                                            dir,
+                                            summary_rel_path,
+                                            report,
+                                            &mut seen_summary_artifacts,
+                                        );
+                                    }
+                                }
 
                                 match gate.comparator_kind.as_str() {
                                     "string_eq" | "scalar_eq" => {

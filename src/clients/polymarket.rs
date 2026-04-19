@@ -173,6 +173,7 @@ impl PolymarketSelectorState {
         if let Some(cache) = self.current_event_slugs_cache.load_full()
             && cache.as_of == now
             && cache.generation == generation
+            && generation.is_multiple_of(2)
         {
             return cache.event_slugs.clone();
         }
@@ -187,11 +188,12 @@ impl PolymarketSelectorState {
             .into_iter()
             .collect();
 
-        if self.snapshot_generation.load(Ordering::Acquire) == generation {
+        let current_generation = self.snapshot_generation.load(Ordering::Acquire);
+        if current_generation == generation && current_generation.is_multiple_of(2) {
             self.current_event_slugs_cache
                 .store(Some(Arc::new(CurrentEventSlugsCache {
                     as_of: now,
-                    generation,
+                    generation: current_generation,
                     event_slugs: event_slugs.clone(),
                 })));
         }
@@ -227,6 +229,11 @@ impl PolymarketSelectorState {
     ) where
         I: IntoIterator<Item = (PolymarketPrefixDiscovery, Vec<String>)>,
     {
+        // Seqlock-style writer section:
+        // 1. bump generation to odd to invalidate all existing cache entries
+        // 2. publish the new snapshot + clear cache
+        // 3. bump generation again to even so readers may cache against the new state
+        self.snapshot_generation.fetch_add(1, Ordering::AcqRel);
         let mut next = (**self.event_slugs_by_discovery.load()).clone();
 
         for (discovery, event_slugs) in event_slugs_by_discovery {

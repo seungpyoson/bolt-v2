@@ -1,0 +1,43 @@
+merge_ready = false
+head_scope_hash = "UNSET"
+
+open_blockers = [
+  "EXP-ETH-ANCHOR-SEMANTICS|semantic_ambiguity|interval_open|mixed-anchor-source|src/strategies/eth_chainlink_taker.rs",
+  "EXP-ETH-ANCHOR-SEMANTICS|artifact_mismatch|market-anchor|page-vs-gamma-surface|external",
+  "EXP-ETH-ANCHOR-SEMANTICS|semantic_ambiguity|stale_chainlink_clock|clock-source-unfrozen|src/strategies/eth_chainlink_taker.rs",
+]
+
+closed_findings = []
+required_evidence = [
+  "E1",
+  "E2",
+  "E3",
+  "E4",
+  "E5",
+  "E6",
+  "E7",
+]
+
+[[claims]]
+claim_id = "C1"
+value = false
+supported_by = []
+depends_on_closed_findings = []
+
+[[claims]]
+claim_id = "C2"
+value = false
+supported_by = []
+depends_on_closed_findings = []
+
+[[claims]]
+claim_id = "C3"
+value = false
+supported_by = []
+depends_on_closed_findings = []
+
+[[claims]]
+claim_id = "C4"
+value = false
+supported_by = []
+depends_on_closed_findings = []

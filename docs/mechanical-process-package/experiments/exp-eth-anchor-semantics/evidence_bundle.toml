@@ -1,0 +1,88 @@
+status = "collected"
+
+[[evidence]]
+evidence_id = "E1"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "raw_gamma_anchor_extraction_order"
+artifact_ref = "src/platform/polymarket_catalog.rs:311-320"
+proves = [
+  "catalog_anchor_extraction_prefers_axis_or_threshold_fields",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E2"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "interval_open_write_path"
+artifact_ref = "src/strategies/eth_chainlink_taker.rs:1113-1133"
+proves = [
+  "interval_open_currently_uses_price_to_beat_then_oracle_then_fused_fair_value",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E3"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "interval_open_fallback_tests"
+artifact_ref = "src/strategies/eth_chainlink_taker.rs:6690-6727"
+proves = [
+  "local_tests_accept_fallback_to_fused_reference_fair_value",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E4"
+type = "external_artifact"
+producer = "polymarket_page"
+subject = "sample_market_page_anchor"
+artifact_ref = "https://polymarket.com/event/eth-updown-5m-1776108900"
+proves = [
+  "sample_market_page_exposes_priceToBeat_and_openPrice_as_same_value",
+  "sample_market_page_names_chainlink_resolution_source",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E5"
+type = "external_artifact"
+producer = "polymarket_gamma_api"
+subject = "sample_gamma_event_surface"
+artifact_ref = "https://gamma-api.polymarket.com/events?slug=eth-updown-5m-1776108900"
+proves = [
+  "sample_gamma_payload_names_chainlink_resolution_source",
+]
+contradicts = [
+  "sample_gamma_payload_exposes_direct_anchor_surface_matching_page_priceToBeat",
+]
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E6"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "stale_chainlink_guard_inputs"
+artifact_ref = "src/strategies/eth_chainlink_taker.rs:1617-1646"
+proves = [
+  "forced_flat_stale_chainlink_uses_active.last_reference_ts_ms",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E7"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "reference_actor_clock_semantics"
+artifact_ref = "tests/reference_actor.rs:348-388"
+proves = [
+  "reference_actor_staleness_uses_actor_clock_while_observation_timestamp_retains_quote_timestamp",
+]
+contradicts = []
+captured_at = "2026-04-19"

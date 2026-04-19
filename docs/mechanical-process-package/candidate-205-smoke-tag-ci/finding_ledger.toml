@@ -1,0 +1,57 @@
+status = "classified"
+
+[[findings]]
+finding_id = "205|semantic_ambiguity|proof_ownership|same_sha_proof_reuse_boundary_unfrozen|ci.yml"
+kind = "semantic_ambiguity"
+subject = "proof_ownership"
+predicate = "same_sha_proof_reuse_boundary_unfrozen"
+locus = ".github/workflows/ci.yml"
+source_refs = [
+  "E205-1",
+  "E205-2",
+  "E205-3",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "SEAM-SAME-SHA-PROOF-OWNERSHIP",
+  "C205-3",
+]
+
+[[findings]]
+finding_id = "205|semantic_ambiguity|artifact_provenance|deploy_artifact_source_unfrozen|ci.yml"
+kind = "semantic_ambiguity"
+subject = "artifact_provenance"
+predicate = "deploy_artifact_source_unfrozen"
+locus = ".github/workflows/ci.yml"
+source_refs = [
+  "E205-2",
+  "E205-3",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "SEAM-BUILD-ARTIFACT-PROVENANCE-RULE",
+  "C205-4",
+]
+
+[[findings]]
+finding_id = "205|missing_proof|required_lane_set|required_safety_lanes_not_frozen|ci.yml"
+kind = "missing_proof"
+subject = "required_lane_set"
+predicate = "required_safety_lanes_not_frozen"
+locus = ".github/workflows/ci.yml"
+source_refs = [
+  "E205-1",
+  "E205-2",
+  "E205-3",
+]
+duplicates = []
+status = "resolved"
+resolution_kind = "fix_here"
+resolved_by = [
+  "SEAM-REQUIRED-LANE-SET-RULE",
+  "C205-5",
+]

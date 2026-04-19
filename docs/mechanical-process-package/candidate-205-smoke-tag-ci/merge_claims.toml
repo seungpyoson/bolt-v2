@@ -1,0 +1,75 @@
+merge_ready = false
+head_scope_hash = "issue-205-process-trial-intake-plus-seam-proof-lock"
+
+open_blockers = []
+
+closed_findings = [
+  "205|semantic_ambiguity|proof_ownership|same_sha_proof_reuse_boundary_unfrozen|ci.yml",
+  "205|semantic_ambiguity|artifact_provenance|deploy_artifact_source_unfrozen|ci.yml",
+  "205|missing_proof|required_lane_set|required_safety_lanes_not_frozen|ci.yml",
+]
+required_evidence = [
+  "E205-1",
+  "E205-2",
+  "E205-3",
+  "E205-4",
+  "E205-5",
+  "E205-6",
+]
+
+[[claims]]
+claim_id = "C205-1"
+value = true
+supported_by = [
+  "E205-1",
+  "E205-2",
+  "E205-3",
+  "E205-5",
+]
+depends_on_closed_findings = []
+
+[[claims]]
+claim_id = "C205-2"
+value = true
+supported_by = [
+  "E205-3",
+  "E205-4",
+  "E205-6",
+]
+depends_on_closed_findings = []
+
+[[claims]]
+claim_id = "C205-3"
+value = true
+supported_by = [
+  "E205-2",
+  "E205-3",
+  "E205-6",
+]
+depends_on_closed_findings = [
+  "205|semantic_ambiguity|proof_ownership|same_sha_proof_reuse_boundary_unfrozen|ci.yml",
+]
+
+[[claims]]
+claim_id = "C205-4"
+value = true
+supported_by = [
+  "E205-2",
+  "E205-3",
+  "E205-6",
+]
+depends_on_closed_findings = [
+  "205|semantic_ambiguity|artifact_provenance|deploy_artifact_source_unfrozen|ci.yml",
+]
+
+[[claims]]
+claim_id = "C205-5"
+value = true
+supported_by = [
+  "E205-2",
+  "E205-3",
+  "E205-6",
+]
+depends_on_closed_findings = [
+  "205|missing_proof|required_lane_set|required_safety_lanes_not_frozen|ci.yml",
+]

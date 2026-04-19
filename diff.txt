@@ -1,0 +1,527 @@
+1a7ef00 fix startup recovery for binance and polymarket (8 minutes ago) <SP Son>
+config/live.local.example.toml |  5 +++
+ src/clients/binance.rs         | 55 ++++++++++++++++++++++++++++-
+ src/clients/polymarket.rs      | 47 +++++++++----------------
+ src/config.rs                  | 11 ++++++
+ src/live_config.rs             | 80 ++++++++++++++++++++++++++++++++++++++++++
+ src/main.rs                    | 34 +++++++++++++++++-
+ src/secrets.rs                 | 49 ++++++++++++++++++++++++++
+ src/validate.rs                | 58 ++++++++++++++++++++++++++++++
+ src/validate/tests.rs          | 41 ++++++++++++++++++++--
+ tests/config_parsing.rs        | 10 ++++++
+ tests/config_schema.rs         | 10 ++++++
+ tests/platform_runtime.rs      |  1 +
+ tests/render_live_config.rs    | 15 ++++++++
+ 13 files changed, 380 insertions(+), 36 deletions(-)
+
+config/live.local.example.toml
+  @@ -52,6 +52,11 @@
+  +[reference.binance]
+  +region = "eu-west-1"
+  +api_key = "/bolt/binance/api-key"
+  +api_secret = "/bolt/binance/api-secret"
+  +
+   [[reference.venues]]
+   name = "BINANCE-BTC"
+   type = "binance"
+  +5 -0
+
+src/clients/binance.rs
+  @@ -1,6 +1,10 @@
+  -use crate::clients::ReferenceDataClientParts;
+  +use crate::{
+  +    clients::ReferenceDataClientParts,
+  +    config::ReferenceConfig,
+  +    secrets::{ResolvedBinanceSecrets, resolve_binance},
+  +};
+   
+   pub fn build_reference_data_client() -> ReferenceDataClientParts {
+       (
+  @@ -8,3 +12,52 @@
+  +
+  +pub fn build_reference_data_client_with_reference(
+  +    reference: &ReferenceConfig,
+  +) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
+  +    let shared = reference.binance.as_ref().ok_or_else(|| {
+  +        std::io::Error::other(
+  +            "missing shared binance config for configured binance reference venues",
+  +        )
+  +    })?;
+  +    let secrets = resolve_binance(&shared.region, &shared.api_key, &shared.api_secret)?;
+  +    Ok(build_reference_data_client_with_secrets(secrets))
+  +}
+  +
+  +pub fn build_reference_data_client_with_secrets(
+  +    secrets: ResolvedBinanceSecrets,
+  +) -> ReferenceDataClientParts {
+  +    (
+  +        Box::new(BinanceDataClientFactory::new()),
+  +        Box::new(BinanceDataClientConfig {
+  +            api_key: Some(secrets.api_key),
+  +            api_secret: Some(secrets.api_secret),
+  +            ..Default::default()
+  +        }),
+  +    )
+  +}
+  +
+  +#[cfg(test)]
+  +mod tests {
+  +    use super::*;
+  +
+  +    #[test]
+  +    fn build_reference_data_client_with_secrets_populates_auth_fields() {
+  +        let secrets = ResolvedBinanceSecrets {
+  +            api_key: "api-key".to_string(),
+  +            api_secret: "api-secret".to_string(),
+  +        };
+  +        let (_, config) = build_reference_data_client_with_secrets(secrets.clone());
+  +        let config = config
+  +            .as_any()
+  +            .downcast_ref::<BinanceDataClientConfig>()
+  +            .expect("binance reference builder should produce BinanceDataClientConfig");
+  +
+  +        assert_eq!(config.api_key.as_deref(), Some(secrets.api_key.as_str()));
+  +        assert_eq!(
+  +            config.api_secret.as_deref(),
+  +            Some(secrets.api_secret.as_str())
+  +        );
+  +    }
+  +}
+  +54 -1
+
+src/clients/polymarket.rs
+  @@ -834,8 +834,6 @@
+  -    canonical_min_secs: u64,
+  -    canonical_max_secs: u64,
+       member_discoveries: Vec<PolymarketPrefixDiscovery>,
+   }
+   
+  @@ -886,8 +884,6 @@
+  -                    canonical_min_secs: current_min,
+  -                    canonical_max_secs: current_max,
+                       member_discoveries: std::mem::take(&mut current_members),
+                   });
+   
+  @@ -907,8 +903,6 @@
+  -            canonical_min_secs: current_min,
+  -            canonical_max_secs: current_max,
+               member_discoveries: current_members,
+           });
+       }
+  @@ -953,7 +947,6 @@
+  -    canonical_bounds: (u64, u64),
+       now: DateTime<Utc>,
+   ) -> bool {
+       let Some(event_slug) = event.slug.as_deref() else {
+  @@ -967,21 +960,18 @@
+  -    let discovery_matches_canonical = discovery.min_time_to_expiry_secs == canonical_bounds.0
+  -        && discovery.max_time_to_expiry_secs == canonical_bounds.1;
+  -    discovery_matches_canonical || matches_time_bounds(event, discovery, now)
+  +    matches_time_bounds(event, discovery, now)
+   }
+   
+   fn partition_events_by_discovery(
+       out: &mut BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>,
+  -    canonical_bounds: (u64, u64),
+       discoveries: &[PolymarketPrefixDiscovery],
+       events: Vec<GammaEvent>,
+       now: DateTime<Utc>,
+   ) {
+       for event in events {
+           for discovery in discoveries {
+  -            if !discovery_matches_event(&event, discovery, canonical_bounds, now) {
+  +            if !discovery_matches_event(&event, discovery, now) {
+                   continue;
+               }
+               out.get_mut(discovery)
+  @@ -1013,18 +1003,11 @@
+  -            canonical_min_secs,
+  -            canonical_max_secs,
+               member_discoveries,
+  +            ..
+           } = group;
+           let events = fetch_gamma_events_paginated(client, canonical_params).await?;
+  -        partition_events_by_discovery(
+  -            &mut out,
+  -            (canonical_min_secs, canonical_max_secs),
+  -            &member_discoveries,
+  -            events,
+  -            now,
+  -        );
+  +        partition_events_by_discovery(&mut out, &member_discoveries, events, now);
+       }
+   
+       Ok(out)
+  @@ -1066,9 +1049,8 @@
+  -            canonical_min_secs,
+  -            canonical_max_secs,
+               member_discoveries,
+  +            ..
+           } = group;
+           let tag_slug = canonical_params.tag_slug.clone().unwrap_or_default();
+           match fetch_gamma_events_paginated(client, canonical_params).await {
+  @@ -1080,7 +1062,6 @@
+  -                    (canonical_min_secs, canonical_max_secs),
+                       &member_discoveries,
+                       events,
+                       now,
+  @@ -1441,7 +1422,7 @@
+  -    async fn spawn_missing_end_date_test_server() -> SocketAddr {
+  +    async fn spawn_out_of_window_test_server() -> SocketAddr {
+           let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+           let addr = listener.local_addr().unwrap();
+           tokio::spawn(async move {
+  @@ -1457,7 +1438,12 @@
+  -                            {"id":"1","slug":"bitcoin-5m-alpha","markets":[]}
+  +                            {
+  +                                "id":"1",
+  +                                "slug":"bitcoin-5m-stale",
+  +                                "endDate":"2025-12-20T01:35:00Z",
+  +                                "markets":[]
+  +                            }
+                           ])
+                           .to_string()
+                       } else {
+  @@ -1731,7 +1717,7 @@
+  -        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 1, 1);
+  +        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 0, 1);
+           let selector_state = PolymarketSelectorState::new(vec![(
+               discovery.clone(),
+               vec!["bitcoin-5m-startup".to_string()],
+  @@ -1782,8 +1768,8 @@
+  -    async fn canonical_window_members_accept_missing_end_date_on_prefix_match() {
+  -        let addr = spawn_missing_end_date_test_server().await;
+  +    async fn canonical_window_members_reject_out_of_window_prefix_matches() {
+  +        let addr = spawn_out_of_window_test_server().await;
+           let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+           let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+   
+  @@ -1796,8 +1782,7 @@
+  -            BTreeMap::from([(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])]),
+  -            "canonical-window members should keep the pre-existing prefix-match behavior when Gamma omits endDate"
+  +            BTreeMap::from([(discovery.clone(), Vec::new())])
+           );
+       }
+   
+  +16 -31
+
+src/config.rs
+  @@ -131,6 +131,8 @@
+  +    pub binance: Option<BinanceSharedConfig>,
+  +    #[serde(default)]
+       pub chainlink: Option<ChainlinkSharedConfig>,
+       #[serde(default)]
+       pub venues: Vec<ReferenceVenueEntry>,
+  @@ -141,6 +143,7 @@
+  +            binance: None,
+               chainlink: None,
+               venues: Vec::new(),
+           }
+  @@ -177,6 +180,14 @@
+  +#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+  +#[serde(deny_unknown_fields)]
+  +pub struct BinanceSharedConfig {
+  +    pub region: String,
+  +    pub api_key: String,
+  +    pub api_secret: String,
+  +}
+  +
+   #[derive(Debug, Clone, Deserialize)]
+   #[serde(deny_unknown_fields)]
+   pub struct RulesetConfig {
+  +11 -0
+
+src/live_config.rs
+  @@ -308,6 +308,8 @@
+  +    pub binance: Option<crate::config::BinanceSharedConfig>,
+  +    #[serde(default)]
+       pub chainlink: Option<crate::config::ChainlinkSharedConfig>,
+       #[serde(default)]
+       pub venues: Vec<LiveReferenceVenueInput>,
+  @@ -318,6 +320,7 @@
+  +            binance: None,
+               chainlink: None,
+               venues: Vec::new(),
+           }
+  @@ -481,6 +484,8 @@
+  +    binance: Option<crate::config::BinanceSharedConfig>,
+  +    #[serde(skip_serializing_if = "Option::is_none")]
+       chainlink: Option<crate::config::ChainlinkSharedConfig>,
+       venues: Vec<RenderedReferenceVenueEntry>,
+   }
+  @@ -689,6 +694,7 @@
+  +            binance: input.reference.binance.clone(),
+               chainlink: input.reference.chainlink.clone(),
+               venues: input
+                   .reference
+  @@ -1158,6 +1164,80 @@
+  +    #[test]
+  +    fn live_reference_binance_shared_config_renders_through_to_runtime() {
+  +        let raw = r#"
+  +[node]
+  +name = "BOLT-V2-TEST"
+  +trader_id = "BOLT-TEST"
+  +
+  +[polymarket]
+  +event_slug = "btc-updown-5m"
+  +instrument_id = "0xabc-12345678901234567890.POLYMARKET"
+  +account_id = "POLYMARKET-001"
+  +funder = "0xabc"
+  +
+  +[secrets]
+  +pk = "/bolt/poly/pk"
+  +api_key = "/bolt/poly/key"
+  +api_secret = "/bolt/poly/secret"
+  +passphrase = "/bolt/poly/passphrase"
+  +
+  +[reference]
+  +publish_topic = "platform.reference.default"
+  +
+  +[reference.binance]
+  +region = "eu-west-1"
+  +api_key = "/bolt/binance/api-key"
+  +api_secret = "/bolt/binance/api-secret"
+  +
+  +[[reference.venues]]
+  +name = "BINANCE-BTC"
+  +type = "binance"
+  +instrument_id = "BTCUSDT.BINANCE"
+  +base_weight = 0.35
+  +stale_after_ms = 1500
+  +disable_after_ms = 5000
+  +
+  +[[rulesets]]
+  +id = "PRIMARY"
+  +venue = "polymarket"
+  +resolution_basis = "binance_btcusdt_1m"
+  +min_time_to_expiry_secs = 60
+  +max_time_to_expiry_secs = 900
+  +min_liquidity_num = 1000
+  +require_accepting_orders = true
+  +freeze_before_end_secs = 90
+  +selector_poll_interval_ms = 1000
+  +candidate_load_timeout_secs = 30
+  +[rulesets.selector]
+  +tag_slug = "bitcoin"
+  +
+  +[audit]
+  +local_dir = "var/audit"
+  +s3_uri = "s3://bolt-runtime-history/phase1"
+  +ship_interval_secs = 30
+  +upload_attempt_timeout_secs = 30
+  +roll_max_bytes = 1048576
+  +roll_max_secs = 300
+  +max_local_backlog_bytes = 10485760
+  +"#;
+  +
+  +        let input: LiveLocalConfig = toml::from_str(raw).expect("config should parse");
+  +        let rendered = render_runtime_config(&input, &repo_path("config/live.local.toml"))
+  +            .expect("config should render");
+  +        let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+  +
+  +        let binance = cfg
+  +            .reference
+  +            .binance
+  +            .as_ref()
+  +            .expect("runtime config should include reference.binance");
+  +        assert_eq!(binance.region, "eu-west-1");
+  +        assert_eq!(binance.api_key, "/bolt/binance/api-key");
+  +        assert_eq!(binance.api_secret, "/bolt/binance/api-secret");
+  +    }
+  +
+       #[test]
+       fn minimal_operator_input_without_phase1_sections_fails_closed() {
+           let raw = r#"
+  +80 -0
+
+src/main.rs
+  @@ -3,7 +3,7 @@
+  -    clients::{chainlink, polymarket},
+  +    clients::{binance, chainlink, polymarket},
+       config::{Config, ReferenceVenueKind, ensure_runtime_has_active_path},
+       normalized_sink,
+       platform::runtime::{
+  @@ -111,6 +111,17 @@
+  +                        ReferenceVenueKind::Binance => {
+  +                            let (factory, config) =
+  +                                binance::build_reference_data_client_with_reference(
+  +                                    &cfg.reference,
+  +                                )?;
+  +                            builder = builder.add_data_client(
+  +                                Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
+  +                                factory,
+  +                                config,
+  +                            )?;
+  +                        }
+                           ReferenceVenueKind::Chainlink => {
+                               let (factory, config) =
+                                   chainlink::build_chainlink_reference_data_client(&cfg.reference)?;
+  @@ -319,6 +330,22 @@
+  +            if let Some(binance) = cfg.reference.binance.as_ref() {
+  +                let check = secrets::check_binance_secret_config(binance);
+  +                if check.is_complete() {
+  +                    println!(
+  +                        "reference.binance: secret config complete ({})",
+  +                        check.present.join(", ")
+  +                    );
+  +                } else {
+  +                    has_errors = true;
+  +                    eprintln!(
+  +                        "reference.binance: missing secret config fields ({})",
+  +                        check.missing.join(", ")
+  +                    );
+  +                }
+  +            }
+  +
+               if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
+                   let check = secrets::check_chainlink_secret_config(chainlink);
+                   if check.is_complete() {
+  @@ -368,6 +395,11 @@
+  +            if let Some(binance) = cfg.reference.binance.as_ref() {
+  +                secrets::resolve_binance(&binance.region, &binance.api_key, &binance.api_secret)?;
+  +                println!("reference.binance: secrets resolved successfully");
+  +            }
+  +
+               if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
+                   secrets::resolve_chainlink(
+                       &chainlink.region,
+  +33 -1
+
+src/secrets.rs
+  @@ -33,6 +33,12 @@
+  +#[derive(Clone)]
+  +pub struct ResolvedBinanceSecrets {
+  +    pub api_key: String,
+  +    pub api_secret: String,
+  +}
+  +
+   impl std::fmt::Debug for ResolvedPolymarketSecrets {
+       fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+           let redacted = RedactedDebug;
+  @@ -57,6 +63,17 @@
+  +impl std::fmt::Debug for ResolvedBinanceSecrets {
+  +    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+  +        let redacted = RedactedDebug;
+  +
+  +        f.debug_struct("ResolvedBinanceSecrets")
+  +            .field("api_key", &redacted)
+  +            .field("api_secret", &redacted)
+  +            .finish()
+  +    }
+  +}
+  +
+   #[derive(Debug, Clone, PartialEq, Eq)]
+   pub struct SecretConfigCheck {
+       pub present: Vec<&'static str>,
+  @@ -153,6 +170,27 @@
+  +pub fn check_binance_secret_config(
+  +    shared: &crate::config::BinanceSharedConfig,
+  +) -> SecretConfigCheck {
+  +    let mut present = Vec::new();
+  +    let mut missing = Vec::new();
+  +
+  +    for (field, configured) in [
+  +        ("region", !shared.region.trim().is_empty()),
+  +        ("api_key", !shared.api_key.trim().is_empty()),
+  +        ("api_secret", !shared.api_secret.trim().is_empty()),
+  +    ] {
+  +        if configured {
+  +            present.push(field);
+  +        } else {
+  +            missing.push(field);
+  +        }
+  +    }
+  +
+  +    SecretConfigCheck { present, missing }
+  +}
+  +
+   pub fn resolve_polymarket(
+       secrets: &ExecClientSecrets,
+   ) -> Result<ResolvedPolymarketSecrets, SecretError> {
+  @@ -202,6 +240,17 @@
+  +pub fn resolve_binance(
+  +    region: &str,
+  +    api_key_path: &str,
+  +    api_secret_path: &str,
+  +) -> Result<ResolvedBinanceSecrets, SecretError> {
+  +    Ok(ResolvedBinanceSecrets {
+  +        api_key: resolve_secret(region, api_key_path)?,
+  +        api_secret: resolve_secret(region, api_secret_path)?,
+  +    })
+  +}
+  +
+   #[cfg(test)]
+   mod tests {
+       use super::{ResolvedChainlinkSecrets, ResolvedPolymarketSecrets, pad_base64};
+  +49 -0
+
+src/validate.rs
+  @@ -297,6 +297,40 @@
+  +fn check_binance_shared_config(
+  +    errors: &mut Vec<ValidationError>,
+  +    field_prefix: &str,
+  +    shared: Option<&crate::config::BinanceSharedConfig>,
+  +    has_binance_venues: bool,
+  +) {
+  +    match (has_binance_venues, shared) {
+  +        (true, Some(shared)) => {
+  +            check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
+  +            check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
+  +            check_ssm_path(
+  +                errors,
+  +                &format!("{field_prefix}.api_secret"),
+  +                &shared.api_secret,
+  +            );
+  +        }
+  +        (true, None) => push_error(
+  +            errors,
+  +            field_prefix,
+  +            "missing_binance_config",
+  +            format!("{field_prefix} must be configured when any reference venue kind is binance"),
+  +        ),
+  +        (false, Some(_)) => push_error(
+  +            errors,
+  +            field_prefix,
+  +            "orphaned_binance_config",
+  +            format!(
+  +                "{field_prefix} must not be configured unless a binance reference venue is enabled"
+  +            ),
+  +        ),
+  +        (false, None) => {}
+  +    }
+  +}
+  +
+   fn check_chainlink_reference_config(
+       errors: &mut Vec<ValidationError>,
+       field_prefix: &str,
+  @@ -935,6 +969,7 @@
+  +            || config.reference.binance.is_some()
+               || config.reference.chainlink.is_some()
+               || !config.reference.venues.is_empty()
+           {
+  @@ -984,6 +1019,17 @@
+  +    let has_binance_reference = config
+  +        .reference
+  +        .venues
+  +        .iter()
+  +        .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+  +    check_binance_shared_config(
+  +        &mut errors,
+  +        "reference.binance",
+  +        config.reference.binance.as_ref(),
+  +        has_binance_reference,
+  +    );
+       check_chainlink_shared_config(
+           &mut errors,
+           "reference.chainlink",
+  @@ -1584,6 +1630,7 @@
+  +            || config.reference.binance.is_some()
+               || config.reference.chainlink.is_some()
+               || !config.reference.venues.is_empty()
+           {
+  @@ -1651,6 +1698,17 @@
+  +    let has_binance_reference = config
+
+... (more changes truncated)
+  +48 -0
+[full diff: rtk git diff --no-compact]

@@ -1,0 +1,40 @@
+status = "frozen"
+
+[[seams]]
+seam_id = "SEAM-SELECTOR-SCHEMA-BOUNDARY"
+semantic_term = "schema_boundary"
+writer_path = "src/clients/polymarket.rs"
+writer_symbol = "PolymarketDataClientInput"
+reader_path = "src/clients/polymarket.rs"
+reader_symbol = "build_data_client / gamma_refresh_interval_secs"
+storage_field = "data_clients[].config"
+authoritative_source = "PolymarketDataClientInput"
+allowed_sources = [
+  "full operator-facing TOML value",
+]
+forbidden_sources = [
+  "subset schema boundary on shared raw TOML value",
+]
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+
+[[seams]]
+seam_id = "SEAM-SELECTOR-SLUG-FETCH-FANOUT"
+semantic_term = "slug_fetch_fanout"
+writer_path = "src/platform/polymarket_catalog.rs"
+writer_symbol = "fetch_raw_events_by_slugs"
+reader_path = "src/platform/polymarket_catalog.rs"
+reader_symbol = "load_raw_anchor_prices_by_market_id"
+storage_field = "per-slug raw anchor fetch"
+authoritative_source = "UNFROZEN"
+allowed_sources = [
+  "bounded concurrency",
+  "explicit follow-up tracking outside base slice",
+]
+forbidden_sources = [
+  "silent unbounded join_all in an accepted clean base",
+]
+fallback_order = []
+freshness_clock = "N/A"
+status = "open"

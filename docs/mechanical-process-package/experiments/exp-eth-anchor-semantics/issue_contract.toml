@@ -1,0 +1,63 @@
+issue_id = "EXP-ETH-ANCHOR-SEMANTICS"
+title = "Freeze ETH anchor semantics before implementation"
+repo = "bolt-v2"
+slice_id = "eth-anchor-semantics"
+status = "blocked"
+problem_statement = "The ETH taker seam currently allows interval_open to be populated from more than one semantic source class. The process must determine whether interval_open is the exact market resolution anchor, a live oracle anchor, or an operational reference surrogate, and must block until that meaning is frozen."
+
+required_outcomes = [
+  "interval_open has one explicit semantic meaning",
+  "allowed anchor sources are explicit",
+  "forbidden anchor fallbacks are explicit",
+  "stale-chainlink protection is tied to the clock named by the seam",
+  "proof obligations exist for disagreement cases between market anchor, oracle anchor, and fused reference fair_value",
+]
+
+non_goals = [
+  "no strategy implementation changes",
+  "no selector changes",
+  "no runtime plumbing changes",
+  "no client or platform refactor",
+]
+
+allowed_surfaces = [
+  "docs/delivery/exp-eth-anchor-semantics/**",
+  "docs/process/**",
+]
+
+forbidden_surfaces = [
+  "src/**",
+  "tests/**",
+  ".github/**",
+]
+
+assumptions = [
+  "Polymarket ETH 5m markets resolve against Chainlink ETH/USD at the window boundary",
+  "The public market page is allowed as external evidence for this experiment",
+  "The sampled public Gamma event payload is allowed as external evidence for this experiment",
+]
+
+[[semantic_terms]]
+name = "interval_open"
+status = "unresolved"
+definition = "The price used by the strategy as the strike or opening anchor for the active market interval."
+
+[[semantic_terms]]
+name = "price_to_beat"
+status = "observed_external"
+definition = "The market-specific opening anchor exposed on the public Polymarket market page."
+
+[[semantic_terms]]
+name = "oracle_anchor"
+status = "observed_local"
+definition = "The best healthy oracle price observed from ReferenceSnapshot venues."
+
+[[semantic_terms]]
+name = "reference_fair_value"
+status = "observed_local"
+definition = "The fused reference fair_value carried in ReferenceSnapshot."
+
+[[semantic_terms]]
+name = "stale_chainlink_clock"
+status = "unresolved"
+definition = "The exact clock that should govern stale-chainlink forced-flat behavior for the anchor seam."

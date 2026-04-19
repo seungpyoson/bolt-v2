@@ -1,0 +1,74 @@
+status = "open"
+
+[[claims]]
+claim_id = "C1"
+claim_text = "interval_open_source_is_unambiguous"
+claim_kind = "semantic_seam"
+covered_by = [
+  "E1",
+  "E2",
+  "E3",
+  "E4",
+]
+falsified_by = [
+  "FX1",
+  "FX2",
+]
+required_before = "implementation"
+status = "open"
+
+[[claims]]
+claim_id = "C2"
+claim_text = "fused_reference_fair_value_is_not_an_implicit_anchor_fallback"
+claim_kind = "semantic_seam"
+covered_by = [
+  "E2",
+  "E3",
+  "E5",
+]
+falsified_by = [
+  "FX2",
+]
+required_before = "implementation"
+status = "open"
+
+[[claims]]
+claim_id = "C3"
+claim_text = "stale_chainlink_uses_the_clock_named_by_the_seam"
+claim_kind = "freshness_guard"
+covered_by = [
+  "E6",
+  "E7",
+]
+falsified_by = [
+  "FX3",
+]
+required_before = "implementation"
+status = "open"
+
+[[claims]]
+claim_id = "C4"
+claim_text = "external_market_artifact_and_local_anchor_logic_do_not_disagree"
+claim_kind = "artifact_match"
+covered_by = [
+  "E4",
+  "E5",
+]
+falsified_by = [
+  "FX1",
+  "FX2",
+]
+required_before = "implementation"
+status = "open"
+
+[[falsifiers]]
+falsifier_id = "FX1"
+description = "price_to_beat differs from oracle and fair_value; interval_open must still use the frozen authoritative source"
+
+[[falsifiers]]
+falsifier_id = "FX2"
+description = "no market price_to_beat is available; the process must say explicitly whether oracle or fused fair_value is allowed, instead of silently accepting whichever code already uses"
+
+[[falsifiers]]
+falsifier_id = "FX3"
+description = "actor clock, quote timestamp, and snapshot timestamp disagree; stale-chainlink guard must name which one governs the seam"

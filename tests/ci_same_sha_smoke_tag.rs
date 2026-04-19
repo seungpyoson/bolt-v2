@@ -292,11 +292,8 @@ fn deploy_keeps_tag_on_main_and_idempotency_guards() {
         idempotency_step.contains("aws s3 ls \"$S3_DEPLOY_PATH/$TAG/bolt-v2\" >/dev/null 2>&1"),
         "deploy must keep the existing idempotency guard before upload"
     );
-    let deploy_steps = run_steps(&deploy, "deploy");
     assert!(
-        deploy_steps
-            .iter()
-            .any(|run| { run.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\"") }),
+        idempotency_step.contains("echo \"skip=true\" >> \"$GITHUB_OUTPUT\""),
         "deploy must keep the idempotency output contract for already-published tags"
     );
 }

@@ -134,3 +134,39 @@ comparator_kind = "string_eq"
 left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
 right_ref = ""
 right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "orchestration_reachability_summary.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#stage"
+right_ref = ""
+right_literal = "review"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#reachability_status"
+right_ref = ""
+right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#out_of_surface_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#incomplete_case_count"
+right_ref = ""
+right_literal = "0"

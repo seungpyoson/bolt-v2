@@ -1,0 +1,6 @@
+status = "frozen"
+coverage_verdict = "pass"
+subject = "true_merge_claims_have_bound_enforcement_rows"
+source_merge_claims_ref = "merge_claims.toml"
+source_claim_enforcement_ref = "claim_enforcement.toml"
+rule_version = "v1"

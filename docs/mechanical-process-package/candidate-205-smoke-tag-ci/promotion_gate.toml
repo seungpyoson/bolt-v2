@@ -122,3 +122,15 @@ comparator_kind = "nonempty"
 left_ref = "review_rounds/pr-210-r2.toml#status"
 right_ref = ""
 right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "claim_enforcement_coverage.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "claim_enforcement_coverage.toml#coverage_verdict"
+right_ref = ""
+right_literal = "pass"

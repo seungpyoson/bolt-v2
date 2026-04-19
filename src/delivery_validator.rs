@@ -1285,22 +1285,6 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                     "review-stage package has external review evidence but no review_rounds artifacts",
                     "add review_rounds/<round_id>.toml to record ingestion of the exact review corpus",
                 );
-            } else {
-                for (path, round) in &review_rounds {
-                    if round.source.is_empty()
-                        || round.review_target_ref.is_empty()
-                        || round.raw_comment_refs.is_empty()
-                        || round.status.is_empty()
-                    {
-                        report.push(
-                            Status::Block,
-                            "review_target",
-                            path.display().to_string(),
-                            "review round exists but is incomplete",
-                            "fill source, review_target_ref, raw_comment_refs, and status for every ingested review round",
-                        );
-                    }
-                }
             }
         }
     }

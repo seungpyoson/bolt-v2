@@ -24,14 +24,14 @@ Required files:
 - `finding_ledger.toml`
 - `evidence_bundle.toml`
 - `merge_claims.toml`
+- `stage_promotion.toml`
+- `promotion_gate.toml`
 - `review_target.toml` if review findings are present
 
 Optional files:
 
 - `README.md`
 - `result.md`
-- `stage_promotion.toml`
-- `promotion_gate.toml`
 
 ## Output Contract
 

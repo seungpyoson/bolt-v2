@@ -225,6 +225,263 @@ status = "ingested"
     );
 }
 
+fn write_stage_gate_files(
+    dst: &Path,
+    from_stage: &str,
+    to_stage: &str,
+    left_ref: &str,
+    right_ref: &str,
+    right_literal: &str,
+) {
+    write_file(
+        &dst.join("stage_promotion.toml"),
+        &format!(
+            r#"
+[[promotions]]
+from_stage = "{from_stage}"
+to_stage = "{to_stage}"
+promotion_gate_artifact = "promotion_gate.toml"
+status = "satisfied"
+"#
+        ),
+    );
+    write_file(
+        &dst.join("promotion_gate.toml"),
+        &format!(
+            r#"
+[[gates]]
+gate_id = "gate-1"
+from_stage = "{from_stage}"
+to_stage = "{to_stage}"
+comparator_kind = "string_eq"
+left_ref = "{left_ref}"
+right_ref = "{right_ref}"
+right_literal = "{right_literal}"
+verdict = "pass"
+status = "frozen"
+"#
+        ),
+    );
+}
+
+fn write_minimal_stage_package(dst: &Path, stage: &str) {
+    write_file(
+        &dst.join("issue_contract.toml"),
+        r#"
+issue_id = 999
+title = "synthetic stage package"
+repo = "seungpyoson/bolt-v2"
+slice_id = "synthetic-stage"
+status = "frozen"
+problem_statement = "synthetic package"
+required_outcomes = ["one stage gate only"]
+non_goals = ["real issue delivery"]
+allowed_surfaces = ["docs/mechanical-process-package/**"]
+forbidden_surfaces = ["src/**"]
+assumptions = []
+semantic_terms = ["synthetic_term"]
+"#,
+    );
+    write_file(
+        &dst.join("finding_ledger.toml"),
+        "status = \"classified\"\n",
+    );
+    write_file(&dst.join("evidence_bundle.toml"), "");
+    write_file(
+        &dst.join("merge_claims.toml"),
+        r#"
+merge_ready = false
+open_blockers = []
+required_evidence = []
+"#,
+    );
+
+    match stage {
+        "intake" => {
+            write_stage_gate_files(
+                dst,
+                "none",
+                "intake",
+                "issue_contract.toml#problem_statement",
+                "",
+                "synthetic package",
+            );
+        }
+        "seam_locked" => {
+            write_file(
+                &dst.join("seam_contract.toml"),
+                r#"
+status = "locked"
+
+[[seams]]
+seam_id = "SEAM-SYN-1"
+semantic_term = "synthetic_term"
+writer_path = "docs/synthetic"
+writer_symbol = "writer"
+reader_path = "docs/synthetic"
+reader_symbol = "reader"
+storage_field = "synthetic.field"
+authoritative_source = "issue_contract.toml"
+allowed_sources = ["issue_contract.toml"]
+forbidden_sources = []
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+"#,
+            );
+            write_stage_gate_files(
+                dst,
+                "intake",
+                "seam_locked",
+                "seam_contract.toml#status",
+                "",
+                "locked",
+            );
+        }
+        "proof_locked" => {
+            write_minimal_stage_package(dst, "seam_locked");
+            write_file(
+                &dst.join("proof_plan.toml"),
+                r#"
+status = "locked"
+
+[[claims]]
+claim_id = "CSYN-1"
+falsified_by = ["FXSYN-1"]
+required_before = "implementation"
+"#,
+            );
+            write_stage_gate_files(
+                dst,
+                "seam_locked",
+                "proof_locked",
+                "proof_plan.toml#status",
+                "",
+                "locked",
+            );
+        }
+        "review" => {
+            write_minimal_stage_package(dst, "proof_locked");
+            write_file(
+                &dst.join("review_target.toml"),
+                r#"
+repo = "seungpyoson/bolt-v2"
+pr_number = 999
+base_ref = "main"
+head_sha = "abc123"
+diff_identity = "synthetic-gate"
+round_id = "review-r1"
+status = "frozen"
+"#,
+            );
+            write_file(
+                &dst.join("execution_target.toml"),
+                r#"
+repo = "seungpyoson/bolt-v2"
+branch = "synthetic-branch"
+base_ref = "main"
+head_sha = "abc123"
+diff_identity = "synthetic-gate"
+changed_paths = ["docs/mechanical-process-package/**"]
+status = "frozen"
+"#,
+            );
+            write_file(
+                &dst.join("ci_surface.toml"),
+                r#"
+workflow = "synthetic"
+head_sha = "abc123"
+run_selection_rule = "synthetic"
+
+[required_jobs_by_stage]
+review = ["job-review"]
+"#,
+            );
+            write_file(
+                &dst.join("claim_enforcement.toml"),
+                r#"
+[[rows]]
+claim_id = "CSYN-1"
+enforcement_kind = "synthetic"
+enforced_at = "synthetic"
+test_ref = ""
+ci_ref = ""
+evidence_required = []
+status = "bound"
+"#,
+            );
+            write_file(
+                &dst.join("orchestration_reachability.toml"),
+                r#"
+[[cases]]
+case_id = "reach-1"
+subject = "synthetic"
+trigger_job = "job-review"
+trigger_result = "success"
+required_reachable_jobs = ["job-review"]
+forbidden_job_results = ["failure"]
+proof_ref = "gate-1"
+status = "covered"
+"#,
+            );
+            write_stage_gate_files(
+                dst,
+                "proof_locked",
+                "review",
+                "execution_target.toml#head_sha",
+                "review_target.toml#head_sha",
+                "",
+            );
+        }
+        "merge_candidate" => {
+            write_minimal_stage_package(dst, "review");
+            write_file(
+                &dst.join("merge_claims.toml"),
+                r#"
+merge_ready = true
+open_blockers = []
+required_evidence = []
+"#,
+            );
+            write_file(
+                &dst.join("ci_surface.toml"),
+                r#"
+workflow = "synthetic"
+head_sha = "abc123"
+run_selection_rule = "synthetic"
+
+[required_jobs_by_stage]
+review = ["job-review"]
+merge_candidate = ["job-merge"]
+"#,
+            );
+            write_file(
+                &dst.join("orchestration_reachability.toml"),
+                r#"
+[[cases]]
+case_id = "reach-1"
+subject = "synthetic"
+trigger_job = "job-merge"
+trigger_result = "success"
+required_reachable_jobs = ["job-merge"]
+forbidden_job_results = ["failure"]
+proof_ref = "gate-1"
+status = "covered"
+"#,
+            );
+            write_stage_gate_files(
+                dst,
+                "review",
+                "merge_candidate",
+                "execution_target.toml#head_sha",
+                "review_target.toml#head_sha",
+                "",
+            );
+        }
+        other => panic!("unsupported synthetic stage {other}"),
+    }
+}
+
 #[test]
 fn eth_anchor_fixture_blocks_with_semantic_and_evidence_failures() {
     let output = run_validator(
@@ -249,10 +506,29 @@ fn eth_anchor_fixture_blocks_with_semantic_and_evidence_failures() {
 
 #[test]
 fn finding_canonicalization_fixture_passes() {
-    let output = run_validator(
-        "docs/mechanical-process-package/experiments/exp-finding-canonicalization",
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root()
+        .join("docs/mechanical-process-package/experiments/exp-finding-canonicalization");
+    let dst = temp.path().join("exp-finding-canonicalization");
+    copy_dir_all(&src, &dst);
+    write_stage_gate_files(
+        &dst,
+        "proof_locked",
         "review",
+        "review_target.toml#head_sha",
+        "",
+        "23659d3a5a45681abaee4a0afe20d79ea4455183",
     );
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
     assert!(
         output.status.success(),
         "finding canonicalization fixture should pass; output:\n{}",
@@ -265,10 +541,29 @@ fn finding_canonicalization_fixture_passes() {
 
 #[test]
 fn proof_plan_fixture_passes_with_review_target_warning() {
-    let output = run_validator(
-        "docs/mechanical-process-package/experiments/exp-proof-plan-selector-path",
+    let temp = tempdir().expect("tempdir should create");
+    let src = repo_root()
+        .join("docs/mechanical-process-package/experiments/exp-proof-plan-selector-path");
+    let dst = temp.path().join("exp-proof-plan-selector-path");
+    copy_dir_all(&src, &dst);
+    write_stage_gate_files(
+        &dst,
+        "proof_locked",
         "review",
+        "issue_contract.toml#problem_statement",
+        "",
+        "Selector-path review history produced late blocker classes around schema-boundary behavior, legacy compatibility, and unbounded slug fan-out. The experiment tests whether those classes can be forced into explicit proof obligations before review.",
     );
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
     assert!(
         output.status.success(),
         "proof-plan fixture should pass structurally; output:\n{}",
@@ -295,6 +590,183 @@ fn candidate_205_package_is_structurally_valid_at_review_stage() {
     let text = combined_output(&output);
     assert!(text.contains("STATUS: PASS"), "{text}");
     assert!(!text.contains("STATUS: BLOCK"), "{text}");
+}
+
+#[test]
+fn synthetic_stage_packages_pass_for_all_stages() {
+    for stage in [
+        "intake",
+        "seam_locked",
+        "proof_locked",
+        "review",
+        "merge_candidate",
+    ] {
+        let temp = tempdir().expect("tempdir should create");
+        let dst = temp.path().join(format!("synthetic-{stage}"));
+        write_minimal_stage_package(&dst, stage);
+
+        let mut command = validator_command();
+        let output = command
+            .current_dir(repo_root())
+            .arg("--delivery-dir")
+            .arg(&dst)
+            .arg("--stage")
+            .arg(stage)
+            .output()
+            .expect("validator command should execute");
+        let text = combined_output(&output);
+        assert!(
+            output.status.success(),
+            "synthetic {stage} package with one valid promotion gate should pass; output:\n{text}"
+        );
+        assert!(text.contains("STATUS: PASS"), "{text}");
+    }
+}
+
+#[test]
+fn synthetic_stage_packages_block_when_promotion_gate_is_missing_for_all_stages() {
+    for stage in [
+        "intake",
+        "seam_locked",
+        "proof_locked",
+        "review",
+        "merge_candidate",
+    ] {
+        let temp = tempdir().expect("tempdir should create");
+        let dst = temp.path().join(format!("synthetic-{stage}"));
+        write_minimal_stage_package(&dst, stage);
+        fs::remove_file(dst.join("promotion_gate.toml")).expect("promotion_gate should remove");
+
+        let mut command = validator_command();
+        let output = command
+            .current_dir(repo_root())
+            .arg("--delivery-dir")
+            .arg(&dst)
+            .arg("--stage")
+            .arg(stage)
+            .output()
+            .expect("validator command should execute");
+        let text = combined_output(&output);
+        assert!(
+            !output.status.success(),
+            "synthetic {stage} package must fail closed when promotion_gate.toml is missing; output:\n{text}"
+        );
+        assert!(text.contains("promotion_gate.toml"), "{text}");
+    }
+}
+
+#[test]
+fn synthetic_stage_packages_block_when_promotion_gate_has_multiple_gates_for_all_stages() {
+    for stage in [
+        "intake",
+        "seam_locked",
+        "proof_locked",
+        "review",
+        "merge_candidate",
+    ] {
+        let temp = tempdir().expect("tempdir should create");
+        let dst = temp.path().join(format!("synthetic-{stage}"));
+        write_minimal_stage_package(&dst, stage);
+        let gate_path = dst.join("promotion_gate.toml");
+        let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+        fs::write(&gate_path, format!("{original}\n{original}"))
+            .expect("duplicated promotion_gate should write");
+
+        let mut command = validator_command();
+        let output = command
+            .current_dir(repo_root())
+            .arg("--delivery-dir")
+            .arg(&dst)
+            .arg("--stage")
+            .arg(stage)
+            .output()
+            .expect("validator command should execute");
+        let text = combined_output(&output);
+        assert!(
+            !output.status.success(),
+            "synthetic {stage} package must fail closed when promotion_gate.toml defines multiple gates; output:\n{text}"
+        );
+        assert!(text.contains("multiple gates"), "{text}");
+    }
+}
+
+#[test]
+fn synthetic_stage_packages_block_when_promotion_gate_stage_binding_is_wrong_for_all_stages() {
+    for (stage, wrong_to_stage) in [
+        ("intake", "review"),
+        ("seam_locked", "review"),
+        ("proof_locked", "review"),
+        ("review", "merge_candidate"),
+        ("merge_candidate", "review"),
+    ] {
+        let temp = tempdir().expect("tempdir should create");
+        let dst = temp.path().join(format!("synthetic-{stage}"));
+        write_minimal_stage_package(&dst, stage);
+        let gate_path = dst.join("promotion_gate.toml");
+        let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+        fs::write(
+            &gate_path,
+            original.replace(
+                &format!("to_stage = \"{stage}\""),
+                &format!("to_stage = \"{wrong_to_stage}\""),
+            ),
+        )
+        .expect("mutated promotion_gate should write");
+
+        let mut command = validator_command();
+        let output = command
+            .current_dir(repo_root())
+            .arg("--delivery-dir")
+            .arg(&dst)
+            .arg("--stage")
+            .arg(stage)
+            .output()
+            .expect("validator command should execute");
+        let text = combined_output(&output);
+        assert!(
+            !output.status.success(),
+            "synthetic {stage} package must fail closed when promotion gate stage binding is wrong; output:\n{text}"
+        );
+        assert!(text.contains("does not match stage transition"), "{text}");
+    }
+}
+
+#[test]
+fn synthetic_stage_packages_block_when_promotion_gate_verdict_is_not_pass_for_all_stages() {
+    for stage in [
+        "intake",
+        "seam_locked",
+        "proof_locked",
+        "review",
+        "merge_candidate",
+    ] {
+        let temp = tempdir().expect("tempdir should create");
+        let dst = temp.path().join(format!("synthetic-{stage}"));
+        write_minimal_stage_package(&dst, stage);
+        let gate_path = dst.join("promotion_gate.toml");
+        let original = fs::read_to_string(&gate_path).expect("promotion_gate should read");
+        fs::write(
+            &gate_path,
+            original.replace("verdict = \"pass\"", "verdict = \"block\""),
+        )
+        .expect("mutated promotion_gate should write");
+
+        let mut command = validator_command();
+        let output = command
+            .current_dir(repo_root())
+            .arg("--delivery-dir")
+            .arg(&dst)
+            .arg("--stage")
+            .arg(stage)
+            .output()
+            .expect("validator command should execute");
+        let text = combined_output(&output);
+        assert!(
+            !output.status.success(),
+            "synthetic {stage} package must fail closed when promotion gate verdict is not pass; output:\n{text}"
+        );
+        assert!(text.contains("verdict"), "{text}");
+    }
 }
 
 #[test]

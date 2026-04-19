@@ -233,6 +233,7 @@ The process needs a round-based ledger of what was reviewed, what was stale, and
 ### Role
 
 Declare the stage transition and name the one authoritative gate artifact.
+This applies to every stage, not only review-stage packages.
 
 ### Required fields
 
@@ -245,6 +246,7 @@ Declare the stage transition and name the one authoritative gate artifact.
 ### Role
 
 Hold the one mechanical exam that can admit the stage transition.
+Every selected stage must bind through one of these artifacts.
 
 ### Required fields
 

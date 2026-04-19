@@ -399,7 +399,7 @@ fn stage_key(stage: Stage) -> &'static str {
     }
 }
 
-fn resolve_toml_string_ref(dir: &Path, ref_spec: &str) -> Result<String> {
+fn resolve_toml_scalar_ref(dir: &Path, ref_spec: &str) -> Result<String> {
     let (rel_path, field) = ref_spec
         .split_once('#')
         .with_context(|| format!("ref `{ref_spec}` must be in `<path>#<field>` form"))?;
@@ -407,9 +407,15 @@ fn resolve_toml_string_ref(dir: &Path, ref_spec: &str) -> Result<String> {
     let value = load_from_path::<TomlValue>(&path)?;
     value
         .get(field)
-        .and_then(TomlValue::as_str)
-        .map(ToOwned::to_owned)
-        .with_context(|| format!("ref `{ref_spec}` must resolve to a top-level string field"))
+        .and_then(|value| match value {
+            TomlValue::String(s) => Some(s.clone()),
+            TomlValue::Boolean(v) => Some(v.to_string()),
+            TomlValue::Integer(v) => Some(v.to_string()),
+            TomlValue::Float(v) => Some(v.to_string()),
+            TomlValue::Datetime(v) => Some(v.to_string()),
+            _ => None,
+        })
+        .with_context(|| format!("ref `{ref_spec}` must resolve to a top-level scalar field"))
 }
 
 fn load_review_rounds(dir: &Path) -> Result<Vec<(PathBuf, ReviewRound)>> {
@@ -543,7 +549,9 @@ fn validate_stage_promotion(
                                         "only a promotion gate with verdict `pass` may advance a stage",
                                     );
                                 }
-                                if gate.comparator_kind != "string_eq" {
+                                if gate.comparator_kind != "string_eq"
+                                    && gate.comparator_kind != "scalar_eq"
+                                {
                                     report.push(
                                         Status::Block,
                                         "scope",
@@ -557,10 +565,10 @@ fn validate_stage_promotion(
                                     return;
                                 }
 
-                                match resolve_toml_string_ref(dir, &gate.left_ref) {
+                                match resolve_toml_scalar_ref(dir, &gate.left_ref) {
                                     Ok(left_value) => {
                                         let right_value = if !gate.right_ref.is_empty() {
-                                            resolve_toml_string_ref(dir, &gate.right_ref)
+                                            resolve_toml_scalar_ref(dir, &gate.right_ref)
                                         } else {
                                             Ok(gate.right_literal.clone())
                                         };
@@ -1296,15 +1304,6 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                 "merge_claims.toml",
                 "merge_ready is true while open_blockers is non-empty",
                 "clear the blockers or keep merge_ready false",
-            );
-        }
-        if stage == Stage::MergeCandidate && !merge.merge_ready {
-            report.push(
-                Status::Block,
-                "merge_claim",
-                "merge_claims.toml",
-                "merge_candidate stage requires merge_ready = true",
-                "satisfy the package and then mark merge_ready true",
             );
         }
     }

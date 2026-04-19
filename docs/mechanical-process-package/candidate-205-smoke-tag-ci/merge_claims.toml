@@ -9,6 +9,10 @@ closed_findings = [
   "205|missing_proof|required_lane_set|required_safety_lanes_not_frozen|ci.yml",
   "205|behavior_mismatch|deploy_fast_path|skip_propagation_can_suppress_deploy|.github/workflows/ci.yml",
   "205|merge_claim|proof_identity|run_attempt_claim_overstated|.github/workflows/ci.yml",
+  "205|test_gap|workflow_contract_tests|global_search_brittleness|tests/ci_same_sha_smoke_tag.rs",
+  "205|test_gap|workflow_contract_tests|missing_fast_path_coverage_fmt_deny_clippy|tests/ci_same_sha_smoke_tag.rs",
+  "205|maintainability_note|same_sha_proof_job|duplicate_json_filter_logic|.github/workflows/ci.yml",
+  "205|environment_assumption|artifact_trust_model|self_referential_sha256_assumption_documented|.github/workflows/ci.yml",
 ]
 required_evidence = [
   "E205-1",
@@ -25,6 +29,9 @@ required_evidence = [
   "E205-12",
   "E205-13",
   "E205-14",
+  "E205-15",
+  "E205-16",
+  "E205-17",
 ]
 
 [[claims]]
@@ -107,3 +114,18 @@ supported_by = [
   "E205-14",
 ]
 depends_on_closed_findings = []
+
+[[claims]]
+claim_id = "C205-8"
+value = true
+supported_by = [
+  "E205-15",
+  "E205-16",
+  "E205-17",
+]
+depends_on_closed_findings = [
+  "205|test_gap|workflow_contract_tests|global_search_brittleness|tests/ci_same_sha_smoke_tag.rs",
+  "205|test_gap|workflow_contract_tests|missing_fast_path_coverage_fmt_deny_clippy|tests/ci_same_sha_smoke_tag.rs",
+  "205|maintainability_note|same_sha_proof_job|duplicate_json_filter_logic|.github/workflows/ci.yml",
+  "205|environment_assumption|artifact_trust_model|self_referential_sha256_assumption_documented|.github/workflows/ci.yml",
+]

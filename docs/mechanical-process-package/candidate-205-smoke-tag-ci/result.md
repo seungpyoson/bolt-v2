@@ -55,7 +55,7 @@ Both were resolved on the implementation branch and recorded in the finding ledg
 The active GitHub review target is now:
 
 - PR `#210`
-- head `6169428f9d401952b776971ffe7d03963401f7fb`
+- head `ccb960824c5d5befbcc1915eeea5da0746128302`
 
 ## Exact-Head CI Snapshot
 
@@ -63,16 +63,29 @@ Current exact-head GitHub CI snapshot recorded into the package:
 
 - `same_sha_proof`: pass
 - `detector`: pass
-- `fmt-check`: pass
-- `deny`: pass
-- `clippy`: pass
-- `test`: pass
-- `build`: in progress
+- exact-head CI restarted cleanly after review-absorption updates
+- remaining lanes were still pending at snapshot time
 
 Known unrelated blocker still visible on the PR surface:
 
 - `nt-pointer-trust-root` fails independently as the already-known private-fetch trust-root issue
 - this is not new `#205` logic drift
+
+## External Review Findings
+
+External review on PR `#210` did not surface a new correctness blocker class.
+
+The comments fit cleanly into two non-blocking categories:
+
+1. `test_gap`
+   - workflow contract tests should scope assertions more tightly
+   - workflow contract tests should cover `fmt-check` / `deny` / `clippy` fast-path guards
+
+2. `maintainability` / `environment_assumption`
+   - duplicate JSON filter logic in `same_sha_proof`
+   - self-referential SHA256 check is acceptable only as a documented trust-model assumption
+
+Those comments were absorbed on head `ccb960824c5d5befbcc1915eeea5da0746128302` and recorded as resolved findings in the package.
 
 ## Verdict
 
@@ -88,7 +101,4 @@ It:
 
 The fresh-issue trial for `#205` has now crossed from planning into a validator-backed implementation package.
 
-It is still not merge-ready, because:
-
-1. exact-head CI is not fully complete yet
-2. external review has not been recorded into the package yet
+It is still not merge-ready, because exact-head CI for the newest review-absorbing head was still in progress at the time of the latest package snapshot.

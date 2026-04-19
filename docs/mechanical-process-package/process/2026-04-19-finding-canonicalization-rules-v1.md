@@ -11,6 +11,7 @@ It is a process rule, not a code implementation.
 Each raw review finding must be normalized into:
 
 - `review_target`
+- `impact_class`
 - `kind`
 - `subject`
 - `predicate`
@@ -19,6 +20,13 @@ Each raw review finding must be normalized into:
 - `evidence_ref`
 
 Free-form wording is not part of the canonical key.
+
+`impact_class` is orthogonal to `kind`.
+It separates:
+
+- correctness
+- trust_boundary
+- maintainability
 
 ## Canonical Key
 
@@ -72,6 +80,8 @@ Examples:
 - `legacy_event_slugs_schema_boundary`
 - `review_target_identity`
 - `nt_pointer_scope_drift`
+- `workflow_contract_tests`
+- `artifact_trust_model`
 
 ## Predicate Normalization
 
@@ -83,6 +93,9 @@ Examples:
 - `subset_schema_rejects_legacy_field`
 - `comment_targets_absent_diff`
 - `scope_not_declared`
+- `global_search_brittleness`
+- `missing_fast_path_coverage`
+- `duplicate_json_filter_logic`
 
 ## Duplicate Collapse Rules
 
@@ -106,6 +119,7 @@ Two findings stay separate if any of these differ:
 - one is scope and one is behavior
 - same root cause but different locus requiring separate closure
 - same locus but different predicate
+- same kind and predicate but different impact_class
 
 ## Allowed Terminal Dispositions
 
@@ -117,6 +131,17 @@ Two findings stay separate if any of these differ:
 - `boundary_accept`
 
 No other terminal state is allowed.
+
+## Non-Correctness Notes
+
+Maintainability or style notes are still valid findings.
+They are not free-form state.
+
+They should normalize as:
+
+- `impact_class = maintainability`
+- `kind = maintainability_note` when they do not threaten executable proof
+- `kind = test_gap` when they weaken proof surface or test coverage
 
 ## Exact-Head Rule
 

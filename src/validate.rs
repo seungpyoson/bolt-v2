@@ -1014,28 +1014,30 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         );
     }
 
-    let has_chainlink_reference = config
-        .reference
-        .venues
-        .iter()
-        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
-    let has_binance_reference = config
-        .reference
-        .venues
-        .iter()
-        .any(|venue| venue.kind == ReferenceVenueKind::Binance);
-    check_binance_shared_config(
-        &mut errors,
-        "reference.binance",
-        config.reference.binance.as_ref(),
-        has_binance_reference,
-    );
-    check_chainlink_shared_config(
-        &mut errors,
-        "reference.chainlink",
-        config.reference.chainlink.as_ref(),
-        has_chainlink_reference,
-    );
+    if !config.rulesets.is_empty() {
+        let has_chainlink_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+        let has_binance_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+        check_binance_shared_config(
+            &mut errors,
+            "reference.binance",
+            config.reference.binance.as_ref(),
+            has_binance_reference,
+        );
+        check_chainlink_shared_config(
+            &mut errors,
+            "reference.chainlink",
+            config.reference.chainlink.as_ref(),
+            has_chainlink_reference,
+        );
+    }
 
     let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, ruleset) in config.rulesets.iter().enumerate() {
@@ -1693,28 +1695,30 @@ fn validate_runtime_with_registry(
         );
     }
 
-    let has_chainlink_reference = config
-        .reference
-        .venues
-        .iter()
-        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
-    let has_binance_reference = config
-        .reference
-        .venues
-        .iter()
-        .any(|venue| venue.kind == ReferenceVenueKind::Binance);
-    check_binance_shared_config(
-        &mut errors,
-        "reference.binance",
-        config.reference.binance.as_ref(),
-        has_binance_reference,
-    );
-    check_chainlink_shared_config(
-        &mut errors,
-        "reference.chainlink",
-        config.reference.chainlink.as_ref(),
-        has_chainlink_reference,
-    );
+    if !config.rulesets.is_empty() {
+        let has_chainlink_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+        let has_binance_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+        check_binance_shared_config(
+            &mut errors,
+            "reference.binance",
+            config.reference.binance.as_ref(),
+            has_binance_reference,
+        );
+        check_chainlink_shared_config(
+            &mut errors,
+            "reference.chainlink",
+            config.reference.chainlink.as_ref(),
+            has_chainlink_reference,
+        );
+    }
 
     let mut reference_name_indices: HashMap<&str, usize> = HashMap::new();
     let mut chainlink_feed_id_indices: HashMap<&str, usize> = HashMap::new();

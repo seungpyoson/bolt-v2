@@ -1,0 +1,71 @@
+merge_ready = true
+head_scope_hash = "selector-path-proof-plan-analysis-only"
+
+open_blockers = []
+
+closed_findings = [
+  "selector-path-proof|missing_proof|schema_boundary|dual_mode_schema_boundary_unproven|src/clients/polymarket.rs",
+  "selector-path-proof|missing_proof|legacy_event_slugs_mode|fail_closed_transition_unproven|src/clients/polymarket.rs",
+  "selector-path-proof|scope_violation|slug_fetch_fanout|base_slice_accepts_unbounded_follow_up_class_without_explicit_tracking|src/platform/polymarket_catalog.rs",
+  "selector-path-proof|review_target_mismatch|stale_review_artifact|not_a_proof_plan_failure|review",
+]
+
+required_evidence = [
+  "E1",
+  "E2",
+  "E3",
+  "E4",
+  "E5",
+  "E6",
+  "E7",
+  "E8",
+  "E9",
+  "E10",
+  "E11",
+]
+
+[[claims]]
+claim_id = "PPA1"
+value = true
+supported_by = [
+  "E1",
+  "E2",
+  "E3",
+  "E7",
+  "E8",
+]
+depends_on_closed_findings = [
+  "selector-path-proof|missing_proof|schema_boundary|dual_mode_schema_boundary_unproven|src/clients/polymarket.rs",
+]
+
+[[claims]]
+claim_id = "PPA2"
+value = true
+supported_by = [
+  "E4",
+  "E9",
+  "E10",
+]
+depends_on_closed_findings = [
+  "selector-path-proof|missing_proof|legacy_event_slugs_mode|fail_closed_transition_unproven|src/clients/polymarket.rs",
+]
+
+[[claims]]
+claim_id = "PPA3"
+value = true
+supported_by = [
+  "E5",
+  "E6",
+  "E11",
+]
+depends_on_closed_findings = [
+  "selector-path-proof|scope_violation|slug_fetch_fanout|base_slice_accepts_unbounded_follow_up_class_without_explicit_tracking|src/platform/polymarket_catalog.rs",
+]
+
+[[claims]]
+claim_id = "PPA4"
+value = true
+supported_by = []
+depends_on_closed_findings = [
+  "selector-path-proof|review_target_mismatch|stale_review_artifact|not_a_proof_plan_failure|review",
+]

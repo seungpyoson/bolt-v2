@@ -1,0 +1,71 @@
+status = "evaluated"
+
+[[claims]]
+claim_id = "PP1"
+claim_text = "ruleset_mode_rejects_unknown_fields_at_the_single_schema_boundary"
+claim_kind = "schema_boundary"
+covered_by = [
+  "E1",
+  "E2",
+]
+falsified_by = [
+  "FX1",
+]
+required_before = "review"
+status = "mapped"
+
+[[claims]]
+claim_id = "PP2"
+claim_text = "legacy_event_slugs_mode_still_builds_client_without_rulesets"
+claim_kind = "legacy_compatibility"
+covered_by = [
+  "E3",
+]
+falsified_by = [
+  "FX2",
+]
+required_before = "review"
+status = "mapped"
+
+[[claims]]
+claim_id = "PP3"
+claim_text = "legacy_mode_without_event_slugs_fails_closed"
+claim_kind = "fail_closed_behavior"
+covered_by = [
+  "E4",
+]
+falsified_by = [
+  "FX3",
+]
+required_before = "review"
+status = "mapped"
+
+[[claims]]
+claim_id = "PP4"
+claim_text = "slug_fetch_fanout_is_either_bounded_in_slice_or_explicitly_deferred_tracked"
+claim_kind = "scope_or_follow_up"
+covered_by = [
+  "E5",
+  "E6",
+]
+falsified_by = [
+  "FX4",
+]
+required_before = "review"
+status = "mapped"
+
+[[falsifiers]]
+falsifier_id = "FX1"
+description = "Provide a typo field like gamma_refresh_interval_sec in ruleset mode and observe silent acceptance."
+
+[[falsifiers]]
+falsifier_id = "FX2"
+description = "Provide a legacy event_slugs config with zero rulesets and observe failure to build a client."
+
+[[falsifiers]]
+falsifier_id = "FX3"
+description = "Provide legacy mode with empty event_slugs and observe non-fail-closed subscribe-to-all behavior."
+
+[[falsifiers]]
+falsifier_id = "FX4"
+description = "Observe unbounded join_all fan-out in an accepted clean base without a bounded-concurrency fix or an explicit tracked defer."

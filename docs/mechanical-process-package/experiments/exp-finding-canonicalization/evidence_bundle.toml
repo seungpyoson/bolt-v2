@@ -1,0 +1,51 @@
+status = "collected"
+
+[[evidence]]
+evidence_id = "E1"
+type = "external_artifact"
+producer = "github_review_thread"
+subject = "gemini_join_all_pr183"
+artifact_ref = "PR #183 discussion_r3094726003"
+proves = [
+  "R1",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E2"
+type = "external_artifact"
+producer = "github_review_thread"
+subject = "gemini_join_all_pr192"
+artifact_ref = "PR #192 discussion_r3104740025"
+proves = [
+  "R2",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E3"
+type = "external_artifact"
+producer = "github_review_thread"
+subject = "stale_nt_pointer_comments_on_pr192"
+artifact_ref = "PR #192 discussion_r3104740027 and greptile stale scope-drift thread on src/nt_pointer_probe/control.rs"
+proves = [
+  "review_target_mismatch_for_nt_pointer_comments",
+]
+contradicts = [
+  "nt_pointer_scope_comments_are_active_findings_on_selector-path_review_target",
+]
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E4"
+type = "external_artifact"
+producer = "github_review_thread"
+subject = "legacy_event_slugs_fix_confirmation"
+artifact_ref = "PR #183 discussion_r3104520276"
+proves = [
+  "legacy_event_slugs_schema_boundary_was_real_and_fixed",
+]
+contradicts = []
+captured_at = "2026-04-19"

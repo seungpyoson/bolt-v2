@@ -1,0 +1,132 @@
+status = "locked"
+
+[[seams]]
+seam_id = "SEAM-SAME-SHA-RUN-CREATION"
+semantic_term = "same_sha_duplicate_proof"
+writer_path = ".github/workflows/ci.yml"
+writer_symbol = "workflow triggers and concurrency key"
+reader_path = ".github/workflows/ci.yml"
+reader_symbol = "CI run creation for main push and tag push"
+storage_field = "same_sha_main_push_and_tag_push_create_separate_runs"
+authoritative_source = ".github/workflows/ci.yml"
+allowed_sources = [
+  "push on main",
+  "push on v* tag",
+  "concurrency key = ref_name + sha",
+]
+forbidden_sources = []
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+
+[[seams]]
+seam_id = "SEAM-TAG-PATH-HEAVY-LANE-COUPLING"
+semantic_term = "same_sha_duplicate_proof"
+writer_path = ".github/workflows/ci.yml"
+writer_symbol = "build_required / gate / deploy needs"
+reader_path = ".github/workflows/ci.yml"
+reader_symbol = "deploy admission on tag run"
+storage_field = "tag_run_reenters_heavy_proof_path_before_deploy"
+authoritative_source = ".github/workflows/ci.yml"
+allowed_sources = [
+  "build_required=true on push",
+  "gate waits on fmt-check, deny, clippy, test, build",
+  "deploy needs gate and build",
+]
+forbidden_sources = []
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+
+[[seams]]
+seam_id = "SEAM-CURRENT-SAFETY-GUARDS"
+semantic_term = "smoke_tag_deploy_latency"
+writer_path = ".github/workflows/ci.yml"
+writer_symbol = "Verify tag is on main / Check idempotency"
+reader_path = ".github/workflows/ci.yml"
+reader_symbol = "deploy execution"
+storage_field = "current_tag_deploy_safety_boundary"
+authoritative_source = ".github/workflows/ci.yml"
+allowed_sources = [
+  "tag commit must be on main",
+  "S3 path idempotency check",
+]
+forbidden_sources = []
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+
+[[seams]]
+seam_id = "SEAM-SAME-SHA-PROOF-OWNERSHIP"
+semantic_term = "same_sha_duplicate_proof"
+writer_path = ".github/workflows/ci.yml"
+writer_symbol = "CI push workflow on main and tag refs"
+reader_path = ".github/workflows/ci.yml"
+reader_symbol = "deploy admission on smoke-tag run"
+storage_field = "proof_eligibility_for_deploy_on_exact_head_sha"
+authoritative_source = "exactly_one_successful_main_push_ci_run_attempt_for_same_sha"
+allowed_sources = [
+  "repo=seungpyoson/bolt-v2",
+  "ref=main",
+  "event=push",
+  "workflow=CI",
+  "exact head SHA match",
+  "exact unique run_id/run_attempt",
+  "successful gate on that exact run attempt",
+]
+forbidden_sources = [
+  "proof reuse from a different SHA",
+  "proof reuse from a tag-triggered run",
+  "proof reuse when multiple eligible main-push run attempts exist",
+  "deploy admission based only on tag presence without required-lane evidence",
+]
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+
+[[seams]]
+seam_id = "SEAM-BUILD-ARTIFACT-PROVENANCE-RULE"
+semantic_term = "same_sha_duplicate_proof"
+writer_path = ".github/workflows/ci.yml"
+writer_symbol = "build job artifact upload"
+reader_path = ".github/workflows/ci.yml"
+reader_symbol = "deploy job artifact download"
+storage_field = "artifact_provenance_for_smoke_tag_deploy"
+authoritative_source = "artifact_from_exact_eligible_main_push_run_attempt"
+allowed_sources = [
+  "artifact name bolt-v2-binary",
+  "artifact payload bolt-v2",
+  "artifact payload bolt-v2.sha256",
+  "artifact bytes and digest produced by exact eligible run attempt",
+]
+forbidden_sources = [
+  "artifact with mismatched SHA provenance",
+  "artifact from a different run attempt",
+  "artifact provenance inferred from tag name alone",
+]
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+
+[[seams]]
+seam_id = "SEAM-REQUIRED-LANE-SET-RULE"
+semantic_term = "smoke_tag_deploy_latency"
+writer_path = ".github/workflows/ci.yml"
+writer_symbol = "required lanes before deploy"
+reader_path = ".github/workflows/ci.yml"
+reader_symbol = "gate / deploy dependency chain"
+storage_field = "required_safety_evidence_for_smoke_tag_deploy"
+authoritative_source = "successful_gate_plus_matching_build_artifact_from_exact_eligible_main_push_run_attempt"
+allowed_sources = [
+  "successful gate result",
+  "matching build artifact from same eligible run attempt",
+]
+forbidden_sources = [
+  "implicit lane weakening during optimization",
+  "partial proof reuse when gate or build artifact is absent",
+]
+fallback_order = [
+  "rerun heavy lanes fail-closed if zero eligible proof record exists",
+]
+freshness_clock = "N/A"
+status = "frozen"

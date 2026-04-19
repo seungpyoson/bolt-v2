@@ -1,0 +1,133 @@
+status = "collected"
+
+[[evidence]]
+evidence_id = "E1"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "single_schema_boundary_comment_and_type"
+artifact_ref = "src/clients/polymarket.rs:33-54"
+proves = [
+  "single_schema_boundary_is_the_intended_local_design",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E2"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "ruleset_mode_unknown_field_rejection_tests"
+artifact_ref = "src/clients/polymarket.rs:2723-2777"
+proves = [
+  "ruleset_mode_typo_rejection_is_explicitly_tested",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E3"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "legacy_event_slugs_builds_without_rulesets"
+artifact_ref = "src/clients/polymarket.rs:2780-2795"
+proves = [
+  "legacy_event_slugs_mode_compatibility_is_explicitly_tested",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E4"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "empty_event_slugs_fail_closed"
+artifact_ref = "src/clients/polymarket.rs:2232-2245"
+proves = [
+  "legacy_mode_without_event_slugs_now_fails_closed",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E5"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "raw_anchor_slug_fetch_still_uses_join_all"
+artifact_ref = "src/platform/polymarket_catalog.rs:246-299"
+proves = [
+  "raw_anchor_fetch_path_still_has_unbounded_join_all_shape",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E6"
+type = "external_artifact"
+producer = "github_review_threads"
+subject = "selector_path_join_all_findings"
+artifact_ref = "PR #183 discussion_r3094726003 and PR #192 discussion_r3104740025"
+proves = [
+  "reviewers_independently_flagged_unbounded_slug_fanout",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E7"
+type = "test_output"
+producer = "cargo test"
+subject = "ruleset_mode_unknown_field_rejection_passes"
+artifact_ref = "cargo test --lib ruleset_mode_rejects_unknown_field_in_polymarket_data_client_config -- --nocapture"
+proves = [
+  "PP1",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E8"
+type = "test_output"
+producer = "cargo test"
+subject = "legacy_event_slugs_compatibility_passes"
+artifact_ref = "cargo test --lib legacy_event_slugs_config_builds_client_without_rulesets -- --nocapture"
+proves = [
+  "PP2",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E9"
+type = "test_output"
+producer = "cargo test"
+subject = "legacy_empty_event_slugs_fail_closed_passes"
+artifact_ref = "cargo test --lib build_data_client_rejects_empty_event_slugs_without_rulesets -- --nocapture"
+proves = [
+  "PP3",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E10"
+type = "test_output"
+producer = "cargo test"
+subject = "ruleset_mode_rejects_legacy_event_slugs_during_bootstrap_passes"
+artifact_ref = "cargo test --test polymarket_bootstrap ruleset_mode_rejects_legacy_event_slugs_during_bootstrap -- --nocapture"
+proves = [
+  "operator_facing_ruleset_seam_rejects_legacy_event_slugs",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E11"
+type = "test_output"
+producer = "cargo test"
+subject = "bounded_slug_fetch_concurrency_passes"
+artifact_ref = "cargo test --test polymarket_catalog prefix_selector_slug_fetch_respects_gamma_event_fetch_max_concurrent -- --nocapture"
+proves = [
+  "PP4",
+]
+contradicts = []
+captured_at = "2026-04-19"

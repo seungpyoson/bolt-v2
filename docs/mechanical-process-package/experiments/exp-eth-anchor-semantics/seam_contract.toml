@@ -1,0 +1,43 @@
+status = "blocked"
+
+[[seams]]
+seam_id = "SEAM-ETH-ANCHOR-WRITE-READ"
+semantic_term = "interval_open"
+writer_path = "src/strategies/eth_chainlink_taker.rs"
+writer_symbol = "ActiveMarketState::observe_reference_snapshot"
+reader_path = "src/strategies/eth_chainlink_taker.rs"
+reader_symbol = "StrategyCore::current_entry_pricing_inputs_at"
+storage_field = "active.interval_open"
+authoritative_source = "UNFROZEN"
+allowed_sources = [
+  "market.price_to_beat",
+  "best_healthy_oracle_price(snapshot)",
+  "snapshot.fair_value",
+]
+forbidden_sources = []
+fallback_order = [
+  "market.price_to_beat",
+  "best_healthy_oracle_price(snapshot)",
+  "snapshot.fair_value",
+]
+freshness_clock = "snapshot.ts_ms / active.last_reference_ts_ms"
+status = "ambiguous"
+
+[[seams]]
+seam_id = "SEAM-ETH-CHAINLINK-STALE-GUARD"
+semantic_term = "stale_chainlink_clock"
+writer_path = "tests/reference_actor.rs"
+writer_symbol = "staleness_uses_actor_clock_while_observation_timestamp_uses_quote_timestamp"
+reader_path = "src/strategies/eth_chainlink_taker.rs"
+reader_symbol = "evaluate_forced_flat_predicates"
+storage_field = "active.last_reference_ts_ms"
+authoritative_source = "UNFROZEN"
+allowed_sources = [
+  "snapshot.ts_ms",
+  "actor clock",
+  "quote observation timestamp",
+]
+forbidden_sources = []
+fallback_order = []
+freshness_clock = "UNFROZEN"
+status = "ambiguous"

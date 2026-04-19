@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -174,6 +178,50 @@ struct MergeClaim {
     supported_by: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct ReviewTarget {
+    #[serde(default)]
+    head_sha: String,
+    #[serde(default)]
+    round_id: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ExecutionTarget {
+    #[serde(default)]
+    repo: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    base_ref: String,
+    #[serde(default)]
+    head_sha: String,
+    #[serde(default)]
+    diff_identity: String,
+    #[serde(default)]
+    changed_paths: Vec<String>,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CiSurface {
+    #[serde(default)]
+    workflow: String,
+    #[serde(default)]
+    head_sha: String,
+    #[serde(default)]
+    run_selection_rule: String,
+    #[serde(default)]
+    required_jobs_by_stage: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    ignored_jobs: Vec<String>,
+    #[serde(default)]
+    partial_ci_allowed_stages: Vec<String>,
+    #[serde(default)]
+    terminal_ci_required_stages: Vec<String>,
+}
+
 fn load_optional<T: for<'de> Deserialize<'de>>(dir: &Path, file_name: &str) -> Result<Option<T>> {
     let path = dir.join(file_name);
     if !path.exists() {
@@ -196,7 +244,10 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     let finding_ledger = load_optional::<FindingLedger>(dir, "finding_ledger.toml")?;
     let evidence_bundle = load_optional::<EvidenceBundle>(dir, "evidence_bundle.toml")?;
     let merge_claims = load_optional::<MergeClaims>(dir, "merge_claims.toml")?;
-    let review_target_present = dir.join("review_target.toml").exists();
+    let review_target = load_optional::<ReviewTarget>(dir, "review_target.toml")?;
+    let execution_target = load_optional::<ExecutionTarget>(dir, "execution_target.toml")?;
+    let ci_surface = load_optional::<CiSurface>(dir, "ci_surface.toml")?;
+    let review_target_present = review_target.is_some();
 
     if issue_contract.is_none()
         && seam_contract.is_none()
@@ -258,6 +309,112 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                 "problem_statement contains fix-shaped language",
                 "keep the issue contract problem-only",
             );
+        }
+    }
+
+    if review_target_present
+        && issue_contract.is_some()
+        && seam_contract.is_some()
+        && proof_plan.is_some()
+        && matches!(stage, Stage::Review | Stage::MergeCandidate)
+    {
+        match &execution_target {
+            Some(target) => {
+                if target.repo.is_empty()
+                    || target.branch.is_empty()
+                    || target.base_ref.is_empty()
+                    || target.head_sha.is_empty()
+                    || target.diff_identity.is_empty()
+                    || target.changed_paths.is_empty()
+                    || target.status.is_empty()
+                {
+                    report.push(
+                        Status::Block,
+                        "schema",
+                        "execution_target.toml",
+                        "execution_target.toml is present but incomplete",
+                        "fill all required execution target fields before review-stage validation",
+                    );
+                }
+                if let Some(review) = &review_target {
+                    if !review.head_sha.is_empty() && target.head_sha != review.head_sha {
+                        report.push(
+                            Status::Block,
+                            "review_target",
+                            "execution_target.toml",
+                            format!(
+                                "execution head `{}` does not match review target head `{}`",
+                                target.head_sha, review.head_sha
+                            ),
+                            "bind the package to one exact head before proceeding",
+                        );
+                    }
+                }
+            }
+            None => report.push(
+                Status::Block,
+                "schema",
+                "execution_target.toml",
+                "review-stage package is missing execution_target.toml",
+                "add execution_target.toml to bind the package to the exact implementation head",
+            ),
+        }
+
+        match &ci_surface {
+            Some(surface) => {
+                if surface.workflow.is_empty()
+                    || surface.head_sha.is_empty()
+                    || surface.run_selection_rule.is_empty()
+                {
+                    report.push(
+                        Status::Block,
+                        "schema",
+                        "ci_surface.toml",
+                        "ci_surface.toml is present but missing core selection fields",
+                        "declare workflow, head_sha, and run_selection_rule explicitly",
+                    );
+                }
+                let stage_key = match stage {
+                    Stage::Review => "review",
+                    Stage::MergeCandidate => "merge_candidate",
+                    Stage::Intake => "intake",
+                    Stage::SeamLocked => "seam_locked",
+                    Stage::ProofLocked => "proof_locked",
+                };
+                match surface.required_jobs_by_stage.get(stage_key) {
+                    Some(jobs) if !jobs.is_empty() => {}
+                    _ => report.push(
+                        Status::Block,
+                        "proof",
+                        "ci_surface.toml",
+                        format!(
+                            "ci_surface.toml does not declare required jobs for stage `{stage_key}`"
+                        ),
+                        "add the exact CI jobs that discharge this stage's proof surface",
+                    ),
+                }
+                if let Some(target) = &execution_target {
+                    if !target.head_sha.is_empty() && surface.head_sha != target.head_sha {
+                        report.push(
+                            Status::Block,
+                            "evidence",
+                            "ci_surface.toml",
+                            format!(
+                                "ci surface head `{}` does not match execution head `{}`",
+                                surface.head_sha, target.head_sha
+                            ),
+                            "bind CI evidence to the same exact head as the execution target",
+                        );
+                    }
+                }
+            }
+            None => report.push(
+                Status::Block,
+                "schema",
+                "ci_surface.toml",
+                "review-stage package is missing ci_surface.toml",
+                "add ci_surface.toml to define the exact CI proof surface for this deliverable",
+            ),
         }
     }
 

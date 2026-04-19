@@ -1,0 +1,7 @@
+repo = "seungpyoson/bolt-v2"
+pr_number = 210
+base_ref = "main"
+head_sha = "556d57240b95c00485d3466797980c8dee20241c"
+diff_identity = "issue-205-same-sha-smoke-tag-proof"
+round_id = "pr-210-r2"
+status = "frozen"

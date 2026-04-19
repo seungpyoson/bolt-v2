@@ -1,0 +1,10 @@
+repo = "seungpyoson/bolt-v2"
+branch = "issue-205-smoke-tag-proof"
+base_ref = "main"
+head_sha = "556d57240b95c00485d3466797980c8dee20241c"
+diff_identity = "issue-205-same-sha-smoke-tag-proof"
+changed_paths = [
+  ".github/workflows/ci.yml",
+  "tests/ci_same_sha_smoke_tag.rs",
+]
+status = "frozen"

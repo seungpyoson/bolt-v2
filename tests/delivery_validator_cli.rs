@@ -283,6 +283,30 @@ comparator_kind = "string_eq"
 left_ref = "review_rounds/review-r1.toml#round_id"
 right_ref = "review_target.toml#round_id"
 right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#source"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#review_target_ref"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#raw_comment_refs"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#status"
+right_ref = ""
+right_literal = ""
 "#,
     );
     write_file(
@@ -407,6 +431,30 @@ right_literal = ""
 comparator_kind = "string_eq"
 left_ref = "review_rounds/review-r1.toml#round_id"
 right_ref = "review_target.toml#round_id"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#source"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#review_target_ref"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#raw_comment_refs"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#status"
+right_ref = ""
 right_literal = ""
 "#,
     );
@@ -1424,6 +1472,132 @@ fn synthetic_review_package_blocks_when_review_round_id_mismatches_review_target
         "review package must fail closed when review round id mismatches review target through the all_of gate; output:\n{text}"
     );
     assert!(text.contains("clause"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_review_round_source_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let round_path = dst.join("review_rounds/review-r1.toml");
+    let original = fs::read_to_string(&round_path).expect("review_round should read");
+    fs::write(
+        &round_path,
+        original.replace("source = \"synthetic\"", "source = \"\""),
+    )
+    .expect("mutated review_round should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when review_round source is empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_review_round_target_ref_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let round_path = dst.join("review_rounds/review-r1.toml");
+    let original = fs::read_to_string(&round_path).expect("review_round should read");
+    fs::write(
+        &round_path,
+        original.replace(
+            "review_target_ref = \"synthetic\"",
+            "review_target_ref = \"\"",
+        ),
+    )
+    .expect("mutated review_round should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when review_round target ref is empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_review_round_raw_comment_refs_are_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let round_path = dst.join("review_rounds/review-r1.toml");
+    let original = fs::read_to_string(&round_path).expect("review_round should read");
+    fs::write(
+        &round_path,
+        original.replace(
+            "raw_comment_refs = [\"comment-1\"]",
+            "raw_comment_refs = []",
+        ),
+    )
+    .expect("mutated review_round should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when review_round raw_comment_refs are empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_review_round_status_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let round_path = dst.join("review_rounds/review-r1.toml");
+    let original = fs::read_to_string(&round_path).expect("review_round should read");
+    fs::write(
+        &round_path,
+        original.replace("status = \"ingested\"", "status = \"\""),
+    )
+    .expect("mutated review_round should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when review_round status is empty through the gate; output:\n{text}"
+    );
+    assert!(text.contains("nonempty"), "{text}");
 }
 
 #[test]

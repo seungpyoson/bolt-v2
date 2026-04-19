@@ -98,3 +98,27 @@ comparator_kind = "string_eq"
 left_ref = "review_rounds/pr-210-r2.toml#round_id"
 right_ref = "review_target.toml#round_id"
 right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/pr-210-r2.toml#source"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/pr-210-r2.toml#review_target_ref"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/pr-210-r2.toml#raw_comment_refs"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/pr-210-r2.toml#status"
+right_ref = ""
+right_literal = ""

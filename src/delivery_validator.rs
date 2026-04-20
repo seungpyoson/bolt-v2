@@ -8,6 +8,12 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use toml::Value as TomlValue;
 
+use crate::summary_replay::{
+    ClaimEnforcementCoverageSummary, ClaimEnforcementRowInput, OrchestrationReachabilitySummary,
+    ReachabilityCaseInput, compute_claim_enforcement_coverage_summary,
+    compute_orchestration_reachability_summary,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Intake,
@@ -253,30 +259,6 @@ struct ClaimEnforcementRow {
     status: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-struct ClaimEnforcementCoverageSummary {
-    status: String,
-    summary_kind: String,
-    summary_verdict: String,
-    subject: String,
-    source_refs: Vec<String>,
-    rule_version: String,
-    covered_true_claim_count: i64,
-    uncovered_true_claim_count: i64,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-struct OrchestrationReachabilitySummary {
-    stage: String,
-    summary_kind: String,
-    summary_verdict: String,
-    source_refs: Vec<String>,
-    rule_version: String,
-    out_of_surface_required_job_count: i64,
-    incomplete_case_count: i64,
-    status: String,
-}
-
 #[derive(Debug, Deserialize, Default)]
 struct AssumptionRegister {
     #[serde(default)]
@@ -512,112 +494,6 @@ fn validate_scalar_summary_artifact(
             "scalar summary artifact must declare nonempty `source_refs`",
             "bind the scalar summary artifact to at least one source artifact ref",
         ),
-    }
-}
-
-fn compute_claim_enforcement_coverage_summary(
-    merge: &MergeClaims,
-    enforcement: &ClaimEnforcement,
-) -> ClaimEnforcementCoverageSummary {
-    let rows_by_claim: BTreeMap<&str, &ClaimEnforcementRow> = enforcement
-        .rows
-        .iter()
-        .filter(|row| !row.claim_id.is_empty())
-        .map(|row| (row.claim_id.as_str(), row))
-        .collect();
-
-    let mut covered_true_claim_count = 0_i64;
-    let mut uncovered_true_claim_count = 0_i64;
-    for claim in &merge.claims {
-        if !claim.value {
-            continue;
-        }
-        match rows_by_claim.get(claim.claim_id.as_str()) {
-            Some(row)
-                if !row.enforcement_kind.is_empty()
-                    && !row.enforced_at.is_empty()
-                    && !row.status.is_empty() =>
-            {
-                covered_true_claim_count += 1;
-            }
-            _ => uncovered_true_claim_count += 1,
-        }
-    }
-
-    let summary_verdict = if uncovered_true_claim_count == 0 {
-        "pass"
-    } else {
-        "block"
-    };
-
-    ClaimEnforcementCoverageSummary {
-        status: "frozen".to_string(),
-        summary_kind: "claim_enforcement_coverage".to_string(),
-        summary_verdict: summary_verdict.to_string(),
-        subject: "true_merge_claims_have_bound_enforcement_rows".to_string(),
-        source_refs: vec![
-            "merge_claims.toml".to_string(),
-            "claim_enforcement.toml".to_string(),
-        ],
-        rule_version: "v1".to_string(),
-        covered_true_claim_count,
-        uncovered_true_claim_count,
-    }
-}
-
-fn compute_orchestration_reachability_summary(
-    stage: Stage,
-    ci_surface: &CiSurface,
-    reachability: &OrchestrationReachability,
-) -> OrchestrationReachabilitySummary {
-    let stage_name = stage_key(stage).to_string();
-    let stage_jobs: BTreeSet<&str> = ci_surface
-        .required_jobs_by_stage
-        .get(stage_key(stage))
-        .map(|jobs| jobs.iter().map(String::as_str).collect())
-        .unwrap_or_default();
-
-    let mut incomplete_case_count = 0_i64;
-    let mut out_of_surface_required_job_count = 0_i64;
-
-    for case in &reachability.cases {
-        let incomplete = case.case_id.is_empty()
-            || case.subject.is_empty()
-            || case.trigger_job.is_empty()
-            || case.trigger_result.is_empty()
-            || case.required_reachable_jobs.is_empty()
-            || case.forbidden_job_results.is_empty()
-            || case.proof_ref.is_empty()
-            || case.status.is_empty();
-        if incomplete {
-            incomplete_case_count += 1;
-        }
-
-        out_of_surface_required_job_count += case
-            .required_reachable_jobs
-            .iter()
-            .filter(|job| !stage_jobs.contains(job.as_str()))
-            .count() as i64;
-    }
-
-    let summary_verdict = if incomplete_case_count == 0 && out_of_surface_required_job_count == 0 {
-        "pass"
-    } else {
-        "block"
-    };
-
-    OrchestrationReachabilitySummary {
-        stage: stage_name,
-        summary_kind: "orchestration_reachability".to_string(),
-        summary_verdict: summary_verdict.to_string(),
-        source_refs: vec![
-            "orchestration_reachability.toml".to_string(),
-            "ci_surface.toml".to_string(),
-        ],
-        rule_version: "v1".to_string(),
-        out_of_surface_required_job_count,
-        incomplete_case_count,
-        status: "frozen".to_string(),
     }
 }
 
@@ -1474,7 +1350,23 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
         &claim_enforcement,
         &claim_enforcement_coverage,
     ) {
-        let recomputed = compute_claim_enforcement_coverage_summary(merge, enforcement);
+        let claim_values: Vec<(String, bool)> = merge
+            .claims
+            .iter()
+            .map(|claim| (claim.claim_id.clone(), claim.value))
+            .collect();
+        let enforcement_rows: Vec<ClaimEnforcementRowInput> = enforcement
+            .rows
+            .iter()
+            .map(|row| ClaimEnforcementRowInput {
+                claim_id: row.claim_id.clone(),
+                enforcement_kind: row.enforcement_kind.clone(),
+                enforced_at: row.enforced_at.clone(),
+                status: row.status.clone(),
+            })
+            .collect();
+        let recomputed =
+            compute_claim_enforcement_coverage_summary(&claim_values, &enforcement_rows);
         if *summary != recomputed {
             report.push(
                 Status::Block,
@@ -1491,7 +1383,29 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
         &orchestration_reachability,
         &orchestration_reachability_summary,
     ) {
-        let recomputed = compute_orchestration_reachability_summary(stage, surface, reachability);
+        let stage_jobs: BTreeSet<String> = surface
+            .required_jobs_by_stage
+            .get(stage_key(stage))
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let cases: Vec<ReachabilityCaseInput> = reachability
+            .cases
+            .iter()
+            .map(|case| ReachabilityCaseInput {
+                case_id: case.case_id.clone(),
+                subject: case.subject.clone(),
+                trigger_job: case.trigger_job.clone(),
+                trigger_result: case.trigger_result.clone(),
+                required_reachable_jobs: case.required_reachable_jobs.clone(),
+                forbidden_job_results: case.forbidden_job_results.clone(),
+                proof_ref: case.proof_ref.clone(),
+                status: case.status.clone(),
+            })
+            .collect();
+        let recomputed =
+            compute_orchestration_reachability_summary(stage_key(stage), &stage_jobs, &cases);
         if *summary != recomputed {
             report.push(
                 Status::Block,

@@ -1,0 +1,59 @@
+version = "v1"
+results_id = "issue-208-scientific-validation-results"
+status = "frozen"
+executed_at = "2026-04-20"
+
+protocol_ref = "2026-04-20-validation-protocol-v1.toml"
+benchmark_manifest_ref = "2026-04-20-benchmark-manifest-v1.toml"
+adjudication_rules_ref = "2026-04-20-adjudication-rules-v1.toml"
+
+subject_repo = "seungpyoson/bolt-v2"
+subject_branch = "issue-208-scientific-validation-subject"
+subject_head = "50c0fca5c21ea4a4b94ce1136ab68aed0ab3e105"
+baseline_subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+metadata_only_delta = true
+
+[local_execution]
+status = "completed"
+
+[[benchmarks]]
+benchmark_id = "B4"
+status = "pass"
+executed_on_head = "50c0fca5c21ea4a4b94ce1136ab68aed0ab3e105"
+evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_gate_comparator_kind_is_unknown",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_gate_clause_comparator_kind_is_unknown",
+]
+
+[[benchmarks]]
+benchmark_id = "B5"
+status = "pass"
+executed_on_head = "50c0fca5c21ea4a4b94ce1136ab68aed0ab3e105"
+evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_claim_enforcement_summary_kind_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_source_refs_are_empty",
+]
+
+[[benchmarks]]
+benchmark_id = "B6"
+status = "pass"
+executed_on_head = "50c0fca5c21ea4a4b94ce1136ab68aed0ab3e105"
+evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_claim_enforcement_coverage_counts_drift",
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_claim_enforcement_coverage_verdict_drifts_from_recomputed_output",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_unreachable_count_drifts",
+]
+
+[[benchmarks]]
+benchmark_id = "B7"
+status = "pass"
+executed_on_head = "50c0fca5c21ea4a4b94ce1136ab68aed0ab3e105"
+evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_workflow_contract_artifact_kind_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_workflow_contract_source_artifacts_are_empty",
+]
+
+[scientific_validation]
+status = "local_benchmark_execution_passed"
+external_adjudication_status = "pending"
+final_decision = "pending_external"

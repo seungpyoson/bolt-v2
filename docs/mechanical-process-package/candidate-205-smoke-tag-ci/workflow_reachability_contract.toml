@@ -1,6 +1,12 @@
+artifact_kind = "producer_contract"
+contract_kind = "workflow_reachability"
+subject = "ci_workflow_reachability"
 workflow = "CI"
 contract_version = "v1"
 status = "frozen"
+source_artifacts = [
+  ".github/workflows/ci.yml",
+]
 
 [[reachability]]
 trigger_job = "same_sha_proof"

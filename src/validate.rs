@@ -1076,6 +1076,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "secrets.passphrase",
         &config.secrets.passphrase,
     );
+    check_non_empty(
+        &mut errors,
+        "raw_capture.output_dir",
+        &config.raw_capture.output_dir,
+    );
     check_absolute_path(
         &mut errors,
         "raw_capture.output_dir",
@@ -1429,6 +1434,11 @@ fn validate_runtime_with_registry(
         config.streaming.contract_path.as_deref(),
     );
     check_runtime_contract_path_shape(&mut errors, config.streaming.contract_path.as_deref());
+    check_non_empty(
+        &mut errors,
+        "raw_capture.output_dir",
+        &config.raw_capture.output_dir,
+    );
     check_absolute_path(
         &mut errors,
         "raw_capture.output_dir",

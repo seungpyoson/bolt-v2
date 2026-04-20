@@ -26,13 +26,26 @@ if existing_fs_type="$(blkid -s TYPE -o value "${BOLT_DATA_DEVICE}" 2>/dev/null)
     BOLT_DATA_FS_TYPE="${existing_fs_type}"
 else
     mkfs -t "${BOLT_DATA_FS_TYPE}" "${BOLT_DATA_DEVICE}"
+    udevadm settle
 fi
 
 mkdir -p "${BOLT_HOME}"
 
 uuid="$(blkid -s UUID -o value "${BOLT_DATA_DEVICE}")"
+if [[ -z "${uuid}" ]]; then
+    echo "Failed to retrieve UUID for ${BOLT_DATA_DEVICE}" >&2
+    exit 1
+fi
+
 fstab_line="UUID=${uuid} ${BOLT_HOME} ${BOLT_DATA_FS_TYPE} defaults,nofail 0 2"
-if ! grep -Fq "${fstab_line}" /etc/fstab; then
+if findmnt --fstab --target "${BOLT_HOME}" >/dev/null 2>&1; then
+    existing_source="$(findmnt --fstab --target "${BOLT_HOME}" -no SOURCE | head -n1)"
+    existing_fstype="$(findmnt --fstab --target "${BOLT_HOME}" -no FSTYPE | head -n1)"
+    if [[ "${existing_source}" != "UUID=${uuid}" || "${existing_fstype}" != "${BOLT_DATA_FS_TYPE}" ]]; then
+        echo "Existing /etc/fstab entry for ${BOLT_HOME} does not match ${BOLT_DATA_DEVICE}" >&2
+        exit 1
+    fi
+else
     printf '%s\n' "${fstab_line}" >> /etc/fstab
 fi
 

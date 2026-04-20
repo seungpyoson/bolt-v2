@@ -1200,6 +1200,17 @@ fn live_local_runtime_write_dirs_must_be_absolute() {
 }
 
 #[test]
+fn live_local_raw_capture_output_dir_must_be_non_empty() {
+    let toml = replace(
+        &valid_toml(),
+        "output_dir = \"/srv/bolt-v2/var/raw\"",
+        "output_dir = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "raw_capture.output_dir", "empty");
+}
+
+#[test]
 fn phase1_audit_intervals_and_limits_must_be_positive() {
     let ship_interval = replace(
         &valid_phase1_toml(),
@@ -1918,6 +1929,14 @@ fn runtime_relative_runtime_write_dirs_rejected() {
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "raw_capture.output_dir", "not_absolute");
     assert_has_error(&errors, "audit.local_dir", "not_absolute");
+}
+
+#[test]
+fn runtime_raw_capture_output_dir_must_be_non_empty() {
+    let toml =
+        valid_runtime_toml().replace("output_dir = \"/srv/bolt-v2/var/raw\"", "output_dir = \"\"");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "raw_capture.output_dir", "empty");
 }
 
 #[test]

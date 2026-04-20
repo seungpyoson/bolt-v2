@@ -1,0 +1,58 @@
+version = "v1"
+results_id = "issue-208-harness-adjudication-results"
+status = "frozen"
+executed_at = "2026-04-20"
+
+protocol_ref = "2026-04-20-validation-protocol-v1.toml"
+benchmark_manifest_ref = "2026-04-20-benchmark-manifest-v1.toml"
+adjudication_rules_ref = "2026-04-20-adjudication-rules-v1.toml"
+
+subject_repo = "seungpyoson/bolt-v2"
+subject_branch = "issue-208-process-validator"
+subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+
+[local_reproduction]
+delivery_validator_cli = "pass"
+summary_replay = "pass"
+
+[[external_reviewers]]
+reviewer = "claude"
+verdict = "keep_prototype"
+mechanical_prototype_credible = true
+experiment_ledger_honest_enough = true
+closure_boundary_honest = true
+evidence_overstated = false
+self_graded_residue = true
+
+[[external_reviewers]]
+reviewer = "gemini"
+verdict = "keep_prototype"
+mechanical_prototype_credible = true
+experiment_ledger_honest_enough = true
+closure_boundary_honest = true
+evidence_overstated = false
+self_graded_residue = false
+
+[[external_reviewers]]
+reviewer = "glm"
+verdict = "keep_prototype"
+mechanical_prototype_credible = true
+experiment_ledger_honest_enough = true
+closure_boundary_honest = true
+evidence_overstated = false
+self_graded_residue = false
+
+[decision_counts]
+keep_prototype = 3
+kill = 0
+inconclusive_do_not_adopt = 0
+
+[decision]
+final_decision = "keep_prototype"
+rule_satisfied = "prototype_keep_rule"
+minimum_external_reviewers_met = true
+builder_vote_present = false
+
+[notes]
+scientific_validation_status = "not_established"
+prototype_status = "kept"

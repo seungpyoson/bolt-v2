@@ -140,6 +140,9 @@ api_key = "/key"
 api_secret = "/secret"
 passphrase = "/pass"
 
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
+
 [reference]
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
@@ -163,7 +166,7 @@ candidate_load_timeout_secs = 12
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 45
@@ -190,6 +193,9 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
 
 [reference]
 publish_topic = "platform.reference.default"
@@ -228,7 +234,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30

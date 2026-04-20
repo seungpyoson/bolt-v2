@@ -1,0 +1,16 @@
+[Unit]
+Description=bolt-v2 live node
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=bolt
+Group=bolt
+WorkingDirectory=/srv/bolt-v2
+ExecStart=/opt/bolt-v2/bolt-v2 run --config /opt/bolt-v2/config/live.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

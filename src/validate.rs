@@ -84,6 +84,21 @@ fn check_non_empty(errors: &mut Vec<ValidationError>, field: &str, value: &str) 
     }
 }
 
+fn check_absolute_path(errors: &mut Vec<ValidationError>, field: &str, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+
+    if !std::path::Path::new(value).is_absolute() {
+        push_error(
+            errors,
+            field,
+            "not_absolute",
+            format!("{field} must be an absolute path, got \"{value}\""),
+        );
+    }
+}
+
 /// Shared hyphen-check logic. `split_fn` selects the split direction to
 /// match the exact NT constructor for each identifier type.
 fn check_nt_hyphenated(
@@ -1061,6 +1076,11 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         "secrets.passphrase",
         &config.secrets.passphrase,
     );
+    check_absolute_path(
+        &mut errors,
+        "raw_capture.output_dir",
+        &config.raw_capture.output_dir,
+    );
 
     if config.rulesets.is_empty() {
         let default_reference = LiveReferenceInput::default();
@@ -1275,6 +1295,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
 
     if let Some(audit) = config.audit.as_ref() {
         check_non_empty(&mut errors, "audit.local_dir", &audit.local_dir);
+        check_absolute_path(&mut errors, "audit.local_dir", &audit.local_dir);
         check_non_empty(&mut errors, "audit.s3_uri", &audit.s3_uri);
         check_positive_u64(
             &mut errors,
@@ -1408,6 +1429,11 @@ fn validate_runtime_with_registry(
         config.streaming.contract_path.as_deref(),
     );
     check_runtime_contract_path_shape(&mut errors, config.streaming.contract_path.as_deref());
+    check_absolute_path(
+        &mut errors,
+        "raw_capture.output_dir",
+        &config.raw_capture.output_dir,
+    );
 
     let mut data_name_indices: HashMap<&str, usize> = HashMap::new();
     for (i, client) in config.data_clients.iter().enumerate() {
@@ -1882,6 +1908,7 @@ fn validate_runtime_with_registry(
 
     if let Some(audit) = config.audit.as_ref() {
         check_non_empty(&mut errors, "audit.local_dir", &audit.local_dir);
+        check_absolute_path(&mut errors, "audit.local_dir", &audit.local_dir);
         check_non_empty(&mut errors, "audit.s3_uri", &audit.s3_uri);
         check_positive_u64(
             &mut errors,

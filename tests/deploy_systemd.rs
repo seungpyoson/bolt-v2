@@ -1,0 +1,13 @@
+use std::{fs, path::PathBuf};
+
+#[test]
+fn systemd_unit_sets_srv_working_directory() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains("WorkingDirectory=/srv/bolt-v2"),
+        "systemd unit must anchor cwd at /srv/bolt-v2"
+    );
+}

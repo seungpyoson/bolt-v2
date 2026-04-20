@@ -376,11 +376,19 @@ struct OrchestrationReachability {
 #[derive(Debug, Deserialize, Default)]
 struct WorkflowReachabilityContract {
     #[serde(default)]
+    artifact_kind: String,
+    #[serde(default)]
+    contract_kind: String,
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
     workflow: String,
     #[serde(default)]
     contract_version: String,
     #[serde(default)]
     status: String,
+    #[serde(default)]
+    source_artifacts: Vec<String>,
     #[serde(default, rename = "reachability")]
     rows: Vec<WorkflowReachabilityRow>,
 }
@@ -515,6 +523,87 @@ fn validate_scalar_summary_artifact(
             rel_path,
             "scalar summary artifact must declare nonempty `source_refs`",
             "bind the scalar summary artifact to at least one source artifact ref",
+        ),
+    }
+}
+
+fn validate_producer_contract_artifact(
+    dir: &Path,
+    rel_path: &str,
+    report: &mut Report,
+    seen: &mut BTreeSet<String>,
+) {
+    if !seen.insert(rel_path.to_string()) {
+        return;
+    }
+    let path = dir.join(rel_path);
+    if !path.exists() {
+        report.push(
+            Status::Block,
+            "schema",
+            rel_path,
+            "producer contract artifact is missing",
+            "add the producer contract artifact or remove the broken replay dependency",
+        );
+        return;
+    }
+    let value = match load_from_path::<TomlValue>(&path) {
+        Ok(value) => value,
+        Err(_) => {
+            report.push(
+                Status::Block,
+                "schema",
+                rel_path,
+                "producer contract artifact is unreadable",
+                "make the producer contract artifact parse as TOML",
+            );
+            return;
+        }
+    };
+    let require_nonempty_scalar = |field: &str, report: &mut Report| {
+        let Some(field_value) = value.get(field) else {
+            report.push(
+                Status::Block,
+                "schema",
+                rel_path,
+                format!("producer contract artifact is missing `{field}`"),
+                "fill all required producer contract fields",
+            );
+            return;
+        };
+        let ok = match field_value {
+            TomlValue::String(v) => !v.is_empty(),
+            TomlValue::Boolean(_) => true,
+            TomlValue::Integer(_) => true,
+            TomlValue::Float(_) => true,
+            TomlValue::Datetime(_) => true,
+            _ => false,
+        };
+        if !ok {
+            report.push(
+                Status::Block,
+                "schema",
+                rel_path,
+                format!("producer contract field `{field}` is empty or non-scalar"),
+                "keep producer contract fields scalar and nonempty",
+            );
+        }
+    };
+
+    require_nonempty_scalar("artifact_kind", report);
+    require_nonempty_scalar("contract_kind", report);
+    require_nonempty_scalar("subject", report);
+    require_nonempty_scalar("contract_version", report);
+    require_nonempty_scalar("status", report);
+
+    match value.get("source_artifacts") {
+        Some(TomlValue::Array(items)) if !items.is_empty() => {}
+        _ => report.push(
+            Status::Block,
+            "schema",
+            rel_path,
+            "producer contract artifact must declare nonempty `source_artifacts`",
+            "bind the producer contract to at least one upstream source artifact",
         ),
     }
 }
@@ -1409,9 +1498,20 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     ) {
         match &workflow_reachability_contract {
             Some(contract) => {
+                let mut seen_contracts = BTreeSet::new();
+                validate_producer_contract_artifact(
+                    dir,
+                    "workflow_reachability_contract.toml",
+                    &mut report,
+                    &mut seen_contracts,
+                );
                 if contract.workflow.is_empty()
+                    || contract.artifact_kind.is_empty()
+                    || contract.contract_kind.is_empty()
+                    || contract.subject.is_empty()
                     || contract.contract_version.is_empty()
                     || contract.status.is_empty()
+                    || contract.source_artifacts.is_empty()
                     || contract.rows.is_empty()
                 {
                     report.push(
@@ -1419,7 +1519,7 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                         "schema",
                         "workflow_reachability_contract.toml",
                         "workflow reachability contract is incomplete",
-                        "fill workflow, contract_version, status, and at least one reachability row",
+                        "fill the producer contract wrapper fields plus workflow and at least one reachability row",
                     );
                 } else {
                     let stage_jobs: BTreeSet<String> = surface

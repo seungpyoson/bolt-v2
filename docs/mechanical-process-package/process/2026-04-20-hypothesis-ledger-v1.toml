@@ -136,3 +136,12 @@ commit = "f5d1479"
 evidence_direct_tests = 4
 evidence_regression_tests = 51
 note = "full reachability summary replay restored after freezing upstream workflow semantics"
+
+[[hypotheses]]
+hypothesis_id = "H18"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "PENDING"
+evidence_direct_tests = 2
+evidence_regression_tests = 53
+note = "producer contract wrapper standardized and generically validated"

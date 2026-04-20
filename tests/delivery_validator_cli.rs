@@ -200,9 +200,13 @@ status = "frozen"
     write_file(
         &dst.join("workflow_reachability_contract.toml"),
         r#"
+artifact_kind = "producer_contract"
+contract_kind = "workflow_reachability"
+subject = "ci_workflow_reachability"
 workflow = "CI"
 contract_version = "v1"
 status = "frozen"
+source_artifacts = [".github/workflows/ci.yml"]
 
 [[reachability]]
 trigger_job = "job-review"
@@ -928,9 +932,13 @@ status = "frozen"
             write_file(
                 &dst.join("workflow_reachability_contract.toml"),
                 r#"
+artifact_kind = "producer_contract"
+contract_kind = "workflow_reachability"
+subject = "ci_workflow_reachability"
 workflow = "CI"
 contract_version = "v1"
 status = "frozen"
+source_artifacts = [".github/workflows/ci.yml"]
 
 [[reachability]]
 trigger_job = "job-review"
@@ -1020,9 +1028,13 @@ status = "frozen"
             write_file(
                 &dst.join("workflow_reachability_contract.toml"),
                 r#"
+artifact_kind = "producer_contract"
+contract_kind = "workflow_reachability"
+subject = "ci_workflow_reachability"
 workflow = "CI"
 contract_version = "v1"
 status = "frozen"
+source_artifacts = [".github/workflows/ci.yml"]
 
 [[reachability]]
 trigger_job = "job-merge"
@@ -2130,6 +2142,74 @@ fn synthetic_review_package_blocks_when_workflow_reachability_contract_is_missin
         text.contains("workflow_reachability_contract.toml"),
         "{text}"
     );
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_workflow_contract_artifact_kind_is_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let contract = dst.join("workflow_reachability_contract.toml");
+    let original =
+        fs::read_to_string(&contract).expect("workflow_reachability_contract should read");
+    fs::write(
+        &contract,
+        original.replace(
+            "artifact_kind = \"producer_contract\"",
+            "artifact_kind = \"\"",
+        ),
+    )
+    .expect("mutated workflow_reachability_contract should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when workflow contract artifact_kind is empty; output:\n{text}"
+    );
+    assert!(text.contains("artifact_kind"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_workflow_contract_source_artifacts_are_empty() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let contract = dst.join("workflow_reachability_contract.toml");
+    let original =
+        fs::read_to_string(&contract).expect("workflow_reachability_contract should read");
+    fs::write(
+        &contract,
+        original.replace(
+            "source_artifacts = [\".github/workflows/ci.yml\"]",
+            "source_artifacts = []",
+        ),
+    )
+    .expect("mutated workflow_reachability_contract should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when workflow contract source_artifacts are empty; output:\n{text}"
+    );
+    assert!(text.contains("source_artifacts"), "{text}");
 }
 
 #[test]

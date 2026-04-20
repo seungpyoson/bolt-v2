@@ -24,8 +24,12 @@
 - `#224` proved the merged `#215` host/storage/service baseline can be reproduced cleanly on a fresh
   EC2 instance, which removes the main reason to prefer risky in-place surgery on a known-damaged
   box.
-- `#224` also proved the remaining blocker is now a concrete runtime-startup issue (`#225`), not a
-  need to salvage the damaged host.
+- The first non-EIP candidate run from `#224` was not a valid trading-boundary test.
+- After rerunning `#224` from the copied production EIP boundary, the earlier Binance startup
+  failure did not recur and the trader started on the candidate host.
+- The production-boundary rerun still does not yet prove full trading readiness: the strategy is in
+  `phase=Active`, but the latest watch window still shows `WarmupIncomplete`, so approval is not
+  yet evidence-backed.
 
 ## 3. Exact repair path if repairable
 
@@ -49,5 +53,8 @@
 3. Continue on the fresh candidate path already established in `#224`, because that is the only path
    that preserves the full production lane by default while removing the proven-negative part
    (the damaged root filesystem and host state).
-4. Resolve `#225`, then rerun candidate validation from the real production network identity
-   boundary before making the final launch/cutover decision in `#221`.
+4. Treat `#225` as the concrete explanation for why the non-production-boundary test was invalid,
+   not as a reason to return to old-host salvage.
+5. Continue the candidate watch from the copied production boundary until strategy readiness is
+   either proven or clearly not reached.
+6. Make the final launch/cutover decision in `#221`.

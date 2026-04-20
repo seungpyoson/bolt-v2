@@ -35,14 +35,13 @@ The available evidence is enough to define the approval bar, but not enough to p
 
 ## Known gaps blocking approval
 
-- The exact current host inventory is **not** captured anywhere complete enough to prove parity:
-  systemd overrides, journald state, mounts, packages, sysctl, limits, timers, cron, and
-  bolt-specific directories/scripts still need read-only capture from the current or forensic host.
-  This is now tracked in `#222`.
-- There is **no live replacement-host validation evidence yet** showing startup, feeds, selector,
+- `#222` now materially covers the old-host baseline needed for host-parity comparison.
+- `#223` now materially covers the minimum monitoring/alerting contract needed for
+  operational-parity signoff.
+- The remaining blocker is the actual candidate-host exercise:
+  there is still **no live replacement-host validation evidence** showing startup, feeds, selector,
   reference health, strategy readiness, and disk behavior on a rebuilt instance.
-- Monitoring and alerting expectations are not yet canonical enough to sign off operational parity.
-  This is now tracked in `#223`.
+  That remaining work is now tracked in `#224`.
 
 ## 1. Rebuild/Cutover Parity Checklist
 

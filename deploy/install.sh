@@ -22,6 +22,12 @@ else
     echo "==> bolt user already exists"
 fi
 
+# --- Guard: BOLT_DATA_DEVICE must refer to an actual block device ---
+if [[ ! -b "$BOLT_DATA_DEVICE" ]]; then
+    echo "ERROR: BOLT_DATA_DEVICE ($BOLT_DATA_DEVICE) is not a block device" >&2
+    exit 1
+fi
+
 # --- Format device if it has no filesystem ---
 if ! blkid "$BOLT_DATA_DEVICE" &>/dev/null; then
     echo "==> No filesystem detected on $BOLT_DATA_DEVICE — formatting ext4"
@@ -34,7 +40,7 @@ fi
 mkdir -p /srv/bolt-v2
 
 # --- Add fstab entry if not already present ---
-if ! grep -q 'LABEL=bolt-v2-data' /etc/fstab; then
+if ! grep -qE '^LABEL=bolt-v2-data[[:space:]]+/srv/bolt-v2[[:space:]]' /etc/fstab; then
     echo "==> Adding /etc/fstab entry"
     echo 'LABEL=bolt-v2-data /srv/bolt-v2 ext4 defaults,nofail,x-systemd.device-timeout=30s 0 2' >> /etc/fstab
 else

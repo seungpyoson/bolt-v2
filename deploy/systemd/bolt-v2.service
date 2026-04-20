@@ -18,6 +18,7 @@ ReadWritePaths=/srv/bolt-v2
 ProtectSystem=strict
 ProtectHome=true
 NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

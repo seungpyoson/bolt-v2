@@ -1,0 +1,25 @@
+workflow = "CI"
+contract_version = "v1"
+status = "frozen"
+
+[[reachability]]
+trigger_job = "same_sha_proof"
+trigger_result = "failure"
+reachable_jobs = [
+  "fmt-check",
+  "deny",
+  "clippy",
+  "test",
+  "build",
+]
+
+[[reachability]]
+trigger_job = "same_sha_proof"
+trigger_result = "success"
+reachable_jobs = [
+  "fmt-check",
+  "deny",
+  "clippy",
+  "test",
+  "build",
+]

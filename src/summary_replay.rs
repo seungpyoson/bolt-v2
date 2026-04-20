@@ -78,9 +78,17 @@ pub struct OrchestrationReachabilitySummary {
     pub summary_verdict: String,
     pub source_refs: Vec<String>,
     pub rule_version: String,
+    pub unreachable_required_job_count: i64,
     pub out_of_surface_required_job_count: i64,
     pub incomplete_case_count: i64,
     pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowReachabilityRowInput {
+    pub trigger_job: String,
+    pub trigger_result: String,
+    pub reachable_jobs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,9 +107,11 @@ pub fn compute_orchestration_reachability_summary(
     stage_name: &str,
     stage_jobs: &BTreeSet<String>,
     cases: &[ReachabilityCaseInput],
+    contract_rows: &[WorkflowReachabilityRowInput],
 ) -> OrchestrationReachabilitySummary {
     let mut incomplete_case_count = 0_i64;
     let mut out_of_surface_required_job_count = 0_i64;
+    let mut unreachable_required_job_count = 0_i64;
 
     for case in cases {
         let incomplete = case.case_id.is_empty()
@@ -116,6 +126,31 @@ pub fn compute_orchestration_reachability_summary(
             incomplete_case_count += 1;
         }
 
+        let matching_rows: Vec<_> = contract_rows
+            .iter()
+            .filter(|row| {
+                row.trigger_job == case.trigger_job && row.trigger_result == case.trigger_result
+            })
+            .collect();
+        let reachable_jobs: BTreeSet<&str> = match matching_rows.as_slice() {
+            [row] => row
+                .reachable_jobs
+                .iter()
+                .map(String::as_str)
+                .filter(|job| stage_jobs.contains(*job))
+                .collect(),
+            _ => {
+                incomplete_case_count += 1;
+                BTreeSet::new()
+            }
+        };
+
+        unreachable_required_job_count += case
+            .required_reachable_jobs
+            .iter()
+            .filter(|job| !reachable_jobs.contains(job.as_str()))
+            .count() as i64;
+
         out_of_surface_required_job_count += case
             .required_reachable_jobs
             .iter()
@@ -123,7 +158,10 @@ pub fn compute_orchestration_reachability_summary(
             .count() as i64;
     }
 
-    let summary_verdict = if incomplete_case_count == 0 && out_of_surface_required_job_count == 0 {
+    let summary_verdict = if incomplete_case_count == 0
+        && out_of_surface_required_job_count == 0
+        && unreachable_required_job_count == 0
+    {
         "pass"
     } else {
         "block"
@@ -136,8 +174,10 @@ pub fn compute_orchestration_reachability_summary(
         source_refs: vec![
             "orchestration_reachability.toml".to_string(),
             "ci_surface.toml".to_string(),
+            "workflow_reachability_contract.toml".to_string(),
         ],
         rule_version: "v1".to_string(),
+        unreachable_required_job_count,
         out_of_surface_required_job_count,
         incomplete_case_count,
         status: "frozen".to_string(),
@@ -182,9 +222,20 @@ mod tests {
             proof_ref: "proof".to_string(),
             status: "declared".to_string(),
         }];
+        let contract_rows = vec![WorkflowReachabilityRowInput {
+            trigger_job: "same_sha_proof".to_string(),
+            trigger_result: "failure".to_string(),
+            reachable_jobs: vec!["fmt-check".to_string()],
+        }];
 
-        let summary = compute_orchestration_reachability_summary("review", &stage_jobs, &cases);
+        let summary = compute_orchestration_reachability_summary(
+            "review",
+            &stage_jobs,
+            &cases,
+            &contract_rows,
+        );
         assert_eq!(summary.out_of_surface_required_job_count, 1);
+        assert_eq!(summary.unreachable_required_job_count, 1);
         assert_eq!(summary.incomplete_case_count, 0);
         assert_eq!(summary.summary_verdict, "block");
     }
@@ -202,9 +253,46 @@ mod tests {
             proof_ref: "proof".to_string(),
             status: "declared".to_string(),
         }];
+        let contract_rows = vec![];
 
-        let summary = compute_orchestration_reachability_summary("review", &stage_jobs, &cases);
-        assert_eq!(summary.incomplete_case_count, 1);
+        let summary = compute_orchestration_reachability_summary(
+            "review",
+            &stage_jobs,
+            &cases,
+            &contract_rows,
+        );
+        assert_eq!(summary.incomplete_case_count, 2);
+        assert_eq!(summary.summary_verdict, "block");
+    }
+
+    #[test]
+    fn reachability_summary_counts_unreachable_required_jobs_from_contract() {
+        let mut stage_jobs = BTreeSet::new();
+        stage_jobs.insert("fmt-check".to_string());
+        stage_jobs.insert("build".to_string());
+        let cases = vec![ReachabilityCaseInput {
+            case_id: "R1".to_string(),
+            subject: "subject".to_string(),
+            trigger_job: "same_sha_proof".to_string(),
+            trigger_result: "failure".to_string(),
+            required_reachable_jobs: vec!["fmt-check".to_string(), "build".to_string()],
+            forbidden_job_results: vec!["skipped".to_string()],
+            proof_ref: "proof".to_string(),
+            status: "declared".to_string(),
+        }];
+        let contract_rows = vec![WorkflowReachabilityRowInput {
+            trigger_job: "same_sha_proof".to_string(),
+            trigger_result: "failure".to_string(),
+            reachable_jobs: vec!["fmt-check".to_string()],
+        }];
+
+        let summary = compute_orchestration_reachability_summary(
+            "review",
+            &stage_jobs,
+            &cases,
+            &contract_rows,
+        );
+        assert_eq!(summary.unreachable_required_job_count, 1);
         assert_eq!(summary.summary_verdict, "block");
     }
 }

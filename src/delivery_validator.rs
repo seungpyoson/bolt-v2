@@ -10,8 +10,8 @@ use toml::Value as TomlValue;
 
 use crate::summary_replay::{
     ClaimEnforcementCoverageSummary, ClaimEnforcementRowInput, OrchestrationReachabilitySummary,
-    ReachabilityCaseInput, compute_claim_enforcement_coverage_summary,
-    compute_orchestration_reachability_summary,
+    ReachabilityCaseInput, WorkflowReachabilityRowInput,
+    compute_claim_enforcement_coverage_summary, compute_orchestration_reachability_summary,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,6 +371,28 @@ struct PromotionGateClause {
 struct OrchestrationReachability {
     #[serde(default)]
     cases: Vec<ReachabilityCase>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WorkflowReachabilityContract {
+    #[serde(default)]
+    workflow: String,
+    #[serde(default)]
+    contract_version: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default, rename = "reachability")]
+    rows: Vec<WorkflowReachabilityRow>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WorkflowReachabilityRow {
+    #[serde(default)]
+    trigger_job: String,
+    #[serde(default)]
+    trigger_result: String,
+    #[serde(default)]
+    reachable_jobs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -987,6 +1009,8 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
         dir,
         "orchestration_reachability_summary.toml",
     )?;
+    let workflow_reachability_contract =
+        load_optional::<WorkflowReachabilityContract>(dir, "workflow_reachability_contract.toml")?;
     let review_target = load_optional::<ReviewTarget>(dir, "review_target.toml")?;
     let execution_target = load_optional::<ExecutionTarget>(dir, "execution_target.toml")?;
     let ci_surface = load_optional::<CiSurface>(dir, "ci_surface.toml")?;
@@ -1383,37 +1407,75 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
         &orchestration_reachability,
         &orchestration_reachability_summary,
     ) {
-        let stage_jobs: BTreeSet<String> = surface
-            .required_jobs_by_stage
-            .get(stage_key(stage))
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        let cases: Vec<ReachabilityCaseInput> = reachability
-            .cases
-            .iter()
-            .map(|case| ReachabilityCaseInput {
-                case_id: case.case_id.clone(),
-                subject: case.subject.clone(),
-                trigger_job: case.trigger_job.clone(),
-                trigger_result: case.trigger_result.clone(),
-                required_reachable_jobs: case.required_reachable_jobs.clone(),
-                forbidden_job_results: case.forbidden_job_results.clone(),
-                proof_ref: case.proof_ref.clone(),
-                status: case.status.clone(),
-            })
-            .collect();
-        let recomputed =
-            compute_orchestration_reachability_summary(stage_key(stage), &stage_jobs, &cases);
-        if *summary != recomputed {
-            report.push(
+        match &workflow_reachability_contract {
+            Some(contract) => {
+                if contract.workflow.is_empty()
+                    || contract.contract_version.is_empty()
+                    || contract.status.is_empty()
+                    || contract.rows.is_empty()
+                {
+                    report.push(
+                        Status::Block,
+                        "schema",
+                        "workflow_reachability_contract.toml",
+                        "workflow reachability contract is incomplete",
+                        "fill workflow, contract_version, status, and at least one reachability row",
+                    );
+                } else {
+                    let stage_jobs: BTreeSet<String> = surface
+                        .required_jobs_by_stage
+                        .get(stage_key(stage))
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+                    let cases: Vec<ReachabilityCaseInput> = reachability
+                        .cases
+                        .iter()
+                        .map(|case| ReachabilityCaseInput {
+                            case_id: case.case_id.clone(),
+                            subject: case.subject.clone(),
+                            trigger_job: case.trigger_job.clone(),
+                            trigger_result: case.trigger_result.clone(),
+                            required_reachable_jobs: case.required_reachable_jobs.clone(),
+                            forbidden_job_results: case.forbidden_job_results.clone(),
+                            proof_ref: case.proof_ref.clone(),
+                            status: case.status.clone(),
+                        })
+                        .collect();
+                    let contract_rows: Vec<WorkflowReachabilityRowInput> = contract
+                        .rows
+                        .iter()
+                        .map(|row| WorkflowReachabilityRowInput {
+                            trigger_job: row.trigger_job.clone(),
+                            trigger_result: row.trigger_result.clone(),
+                            reachable_jobs: row.reachable_jobs.clone(),
+                        })
+                        .collect();
+                    let recomputed = compute_orchestration_reachability_summary(
+                        stage_key(stage),
+                        &stage_jobs,
+                        &cases,
+                        &contract_rows,
+                    );
+                    if *summary != recomputed {
+                        report.push(
+                            Status::Block,
+                            "evidence",
+                            "orchestration_reachability_summary.toml",
+                            "orchestration reachability summary does not match recomputed producer output",
+                            "recompute orchestration_reachability_summary.toml from orchestration_reachability.toml, ci_surface.toml, and workflow_reachability_contract.toml",
+                        );
+                    }
+                }
+            }
+            None => report.push(
                 Status::Block,
-                "evidence",
-                "orchestration_reachability_summary.toml",
-                "orchestration reachability summary does not match recomputed producer output",
-                "recompute orchestration_reachability_summary.toml from orchestration_reachability.toml and ci_surface.toml",
-            );
+                "schema",
+                "workflow_reachability_contract.toml",
+                "orchestration reachability replay requires workflow_reachability_contract.toml",
+                "add workflow_reachability_contract.toml to freeze the missing workflow reachability semantics",
+            ),
         }
     }
 

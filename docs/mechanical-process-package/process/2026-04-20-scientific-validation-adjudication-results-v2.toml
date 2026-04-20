@@ -1,0 +1,56 @@
+version = "v1"
+results_id = "issue-208-scientific-validation-adjudication-results-v2"
+status = "frozen"
+executed_at = "2026-04-20"
+
+protocol_ref = "2026-04-20-validation-protocol-v1.toml"
+entry_gates_ref = "2026-04-20-future-scientific-validation-entry-gates-v1.toml"
+benchmark_manifest_ref = "2026-04-20-benchmark-manifest-v1.toml"
+local_results_ref = "2026-04-20-scientific-validation-results-v2.toml"
+
+subject_repo = "seungpyoson/bolt-v2"
+subject_branch = "issue-208-scientific-validation-post-protocol"
+subject_logic_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+subject_registration_head = "6b36d1627f3e1db72d7b9beeff6b7f0dcddf4b30"
+protocol_snapshot_head_reviewed = "6ed9711403a482a8698cd7a22721dd0c0c06e2b1"
+
+[[external_reviewers]]
+reviewer = "claude"
+verdict = "not_established"
+subject_eligible_under_protocol = false
+benchmark_corpus_frozen_enough = false
+benchmark_execution_adequate = false
+evidence_overstated = true
+self_graded_residue = true
+
+[[external_reviewers]]
+reviewer = "gemini"
+verdict = "not_established"
+subject_eligible_under_protocol = false
+benchmark_corpus_frozen_enough = false
+benchmark_execution_adequate = false
+evidence_overstated = true
+self_graded_residue = true
+
+[[external_reviewers]]
+reviewer = "glm"
+verdict = "not_established"
+subject_eligible_under_protocol = false
+benchmark_corpus_frozen_enough = true
+benchmark_execution_adequate = true
+evidence_overstated = true
+self_graded_residue = false
+
+[decision_counts]
+scientific_validation_established = 0
+scientific_validation_not_established = 3
+inconclusive = 0
+
+[decision]
+final_decision = "scientific_validation_not_established"
+minimum_external_reviewers_met = true
+builder_vote_present = false
+
+[notes]
+common_failure_modes = "subject_eligibility_not_proven; corpus_independence_not_proven; result_framing_was_overstated"
+recommended_next_mode = "ultraplan_on_protocol_redesign_not_more_ad_hoc_validation_runs"

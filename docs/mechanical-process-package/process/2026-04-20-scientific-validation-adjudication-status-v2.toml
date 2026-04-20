@@ -15,11 +15,11 @@ B6 = "pass"
 B7 = "pass"
 
 [external_adjudication]
-status = "pending"
+status = "completed"
 minimum_external_reviewers = 3
-completed_external_reviewers = 0
-blocking_reason = "external review collection incomplete"
+completed_external_reviewers = 3
+blocking_reason = "none"
 
 [notes]
-final_scientific_validation_decision = "pending"
-adjudication_results_ref = ""
+final_scientific_validation_decision = "not_established"
+adjudication_results_ref = "2026-04-20-scientific-validation-adjudication-results-v2.toml"

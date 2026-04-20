@@ -45,13 +45,11 @@ executed_on_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
 descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B7-producer-contract-schema-breaks.toml"
 
 [scientific_validation]
-status = "eligible_subject_local_benchmark_execution_passed"
-subject_eligible_under_protocol = true
-benchmark_corpus_frozen_enough = true
-benchmark_execution_adequate = true
-external_adjudication_status = "pending"
-final_decision = "pending_external"
+status = "local_execution_completed"
+external_adjudication_status = "completed"
+external_adjudication_results_ref = "2026-04-20-scientific-validation-adjudication-results-v2.toml"
+final_decision = "scientific_validation_not_established"
 
 [notes]
-local_result_interpretation = "the_first_post_protocol_subject_passed_the_protocol_owned_B4_through_B7_benchmark_layer_but_still_requires_external_adjudication"
+local_result_interpretation = "the_first_post_protocol_subject_passed_the_protocol_owned_B4_through_B7_benchmark_layer"
 builder_adjudication_performed = false

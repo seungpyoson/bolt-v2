@@ -46,6 +46,15 @@ fn replace(base: &str, old: &str, new: &str) -> String {
     base.replacen(old, new, 1)
 }
 
+fn strip_block(base: &str, block: &str) -> String {
+    let count = base.matches(block).count();
+    assert_eq!(
+        count, 1,
+        "test helper: block must appear exactly once in base config (found {count})"
+    );
+    base.replacen(block, "", 1)
+}
+
 fn parse(toml: &str) -> LiveLocalConfig {
     toml::from_str(toml).expect("test config should parse")
 }
@@ -65,6 +74,13 @@ fn assert_has_error(errors: &[ValidationError], field: &str, code: &str) {
     assert!(
         errors.iter().any(|e| e.field == field && e.code == code),
         "expected error field={field} code={code}, got: {errors:?}"
+    );
+}
+
+fn assert_lacks_error(errors: &[ValidationError], field: &str, code: &str) {
+    assert!(
+        !errors.iter().any(|e| e.field == field && e.code == code),
+        "expected no error field={field} code={code}, got: {errors:?}"
     );
 }
 
@@ -791,110 +807,47 @@ tag_slug = "bitcoin-2"
 
 #[test]
 fn phase1_reference_rejected_when_rulesets_are_missing() {
-    let toml = valid_phase1_toml()
-        .replace("[[rulesets]]\n", "")
-        .replace("id = \"PRIMARY\"\n", "")
-        .replace("venue = \"polymarket\"\n", "")
-        .replace("[rulesets.selector]\n", "")
-        .replace("tag_slug = \"bitcoin\"\n", "")
-        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
-        .replace("min_time_to_expiry_secs = 60\n", "")
-        .replace("max_time_to_expiry_secs = 900\n", "")
-        .replace("min_liquidity_num = 1000\n", "")
-        .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 90\n", "")
-        .replace("selector_poll_interval_ms = 1000\n", "")
-        .replace("candidate_load_timeout_secs = 30\n", "")
-        .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
-        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
-        .replace("ship_interval_secs = 30\n", "")
-        .replace("upload_attempt_timeout_secs = 30\n", "")
-        .replace("roll_max_bytes = 1048576\n", "")
-        .replace("roll_max_secs = 300\n", "")
-        .replace("max_local_backlog_bytes = 10485760\n", "");
+    let toml = without_phase1_audit(&without_phase1_rulesets(&valid_phase1_toml()));
     let errors = errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
 }
 
 #[test]
 fn phase1_reference_min_publish_interval_only_rejected_when_rulesets_are_missing() {
-    let toml = valid_phase1_toml()
-        .replace("[[rulesets]]\n", "")
-        .replace("id = \"PRIMARY\"\n", "")
-        .replace("venue = \"polymarket\"\n", "")
-        .replace("[rulesets.selector]\n", "")
-        .replace("tag_slug = \"bitcoin\"\n", "")
-        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
-        .replace("min_time_to_expiry_secs = 60\n", "")
-        .replace("max_time_to_expiry_secs = 900\n", "")
-        .replace("min_liquidity_num = 1000\n", "")
-        .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 90\n", "")
-        .replace("selector_poll_interval_ms = 1000\n", "")
-        .replace("candidate_load_timeout_secs = 30\n", "")
-        .replace("publish_topic = \"platform.reference.default\"\n", "")
-        .replace("[[reference.venues]]\n", "")
-        .replace("name = \"BINANCE-BTC\"\n", "")
-        .replace("type = \"binance\"\n", "")
-        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
-        .replace("base_weight = 0.35\n", "")
-        .replace("stale_after_ms = 1500\n", "")
-        .replace("disable_after_ms = 5000\n", "")
-        .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
-        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
-        .replace("ship_interval_secs = 30\n", "")
-        .replace("upload_attempt_timeout_secs = 30\n", "")
-        .replace("roll_max_bytes = 1048576\n", "")
-        .replace("roll_max_secs = 300\n", "")
-        .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace(
-            "min_publish_interval_ms = 100",
-            "min_publish_interval_ms = 250",
-        );
+    let toml = without_phase1_audit(&without_phase1_reference_venues(&without_phase1_rulesets(
+        &valid_phase1_toml(),
+    )))
+    .replace("publish_topic = \"platform.reference.default\"\n", "")
+    .replace(
+        "min_publish_interval_ms = 100",
+        "min_publish_interval_ms = 250",
+    );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
 }
 
 #[test]
 fn phase1_reference_zero_min_publish_interval_only_rejected_when_rulesets_are_missing() {
-    let toml = valid_phase1_toml()
-        .replace("[[rulesets]]\n", "")
-        .replace("id = \"PRIMARY\"\n", "")
-        .replace("venue = \"polymarket\"\n", "")
-        .replace("[rulesets.selector]\n", "")
-        .replace("tag_slug = \"bitcoin\"\n", "")
-        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
-        .replace("min_time_to_expiry_secs = 60\n", "")
-        .replace("max_time_to_expiry_secs = 900\n", "")
-        .replace("min_liquidity_num = 1000\n", "")
-        .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 90\n", "")
-        .replace("selector_poll_interval_ms = 1000\n", "")
-        .replace("candidate_load_timeout_secs = 30\n", "")
-        .replace("publish_topic = \"platform.reference.default\"\n", "")
-        .replace("[[reference.venues]]\n", "")
-        .replace("name = \"BINANCE-BTC\"\n", "")
-        .replace("type = \"binance\"\n", "")
-        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
-        .replace("base_weight = 0.35\n", "")
-        .replace("stale_after_ms = 1500\n", "")
-        .replace("disable_after_ms = 5000\n", "")
-        .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
-        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
-        .replace("ship_interval_secs = 30\n", "")
-        .replace("upload_attempt_timeout_secs = 30\n", "")
-        .replace("roll_max_bytes = 1048576\n", "")
-        .replace("roll_max_secs = 300\n", "")
-        .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace(
-            "min_publish_interval_ms = 100",
-            "min_publish_interval_ms = 0",
-        );
+    let toml = without_phase1_audit(&without_phase1_reference_venues(&without_phase1_rulesets(
+        &valid_phase1_toml(),
+    )))
+    .replace("publish_topic = \"platform.reference.default\"\n", "")
+    .replace(
+        "min_publish_interval_ms = 100",
+        "min_publish_interval_ms = 0",
+    );
     let errors = errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+}
+
+#[test]
+fn phase1_live_local_orphaned_reference_binance_reports_only_top_level_error_without_rulesets() {
+    let toml = without_phase1_audit(&without_phase1_reference_venues(&without_phase1_rulesets(
+        &valid_phase1_toml(),
+    )));
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+    assert_lacks_error(&errors, "reference.binance", "orphaned_binance_config");
 }
 
 #[test]
@@ -1395,12 +1348,61 @@ max_local_backlog_bytes = 10485760
     )
 }
 
+const PHASE1_REFERENCE_BINANCE_VENUE_BLOCK: &str = r#"[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+"#;
+
+const PHASE1_RULESET_BLOCK: &str = r#"[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+resolution_basis = "binance_btcusdt_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin"
+"#;
+
+const PHASE1_AUDIT_BLOCK: &str = r#"[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#;
+
+fn without_phase1_rulesets(base: &str) -> String {
+    strip_block(base, PHASE1_RULESET_BLOCK)
+}
+
+fn without_phase1_reference_venues(base: &str) -> String {
+    strip_block(base, PHASE1_REFERENCE_BINANCE_VENUE_BLOCK)
+}
+
+fn without_phase1_audit(base: &str) -> String {
+    strip_block(base, PHASE1_AUDIT_BLOCK)
+}
+
 fn valid_phase1_runtime_toml() -> String {
     format!(
         "{}\n{}",
-        valid_runtime_toml().replace(
-            "event_slugs = [\"btc-updown-5m\"]\n",
-            "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 8\n",
+        format!(
+            "{VALID_BINANCE_SHARED_BLOCK}\n{}",
+            valid_runtime_toml().replace(
+                "event_slugs = [\"btc-updown-5m\"]\n",
+                "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 8\n",
+            )
         ),
         r#"
 [reference]
@@ -1447,6 +1449,15 @@ api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
 ws_url = "wss://streams.chain.link"
 ws_reconnect_alert_threshold = 5
+"#;
+
+const VALID_BINANCE_SHARED_BLOCK: &str = r#"[reference.binance]
+region = "eu-west-1"
+api_key = "/bolt/binance/api-key"
+api_secret = "/bolt/binance/api-secret"
+environment = "Mainnet"
+product_types = ["SPOT"]
+instrument_status_poll_secs = 3600
 "#;
 
 struct StubRuntimeTemplateBuilder;
@@ -1978,7 +1989,7 @@ tag_slug = "bitcoin-2"
 
 #[test]
 fn phase1_runtime_requires_reference_venues_when_one_ruleset_is_active() {
-    let toml = valid_phase1_runtime_toml()
+    let toml = strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK)
         .replace("[reference]\n", "")
         .replace("publish_topic = \"platform.reference.default\"\n", "")
         .replace("min_publish_interval_ms = 100\n", "")
@@ -2222,88 +2233,46 @@ tag_slug = "bitcoin-2"
 
 #[test]
 fn phase1_runtime_rejects_orphaned_reference_min_publish_interval_without_rulesets() {
-    let toml = valid_phase1_runtime_toml()
-        .replace("[[rulesets]]\n", "")
-        .replace("id = \"PRIMARY\"\n", "")
-        .replace("venue = \"polymarket\"\n", "")
-        .replace("[rulesets.selector]\n", "")
-        .replace("tag_slug = \"bitcoin\"\n", "")
-        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
-        .replace("min_time_to_expiry_secs = 60\n", "")
-        .replace("max_time_to_expiry_secs = 900\n", "")
-        .replace("min_liquidity_num = 1000\n", "")
-        .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 90\n", "")
-        .replace("selector_poll_interval_ms = 1000\n", "")
-        .replace("candidate_load_timeout_secs = 30\n", "")
-        .replace(
-            "publish_topic = \"platform.reference.default\"",
-            "publish_topic = \"\"",
-        )
-        .replace("[[reference.venues]]\n", "")
-        .replace("name = \"BINANCE-BTC\"\n", "")
-        .replace("type = \"binance\"\n", "")
-        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
-        .replace("base_weight = 0.35\n", "")
-        .replace("stale_after_ms = 1500\n", "")
-        .replace("disable_after_ms = 5000\n", "")
-        .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
-        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
-        .replace("ship_interval_secs = 30\n", "")
-        .replace("upload_attempt_timeout_secs = 30\n", "")
-        .replace("roll_max_bytes = 1048576\n", "")
-        .replace("roll_max_secs = 300\n", "")
-        .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace(
-            "min_publish_interval_ms = 100",
-            "min_publish_interval_ms = 250",
-        );
+    let toml = without_phase1_audit(&without_phase1_reference_venues(&without_phase1_rulesets(
+        &valid_phase1_runtime_toml(),
+    )))
+    .replace(
+        "publish_topic = \"platform.reference.default\"",
+        "publish_topic = \"\"",
+    )
+    .replace(
+        "min_publish_interval_ms = 100",
+        "min_publish_interval_ms = 250",
+    );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
 }
 
 #[test]
 fn phase1_runtime_rejects_orphaned_reference_zero_min_publish_interval_without_rulesets() {
-    let toml = valid_phase1_runtime_toml()
-        .replace("[[rulesets]]\n", "")
-        .replace("id = \"PRIMARY\"\n", "")
-        .replace("venue = \"polymarket\"\n", "")
-        .replace("[rulesets.selector]\n", "")
-        .replace("tag_slug = \"bitcoin\"\n", "")
-        .replace("resolution_basis = \"binance_btcusdt_1m\"\n", "")
-        .replace("min_time_to_expiry_secs = 60\n", "")
-        .replace("max_time_to_expiry_secs = 900\n", "")
-        .replace("min_liquidity_num = 1000\n", "")
-        .replace("require_accepting_orders = true\n", "")
-        .replace("freeze_before_end_secs = 90\n", "")
-        .replace("selector_poll_interval_ms = 1000\n", "")
-        .replace("candidate_load_timeout_secs = 30\n", "")
-        .replace(
-            "publish_topic = \"platform.reference.default\"",
-            "publish_topic = \"\"",
-        )
-        .replace("[[reference.venues]]\n", "")
-        .replace("name = \"BINANCE-BTC\"\n", "")
-        .replace("type = \"binance\"\n", "")
-        .replace("instrument_id = \"BTCUSDT.BINANCE\"\n", "")
-        .replace("base_weight = 0.35\n", "")
-        .replace("stale_after_ms = 1500\n", "")
-        .replace("disable_after_ms = 5000\n", "")
-        .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
-        .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
-        .replace("ship_interval_secs = 30\n", "")
-        .replace("upload_attempt_timeout_secs = 30\n", "")
-        .replace("roll_max_bytes = 1048576\n", "")
-        .replace("roll_max_secs = 300\n", "")
-        .replace("max_local_backlog_bytes = 10485760\n", "")
-        .replace(
-            "min_publish_interval_ms = 100",
-            "min_publish_interval_ms = 0",
-        );
+    let toml = without_phase1_audit(&without_phase1_reference_venues(&without_phase1_rulesets(
+        &valid_phase1_runtime_toml(),
+    )))
+    .replace(
+        "publish_topic = \"platform.reference.default\"",
+        "publish_topic = \"\"",
+    )
+    .replace(
+        "min_publish_interval_ms = 100",
+        "min_publish_interval_ms = 0",
+    );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+}
+
+#[test]
+fn phase1_runtime_orphaned_reference_binance_reports_only_top_level_error_without_rulesets() {
+    let toml = without_phase1_audit(&without_phase1_reference_venues(&without_phase1_rulesets(
+        &valid_phase1_runtime_toml().replace("event_slugs = [\"btc-updown-5m\"]\n", ""),
+    )));
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference", "orphaned_phase1_reference");
+    assert_lacks_error(&errors, "reference.binance", "orphaned_binance_config");
 }
 
 #[test]
@@ -2545,7 +2514,7 @@ subscribe_new_markets = false
 #[test]
 fn phase1_runtime_chainlink_requires_shared_reference_block() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -2572,12 +2541,140 @@ price_scale = 8
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "reference.chainlink", "missing_chainlink_config");
+    assert_lacks_error(&errors, "reference.binance", "orphaned_binance_config");
+}
+
+#[test]
+fn phase1_runtime_binance_requires_shared_reference_block() {
+    let toml = strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK);
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance", "missing_binance_config");
+}
+
+#[test]
+fn phase1_runtime_binance_shared_paths_must_be_absolute_ssm_paths() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("/bolt/binance/api-key", "bolt/binance/api-key")
+        .replace("/bolt/binance/api-secret", "bolt/binance/api-secret");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.binance.api_key",
+        "missing_leading_slash",
+    );
+    assert_has_error(
+        &errors,
+        "reference.binance.api_secret",
+        "missing_leading_slash",
+    );
+}
+
+#[test]
+fn phase1_runtime_binance_allows_zero_instrument_status_poll_secs() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600",
+        "instrument_status_poll_secs = 0",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_lacks_error(
+        &errors,
+        "reference.binance.instrument_status_poll_secs",
+        "not_positive",
+    );
+}
+
+#[test]
+fn phase1_runtime_binance_requires_non_empty_product_types() {
+    let toml =
+        valid_phase1_runtime_toml().replace("product_types = [\"SPOT\"]", "product_types = []");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.product_types", "empty");
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_empty_base_url_http() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_http = \"\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.base_url_http", "empty");
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_invalid_base_url_http() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_http = \"not-a-url\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(
+        &errors,
+        "reference.binance.base_url_http",
+        "invalid_http_url",
+    );
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_empty_base_url_ws() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_ws = \"\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.base_url_ws", "empty");
+}
+
+#[test]
+fn phase1_runtime_binance_rejects_invalid_base_url_ws() {
+    let toml = valid_phase1_runtime_toml().replace(
+        "instrument_status_poll_secs = 3600\n",
+        "instrument_status_poll_secs = 3600\nbase_url_ws = \"api.binance.com\"\n",
+    );
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "reference.binance.base_url_ws", "invalid_ws_url");
+}
+
+#[test]
+fn phase1_runtime_binance_shared_config_is_venue_driven_not_resolution_basis_driven() {
+    let toml = format!(
+        "{}\n{}",
+        valid_phase1_runtime_toml()
+            .replace("event_slugs = [\"btc-updown-5m\"]\n", "")
+            .replace(
+                "resolution_basis = \"binance_btcusdt_1m\"",
+                "resolution_basis = \"chainlink_btcusd\"",
+            )
+            .replace(
+                "[[reference.venues]]\nname = \"BINANCE-BTC\"",
+                &format!(
+                    "{VALID_CHAINLINK_SHARED_BLOCK}\n[[reference.venues]]\nname = \"BINANCE-BTC\""
+                ),
+            ),
+        r#"
+[[reference.venues]]
+name = "CHAINLINK-BTC"
+type = "chainlink"
+instrument_id = "BTCUSD.CHAINLINK"
+base_weight = 0.25
+stale_after_ms = 1500
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+"#
+    );
+    let errors = runtime_errors_for(&toml);
+    assert!(
+        errors.is_empty(),
+        "a configured Binance reference venue remains valid even when the active ruleset resolves against another source: {errors:#?}"
+    );
 }
 
 #[test]
 fn phase1_runtime_chainlink_price_scale_must_be_positive_and_bounded() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -2617,7 +2714,7 @@ price_scale = 19
 #[test]
 fn phase1_runtime_chainlink_price_scale_must_be_positive() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -2657,7 +2754,7 @@ price_scale = 0
 #[test]
 fn phase1_runtime_chainlink_feed_id_must_be_strict_hex() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -2698,7 +2795,7 @@ price_scale = 8
 fn phase1_runtime_chainlink_feed_ids_must_be_unique() {
     let toml = format!(
         "{}\n{}",
-        valid_phase1_runtime_toml(),
+        strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"
 [[reference.venues]]
 name = "CHAINLINK-ETH"
@@ -2748,7 +2845,7 @@ price_scale = 8
 #[test]
 fn phase1_runtime_chainlink_shared_ws_reconnect_alert_threshold_must_be_positive() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -2791,7 +2888,7 @@ price_scale = 8
 #[test]
 fn phase1_runtime_chainlink_shared_ws_url_must_be_wss() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -2830,7 +2927,7 @@ price_scale = 8
 #[test]
 fn phase1_runtime_chainlink_shared_ws_url_rejects_insecure_fallback_origin() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"
@@ -2869,7 +2966,7 @@ price_scale = 8
 #[test]
 fn phase1_runtime_chainlink_shared_ws_url_must_include_host() {
     let toml = replace(
-        &valid_phase1_runtime_toml(),
+        &strip_block(&valid_phase1_runtime_toml(), VALID_BINANCE_SHARED_BLOCK),
         r#"[[reference.venues]]
 name = "BINANCE-BTC"
 type = "binance"

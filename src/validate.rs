@@ -8,6 +8,7 @@ use crate::strategies::{production_strategy_registry, registry::StrategyRegistry
 use chainlink_data_streams_report::feed_id::ID as ChainlinkFeedId;
 use std::collections::{HashMap, hash_map::Entry};
 use toml::Value;
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValidationError {
@@ -257,14 +258,100 @@ fn check_chainlink_ws_origins(errors: &mut Vec<ValidationError>, field: &str, va
     }
 }
 
+fn check_absolute_url_with_schemes(
+    errors: &mut Vec<ValidationError>,
+    field: &str,
+    value: &str,
+    allowed_schemes: &[&str],
+    code: &'static str,
+) {
+    check_non_empty(errors, field, value);
+    if value.trim().is_empty() {
+        return;
+    }
+
+    match Url::parse(value) {
+        Ok(url) => {
+            if !allowed_schemes.contains(&url.scheme()) {
+                push_error(
+                    errors,
+                    field,
+                    code,
+                    format!(
+                        "must use one of [{}], got \"{value}\"",
+                        allowed_schemes.join(", ")
+                    ),
+                );
+            } else if url.host_str().is_none() {
+                push_error(
+                    errors,
+                    field,
+                    code,
+                    format!("must be an absolute URL with a host, got \"{value}\""),
+                );
+            }
+        }
+        Err(error) => push_error(errors, field, code, error.to_string()),
+    }
+}
+
+struct SharedReferenceConfigContract {
+    venue_kind: &'static str,
+    missing_code: &'static str,
+    orphaned_code: &'static str,
+}
+
+fn check_shared_reference_config<T>(
+    errors: &mut Vec<ValidationError>,
+    field_prefix: &str,
+    shared: Option<&T>,
+    has_venues: bool,
+    contract: SharedReferenceConfigContract,
+    validate_fields: impl FnOnce(&mut Vec<ValidationError>, &str, &T),
+) {
+    match (has_venues, shared) {
+        (true, Some(shared)) => {
+            validate_fields(errors, field_prefix, shared);
+        }
+        (true, None) => push_error(
+            errors,
+            field_prefix,
+            contract.missing_code,
+            format!(
+                "{field_prefix} must be configured when any reference venue kind is {}",
+                contract.venue_kind
+            ),
+        ),
+        (false, Some(_)) => push_error(
+            errors,
+            field_prefix,
+            contract.orphaned_code,
+            format!(
+                "{field_prefix} must not be configured unless a {} reference venue is enabled",
+                contract.venue_kind
+            ),
+        ),
+        (false, None) => {}
+    }
+}
+
 fn check_chainlink_shared_config(
     errors: &mut Vec<ValidationError>,
     field_prefix: &str,
     shared: Option<&crate::config::ChainlinkSharedConfig>,
     has_chainlink_venues: bool,
 ) {
-    match (has_chainlink_venues, shared) {
-        (true, Some(shared)) => {
+    check_shared_reference_config(
+        errors,
+        field_prefix,
+        shared,
+        has_chainlink_venues,
+        SharedReferenceConfigContract {
+            venue_kind: "chainlink",
+            missing_code: "missing_chainlink_config",
+            orphaned_code: "orphaned_chainlink_config",
+        },
+        |errors, field_prefix, shared| {
             check_non_empty(errors, &format!("{field_prefix}.region"), &shared.region);
             check_ssm_path(errors, &format!("{field_prefix}.api_key"), &shared.api_key);
             check_ssm_path(
@@ -278,23 +365,67 @@ fn check_chainlink_shared_config(
                 &format!("{field_prefix}.ws_reconnect_alert_threshold"),
                 shared.ws_reconnect_alert_threshold,
             );
-        }
-        (true, None) => push_error(
-            errors,
-            field_prefix,
-            "missing_chainlink_config",
-            format!("{field_prefix} must be configured when any reference venue kind is chainlink"),
-        ),
-        (false, Some(_)) => push_error(
-            errors,
-            field_prefix,
-            "orphaned_chainlink_config",
-            format!(
-                "{field_prefix} must not be configured unless a chainlink reference venue is enabled"
-            ),
-        ),
-        (false, None) => {}
-    }
+        },
+    );
+}
+
+fn check_binance_shared_config(
+    errors: &mut Vec<ValidationError>,
+    field_prefix: &str,
+    shared: Option<&crate::config::BinanceSharedConfig>,
+    has_binance_venues: bool,
+) {
+    check_shared_reference_config(
+        errors,
+        field_prefix,
+        shared,
+        has_binance_venues,
+        SharedReferenceConfigContract {
+            venue_kind: "binance",
+            missing_code: "missing_binance_config",
+            orphaned_code: "orphaned_binance_config",
+        },
+        |errors, field_prefix, shared| {
+            let contract = crate::secrets::binance_secret_config_contract(shared);
+            check_non_empty(errors, &format!("{field_prefix}.region"), contract.region);
+            check_ssm_path(
+                errors,
+                &format!("{field_prefix}.api_key"),
+                contract.api_key_path,
+            );
+            check_ssm_path(
+                errors,
+                &format!("{field_prefix}.api_secret"),
+                contract.api_secret_path,
+            );
+            if shared.product_types.is_empty() {
+                push_error(
+                    errors,
+                    &format!("{field_prefix}.product_types"),
+                    "empty",
+                    format!("{field_prefix}.product_types must not be empty"),
+                );
+            }
+            if let Some(base_url_http) = shared.base_url_http.as_deref() {
+                check_absolute_url_with_schemes(
+                    errors,
+                    &format!("{field_prefix}.base_url_http"),
+                    base_url_http,
+                    &["http", "https"],
+                    "invalid_http_url",
+                );
+            }
+            if let Some(base_url_ws) = shared.base_url_ws.as_deref() {
+                check_absolute_url_with_schemes(
+                    errors,
+                    &format!("{field_prefix}.base_url_ws"),
+                    base_url_ws,
+                    &["ws", "wss"],
+                    "invalid_ws_url",
+                );
+            }
+        },
+    );
 }
 
 fn check_chainlink_reference_config(
@@ -935,6 +1066,7 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         let default_reference = LiveReferenceInput::default();
         if !config.reference.publish_topic.trim().is_empty()
             || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || config.reference.binance.is_some()
             || config.reference.chainlink.is_some()
             || !config.reference.venues.is_empty()
         {
@@ -979,17 +1111,30 @@ pub fn validate_live_local(config: &LiveLocalConfig) -> Vec<ValidationError> {
         );
     }
 
-    let has_chainlink_reference = config
-        .reference
-        .venues
-        .iter()
-        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
-    check_chainlink_shared_config(
-        &mut errors,
-        "reference.chainlink",
-        config.reference.chainlink.as_ref(),
-        has_chainlink_reference,
-    );
+    if !config.rulesets.is_empty() {
+        let has_chainlink_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+        let has_binance_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+        check_binance_shared_config(
+            &mut errors,
+            "reference.binance",
+            config.reference.binance.as_ref(),
+            has_binance_reference,
+        );
+        check_chainlink_shared_config(
+            &mut errors,
+            "reference.chainlink",
+            config.reference.chainlink.as_ref(),
+            has_chainlink_reference,
+        );
+    }
 
     let mut ruleset_id_indices: HashMap<&str, usize> = HashMap::new();
     for (i, ruleset) in config.rulesets.iter().enumerate() {
@@ -1584,6 +1729,7 @@ fn validate_runtime_with_registry(
         let default_reference = ReferenceConfig::default();
         if !config.reference.publish_topic.trim().is_empty()
             || config.reference.min_publish_interval_ms != default_reference.min_publish_interval_ms
+            || config.reference.binance.is_some()
             || config.reference.chainlink.is_some()
             || !config.reference.venues.is_empty()
         {
@@ -1646,17 +1792,30 @@ fn validate_runtime_with_registry(
         );
     }
 
-    let has_chainlink_reference = config
-        .reference
-        .venues
-        .iter()
-        .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
-    check_chainlink_shared_config(
-        &mut errors,
-        "reference.chainlink",
-        config.reference.chainlink.as_ref(),
-        has_chainlink_reference,
-    );
+    if !config.rulesets.is_empty() {
+        let has_chainlink_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Chainlink);
+        let has_binance_reference = config
+            .reference
+            .venues
+            .iter()
+            .any(|venue| venue.kind == ReferenceVenueKind::Binance);
+        check_binance_shared_config(
+            &mut errors,
+            "reference.binance",
+            config.reference.binance.as_ref(),
+            has_binance_reference,
+        );
+        check_chainlink_shared_config(
+            &mut errors,
+            "reference.chainlink",
+            config.reference.chainlink.as_ref(),
+            has_chainlink_reference,
+        );
+    }
 
     let mut reference_name_indices: HashMap<&str, usize> = HashMap::new();
     let mut chainlink_feed_id_indices: HashMap<&str, usize> = HashMap::new();

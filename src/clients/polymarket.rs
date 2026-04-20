@@ -834,8 +834,6 @@ pub(crate) fn resolve_event_slugs_for_prefix_discoveries(
 
 struct CanonicalQueryGroup {
     canonical_params: GetGammaEventsParams,
-    canonical_min_secs: u64,
-    canonical_max_secs: u64,
     member_discoveries: Vec<PolymarketPrefixDiscovery>,
 }
 
@@ -886,8 +884,6 @@ fn group_discoveries_by_canonical_query(
                         &canonical_discovery,
                         now,
                     )?,
-                    canonical_min_secs: current_min,
-                    canonical_max_secs: current_max,
                     member_discoveries: std::mem::take(&mut current_members),
                 });
 
@@ -907,8 +903,6 @@ fn group_discoveries_by_canonical_query(
         };
         groups.push(CanonicalQueryGroup {
             canonical_params: gamma_event_params_for_prefix_discovery(&canonical_discovery, now)?,
-            canonical_min_secs: current_min,
-            canonical_max_secs: current_max,
             member_discoveries: current_members,
         });
     }
@@ -953,7 +947,6 @@ fn matches_time_bounds(
 fn discovery_matches_event(
     event: &GammaEvent,
     discovery: &PolymarketPrefixDiscovery,
-    canonical_bounds: (u64, u64),
     now: DateTime<Utc>,
 ) -> bool {
     let Some(event_slug) = event.slug.as_deref() else {
@@ -967,21 +960,18 @@ fn discovery_matches_event(
     if !prefix_match {
         return false;
     }
-    let discovery_matches_canonical = discovery.min_time_to_expiry_secs == canonical_bounds.0
-        && discovery.max_time_to_expiry_secs == canonical_bounds.1;
-    discovery_matches_canonical || matches_time_bounds(event, discovery, now)
+    matches_time_bounds(event, discovery, now)
 }
 
 fn partition_events_by_discovery(
     out: &mut BTreeMap<PolymarketPrefixDiscovery, Vec<GammaEvent>>,
-    canonical_bounds: (u64, u64),
     discoveries: &[PolymarketPrefixDiscovery],
     events: Vec<GammaEvent>,
     now: DateTime<Utc>,
 ) {
     for event in events {
         for discovery in discoveries {
-            if !discovery_matches_event(&event, discovery, canonical_bounds, now) {
+            if !discovery_matches_event(&event, discovery, now) {
                 continue;
             }
             out.get_mut(discovery)
@@ -1013,18 +1003,11 @@ async fn resolve_matching_events_by_discovery_with_gamma_client(
     for group in groups {
         let CanonicalQueryGroup {
             canonical_params,
-            canonical_min_secs,
-            canonical_max_secs,
             member_discoveries,
+            ..
         } = group;
         let events = fetch_gamma_events_paginated(client, canonical_params).await?;
-        partition_events_by_discovery(
-            &mut out,
-            (canonical_min_secs, canonical_max_secs),
-            &member_discoveries,
-            events,
-            now,
-        );
+        partition_events_by_discovery(&mut out, &member_discoveries, events, now);
     }
 
     Ok(out)
@@ -1066,9 +1049,8 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
     for group in groups {
         let CanonicalQueryGroup {
             canonical_params,
-            canonical_min_secs,
-            canonical_max_secs,
             member_discoveries,
+            ..
         } = group;
         let tag_slug = canonical_params.tag_slug.clone().unwrap_or_default();
         match fetch_gamma_events_paginated(client, canonical_params).await {
@@ -1080,7 +1062,6 @@ async fn resolve_matching_events_by_discovery_with_gamma_client_best_effort(
                 }
                 partition_events_by_discovery(
                     &mut matched_events_by_discovery,
-                    (canonical_min_secs, canonical_max_secs),
                     &member_discoveries,
                     events,
                     now,
@@ -1441,6 +1422,45 @@ mod tests {
         (addr, requests)
     }
 
+    async fn spawn_out_of_window_test_server() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+
+                    let body = if path == "/events"
+                        && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
+                    {
+                        json!([
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-stale",
+                                "endDate":"2025-12-20T01:35:00Z",
+                                "markets":[]
+                            }
+                        ])
+                        .to_string()
+                    } else {
+                        "[]".to_string()
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        addr
+    }
+
     async fn spawn_missing_end_date_test_server() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1457,7 +1477,11 @@ mod tests {
                         && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
                     {
                         json!([
-                            {"id":"1","slug":"bitcoin-5m-alpha","markets":[]}
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-no-end-date",
+                                "markets":[]
+                            }
                         ])
                         .to_string()
                     } else {
@@ -1554,6 +1578,36 @@ mod tests {
         panic!(
             "expected at least {expected} requests, observed {}",
             request_count.load(Ordering::Relaxed)
+        );
+    }
+
+    async fn wait_for_selector_discovery_read(
+        selector_state: &PolymarketSelectorState,
+        discovery: &PolymarketPrefixDiscovery,
+        expected: SelectorDiscoveryRead,
+    ) {
+        const SELECTOR_STATE_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+        const SELECTOR_STATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+        let wait_result = tokio::time::timeout(SELECTOR_STATE_WAIT_TIMEOUT, async {
+            loop {
+                let current = selector_state.event_slugs_read_for_discovery(discovery);
+                if current == expected {
+                    return;
+                }
+                tokio::time::sleep(SELECTOR_STATE_POLL_INTERVAL).await;
+            }
+        })
+        .await;
+
+        if wait_result.is_ok() {
+            return;
+        }
+
+        panic!(
+            "expected discovery read {:?}, observed {:?}",
+            expected,
+            selector_state.event_slugs_read_for_discovery(discovery)
         );
     }
 
@@ -1731,7 +1785,7 @@ mod tests {
     async fn refresh_task_end_to_end_preserves_then_ages_out_then_recovers() {
         use std::sync::atomic::Ordering;
 
-        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 1, 1);
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 0, 1);
         let selector_state = PolymarketSelectorState::new(vec![(
             discovery.clone(),
             vec!["bitcoin-5m-startup".to_string()],
@@ -1768,6 +1822,12 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(2100)).await;
         wait_for_request_count(&request_count, 3).await;
+        wait_for_selector_discovery_read(
+            &selector_state,
+            &discovery,
+            SelectorDiscoveryRead::Live(vec!["bitcoin-5m-recovered".to_string()]),
+        )
+        .await;
         assert_eq!(
             selector_state.current_event_slugs(),
             vec!["bitcoin-5m-recovered".to_string()]
@@ -1782,7 +1842,26 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn canonical_window_members_accept_missing_end_date_on_prefix_match() {
+    async fn canonical_window_members_reject_out_of_window_prefix_matches() {
+        let addr = spawn_out_of_window_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            std::slice::from_ref(&discovery),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([(discovery.clone(), Vec::new())])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canonical_window_members_reject_missing_end_date_prefix_matches() {
         let addr = spawn_missing_end_date_test_server().await;
         let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
         let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
@@ -1796,8 +1875,7 @@ mod tests {
 
         assert_eq!(
             event_slugs,
-            BTreeMap::from([(discovery.clone(), vec!["bitcoin-5m-alpha".to_string()])]),
-            "canonical-window members should keep the pre-existing prefix-match behavior when Gamma omits endDate"
+            BTreeMap::from([(discovery.clone(), Vec::new())])
         );
     }
 

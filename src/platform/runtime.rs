@@ -28,7 +28,7 @@ use toml::Value;
 
 use crate::{
     clients::{self, ReferenceDataClientParts, polymarket::PolymarketSelectorState},
-    config::{Config, ReferenceVenueEntry, ReferenceVenueKind, RulesetConfig},
+    config::{Config, ReferenceConfig, ReferenceVenueEntry, ReferenceVenueKind, RulesetConfig},
     platform::{
         audit::{
             AuditReceiver, AuditRecord, AuditSender, AuditSpoolConfig, AwsCliUploader,
@@ -361,18 +361,67 @@ impl PlatformRuntimeGuards {
     }
 }
 
-pub fn build_reference_data_client(
+fn build_reference_data_client_with_builders<BinanceBuilder, ChainlinkBuilder>(
+    reference: &ReferenceConfig,
     venue: &ReferenceVenueEntry,
-) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
+    build_binance: BinanceBuilder,
+    build_chainlink: ChainlinkBuilder,
+) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>>
+where
+    BinanceBuilder:
+        FnOnce(&ReferenceConfig) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>>,
+    ChainlinkBuilder:
+        FnOnce(&ReferenceConfig) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>>,
+{
     match &venue.kind {
-        ReferenceVenueKind::Binance => Ok(clients::binance::build_reference_data_client()),
+        ReferenceVenueKind::Binance => build_binance(reference),
         ReferenceVenueKind::Bybit => Ok(clients::bybit::build_reference_data_client()),
+        ReferenceVenueKind::Chainlink => build_chainlink(reference),
         ReferenceVenueKind::Deribit => Ok(clients::deribit::build_reference_data_client()),
         ReferenceVenueKind::Hyperliquid => Ok(clients::hyperliquid::build_reference_data_client()),
         ReferenceVenueKind::Kraken => Ok(clients::kraken::build_reference_data_client()),
         ReferenceVenueKind::Okx => Ok(clients::okx::build_reference_data_client()),
         other => Err(format!("unsupported reference venue kind: {other:?}").into()),
     }
+}
+
+pub fn build_reference_data_client(
+    reference: &ReferenceConfig,
+    venue: &ReferenceVenueEntry,
+) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
+    build_reference_data_client_with_resolver(reference, venue, &|shared| {
+        crate::secrets::resolve_binance(&shared.region, &shared.api_key, &shared.api_secret)
+            .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
+    })
+}
+
+fn build_reference_data_client_with_resolver<BinanceResolver>(
+    reference: &ReferenceConfig,
+    venue: &ReferenceVenueEntry,
+    resolve_binance: &BinanceResolver,
+) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>>
+where
+    BinanceResolver:
+        Fn(
+            &crate::config::BinanceSharedConfig,
+        ) -> Result<crate::secrets::ResolvedBinanceSecrets, Box<dyn std::error::Error>>,
+{
+    build_reference_data_client_with_builders(
+        reference,
+        venue,
+        |reference| {
+            let shared = reference.binance.as_ref().ok_or_else(|| {
+                std::io::Error::other(
+                    "missing shared binance config for configured binance reference venues",
+                )
+            })?;
+            let secrets = resolve_binance(shared)?;
+            Ok(clients::binance::build_reference_data_client_with_secrets(
+                shared, secrets,
+            ))
+        },
+        clients::chainlink::build_chainlink_reference_data_client,
+    )
 }
 
 pub fn wire_platform_runtime(
@@ -1071,14 +1120,24 @@ impl PlatformAuditTaskFactory for ProductionAuditTaskFactory {
 mod tests {
     use super::*;
     use crate::config::{
-        AuditConfig, Config, ExecClientEntry, ExecClientSecrets, LoggingConfig, NodeConfig,
-        RawCaptureConfig, ReferenceConfig, RulesetConfig, RulesetVenueKind, StrategyEntry,
-        StreamingCaptureConfig,
+        AuditConfig, BinanceSharedConfig, Config, ExecClientEntry, ExecClientSecrets,
+        LoggingConfig, NodeConfig, RawCaptureConfig, ReferenceConfig, ReferenceVenueEntry,
+        ReferenceVenueKind, RulesetConfig, RulesetVenueKind, StrategyEntry, StreamingCaptureConfig,
     };
-    use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+    use crate::secrets::ResolvedBinanceSecrets;
+    use nautilus_binance::common::enums::{BinanceEnvironment, BinanceProductType};
+    use nautilus_binance::config::BinanceDataClientConfig;
+    use nautilus_common::{
+        cache::Cache, clients::DataClient, clock::Clock, enums::Environment,
+        logging::logger::LoggerConfig,
+    };
     use nautilus_live::node::LiveNode;
-    use nautilus_model::identifiers::TraderId;
-    use std::sync::Arc;
+    use nautilus_model::identifiers::{ClientId, TraderId};
+    use nautilus_system::factories::DataClientFactory;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use tokio_util::sync::CancellationToken;
 
     fn config_with_runtime_strategy(kind: &str) -> Config {
@@ -1144,6 +1203,250 @@ mod tests {
 
         assert_eq!(template.kind, "stub_runtime_strategy");
         assert_eq!(template.strategy_id, StrategyId::from("STUB-RUNTIME-001"));
+    }
+
+    #[derive(Debug)]
+    struct CapturingDataClientFactory {
+        inner: Box<dyn DataClientFactory>,
+        captured: Arc<Mutex<Option<BinanceDataClientConfig>>>,
+    }
+
+    impl DataClientFactory for CapturingDataClientFactory {
+        fn create(
+            &self,
+            name: &str,
+            config: &dyn nautilus_system::factories::ClientConfig,
+            cache: Rc<RefCell<Cache>>,
+            clock: Rc<RefCell<dyn Clock>>,
+        ) -> anyhow::Result<Box<dyn DataClient>> {
+            let captured_config = config
+                .as_any()
+                .downcast_ref::<BinanceDataClientConfig>()
+                .expect("capturing factory should receive BinanceDataClientConfig")
+                .clone();
+            *self
+                .captured
+                .lock()
+                .expect("capture lock should not be poisoned") = Some(captured_config);
+            self.inner.create(name, config, cache, clock)
+        }
+
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+
+        fn config_type(&self) -> &str {
+            self.inner.config_type()
+        }
+    }
+
+    fn synthetic_ed25519_seed_base64() -> String {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+
+        BASE64_STANDARD.encode((0_u8..32).collect::<Vec<_>>())
+    }
+
+    fn binance_reference_config(
+        base_url_http: Option<&str>,
+        base_url_ws: Option<&str>,
+    ) -> ReferenceConfig {
+        ReferenceConfig {
+            publish_topic: "platform.reference.test".to_string(),
+            min_publish_interval_ms: 100,
+            binance: Some(BinanceSharedConfig {
+                region: "eu-west-1".to_string(),
+                api_key: "/bolt/binance/api-key".to_string(),
+                api_secret: "/bolt/binance/api-secret".to_string(),
+                environment: BinanceEnvironment::Mainnet,
+                product_types: vec![BinanceProductType::Spot],
+                instrument_status_poll_secs: 0,
+                base_url_http: base_url_http.map(ToString::to_string),
+                base_url_ws: base_url_ws.map(ToString::to_string),
+            }),
+            chainlink: None,
+            venues: vec![ReferenceVenueEntry {
+                name: "BINANCE-BTC".to_string(),
+                kind: ReferenceVenueKind::Binance,
+                instrument_id: "BTCUSDT.BINANCE".to_string(),
+                base_weight: 1.0,
+                stale_after_ms: 1_500,
+                disable_after_ms: 5_000,
+                chainlink: None,
+            }],
+        }
+    }
+
+    fn resolved_binance_secrets(api_secret: &str) -> ResolvedBinanceSecrets {
+        ResolvedBinanceSecrets {
+            api_key: "binance-api-key".to_string(),
+            api_secret: api_secret.to_string(),
+        }
+    }
+
+    #[test]
+    fn build_reference_data_client_routes_binance_through_shared_reference_builder() {
+        let reference = ReferenceConfig {
+            publish_topic: "platform.reference.test".to_string(),
+            min_publish_interval_ms: 100,
+            binance: Some(BinanceSharedConfig {
+                region: "eu-west-1".to_string(),
+                api_key: "/bolt/binance/api-key".to_string(),
+                api_secret: "/bolt/binance/api-secret".to_string(),
+                environment: BinanceEnvironment::Mainnet,
+                product_types: vec![BinanceProductType::Spot],
+                instrument_status_poll_secs: 0,
+                base_url_http: Some("https://api.binance.com".to_string()),
+                base_url_ws: Some("wss://stream.binance.com/ws".to_string()),
+            }),
+            chainlink: None,
+            venues: Vec::new(),
+        };
+        let venue = ReferenceVenueEntry {
+            name: "BINANCE-BTC".to_string(),
+            kind: ReferenceVenueKind::Binance,
+            instrument_id: "BTCUSDT.BINANCE".to_string(),
+            base_weight: 1.0,
+            stale_after_ms: 1_500,
+            disable_after_ms: 5_000,
+            chainlink: None,
+        };
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = Arc::clone(&called);
+
+        let (factory, config) = build_reference_data_client_with_builders(
+            &reference,
+            &venue,
+            move |reference| {
+                called_clone.store(true, Ordering::Relaxed);
+                let shared = reference
+                    .binance
+                    .as_ref()
+                    .expect("binance shared config should be present");
+                assert_eq!(shared.region, "eu-west-1");
+                assert_eq!(shared.instrument_status_poll_secs, 0);
+                assert_eq!(
+                    shared.base_url_http.as_deref(),
+                    Some("https://api.binance.com")
+                );
+                assert_eq!(
+                    shared.base_url_ws.as_deref(),
+                    Some("wss://stream.binance.com/ws")
+                );
+                Ok(crate::clients::bybit::build_reference_data_client())
+            },
+            |_| unreachable!("chainlink builder should not be used for binance"),
+        )
+        .expect("binance runtime builder should route through the shared reference builder");
+
+        assert!(called.load(Ordering::Relaxed));
+        assert_eq!(factory.name(), "BYBIT");
+        assert_eq!(factory.config_type(), "BybitDataClientConfig");
+        assert!(
+            config
+                .as_any()
+                .is::<nautilus_bybit::config::BybitDataClientConfig>()
+        );
+    }
+
+    #[test]
+    fn binance_reference_builder_uses_shared_auth_config_from_reference() {
+        let reference = binance_reference_config(
+            Some("http://127.0.0.1:19999"),
+            Some("wss://stream.binance.com/ws"),
+        );
+        let secret = synthetic_ed25519_seed_base64();
+        let (factory, config) = build_reference_data_client_with_resolver(
+            &reference,
+            reference
+                .venues
+                .first()
+                .expect("binance venue should exist"),
+            &|_shared| {
+                Ok::<ResolvedBinanceSecrets, Box<dyn std::error::Error>>(resolved_binance_secrets(
+                    &secret,
+                ))
+            },
+        )
+        .expect("shared binance wrapper should build successfully");
+
+        assert_eq!(factory.name(), "BINANCE");
+        assert_eq!(factory.config_type(), "BinanceDataClientConfig");
+        let cfg = config
+            .as_any()
+            .downcast_ref::<BinanceDataClientConfig>()
+            .expect("config should downcast to BinanceDataClientConfig");
+        assert_eq!(cfg.api_key.as_deref(), Some("binance-api-key"));
+        assert_eq!(cfg.api_secret.as_deref(), Some(secret.as_str()));
+        assert_eq!(cfg.environment, BinanceEnvironment::Mainnet);
+        assert_eq!(cfg.product_types, vec![BinanceProductType::Spot]);
+        assert_eq!(cfg.base_url_http.as_deref(), Some("http://127.0.0.1:19999"));
+        assert_eq!(
+            cfg.base_url_ws.as_deref(),
+            Some("wss://stream.binance.com/ws")
+        );
+        assert_eq!(cfg.instrument_status_poll_secs, 0);
+    }
+
+    #[test]
+    fn binance_reference_registration_preserves_auth_fields_and_runtime_knobs() {
+        let reference = binance_reference_config(
+            Some("https://api.binance.com"),
+            Some("wss://stream.binance.com/ws"),
+        );
+        let secret = synthetic_ed25519_seed_base64();
+        let (factory, config) = build_reference_data_client_with_resolver(
+            &reference,
+            reference
+                .venues
+                .first()
+                .expect("binance venue should exist"),
+            &|_shared| {
+                Ok::<ResolvedBinanceSecrets, Box<dyn std::error::Error>>(resolved_binance_secrets(
+                    &secret,
+                ))
+            },
+        )
+        .expect("shared binance wrapper should build successfully");
+        let captured = Arc::new(Mutex::new(None));
+        let factory = CapturingDataClientFactory {
+            inner: factory,
+            captured: Arc::clone(&captured),
+        };
+
+        let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+            .expect("builder should construct")
+            .with_name("TEST-NODE")
+            .with_logging(LoggerConfig::default())
+            .with_timeout_connection(1)
+            .with_timeout_disconnection_secs(1)
+            .with_delay_post_stop_secs(0)
+            .with_delay_shutdown_secs(0)
+            .add_data_client(Some("BINANCE".to_string()), Box::new(factory), config)
+            .expect("data client should register with builder")
+            .build()
+            .expect("node should build");
+
+        assert_eq!(
+            node.kernel().data_engine().registered_clients(),
+            vec![ClientId::from("BINANCE")]
+        );
+
+        let captured = captured
+            .lock()
+            .expect("capture lock should not be poisoned")
+            .clone()
+            .expect("registration should capture BinanceDataClientConfig");
+        assert_eq!(captured.api_key.as_deref(), Some("binance-api-key"));
+        assert_eq!(captured.api_secret.as_deref(), Some(secret.as_str()));
+        assert_eq!(
+            captured.base_url_http.as_deref(),
+            Some("https://api.binance.com")
+        );
+        assert_eq!(
+            captured.base_url_ws.as_deref(),
+            Some("wss://stream.binance.com/ws")
+        );
+        assert_eq!(captured.instrument_status_poll_secs, 0);
     }
 
     struct NoopAuditTaskFactory;

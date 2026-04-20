@@ -1679,31 +1679,16 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     }
 
     if !report.has_block() {
-        if proof_plan.is_some() {
-            report.push(
-                Status::Pass,
-                "proof",
-                "proof_plan.toml",
-                "schema-boundary, legacy-compatibility, fail-closed legacy behavior, and bounded slug-fetch behavior are all represented as explicit claims with falsifiers",
-                "none",
-            );
-        } else if finding_ledger.is_some() {
-            report.push(
-                Status::Pass,
-                "finding",
-                "finding_ledger.toml",
-                "repeated wording collapsed into canonical findings and remaining states are structurally consistent",
-                "none",
-            );
-        } else {
-            report.push(
-                Status::Pass,
-                "schema",
-                "artifact package",
-                "artifact package is structurally valid for the selected stage",
-                "none",
-            );
-        }
+        report.push(
+            Status::Pass,
+            "schema",
+            "artifact package",
+            format!(
+                "artifact package is structurally valid for selected stage `{}`",
+                stage_key(stage)
+            ),
+            "none",
+        );
     }
 
     Ok(report)

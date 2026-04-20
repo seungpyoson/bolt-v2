@@ -1,0 +1,58 @@
+version = "v1"
+validated_at = "2026-04-20"
+branch = "issue-208-process-validator"
+
+[gate_family]
+status = "closed"
+supported_comparators = [
+  "string_eq",
+  "scalar_eq",
+  "nonempty",
+  "all_of",
+]
+unsupported_comparators_fail_closed = true
+
+[scalar_summary_family]
+status = "closed"
+required_fields = [
+  "status",
+  "summary_kind",
+  "summary_verdict",
+  "rule_version",
+  "source_refs",
+]
+generic_validation = true
+
+[replayed_summaries]
+status = "partial"
+replayed = [
+  "claim_enforcement_coverage.toml",
+  "orchestration_reachability_summary.toml",
+]
+
+[producer_contract_family]
+status = "partial"
+required_fields = [
+  "artifact_kind",
+  "contract_kind",
+  "subject",
+  "contract_version",
+  "status",
+  "source_artifacts",
+]
+standardized = [
+  "workflow_reachability_contract.toml",
+]
+
+[evidence]
+delivery_validator_cli_tests = 53
+summary_replay_unit_tests = 4
+hypothesis_ledger = "2026-04-20-hypothesis-ledger-v1.toml"
+
+[open_boundary]
+status = "explicit"
+statement = "New producer kinds must either fit the standardized producer-contract wrapper plus replay module pattern, or be rejected as a new uncontrolled family."
+
+[stop_rule]
+status = "active"
+statement = "Stop if a new guarantee requires either an unsupported comparator kind, an unvalidated scalar summary shape, or producer semantics that cannot be frozen upstream in one explicit contract artifact."

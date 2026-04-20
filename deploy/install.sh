@@ -53,6 +53,8 @@ if ! mountpoint -q "${BOLT_HOME}"; then
     mount "${BOLT_HOME}"
 fi
 
+chown "${BOLT_USER}:${BOLT_GROUP}" "${BOLT_HOME}"
+
 install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
     "${BOLT_HOME}/var" \
     "${BOLT_HOME}/var/audit" \

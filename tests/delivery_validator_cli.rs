@@ -179,6 +179,8 @@ summary_verdict = "pass"
 subject = "true_merge_claims_have_bound_enforcement_rows"
 source_refs = ["merge_claims.toml", "claim_enforcement.toml"]
 rule_version = "v1"
+covered_true_claim_count = 0
+uncovered_true_claim_count = 0
 "#,
     );
     write_file(
@@ -890,6 +892,8 @@ summary_verdict = "pass"
 subject = "true_merge_claims_have_bound_enforcement_rows"
 source_refs = ["merge_claims.toml", "claim_enforcement.toml"]
 rule_version = "v1"
+covered_true_claim_count = 0
+uncovered_true_claim_count = 0
 "#,
             );
             write_file(
@@ -955,6 +959,8 @@ summary_verdict = "pass"
 subject = "true_merge_claims_have_bound_enforcement_rows"
 source_refs = ["merge_claims.toml", "claim_enforcement.toml"]
 rule_version = "v1"
+covered_true_claim_count = 0
+uncovered_true_claim_count = 0
 "#,
             );
             write_file(
@@ -2008,6 +2014,42 @@ fn synthetic_review_package_blocks_when_claim_enforcement_summary_kind_is_empty(
 }
 
 #[test]
+fn synthetic_review_package_blocks_when_claim_enforcement_coverage_counts_drift() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let coverage = dst.join("claim_enforcement_coverage.toml");
+    let original = fs::read_to_string(&coverage).expect("claim_enforcement_coverage should read");
+    fs::write(
+        &coverage,
+        original.replace(
+            "covered_true_claim_count = 0\nuncovered_true_claim_count = 0",
+            "covered_true_claim_count = 0\nuncovered_true_claim_count = 1",
+        ),
+    )
+    .expect("mutated claim_enforcement_coverage should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when claim_enforcement_coverage counts drift from recomputed output; output:\n{text}"
+    );
+    assert!(
+        text.contains("does not match recomputed producer output"),
+        "{text}"
+    );
+}
+
+#[test]
 fn synthetic_review_package_blocks_when_reachability_summary_is_missing() {
     let temp = tempdir().expect("tempdir should create");
     let dst = temp.path().join("synthetic-review-package");
@@ -2162,6 +2204,40 @@ fn synthetic_merge_candidate_blocks_when_claim_enforcement_coverage_verdict_is_b
         "merge_candidate must fail closed when claim_enforcement_coverage verdict is block through the gate; output:\n{text}"
     );
     assert!(text.contains("clause"), "{text}");
+}
+
+#[test]
+fn synthetic_merge_candidate_blocks_when_claim_enforcement_coverage_verdict_drifts_from_recomputed_output()
+ {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-merge-candidate");
+    write_minimal_stage_package(&dst, "merge_candidate");
+    let coverage = dst.join("claim_enforcement_coverage.toml");
+    let original = fs::read_to_string(&coverage).expect("claim_enforcement_coverage should read");
+    fs::write(
+        &coverage,
+        original.replace("summary_verdict = \"pass\"", "summary_verdict = \"block\""),
+    )
+    .expect("mutated claim_enforcement_coverage should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("merge_candidate")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "merge_candidate must fail closed when claim_enforcement_coverage verdict drifts from recomputed output; output:\n{text}"
+    );
+    assert!(
+        text.contains("does not match recomputed producer output"),
+        "{text}"
+    );
 }
 
 #[test]

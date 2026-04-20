@@ -7,3 +7,5 @@ source_refs = [
   "claim_enforcement.toml",
 ]
 rule_version = "v1"
+covered_true_claim_count = 8
+uncovered_true_claim_count = 0

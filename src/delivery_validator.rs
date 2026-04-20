@@ -253,6 +253,18 @@ struct ClaimEnforcementRow {
     status: String,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct ClaimEnforcementCoverageSummary {
+    status: String,
+    summary_kind: String,
+    summary_verdict: String,
+    subject: String,
+    source_refs: Vec<String>,
+    rule_version: String,
+    covered_true_claim_count: i64,
+    uncovered_true_claim_count: i64,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct AssumptionRegister {
     #[serde(default)]
@@ -488,6 +500,56 @@ fn validate_scalar_summary_artifact(
             "scalar summary artifact must declare nonempty `source_refs`",
             "bind the scalar summary artifact to at least one source artifact ref",
         ),
+    }
+}
+
+fn compute_claim_enforcement_coverage_summary(
+    merge: &MergeClaims,
+    enforcement: &ClaimEnforcement,
+) -> ClaimEnforcementCoverageSummary {
+    let rows_by_claim: BTreeMap<&str, &ClaimEnforcementRow> = enforcement
+        .rows
+        .iter()
+        .filter(|row| !row.claim_id.is_empty())
+        .map(|row| (row.claim_id.as_str(), row))
+        .collect();
+
+    let mut covered_true_claim_count = 0_i64;
+    let mut uncovered_true_claim_count = 0_i64;
+    for claim in &merge.claims {
+        if !claim.value {
+            continue;
+        }
+        match rows_by_claim.get(claim.claim_id.as_str()) {
+            Some(row)
+                if !row.enforcement_kind.is_empty()
+                    && !row.enforced_at.is_empty()
+                    && !row.status.is_empty() =>
+            {
+                covered_true_claim_count += 1;
+            }
+            _ => uncovered_true_claim_count += 1,
+        }
+    }
+
+    let summary_verdict = if uncovered_true_claim_count == 0 {
+        "pass"
+    } else {
+        "block"
+    };
+
+    ClaimEnforcementCoverageSummary {
+        status: "frozen".to_string(),
+        summary_kind: "claim_enforcement_coverage".to_string(),
+        summary_verdict: summary_verdict.to_string(),
+        subject: "true_merge_claims_have_bound_enforcement_rows".to_string(),
+        source_refs: vec![
+            "merge_claims.toml".to_string(),
+            "claim_enforcement.toml".to_string(),
+        ],
+        rule_version: "v1".to_string(),
+        covered_true_claim_count,
+        uncovered_true_claim_count,
     }
 }
 
@@ -975,6 +1037,8 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     let finding_ledger = load_optional::<FindingLedger>(dir, "finding_ledger.toml")?;
     let evidence_bundle = load_optional::<EvidenceBundle>(dir, "evidence_bundle.toml")?;
     let merge_claims = load_optional::<MergeClaims>(dir, "merge_claims.toml")?;
+    let claim_enforcement_coverage =
+        load_optional::<ClaimEnforcementCoverageSummary>(dir, "claim_enforcement_coverage.toml")?;
     let review_target = load_optional::<ReviewTarget>(dir, "review_target.toml")?;
     let execution_target = load_optional::<ExecutionTarget>(dir, "execution_target.toml")?;
     let ci_surface = load_optional::<CiSurface>(dir, "ci_surface.toml")?;
@@ -1330,6 +1394,23 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                     },
                 );
             }
+        }
+    }
+
+    if let (Some(merge), Some(enforcement), Some(summary)) = (
+        &merge_claims,
+        &claim_enforcement,
+        &claim_enforcement_coverage,
+    ) {
+        let recomputed = compute_claim_enforcement_coverage_summary(merge, enforcement);
+        if *summary != recomputed {
+            report.push(
+                Status::Block,
+                "evidence",
+                "claim_enforcement_coverage.toml",
+                "claim_enforcement coverage summary does not match recomputed producer output",
+                "recompute claim_enforcement_coverage.toml from merge_claims.toml and claim_enforcement.toml",
+            );
         }
     }
 

@@ -1,69 +1,53 @@
-# Issue 221: Replacement-Host Parity Gate
+# Issue 221: Current Launch Decision
 
 ## 1. Current answer
 
-**Not approved: a rebuilt host is not yet approved as a production-equivalent replacement environment.**
+**Not repairable for trusted launch: the current host should not be repaired in place and trusted again for launch.**
 
-## 2. Parity rule
+## 2. Evidence
 
-Rebuild/cutover approval must preserve the full production lane first, end to end: AWS/network
-identity, host/OS behavior, binary/runtime behavior, config/secrets/startup behavior, actual
-trading behavior, and operator/rollback behavior. Only explicitly approved deltas may differ.
-Anything omitted is a regression until proven otherwise.
+- The original production host hit real root-volume exhaustion (`ENOSPC`) and the forensic clone was
+  captured at `100%` used.
+- The incident was not confined to one surface: the forensic clone showed large root-side write
+  growth across `/var/logs`, `/var/log`, and `/var/lib/amazon/ssm`, not just one misconfigured
+  directory.
+- The forensic record includes host-damage indicators, not just full disk:
+  truncated journal and at least one root-level path returning `Structure needs cleaning`.
+- The current live host is still a bad control-plane citizen: `aws ssm send-command` on
+  `i-08dee6aefe9a5b02c` still fails immediately with `ResponseCode=1` and empty stdout/stderr,
+  even though the instance reports `PingStatus=Online`.
+- `#222` proved the old host baseline was root-only, lacked `WorkingDirectory`, lacked a dedicated
+  service user, and carried root-owned runtime/config paths. That is the opposite of a clean,
+  trusted baseline for in-place repair.
+- `#223` proved what operators must be able to observe for approval; the current host does not meet
+  that bar because a core remote-control surface is still broken.
+- `#224` proved the merged `#215` host/storage/service baseline can be reproduced cleanly on a fresh
+  EC2 instance, which removes the main reason to prefer risky in-place surgery on a known-damaged
+  box.
+- `#224` also proved the remaining blocker is now a concrete runtime-startup issue (`#225`), not a
+  need to salvage the damaged host.
 
-## 3. What has already been proven
+## 3. Exact repair path if repairable
 
-- `#215` is merged, so the root-volume remediation baseline is defined in `main`: dedicated data
-  volume layout, `WorkingDirectory=/srv/bolt-v2`, `User=bolt`, absolute runtime write paths, and
-  capped journald.
-- `#222` captured the current production/forensic host baseline that matters for parity review:
-  AWS identity, EIP/network boundary, root-only pre-remediation mount layout, systemd/journald
-  state, package/sysctl/limits/timer context, deployed artifact identity, and the rendered live
-  lane config recovered from the forensic clone.
-- `#223` defined the minimum operator-visible monitoring contract required for approval: control
-  plane, storage/mount health, service/restart state, config/secret resolution, reference health,
-  selector health, reconnect-storm visibility, strategy readiness, and audit backlog health.
-- `#224` proved that the merged `#215` host/storage/service baseline can be provisioned on a fresh
-  EC2 instance with the same AMI / instance family / subnet / AZ / SG / IAM profile boundary.
-- `#224` also proved that a non-EIP candidate run is insufficient for trading parity: the host can
-  be provisioned cleanly without yet proving operation from the real production network identity.
-- `#224` further proved that the first fresh candidate still failed actual runtime startup: Binance
-  did not connect, the trader did not start, and the host was therefore not approved.
+- None. I do **not** have an evidence-backed in-place repair path that would make the current host
+  trustworthy again for launch.
 
-## 4. Remaining blockers
+## 4. Exact stop condition if not repairable
 
-- `#225`: the current Binance startup path still blocks trader startup on the candidate run
-  (`HTTP 400 Bad Request` / `Invalid X-MBX-APIKEY header` on the SBE endpoint).
-- The candidate run in `#224` did not validate from the full real production network identity
-  boundary, including the whitelisted EIP/source-IP path that counterparties actually see.
-- Because of those two points, full trading parity is still unproven: feed connectivity,
-  reference health, trader start, strategy readiness, counterparty acceptance, and latency-sensitive
-  behavior from the real production boundary are not yet established.
+- Stop in-place repair immediately because the host has already crossed the trust boundary from
+  “misconfigured” into “operationally damaged”:
+  root-volume exhaustion, journal truncation, filesystem-cleanliness concerns, and a still-broken
+  `RunShellScript` control path.
+- Do not treat “instance is still running” or “SSM PingStatus is Online” as evidence of trust.
+- Do not launch from this host unless someone explicitly accepts that they are launching from a box
+  whose remote-control path is still broken after a filesystem-damage incident.
 
-## 5. Next actions
+## 5. What should happen next
 
-1. Resolve `#225` so the Binance startup path succeeds under the real production credential and
-   network-identity boundary.
-2. Re-run the candidate-host exercise from the full production boundary, including the production
-   EIP / source-IP path and every behavior tied to that network identity.
-3. Re-verify the entire lane on that candidate in one pass: AWS/network identity, host/OS state,
-   binary/runtime identity, config/secret resolution, startup validation, selector/reference
-   behavior, actual trader start, strategy readiness, operator visibility, and rollback viability.
-4. Update `#221` with the exact result of that rerun and make the rebuild/cutover decision here,
-   not in side branches.
-
-## 6. Approval criteria
-
-Rebuild/cutover is approved only when all of the following are true:
-
-- The candidate host preserves the real production AWS/network identity boundary, including the EIP
-  / source-IP behavior and any counterparty allowlist effects that depend on it.
-- The candidate host preserves the required host/OS/system behavior from the production lane, or
-  every delta is explicit, justified, and accepted.
-- The candidate host runs the intended artifact and runtime shape from `main`, with the intended
-  rendered config and successful SSM-based secret resolution.
-- Startup completes from the real production boundary with healthy feed connectivity, healthy
-  reference behavior, healthy selector behavior, trader start, and strategy readiness.
-- Operators can observe healthy vs unhealthy state and perform rollback without silent failures.
-- No remaining blocker in this approval path, including `#225`, still prevents full production
-  parity.
+1. Keep `#221` as the single control issue and decision surface.
+2. Treat the current host as reference-only evidence, not as a launch candidate.
+3. Continue on the fresh candidate path already established in `#224`, because that is the only path
+   that preserves the full production lane by default while removing the proven-negative part
+   (the damaged root filesystem and host state).
+4. Resolve `#225`, then rerun candidate validation from the real production network identity
+   boundary before making the final launch/cutover decision in `#221`.

@@ -4,7 +4,11 @@ status = "frozen"
 track = "scientific_validation"
 base_subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
 fault_family = "scalar_summary_schema_breaks"
-base_fixture = "tests/delivery_validator_cli.rs::write_minimal_review_package"
+fixture_ref = "docs/mechanical-process-package/validation/benchmarks/fixture-sets/review-package-protocol-owned.toml"
+fixture_owner = "protocol_validation"
+runner_ref = "docs/mechanical-process-package/validation/benchmarks/runners/held-out-b4-b7-review-runner.toml"
+runner_owner = "protocol_validation"
+subject_test_refs_used = false
 mutation_surface = "claim_enforcement_coverage.toml and orchestration_reachability_summary.toml"
 expected_outcome = "fail_closed"
 
@@ -15,8 +19,8 @@ non_redefinable = [
 ]
 
 [seed]
-kind = "schema_break"
+kind = "toml_set"
 targets = [
-  "claim_enforcement_coverage.summary_kind = \"\"",
-  "orchestration_reachability_summary.source_refs = []",
+  "claim_enforcement_coverage.toml#summary_kind = \"\"",
+  "orchestration_reachability_summary.toml#source_refs = []",
 ]

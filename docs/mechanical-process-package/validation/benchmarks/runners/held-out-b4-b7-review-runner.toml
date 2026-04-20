@@ -1,0 +1,7 @@
+version = "v1"
+runner_id = "held_out_b4_b7_review_runner"
+status = "frozen"
+binary = "scientific_validation_runner"
+command_kind = "subject_process_validator"
+stage = "review"
+expected_outcome = "fail_closed"

@@ -4,7 +4,11 @@ status = "frozen"
 track = "scientific_validation"
 base_subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
 fault_family = "summary_replay_drift"
-base_fixture = "tests/delivery_validator_cli.rs::write_minimal_review_package"
+fixture_ref = "docs/mechanical-process-package/validation/benchmarks/fixture-sets/review-package-protocol-owned.toml"
+fixture_owner = "protocol_validation"
+runner_ref = "docs/mechanical-process-package/validation/benchmarks/runners/held-out-b4-b7-review-runner.toml"
+runner_owner = "protocol_validation"
+subject_test_refs_used = false
 mutation_surface = "replayed scalar summary artifacts"
 expected_outcome = "fail_closed"
 
@@ -15,9 +19,9 @@ non_redefinable = [
 ]
 
 [seed]
-kind = "replay_drift"
+kind = "toml_set"
 targets = [
-  "claim_enforcement_coverage.covered_true_claim_count drift",
-  "claim_enforcement_coverage.summary_verdict drift",
-  "orchestration_reachability_summary.unreachable_required_job_count drift",
+  "claim_enforcement_coverage.toml#covered_true_claim_count = 1",
+  "claim_enforcement_coverage.toml#summary_verdict = \"block\"",
+  "orchestration_reachability_summary.toml#unreachable_required_job_count = 1",
 ]

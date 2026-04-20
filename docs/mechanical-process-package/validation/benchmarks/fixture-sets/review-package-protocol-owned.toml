@@ -1,0 +1,376 @@
+version = "v1"
+fixture_id = "review_package_protocol_owned"
+status = "frozen"
+target_stage = "review"
+
+[[files]]
+path = "issue_contract.toml"
+contents = '''
+issue_id = 999
+title = "synthetic promotion gate package"
+repo = "seungpyoson/bolt-v2"
+slice_id = "synthetic-gate"
+status = "frozen"
+problem_statement = "freeze one synthetic review-stage package"
+required_outcomes = ["one stage gate only"]
+non_goals = ["real issue delivery"]
+allowed_surfaces = ["docs/mechanical-process-package/**"]
+forbidden_surfaces = ["src/**"]
+assumptions = []
+semantic_terms = ["synthetic_term"]
+'''
+
+[[files]]
+path = "seam_contract.toml"
+contents = '''
+status = "locked"
+
+[[seams]]
+seam_id = "SEAM-SYN-1"
+semantic_term = "synthetic_term"
+writer_path = "docs/synthetic"
+writer_symbol = "writer"
+reader_path = "docs/synthetic"
+reader_symbol = "reader"
+storage_field = "synthetic.field"
+authoritative_source = "review_target.toml"
+allowed_sources = ["review_target.toml"]
+forbidden_sources = []
+fallback_order = []
+freshness_clock = "N/A"
+status = "frozen"
+'''
+
+[[files]]
+path = "proof_plan.toml"
+contents = '''
+[[claims]]
+claim_id = "CSYN-1"
+falsified_by = ["FXSYN-1"]
+required_before = "implementation"
+'''
+
+[[files]]
+path = "finding_ledger.toml"
+contents = '''
+status = "classified"
+'''
+
+[[files]]
+path = "evidence_bundle.toml"
+contents = ''
+
+[[files]]
+path = "merge_claims.toml"
+contents = '''
+merge_ready = false
+open_blockers = []
+required_evidence = []
+'''
+
+[[files]]
+path = "review_target.toml"
+contents = '''
+repo = "seungpyoson/bolt-v2"
+pr_number = 999
+base_ref = "main"
+head_sha = "abc123"
+diff_identity = "synthetic-gate"
+round_id = "review-r1"
+status = "frozen"
+'''
+
+[[files]]
+path = "execution_target.toml"
+contents = '''
+repo = "seungpyoson/bolt-v2"
+branch = "synthetic-branch"
+base_ref = "main"
+head_sha = "abc123"
+diff_identity = "synthetic-gate"
+changed_paths = ["docs/mechanical-process-package/**"]
+status = "frozen"
+'''
+
+[[files]]
+path = "ci_surface.toml"
+contents = '''
+workflow = "synthetic"
+head_sha = "abc123"
+run_selection_rule = "synthetic"
+
+[required_jobs_by_stage]
+review = ["job-review"]
+'''
+
+[[files]]
+path = "claim_enforcement.toml"
+contents = '''
+[[rows]]
+claim_id = "CSYN-1"
+enforcement_kind = "synthetic"
+enforced_at = "synthetic"
+test_ref = ""
+ci_ref = ""
+evidence_required = []
+status = "bound"
+'''
+
+[[files]]
+path = "claim_enforcement_coverage.toml"
+contents = '''
+status = "frozen"
+summary_kind = "claim_enforcement_coverage"
+summary_verdict = "pass"
+subject = "true_merge_claims_have_bound_enforcement_rows"
+source_refs = ["merge_claims.toml", "claim_enforcement.toml"]
+rule_version = "v1"
+covered_true_claim_count = 0
+uncovered_true_claim_count = 0
+'''
+
+[[files]]
+path = "orchestration_reachability_summary.toml"
+contents = '''
+stage = "review"
+summary_kind = "orchestration_reachability"
+summary_verdict = "pass"
+source_refs = ["orchestration_reachability.toml", "ci_surface.toml", "workflow_reachability_contract.toml"]
+rule_version = "v1"
+unreachable_required_job_count = 0
+out_of_surface_required_job_count = 0
+incomplete_case_count = 0
+status = "frozen"
+'''
+
+[[files]]
+path = "workflow_reachability_contract.toml"
+contents = '''
+artifact_kind = "producer_contract"
+contract_kind = "workflow_reachability"
+subject = "ci_workflow_reachability"
+workflow = "CI"
+contract_version = "v1"
+status = "frozen"
+source_artifacts = [".github/workflows/ci.yml"]
+
+[[reachability]]
+trigger_job = "job-review"
+trigger_result = "success"
+reachable_jobs = ["job-review"]
+'''
+
+[[files]]
+path = "stage_promotion.toml"
+contents = '''
+[[promotions]]
+from_stage = "proof_locked"
+to_stage = "review"
+promotion_gate_artifact = "promotion_gate.toml"
+status = "satisfied"
+'''
+
+[[files]]
+path = "promotion_gate.toml"
+contents = '''
+[[gates]]
+gate_id = "gate-1"
+from_stage = "proof_locked"
+to_stage = "review"
+comparator_kind = "all_of"
+left_ref = ""
+right_ref = ""
+right_literal = ""
+verdict = "pass"
+status = "frozen"
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#repo"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#branch"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#base_ref"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#head_sha"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#diff_identity"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#changed_paths"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "execution_target.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "execution_target.toml#head_sha"
+right_ref = "review_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#workflow"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#run_selection_rule"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "ci_surface.toml#head_sha"
+right_ref = "execution_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "ci_surface.toml#required_jobs_by_stage.review"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "review_rounds/review-r1.toml#absorbed_by_head"
+right_ref = "review_target.toml#head_sha"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "review_rounds/review-r1.toml#round_id"
+right_ref = "review_target.toml#round_id"
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#source"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#review_target_ref"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#raw_comment_refs"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "review_rounds/review-r1.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "claim_enforcement_coverage.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "claim_enforcement_coverage.toml#summary_verdict"
+right_ref = ""
+right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "nonempty"
+left_ref = "orchestration_reachability_summary.toml#status"
+right_ref = ""
+right_literal = ""
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#stage"
+right_ref = ""
+right_literal = "review"
+
+[[gates.clauses]]
+comparator_kind = "string_eq"
+left_ref = "orchestration_reachability_summary.toml#summary_verdict"
+right_ref = ""
+right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#out_of_surface_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#incomplete_case_count"
+right_ref = ""
+right_literal = "0"
+'''
+
+[[files]]
+path = "orchestration_reachability.toml"
+contents = '''
+[[cases]]
+case_id = "reach-1"
+subject = "synthetic"
+trigger_job = "job-review"
+trigger_result = "success"
+required_reachable_jobs = ["job-review"]
+forbidden_job_results = ["failure"]
+proof_ref = "gate-1"
+status = "covered"
+'''
+
+[[files]]
+path = "review_rounds/review-r1.toml"
+contents = '''
+round_id = "review-r1"
+source = "synthetic"
+review_target_ref = "synthetic"
+raw_comment_refs = ["comment-1"]
+ingested_findings = []
+stale_findings = []
+wrong_target_findings = []
+absorbed_by_head = "abc123"
+status = "ingested"
+'''

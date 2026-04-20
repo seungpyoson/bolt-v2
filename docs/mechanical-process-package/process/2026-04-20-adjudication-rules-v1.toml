@@ -1,0 +1,34 @@
+version = "v1"
+rules_id = "issue-208-harness-adjudication"
+status = "frozen"
+
+[prototype_decision]
+allowed_verdicts = [
+  "keep_prototype",
+  "kill",
+  "inconclusive_do_not_adopt",
+]
+minimum_external_reviewers = 3
+builder_vote_allowed = false
+
+[prototype_keep_rule]
+minimum_keep_votes = 2
+maximum_kill_votes = 1
+critical_falsehoods_allowed = 0
+
+[prototype_kill_rule]
+minimum_kill_votes = 2
+
+[prototype_inconclusive_rule]
+applies_when = "no_keep_or_kill_rule_is_satisfied"
+
+[scientific_validation_rule]
+status = "not_applicable_to_current_subject"
+reason = "the_current_subject_head_predates_the_frozen_validation_protocol"
+
+[future_scientific_validation_rule]
+status = "registered_for_future_run_only"
+requires_preregistered_protocol = true
+requires_held_out_benchmarks = true
+requires_external_only_adjudication = true
+minimum_external_reviewers = 3

@@ -1,0 +1,66 @@
+version = "v1"
+manifest_id = "issue-208-harness-benchmarks"
+status = "frozen"
+subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+
+[[benchmarks]]
+benchmark_id = "B1"
+track = "prototype_adjudication"
+kind = "external_review_packet"
+status = "registered_not_run"
+artifact_refs = [
+  "docs/mechanical-process-package/process/2026-04-20-experiment-ledger-v1.toml",
+  "docs/mechanical-process-package/process/2026-04-20-closure-boundary-v1.toml",
+  "src/delivery_validator.rs",
+  "src/summary_replay.rs",
+  "tests/delivery_validator_cli.rs",
+]
+expected_observation = "external_adjudicator_returns_keep_kill_or_inconclusive"
+
+[[benchmarks]]
+benchmark_id = "B2"
+track = "prototype_adjudication"
+kind = "local_reproduction"
+status = "registered_not_run"
+command = "cargo test --test delivery_validator_cli -- --nocapture"
+expected_exit = 0
+
+[[benchmarks]]
+benchmark_id = "B3"
+track = "prototype_adjudication"
+kind = "local_reproduction"
+status = "registered_not_run"
+command = "cargo test summary_replay -- --nocapture"
+expected_exit = 0
+
+[[benchmarks]]
+benchmark_id = "B4"
+track = "scientific_validation"
+kind = "held_out_seeded_fault_family"
+status = "registered_not_run"
+fault_family = "unsupported_comparator_kinds"
+expected_outcome = "fail_closed"
+
+[[benchmarks]]
+benchmark_id = "B5"
+track = "scientific_validation"
+kind = "held_out_seeded_fault_family"
+status = "registered_not_run"
+fault_family = "scalar_summary_schema_breaks"
+expected_outcome = "fail_closed"
+
+[[benchmarks]]
+benchmark_id = "B6"
+track = "scientific_validation"
+kind = "held_out_seeded_fault_family"
+status = "registered_not_run"
+fault_family = "summary_replay_drift"
+expected_outcome = "fail_closed"
+
+[[benchmarks]]
+benchmark_id = "B7"
+track = "scientific_validation"
+kind = "held_out_seeded_fault_family"
+status = "registered_not_run"
+fault_family = "producer_contract_schema_breaks"
+expected_outcome = "fail_closed"

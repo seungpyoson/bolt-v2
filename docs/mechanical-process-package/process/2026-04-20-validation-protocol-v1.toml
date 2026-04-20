@@ -1,0 +1,46 @@
+version = "v1"
+protocol_id = "issue-208-harness-validation"
+status = "frozen"
+created_at = "2026-04-20"
+
+subject_repo = "seungpyoson/bolt-v2"
+subject_branch = "issue-208-process-validator"
+subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+
+registration_mode = "prospective_for_validation"
+builder_must_not_adjudicate = true
+
+benchmark_manifest_ref = "2026-04-20-benchmark-manifest-v1.toml"
+adjudication_rules_ref = "2026-04-20-adjudication-rules-v1.toml"
+
+target_decisions = [
+  "keep_prototype",
+  "kill",
+  "inconclusive_do_not_adopt",
+]
+
+non_claims = [
+  "does_not_claim_scientific_validation_of_the_current_subject_head",
+  "does_not_claim_unbounded_general_solution",
+  "does_not_treat_builder_judgment_as_final_verdict",
+]
+
+[tracks.prototype_adjudication]
+status = "eligible_now"
+question = "should_the_frozen_subject_head_be_kept_as_a_mechanical_prototype"
+
+[tracks.scientific_validation]
+status = "not_eligible_on_current_subject"
+question = "can_the_harness_be_scientifically_validated_through_a_preregistered_held_out_run"
+ineligibility_reason = "the_current_subject_head_was_built_before_this_protocol_was_frozen"
+
+[success_conditions.prototype]
+requires_reproduction_checks = true
+requires_external_adjudication = true
+requires_subject_head_frozen = true
+
+[success_conditions.scientific_validation]
+requires_preregistration = true
+requires_held_out_benchmarks = true
+requires_external_only_adjudication = true
+requires_threshold_rule = true

@@ -1,23 +1,6 @@
-use std::fs;
-use std::path::PathBuf;
-
-fn repo_root() -> PathBuf {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .expect("git should resolve repo root in tests");
-    assert!(output.status.success(), "git rev-parse failed");
-    PathBuf::from(
-        String::from_utf8(output.stdout)
-            .expect("git output utf-8")
-            .trim()
-            .to_string(),
-    )
-}
-
 fn read(rel: &str) -> String {
-    let path = repo_root().join(rel);
-    fs::read_to_string(&path)
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
@@ -99,9 +82,9 @@ fn journald_drop_in_caps_growth() {
 fn install_script_targets_srv_bolt_v2() {
     let contents = read("deploy/install.sh");
     assert!(
-        contents.contains("BOLT_DATA_DEVICE"),
-        "deploy/install.sh must contain 'BOLT_DATA_DEVICE' (the required env var \
-        for the data device); directive is missing"
+        contents.contains("${BOLT_DATA_DEVICE"),
+        "install.sh must reference `${{BOLT_DATA_DEVICE}}` expansion; \
+        the device parameter is missing or only present in comments"
     );
     assert!(
         contents.contains("/srv/bolt-v2"),

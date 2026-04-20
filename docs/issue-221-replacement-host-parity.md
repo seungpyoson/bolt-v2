@@ -1,239 +1,69 @@
 # Issue 221: Replacement-Host Parity Gate
 
-## Current answer
+## 1. Current answer
 
-**No, not yet.**
+**Not approved: a rebuilt host is not yet approved as a production-equivalent replacement environment.**
 
-A new EC2 instance is **not** currently approved as a production-equivalent replacement environment.
-The available evidence is enough to define the approval bar, but not enough to prove parity today.
+## 2. Parity rule
 
-## Scope and assumptions
+Rebuild/cutover approval must preserve the full production lane first, end to end: AWS/network
+identity, host/OS behavior, binary/runtime behavior, config/secrets/startup behavior, actual
+trading behavior, and operator/rollback behavior. Only explicitly approved deltas may differ.
+Anything omitted is a regression until proven otherwise.
 
-- Scope is `#221` only: the decision bar for approving a rebuild/new-instance cutover.
-- `#215` is merged via PR `#218`:
-  - `WorkingDirectory=/srv/bolt-v2`
-  - `User=bolt`, `Group=bolt`
-  - runtime data mount at `/srv/bolt-v2`
-  - config readable by the service user at `/opt/bolt-v2/config/live.toml`
-  - journald cap via `SystemMaxUse=500M`
-  - `raw_capture.output_dir` and `audit.local_dir` anchored under `/srv/bolt-v2/var/...`
-- `#219` is explicitly out of the critical path here.
+## 3. What has already been proven
 
-## What was checked
+- `#215` is merged, so the root-volume remediation baseline is defined in `main`: dedicated data
+  volume layout, `WorkingDirectory=/srv/bolt-v2`, `User=bolt`, absolute runtime write paths, and
+  capped journald.
+- `#222` captured the current production/forensic host baseline that matters for parity review:
+  AWS identity, EIP/network boundary, root-only pre-remediation mount layout, systemd/journald
+  state, package/sysctl/limits/timer context, deployed artifact identity, and the rendered live
+  lane config recovered from the forensic clone.
+- `#223` defined the minimum operator-visible monitoring contract required for approval: control
+  plane, storage/mount health, service/restart state, config/secret resolution, reference health,
+  selector health, reconnect-storm visibility, strategy readiness, and audit backlog health.
+- `#224` proved that the merged `#215` host/storage/service baseline can be provisioned on a fresh
+  EC2 instance with the same AMI / instance family / subnet / AZ / SG / IAM profile boundary.
+- `#224` also proved that a non-EIP candidate run is insufficient for trading parity: the host can
+  be provisioned cleanly without yet proving operation from the real production network identity.
+- `#224` further proved that the first fresh candidate still failed actual runtime startup: Binance
+  did not connect, the trader did not start, and the host was therefore not approved.
 
-- Issue scope and boundaries from `#221`, `#215`, and `#219`
-- `#215` implementation baseline as merged in PR `#218`
-- Current repo build/runtime contract:
-  - target `aarch64-unknown-linux-gnu`
-  - release build via `cargo zigbuild --release --target aarch64-unknown-linux-gnu --locked`
-  - release profile uses thin LTO, stripped binary, and `panic = "abort"`
-  - pinned NautilusTrader revision `af2aefc24451ed5c51b94e64459421f1dd540bfb`
-- Current operator intent from `config/operator-snapshots/2026-04-16/live.local.toml`
-- Current runtime behavior in `src/main.rs`, `src/live_config.rs`, `src/secrets.rs`,
-  `src/startup_validation.rs`, `src/platform/runtime.rs`, `src/platform/reference.rs`,
-  `src/clients/chainlink.rs`, `src/log_sweep.rs`, and `src/strategies/eth_chainlink_taker.rs`
+## 4. Remaining blockers
 
-## Known gaps blocking approval
+- `#225`: the current Binance startup path still blocks trader startup on the candidate run
+  (`HTTP 400 Bad Request` / `Invalid X-MBX-APIKEY header` on the SBE endpoint).
+- The candidate run in `#224` did not validate from the full real production network identity
+  boundary, including the whitelisted EIP/source-IP path that counterparties actually see.
+- Because of those two points, full trading parity is still unproven: feed connectivity,
+  reference health, trader start, strategy readiness, counterparty acceptance, and latency-sensitive
+  behavior from the real production boundary are not yet established.
 
-- `#222` now materially covers the old-host baseline needed for host-parity comparison.
-- `#223` now materially covers the minimum monitoring/alerting contract needed for
-  operational-parity signoff.
-- `#224` now materially covers the first real candidate-host exercise and proves that the merged
-  `#215` host/storage/service baseline can be provisioned on a fresh EC2 instance.
-- The remaining blocker is now the concrete runtime-startup failure exposed by `#224`:
-  the candidate host was **not** approved because Binance failed its startup WebSocket connect and
-  the trader never reached trading-ready startup.
-  That concrete blocker is now tracked in `#225`.
+## 5. Next actions
 
-## 1. Rebuild/Cutover Parity Checklist
+1. Resolve `#225` so the Binance startup path succeeds under the real production credential and
+   network-identity boundary.
+2. Re-run the candidate-host exercise from the full production boundary, including the production
+   EIP / source-IP path and every behavior tied to that network identity.
+3. Re-verify the entire lane on that candidate in one pass: AWS/network identity, host/OS state,
+   binary/runtime identity, config/secret resolution, startup validation, selector/reference
+   behavior, actual trader start, strategy readiness, operator visibility, and rollback viability.
+4. Update `#221` with the exact result of that rerun and make the rebuild/cutover decision here,
+   not in side branches.
 
-### Host parity
+## 6. Approval criteria
 
-- Capture `systemctl cat bolt-v2.service` from the source/forensic environment and compare it to the
-  approved replacement host. Evidence must account for:
-  - `User=bolt`
-  - `Group=bolt`
-  - `WorkingDirectory=/srv/bolt-v2`
-  - `ExecStart=/opt/bolt-v2/bolt-v2 run --config /opt/bolt-v2/config/live.toml`
-  - `Restart=on-failure`
-  - `RestartSec=5`
-- Capture `systemd-delta --type=extended` so hidden service overrides are not missed.
-- Capture journald config from `/etc/systemd/journald.conf` and `/etc/systemd/journald.conf.d/`.
-  `#215` gives the minimum baseline (`SystemMaxUse=500M`), but any additional rate-limit or storage
-  knobs on the current host must also be reproduced or explicitly waived.
-- Capture mount state with `findmnt`, `lsblk -f`, and `/etc/fstab`. The replacement must prove:
-  - `/srv/bolt-v2` is a separate data volume
-  - the filesystem type and UUID-backed mount entry are intentional
-  - the root volume remains OS-only
-- Capture users, groups, and path permissions with `getent passwd bolt`, `getent group bolt`,
-  `id bolt`, and `namei -l` for `/opt/bolt-v2`, `/opt/bolt-v2/config/live.toml`, and
-  `/srv/bolt-v2`.
-- Capture installed packages and host services with `dpkg-query -W`, `systemctl list-unit-files`,
-  `systemctl list-timers --all`, and `crontab -l` plus `/etc/cron*`.
-- Capture sysctl and limits with `/etc/sysctl.conf`, `/etc/sysctl.d/*`,
-  `/etc/security/limits.conf`, `/etc/security/limits.d/*`, and
-  `systemctl show bolt-v2 -p LimitNOFILE -p LimitNPROC -p LimitCORE`.
-- Capture any bolt-specific scripts or directories outside the repo-managed baseline, especially
-  under `/opt/bolt-v2`, `/srv/bolt-v2`, `/usr/local/bin`, and `/etc/systemd/system`.
+Rebuild/cutover is approved only when all of the following are true:
 
-### Binary/runtime parity
-
-- The deployed binary must match the intended production artifact by `sha256`.
-- `file /opt/bolt-v2/bolt-v2` and `readelf -h /opt/bolt-v2/bolt-v2` must show an ARM64 Linux
-  binary that matches the release artifact.
-- The build contract must match the repo:
-  - Rust `1.94.1`
-  - `cargo zigbuild --release --target aarch64-unknown-linux-gnu --locked`
-  - release profile with thin LTO, `strip = true`, `panic = "abort"`
-  - NautilusTrader dependencies pinned to `af2aefc24451ed5c51b94e64459421f1dd540bfb`
-- `config/live.toml` must be generated by `render_live_config`; it must not be hand-edited.
-- Runtime-sensitive operator settings from the dated snapshot must be preserved:
-  - Polymarket: `subscribe_new_markets = true`, `gamma_refresh_interval_secs = 5`,
-    `ws_max_subscriptions = 200`
-  - Reference: publish topic `platform.reference.default`, 7 ETH reference venues,
-    `stale_after_ms = 1000`, `disable_after_ms = 5000`
-  - Ruleset: selector tag `ethereum`, prefix `eth-updown-5m`, poll every `1000ms`,
-    candidate load timeout `30s`
-  - Strategy: `warmup_tick_count = 50`, `book_impact_cap_bps = 15`,
-    `vol_min_observations = 20`, `forced_flat_stale_chainlink_ms = 1500`,
-    `lead_jitter_max_ms = 250`, `max_position_usdc = 25.0`,
-    `worst_case_ev_min_bps = 50`, `exit_hysteresis_bps = 20`,
-    `theta_decay_factor = 1.0`
-- The runtime fail-closed behaviors currently present in `bolt-v2` must remain intact:
-  - Polymarket startup validation rejects empty or mismatched selector discovery
-  - reference venues age out and auto-disable when stale
-  - Chainlink reconnects indefinitely with an alert threshold
-  - audit and selector tasks start only after the node is running
-  - normalized sink failures latch unhealthy state instead of silently continuing
-
-### Config and secrets parity
-
-- Rendered runtime config intent must match the approved operator snapshot for:
-  - node/trader IDs
-  - Polymarket account and funder wiring
-  - reference venue set and weight/staleness policy
-  - ruleset selector and time/liquidity windows
-  - strategy knobs
-- Under the `#215` baseline, runtime write paths must be absolute and data-volume anchored:
-  - `/srv/bolt-v2/var/raw`
-  - `/srv/bolt-v2/var/audit`
-- `bolt-v2 secrets check --config /opt/bolt-v2/config/live.toml` must pass on the candidate host.
-- `bolt-v2 secrets resolve --config /opt/bolt-v2/config/live.toml` must succeed through SSM
-  without introducing any non-SSM secret backend.
-- `/opt/bolt-v2/config/live.toml` must be readable by the service user, for example `root:bolt`
-  with mode `0640`.
-
-### Operational parity
-
-- Deploy path must be explicit and reproducible:
-  - binary at `/opt/bolt-v2/bolt-v2`
-  - rendered config at `/opt/bolt-v2/config/live.toml`
-  - `deploy/install.sh` used to provision the mount, directories, unit, and journald drop-in
-  - service enable/start done as an explicit operational step
-- SSM must work on the replacement host before approval:
-  - Session Manager access
-  - `RunShellScript`
-  - `aws ssm get-parameter --with-decryption`
-- Log access paths must be confirmed:
-  - `journalctl -u bolt-v2`
-  - `/srv/bolt-v2/var/logs`
-  - `/srv/bolt-v2/var/audit`
-  - `/srv/bolt-v2/var/raw`
-- IAM / SG / subnet / AZ / EIP requirements must be captured and matched or deliberately changed
-  with an explicit reason. The currently documented lane expects at least:
-  - instance profile with SSM and S3 access
-  - outbound access for venue/reference clients
-  - the existing EIP behavior to be preserved or intentionally replaced
-- Monitoring and alerting expectations must be explicit enough that operators can tell whether the
-  rebuilt host is healthy after cutover.
-
-### Trading parity
-
-- `systemctl start bolt-v2` must reach a stable active state.
-- Startup validation must pass without fail-closed selector or discovery errors.
-- Polymarket feeds must connect cleanly and discover live markets for the configured prefix.
-- Reference publishing must reach a healthy state:
-  - non-zero confidence
-  - no unexpected stale or disabled venues
-  - no sustained Chainlink reconnect storm
-- The runtime selector must choose the expected market and the strategy must reach ready/active
-  state after warmup rather than remaining blocked on warmup, volatility readiness, or stale inputs.
-- Audit shipping must start and local backlog must remain within cap.
-- Disk behavior must prove the incident class is actually fixed:
-  - runtime writes land under `/srv/bolt-v2/var/...`
-  - root usage remains OS-like
-  - journald stays within the configured cap
-
-## 2. Host Facts That Must Be Captured Before Approval
-
-- Full `bolt-v2.service` definition plus all drop-ins and overrides
-- Full journald config and current journal disk usage
-- `/etc/fstab`, `findmnt`, `lsblk -f`, and the exact data-device mapping
-- `bolt` user/group existence plus directory and config ownership/permissions
-- Installed package inventory, kernel version, AWS CLI version, and SSM agent version
-- `/etc/sysctl*` contents and effective runtime sysctl values relevant to networking/filesystems
-- `/etc/security/limits*` contents plus effective systemd limits for `bolt-v2`
-- Active timers, cron entries, and auxiliary services that affect deploy, logging, cleanup, or
-  observability
-- Inventory of bolt-specific files and directories on the host outside repo-managed source
-- Deployed binary `sha256`, architecture, and path metadata
-- Redacted rendered config fingerprint proving node/reference/ruleset/strategy intent matches the
-  approved operator snapshot
-- AWS identity facts for the current lane:
-  - instance profile
-  - security groups
-  - subnet / AZ
-  - AMI
-  - instance type
-  - EIP behavior
-
-## 3. Launch/Cutover Validation Sequence
-
-1. Confirm the `#215` baseline is present on the candidate host: service unit, data mount,
-   journald drop-in, absolute runtime write paths, and config readability.
-2. Build or fetch the exact ARM64 release artifact, record its `sha256`, and verify it matches the
-   installed binary on the candidate host.
-3. Generate `config/live.toml` from the approved local operator source, review the rendered diff,
-   and confirm it preserves the intended reference, ruleset, and strategy settings.
-4. Verify SSM and secret resolution on the candidate host before starting the service.
-5. Start `bolt-v2` and watch:
-   - `systemctl status bolt-v2`
-   - `journalctl -u bolt-v2 -n 200 -f`
-6. Wait through at least one selector poll window and one full strategy warmup window. Confirm:
-   - startup validation did not fail closed
-   - feeds connected
-   - reference publishing is healthy
-   - the runtime selector chose a live market
-   - the strategy reached ready/active state
-7. Check disk behavior immediately after startup and again after the observation window:
-   - root usage
-   - `/srv/bolt-v2` usage
-   - files created under `/srv/bolt-v2/var/*`
-8. Verify audit and log access paths are working and operators can still inspect the lane through
-   SSM and journald.
-9. Only after all pre-cutover checks pass, perform the actual cutover step, such as EIP
-   reassociation or equivalent traffic move.
-10. Keep a post-cutover watch window long enough to catch reconnect storms, stale references,
-    strategy non-readiness, or root-volume drift. If any unexplained regression appears, do not
-    keep the new host as the production lane.
-
-## 4. Signoff Criteria
-
-Approve a replacement host **only if all of the following are true**:
-
-- `#215` remediation is present in the approved form.
-- Every host-parity item above is captured and any diff from the current/forensic lane is explained
-  and accepted.
-- Binary target, release profile, dependency pinning, and deployed artifact hash match the intended
-  production build.
-- Rendered config intent, SSM secret resolution, service-user readability, and venue/reference
-  wiring match the approved operator configuration.
-- Operational access is proven: SSM works, logs are reachable, and IAM / SG / subnet / EIP
-  behavior is understood.
-- Launch validation on the candidate host proves healthy startup, feed connectivity, selector
-  operation, reference health, strategy readiness, and stable disk behavior.
-- Monitoring/alerting expectations for the rebuilt lane are explicit enough that operators can
-  recognize post-cutover regressions.
-
-If any item above is unchecked, unknown, or explained only by assumption, the answer remains:
-**do not approve the new instance yet**.
+- The candidate host preserves the real production AWS/network identity boundary, including the EIP
+  / source-IP behavior and any counterparty allowlist effects that depend on it.
+- The candidate host preserves the required host/OS/system behavior from the production lane, or
+  every delta is explicit, justified, and accepted.
+- The candidate host runs the intended artifact and runtime shape from `main`, with the intended
+  rendered config and successful SSM-based secret resolution.
+- Startup completes from the real production boundary with healthy feed connectivity, healthy
+  reference behavior, healthy selector behavior, trader start, and strategy readiness.
+- Operators can observe healthy vs unhealthy state and perform rollback without silent failures.
+- No remaining blocker in this approval path, including `#225`, still prevents full production
+  parity.

@@ -227,7 +227,7 @@ pub struct AuditConfig {
 }
 
 pub(crate) fn default_raw_capture_output_dir() -> String {
-    "var/raw".to_string()
+    "/srv/bolt-v2/var/raw".to_string()
 }
 
 fn default_binance_product_types() -> Vec<BinanceProductType> {

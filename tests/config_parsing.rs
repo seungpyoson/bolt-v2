@@ -71,6 +71,55 @@ fn parses_runtime_config_with_optional_streaming_section() {
 }
 
 #[test]
+fn runtime_config_defaults_raw_capture_output_dir_to_srv_path() {
+    let toml = r#"
+        [node]
+        name = "bolt-v2"
+        trader_id = "TRADER-001"
+        environment = "Live"
+        load_state = true
+        save_state = true
+        timeout_connection_secs = 60
+        timeout_reconciliation_secs = 30
+        timeout_portfolio_secs = 10
+        timeout_disconnection_secs = 10
+        delay_post_stop_secs = 10
+        delay_shutdown_secs = 5
+
+        [logging]
+        stdout_level = "Info"
+        file_level = "Off"
+
+        [[data_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [data_clients.config]
+        subscribe_new_markets = false
+        update_instruments_interval_mins = 60
+        ws_max_subscriptions = 200
+        event_slugs = ["btc-updown-5m"]
+
+        [[exec_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [exec_clients.config]
+        account_id = "POLYMARKET-001"
+        signature_type = 2
+        funder = "0xdeadbeef"
+        [exec_clients.secrets]
+        region = "us-east-1"
+        pk = "/pk"
+        api_key = "/key"
+        api_secret = "/secret"
+        passphrase = "/pass"
+    "#;
+
+    let cfg: Config = toml::from_str(toml).unwrap();
+
+    assert_eq!(cfg.raw_capture.output_dir, "/srv/bolt-v2/var/raw");
+}
+
+#[test]
 fn runtime_config_parses_ruleset_selector_table() {
     let toml = r#"
         [node]

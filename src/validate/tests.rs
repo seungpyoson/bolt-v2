@@ -33,6 +33,9 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
 "#
     .to_string()
 }
@@ -1171,7 +1174,7 @@ fn phase1_ruleset_candidate_load_timeout_secs_must_be_positive() {
 fn phase1_audit_paths_must_be_non_empty() {
     let local_dir = replace(
         &valid_phase1_toml(),
-        "local_dir = \"var/audit\"",
+        "local_dir = \"/srv/bolt-v2/var/audit\"",
         "local_dir = \"\"",
     );
     let local_dir_errors = errors_for(&local_dir);
@@ -1184,6 +1187,27 @@ fn phase1_audit_paths_must_be_non_empty() {
     );
     let s3_uri_errors = errors_for(&s3_uri);
     assert_has_error(&s3_uri_errors, "audit.s3_uri", "empty");
+}
+
+#[test]
+fn live_local_runtime_write_dirs_must_be_absolute() {
+    let toml = valid_phase1_toml()
+        .replace("/srv/bolt-v2/var/raw", "var/raw")
+        .replace("/srv/bolt-v2/var/audit", "var/audit");
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "raw_capture.output_dir", "not_absolute");
+    assert_has_error(&errors, "audit.local_dir", "not_absolute");
+}
+
+#[test]
+fn live_local_raw_capture_output_dir_must_be_non_empty() {
+    let toml = replace(
+        &valid_toml(),
+        "output_dir = \"/srv/bolt-v2/var/raw\"",
+        "output_dir = \"\"",
+    );
+    let errors = errors_for(&toml);
+    assert_has_error(&errors, "raw_capture.output_dir", "empty");
 }
 
 #[test]
@@ -1286,6 +1310,9 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
 "#
 }
 
@@ -1307,8 +1334,9 @@ order_qty = "5"
 
 fn valid_phase1_toml() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         valid_toml().replace("event_slug = \"btc-updown-5m\"\n", ""),
+        VALID_BINANCE_SHARED_BLOCK,
         r#"
 [reference]
 publish_topic = "platform.reference.default"
@@ -1337,7 +1365,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -1373,7 +1401,7 @@ tag_slug = "bitcoin"
 "#;
 
 const PHASE1_AUDIT_BLOCK: &str = r#"[audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -1432,7 +1460,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -1890,6 +1918,25 @@ fn runtime_relative_contract_path_rejected() {
     );
     let errors = runtime_errors_for(&toml);
     assert_has_error(&errors, "streaming.contract_path", "not_absolute");
+}
+
+#[test]
+fn runtime_relative_runtime_write_dirs_rejected() {
+    let toml = valid_phase1_runtime_toml()
+        .replace("event_slugs = [\"btc-updown-5m\"]\n", "")
+        .replace("/srv/bolt-v2/var/raw", "var/raw")
+        .replace("/srv/bolt-v2/var/audit", "var/audit");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "raw_capture.output_dir", "not_absolute");
+    assert_has_error(&errors, "audit.local_dir", "not_absolute");
+}
+
+#[test]
+fn runtime_raw_capture_output_dir_must_be_non_empty() {
+    let toml =
+        valid_runtime_toml().replace("output_dir = \"/srv/bolt-v2/var/raw\"", "output_dir = \"\"");
+    let errors = runtime_errors_for(&toml);
+    assert_has_error(&errors, "raw_capture.output_dir", "empty");
 }
 
 #[test]

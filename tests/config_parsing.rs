@@ -49,7 +49,7 @@ fn parses_runtime_config_with_optional_streaming_section() {
         passphrase = "/pass"
 
         [raw_capture]
-        output_dir = "var/raw"
+        output_dir = "/srv/bolt-v2/var/raw"
 
         [streaming]
         catalog_path = "var/catalog"
@@ -61,13 +61,62 @@ fn parses_runtime_config_with_optional_streaming_section() {
 
     assert_eq!(cfg.node.timeout_connection_secs, 60);
     assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
-    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
+    assert_eq!(cfg.raw_capture.output_dir, "/srv/bolt-v2/var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 1000);
     assert_eq!(
         cfg.streaming.contract_path.as_deref(),
         Some("/opt/bolt-v2/contracts/polymarket.toml")
     );
+}
+
+#[test]
+fn runtime_config_defaults_raw_capture_output_dir_to_srv_path() {
+    let toml = r#"
+        [node]
+        name = "bolt-v2"
+        trader_id = "TRADER-001"
+        environment = "Live"
+        load_state = true
+        save_state = true
+        timeout_connection_secs = 60
+        timeout_reconciliation_secs = 30
+        timeout_portfolio_secs = 10
+        timeout_disconnection_secs = 10
+        delay_post_stop_secs = 10
+        delay_shutdown_secs = 5
+
+        [logging]
+        stdout_level = "Info"
+        file_level = "Off"
+
+        [[data_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [data_clients.config]
+        subscribe_new_markets = false
+        update_instruments_interval_mins = 60
+        ws_max_subscriptions = 200
+        event_slugs = ["btc-updown-5m"]
+
+        [[exec_clients]]
+        name = "POLYMARKET"
+        type = "polymarket"
+        [exec_clients.config]
+        account_id = "POLYMARKET-001"
+        signature_type = 2
+        funder = "0xdeadbeef"
+        [exec_clients.secrets]
+        region = "us-east-1"
+        pk = "/pk"
+        api_key = "/key"
+        api_secret = "/secret"
+        passphrase = "/pass"
+    "#;
+
+    let cfg: Config = toml::from_str(toml).unwrap();
+
+    assert_eq!(cfg.raw_capture.output_dir, "/srv/bolt-v2/var/raw");
 }
 
 #[test]
@@ -114,7 +163,7 @@ fn runtime_config_parses_ruleset_selector_table() {
         passphrase = "/pass"
 
         [raw_capture]
-        output_dir = "var/raw"
+        output_dir = "/srv/bolt-v2/var/raw"
 
         [reference]
         publish_topic = "platform.reference.default"
@@ -153,7 +202,7 @@ fn runtime_config_parses_ruleset_selector_table() {
         event_slug_prefix = "btc-updown"
 
         [audit]
-        local_dir = "var/audit"
+        local_dir = "/srv/bolt-v2/var/audit"
         s3_uri = "s3://bolt-runtime-history/phase1"
         ship_interval_secs = 30
         upload_attempt_timeout_secs = 30
@@ -318,7 +367,7 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
         passphrase = "/pass"
 
         [raw_capture]
-        output_dir = "var/raw"
+        output_dir = "/srv/bolt-v2/var/raw"
 
         [streaming]
         catalog_path = "var/catalog"
@@ -361,6 +410,9 @@ fn rendered_runtime_toml_preserves_phase1_platform_values() {
         api_secret = "/bolt/poly/secret"
         passphrase = "/bolt/poly/passphrase"
 
+        [raw_capture]
+        output_dir = "/srv/bolt-v2/var/raw"
+
         [reference]
         publish_topic = "platform.reference.default"
         min_publish_interval_ms = 100
@@ -397,7 +449,7 @@ candidate_load_timeout_secs = 12
         tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 45

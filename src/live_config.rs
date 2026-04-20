@@ -1217,7 +1217,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -1268,6 +1268,9 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
 "#;
 
         let input: LiveLocalConfig =

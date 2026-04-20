@@ -1511,7 +1511,7 @@ mod tests {
                 candidate_load_timeout_secs: 7,
             }],
             audit: Some(AuditConfig {
-                local_dir: "var/audit".to_string(),
+                local_dir: "/srv/bolt-v2/var/audit".to_string(),
                 s3_uri: "s3://bucket/audit".to_string(),
                 ship_interval_secs: 1,
                 upload_attempt_timeout_secs: 1,

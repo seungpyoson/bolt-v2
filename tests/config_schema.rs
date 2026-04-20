@@ -119,6 +119,9 @@ api_key = "/bolt/polymarket/api-key"
 api_secret = "/bolt/polymarket/api-secret"
 passphrase = "/bolt/polymarket/api-passphrase"
 
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
+
 [reference]
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
@@ -181,7 +184,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "ethereum"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -236,6 +239,9 @@ api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
 
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
+
 [reference]
 publish_topic = "platform.reference.default"
 min_publish_interval_ms = 100
@@ -272,7 +278,7 @@ candidate_load_timeout_secs = 12
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 45
@@ -318,7 +324,10 @@ max_local_backlog_bytes = 10485760
         value["rulesets"][0]["candidate_load_timeout_secs"].as_integer(),
         Some(12)
     );
-    assert_eq!(value["audit"]["local_dir"].as_str(), Some("var/audit"));
+    assert_eq!(
+        value["audit"]["local_dir"].as_str(),
+        Some("/srv/bolt-v2/var/audit")
+    );
     assert_eq!(
         value["audit"]["upload_attempt_timeout_secs"].as_integer(),
         Some(45)
@@ -354,6 +363,9 @@ pk = "/bolt/poly/pk"
 api_key = "/bolt/poly/key"
 api_secret = "/bolt/poly/secret"
 passphrase = "/bolt/poly/passphrase"
+
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
 
 [reference]
 publish_topic = "platform.reference.default"
@@ -391,7 +403,7 @@ candidate_load_timeout_secs = 12
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 45

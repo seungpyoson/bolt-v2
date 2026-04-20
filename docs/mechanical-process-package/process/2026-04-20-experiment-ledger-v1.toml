@@ -1,0 +1,240 @@
+version = "v1"
+generated_at = "2026-04-20"
+scope = "issue-208-process-validator"
+registration_mode = "retrospective"
+
+[state]
+implementation_status = "prototype_exists"
+scientific_validation_status = "not_established"
+external_adjudication_status = "not_passed"
+
+[metrics]
+direct_evidence = "Each item in direct_evidence_refs is an exact artifact path or test id used as the primary evidence for the entry."
+regression_evidence = "regression_pass_count is the count of passing tests in regression_suite on the validation snapshot recorded for the entry."
+
+[[experiments]]
+experiment_id = "H3"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "bcff1ce"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-comparator-closure-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_merge_ready_is_false_via_scalar_gate",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 25
+
+[[experiments]]
+experiment_id = "H4"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "3c66e3b"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-review-exact-head-comparator-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_execution_head_mismatches_review_head",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_review_round_id_mismatches_review_target",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 27
+
+[[experiments]]
+experiment_id = "H5"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "76ccaad"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-ci-surface-comparator-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_ci_surface_head_mismatches_execution_head",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_review_jobs_missing_from_ci_surface",
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_merge_jobs_missing_from_ci_surface",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 30
+
+[[experiments]]
+experiment_id = "H6"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "0c0671a"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-completeness-gate-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_execution_target_repo_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_ci_surface_workflow_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_execution_target_repo_is_empty",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 33
+
+[[experiments]]
+experiment_id = "H7"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "17035a8"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-review-round-completeness-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_review_round_source_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_review_round_target_ref_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_review_round_raw_comment_refs_are_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_review_round_status_is_empty",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 37
+
+[[experiments]]
+experiment_id = "H8"
+classification = "retrospective_structural_boundary"
+validated_at = "2026-04-20"
+result = "fail"
+commit = "2524988"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-claim-enforcement-closure-boundary-v1.md"
+direct_evidence_refs = [
+  "docs/mechanical-process-package/process/2026-04-20-claim-enforcement-closure-boundary-v1.md",
+]
+regression_suite = "none"
+regression_pass_count = 0
+
+[[experiments]]
+experiment_id = "H9"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "fb85fdc"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-claim-enforcement-scalarization-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_claim_enforcement_coverage_is_missing",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_claim_enforcement_coverage_status_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_claim_enforcement_coverage_verdict_is_block",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 40
+
+[[experiments]]
+experiment_id = "H10"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "74f2010"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-reachability-scalarization-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_is_missing",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_verdict_is_block",
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_reachability_summary_stage_is_wrong",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 43
+
+[[experiments]]
+experiment_id = "H11"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "0ff699d"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-scalar-summary-schema-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_claim_enforcement_summary_kind_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_source_refs_are_empty",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 45
+
+[[experiments]]
+experiment_id = "H12"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "9276148"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-comparator-closure-experiment-v2.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_gate_comparator_kind_is_unknown",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_gate_clause_comparator_kind_is_unknown",
+]
+regression_suite = "delivery_validator_cli"
+regression_pass_count = 47
+
+[[experiments]]
+experiment_id = "H13"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "ccbaf16"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-claim-enforcement-replay-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_claim_enforcement_coverage_counts_drift",
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_claim_enforcement_coverage_verdict_drifts_from_recomputed_output",
+]
+regression_suite = "delivery_validator_cli + summary_replay"
+regression_pass_count = 53
+
+[[experiments]]
+experiment_id = "H14"
+classification = "retrospective_structural_boundary"
+validated_at = "2026-04-20"
+result = "fail"
+commit = "0ff67e4"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-reachability-replay-boundary-v1.md"
+direct_evidence_refs = [
+  "docs/mechanical-process-package/process/2026-04-20-reachability-replay-boundary-v1.md",
+]
+regression_suite = "none"
+regression_pass_count = 0
+
+[[experiments]]
+experiment_id = "H15"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "d2bebb6"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-reachability-replay-reduction-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_unreachable_count_drifts",
+]
+regression_suite = "delivery_validator_cli + summary_replay"
+regression_pass_count = 53
+
+[[experiments]]
+experiment_id = "H16"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "5dc0f8b"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-summary-replay-module-experiment-v1.md"
+direct_evidence_refs = [
+  "src/summary_replay.rs::tests::claim_enforcement_summary_counts_true_claim_coverage",
+  "src/summary_replay.rs::tests::reachability_summary_counts_out_of_surface_jobs",
+  "src/summary_replay.rs::tests::reachability_summary_blocks_incomplete_case",
+]
+regression_suite = "delivery_validator_cli + summary_replay"
+regression_pass_count = 53
+
+[[experiments]]
+experiment_id = "H17"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "f5d1479"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-full-reachability-replay-experiment-v1.md"
+direct_evidence_refs = [
+  "src/summary_replay.rs::tests::reachability_summary_counts_unreachable_required_jobs_from_contract",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_workflow_reachability_contract_is_missing",
+]
+regression_suite = "delivery_validator_cli + summary_replay"
+regression_pass_count = 53
+
+[[experiments]]
+experiment_id = "H18"
+classification = "retrospective_tested"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "af25740"
+primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-producer-contract-schema-experiment-v1.md"
+direct_evidence_refs = [
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_workflow_contract_artifact_kind_is_empty",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_workflow_contract_source_artifacts_are_empty",
+]
+regression_suite = "delivery_validator_cli + summary_replay"
+regression_pass_count = 53

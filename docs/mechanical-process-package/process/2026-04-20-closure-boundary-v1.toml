@@ -47,7 +47,12 @@ standardized = [
 [evidence]
 delivery_validator_cli_tests = 53
 summary_replay_unit_tests = 4
-hypothesis_ledger = "2026-04-20-hypothesis-ledger-v1.toml"
+experiment_ledger = "2026-04-20-experiment-ledger-v1.toml"
+
+[state]
+implementation_status = "prototype_exists"
+scientific_validation_status = "not_established"
+external_adjudication_status = "not_passed"
 
 [open_boundary]
 status = "explicit"

@@ -265,6 +265,18 @@ struct ClaimEnforcementCoverageSummary {
     uncovered_true_claim_count: i64,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct OrchestrationReachabilitySummary {
+    stage: String,
+    summary_kind: String,
+    summary_verdict: String,
+    source_refs: Vec<String>,
+    rule_version: String,
+    out_of_surface_required_job_count: i64,
+    incomplete_case_count: i64,
+    status: String,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct AssumptionRegister {
     #[serde(default)]
@@ -550,6 +562,62 @@ fn compute_claim_enforcement_coverage_summary(
         rule_version: "v1".to_string(),
         covered_true_claim_count,
         uncovered_true_claim_count,
+    }
+}
+
+fn compute_orchestration_reachability_summary(
+    stage: Stage,
+    ci_surface: &CiSurface,
+    reachability: &OrchestrationReachability,
+) -> OrchestrationReachabilitySummary {
+    let stage_name = stage_key(stage).to_string();
+    let stage_jobs: BTreeSet<&str> = ci_surface
+        .required_jobs_by_stage
+        .get(stage_key(stage))
+        .map(|jobs| jobs.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+
+    let mut incomplete_case_count = 0_i64;
+    let mut out_of_surface_required_job_count = 0_i64;
+
+    for case in &reachability.cases {
+        let incomplete = case.case_id.is_empty()
+            || case.subject.is_empty()
+            || case.trigger_job.is_empty()
+            || case.trigger_result.is_empty()
+            || case.required_reachable_jobs.is_empty()
+            || case.forbidden_job_results.is_empty()
+            || case.proof_ref.is_empty()
+            || case.status.is_empty();
+        if incomplete {
+            incomplete_case_count += 1;
+        }
+
+        out_of_surface_required_job_count += case
+            .required_reachable_jobs
+            .iter()
+            .filter(|job| !stage_jobs.contains(job.as_str()))
+            .count() as i64;
+    }
+
+    let summary_verdict = if incomplete_case_count == 0 && out_of_surface_required_job_count == 0 {
+        "pass"
+    } else {
+        "block"
+    };
+
+    OrchestrationReachabilitySummary {
+        stage: stage_name,
+        summary_kind: "orchestration_reachability".to_string(),
+        summary_verdict: summary_verdict.to_string(),
+        source_refs: vec![
+            "orchestration_reachability.toml".to_string(),
+            "ci_surface.toml".to_string(),
+        ],
+        rule_version: "v1".to_string(),
+        out_of_surface_required_job_count,
+        incomplete_case_count,
+        status: "frozen".to_string(),
     }
 }
 
@@ -1039,6 +1107,10 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
     let merge_claims = load_optional::<MergeClaims>(dir, "merge_claims.toml")?;
     let claim_enforcement_coverage =
         load_optional::<ClaimEnforcementCoverageSummary>(dir, "claim_enforcement_coverage.toml")?;
+    let orchestration_reachability_summary = load_optional::<OrchestrationReachabilitySummary>(
+        dir,
+        "orchestration_reachability_summary.toml",
+    )?;
     let review_target = load_optional::<ReviewTarget>(dir, "review_target.toml")?;
     let execution_target = load_optional::<ExecutionTarget>(dir, "execution_target.toml")?;
     let ci_surface = load_optional::<CiSurface>(dir, "ci_surface.toml")?;
@@ -1410,6 +1482,23 @@ pub fn validate_dir(dir: &Path, stage: Stage) -> Result<Report> {
                 "claim_enforcement_coverage.toml",
                 "claim_enforcement coverage summary does not match recomputed producer output",
                 "recompute claim_enforcement_coverage.toml from merge_claims.toml and claim_enforcement.toml",
+            );
+        }
+    }
+
+    if let (Some(surface), Some(reachability), Some(summary)) = (
+        &ci_surface,
+        &orchestration_reachability,
+        &orchestration_reachability_summary,
+    ) {
+        let recomputed = compute_orchestration_reachability_summary(stage, surface, reachability);
+        if *summary != recomputed {
+            report.push(
+                Status::Block,
+                "evidence",
+                "orchestration_reachability_summary.toml",
+                "orchestration reachability summary does not match recomputed producer output",
+                "recompute orchestration_reachability_summary.toml from orchestration_reachability.toml and ci_surface.toml",
             );
         }
     }

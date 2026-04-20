@@ -225,13 +225,48 @@ Interpretation:
 
 For candidate host `i-0b969ff05b7b47811`, the answer is:
 
-**No, do not approve this host yet as a production-equivalent replacement environment.**
+**Still not approved yet, but the production-boundary rerun materially improved the result.**
 
 Reason:
 
 - host/platform parity is substantially improved and the `#215` baseline is proven
-- but the runtime still fails a real startup-readiness condition on a fresh host
-- that means the replacement environment is still not functionally equivalent for actual trading
+- the first non-EIP candidate run was not a valid trading-boundary test
+- after rerunning from the copied production EIP boundary, the earlier Binance startup failure no
+  longer reproduced and the trader started
+- but strategy readiness is still not proven yet from that production-boundary watch window
+
+## EIP-boundary rerun
+
+The candidate was then rerun from the copied production network identity boundary:
+
+- EIP `34.248.143.2` was moved from the old host to the candidate
+- old host fell back to a different public IP
+- candidate retained the same private-subnet / AZ / SG / IAM profile boundary and now also carried
+  the production allowlist-relevant source IP
+
+Material change from that rerun:
+
+- the earlier Binance `HTTP 400 Bad Request` startup failure did **not** recur
+- the journal showed repeated successful startup sequences:
+  - `Startup reconciliation completed ...`
+  - `Trader started`
+- the runtime stayed `active/running`
+- audit record growth became substantial:
+  - thousands of `reference_snapshot`
+  - thousands of `selector_decision`
+  - `eligibility_reject` records present as expected
+
+What remains unproven even after the EIP-boundary rerun:
+
+- strategy readiness to the point of actual entry eligibility
+- the latest watch window still showed the strategy in `phase=Active` but blocked by
+  `WarmupIncomplete`
+
+So the current candidate state is:
+
+- production-boundary startup is materially healthier than the pre-EIP run
+- but the launch job still does not yet have a clean evidence-backed “approved” answer for trading
+  readiness
 
 ## Follow-up
 

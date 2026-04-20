@@ -1,0 +1,38 @@
+version = "v1"
+subject_id = "issue-208-scientific-validation-post-protocol-v1"
+status = "frozen"
+
+protocol_ref = "issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-validation-protocol-v1.toml"
+entry_gates_ref = "issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-future-scientific-validation-entry-gates-v1.toml"
+benchmark_manifest_ref = "issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-benchmark-manifest-v1.toml"
+
+[protocol]
+frozen_head = "6ed9711403a482a8698cd7a22721dd0c0c06e2b1"
+frozen_at = "2026-04-20T15:01:21+09:00"
+
+[subject]
+repo = "seungpyoson/bolt-v2"
+branch = "issue-208-scientific-validation-post-protocol"
+head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+first_logic_commit = "f1501df6bd4d55a29d54f760e12ebefc0b9138d9"
+first_logic_commit_at = "2026-04-20T15:04:39+09:00"
+harness_logic_delta = "replayed_validator_logic_and_fixtures_after_protocol_freeze"
+metadata_only_delta = false
+
+[benchmark_corpus]
+manifest_head = "6ed9711403a482a8698cd7a22721dd0c0c06e2b1"
+descriptor_heads = [
+  "6ed9711403a482a8698cd7a22721dd0c0c06e2b1",
+  "6ed9711403a482a8698cd7a22721dd0c0c06e2b1",
+  "6ed9711403a482a8698cd7a22721dd0c0c06e2b1",
+  "6ed9711403a482a8698cd7a22721dd0c0c06e2b1",
+]
+frozen_at = "2026-04-20T15:01:21+09:00"
+
+[benchmark_execution]
+fixture_owner = "protocol_validation"
+runner_owner = "protocol_validation"
+subject_test_refs_used = false
+
+[claim]
+statement = "This subject head is the first post-protocol replay of the validator logic and fixtures targeted by the scientific-validation benchmark layer."

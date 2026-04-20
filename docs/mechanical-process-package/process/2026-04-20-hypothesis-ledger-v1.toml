@@ -1,0 +1,138 @@
+version = "v1"
+generated_at = "2026-04-20"
+scope = "issue-208-process-validator"
+
+[[hypotheses]]
+hypothesis_id = "H3"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "bcff1ce"
+evidence_direct_tests = 6
+evidence_regression_tests = 25
+note = "merge_candidate gate migrated to scalar comparator"
+
+[[hypotheses]]
+hypothesis_id = "H4"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "3c66e3b"
+evidence_direct_tests = 4
+evidence_regression_tests = 27
+note = "review exact-head admission moved into all_of"
+
+[[hypotheses]]
+hypothesis_id = "H5"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "76ccaad"
+evidence_direct_tests = 5
+evidence_regression_tests = 30
+note = "ci_surface admission moved into gates"
+
+[[hypotheses]]
+hypothesis_id = "H6"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "0c0671a"
+evidence_direct_tests = 6
+evidence_regression_tests = 33
+note = "execution_target and ci_surface completeness moved into gates"
+
+[[hypotheses]]
+hypothesis_id = "H7"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "17035a8"
+evidence_direct_tests = 5
+evidence_regression_tests = 37
+note = "review_round completeness moved into gates"
+
+[[hypotheses]]
+hypothesis_id = "H8"
+validated_at = "2026-04-20"
+result = "fail"
+commit = "2524988"
+evidence_direct_tests = 0
+evidence_regression_tests = 0
+note = "direct claim_enforcement join would require quantified relation comparator"
+
+[[hypotheses]]
+hypothesis_id = "H9"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "fb85fdc"
+evidence_direct_tests = 4
+evidence_regression_tests = 40
+note = "claim_enforcement scalarized upstream"
+
+[[hypotheses]]
+hypothesis_id = "H10"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "74f2010"
+evidence_direct_tests = 4
+evidence_regression_tests = 43
+note = "reachability scalarized upstream"
+
+[[hypotheses]]
+hypothesis_id = "H11"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "0ff699d"
+evidence_direct_tests = 2
+evidence_regression_tests = 45
+note = "scalar summary family standardized and generically validated"
+
+[[hypotheses]]
+hypothesis_id = "H12"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "9276148"
+evidence_direct_tests = 2
+evidence_regression_tests = 47
+note = "comparator family explicitly closed with negative tests"
+
+[[hypotheses]]
+hypothesis_id = "H13"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "ccbaf16"
+evidence_direct_tests = 2
+evidence_regression_tests = 49
+note = "claim_enforcement coverage replayed from source artifacts"
+
+[[hypotheses]]
+hypothesis_id = "H14"
+validated_at = "2026-04-20"
+result = "fail"
+commit = "0ff67e4"
+evidence_direct_tests = 0
+evidence_regression_tests = 0
+note = "full reachability summary not replayable from current sources"
+
+[[hypotheses]]
+hypothesis_id = "H15"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "d2bebb6"
+evidence_direct_tests = 3
+evidence_regression_tests = 49
+note = "reduced reachability summary replayed from current sources"
+
+[[hypotheses]]
+hypothesis_id = "H16"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "5dc0f8b"
+evidence_direct_tests = 3
+evidence_regression_tests = 49
+note = "summary replay logic extracted into first-class module"
+
+[[hypotheses]]
+hypothesis_id = "H17"
+validated_at = "2026-04-20"
+result = "pass"
+commit = "f5d1479"
+evidence_direct_tests = 4
+evidence_regression_tests = 51
+note = "full reachability summary replay restored after freezing upstream workflow semantics"

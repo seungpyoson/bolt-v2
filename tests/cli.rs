@@ -286,7 +286,89 @@ region = "eu-west-1"
 fn secrets_resolve_surfaces_binance_ssm_failure() {
     use std::os::unix::fs::PermissionsExt;
 
-    let path = write_generated_runtime_config();
+    let path = write_temp_config(
+        r#"
+[node]
+name = "BOLT-V2-001"
+trader_id = "BOLT-001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 60
+timeout_reconciliation_secs = 30
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 10
+delay_shutdown_secs = 5
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "TESTDATA"
+type = "polymarket"
+[data_clients.config]
+gamma_event_fetch_max_concurrent = 8
+
+[[exec_clients]]
+name = "TESTEXEC"
+type = "polymarket"
+[exec_clients.config]
+account_id = "POLYMARKET-001"
+signature_type = 2
+funder = "0xabc"
+[exec_clients.secrets]
+region = "us-east-1"
+pk = "/bolt/poly/pk"
+api_key = "/bolt/poly/api-key"
+api_secret = "/bolt/poly/api-secret"
+passphrase = "/bolt/poly/passphrase"
+
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 100
+
+[reference.binance]
+region = "eu-west-1"
+api_key = "/bolt/binance/api-key"
+api_secret = "/bolt/binance/api-secret"
+environment = "Mainnet"
+product_types = ["SPOT"]
+instrument_status_poll_secs = 0
+
+[[reference.venues]]
+name = "BINANCE-BTC"
+type = "binance"
+instrument_id = "BTCUSDT.BINANCE"
+base_weight = 0.35
+stale_after_ms = 1500
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "PRIMARY"
+venue = "polymarket"
+resolution_basis = "binance_btcusdt_1m"
+min_time_to_expiry_secs = 60
+max_time_to_expiry_secs = 900
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 90
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
+[rulesets.selector]
+tag_slug = "bitcoin"
+
+[audit]
+local_dir = "var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760
+"#,
+    );
     let tempdir = tempdir().expect("tempdir should be created");
     let aws_path = tempdir.path().join("aws");
     fs::write(

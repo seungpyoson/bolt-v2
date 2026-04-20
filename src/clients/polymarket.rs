@@ -1581,6 +1581,36 @@ mod tests {
         );
     }
 
+    async fn wait_for_selector_discovery_read(
+        selector_state: &PolymarketSelectorState,
+        discovery: &PolymarketPrefixDiscovery,
+        expected: SelectorDiscoveryRead,
+    ) {
+        const SELECTOR_STATE_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+        const SELECTOR_STATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+        let wait_result = tokio::time::timeout(SELECTOR_STATE_WAIT_TIMEOUT, async {
+            loop {
+                let current = selector_state.event_slugs_read_for_discovery(discovery);
+                if current == expected {
+                    return;
+                }
+                tokio::time::sleep(SELECTOR_STATE_POLL_INTERVAL).await;
+            }
+        })
+        .await;
+
+        if wait_result.is_ok() {
+            return;
+        }
+
+        panic!(
+            "expected discovery read {:?}, observed {:?}",
+            expected,
+            selector_state.event_slugs_read_for_discovery(discovery)
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn wait_for_request_count_tolerates_real_time_progress() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1792,6 +1822,12 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(2100)).await;
         wait_for_request_count(&request_count, 3).await;
+        wait_for_selector_discovery_read(
+            &selector_state,
+            &discovery,
+            SelectorDiscoveryRead::Live(vec!["bitcoin-5m-recovered".to_string()]),
+        )
+        .await;
         assert_eq!(
             selector_state.current_event_slugs(),
             vec!["bitcoin-5m-recovered".to_string()]

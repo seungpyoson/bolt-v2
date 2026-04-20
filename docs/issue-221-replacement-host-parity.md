@@ -10,7 +10,7 @@ The available evidence is enough to define the approval bar, but not enough to p
 ## Scope and assumptions
 
 - Scope is `#221` only: the decision bar for approving a rebuild/new-instance cutover.
-- `#215` is assumed merged or merge-ready in the shape of PR `#218`:
+- `#215` is merged via PR `#218`:
   - `WorkingDirectory=/srv/bolt-v2`
   - `User=bolt`, `Group=bolt`
   - runtime data mount at `/srv/bolt-v2`
@@ -22,7 +22,7 @@ The available evidence is enough to define the approval bar, but not enough to p
 ## What was checked
 
 - Issue scope and boundaries from `#221`, `#215`, and `#219`
-- `#215` implementation baseline from PR `#218`
+- `#215` implementation baseline as merged in PR `#218`
 - Current repo build/runtime contract:
   - target `aarch64-unknown-linux-gnu`
   - release build via `cargo zigbuild --release --target aarch64-unknown-linux-gnu --locked`
@@ -41,8 +41,6 @@ The available evidence is enough to define the approval bar, but not enough to p
   This is now tracked in `#222`.
 - There is **no live replacement-host validation evidence yet** showing startup, feeds, selector,
   reference health, strategy readiness, and disk behavior on a rebuilt instance.
-- `main` does **not** currently contain the two incident files named in `#221`; they exist on the
-  `#215` PR branch. Repo-only parity evidence therefore depends on `#215` landing as assumed.
 - Monitoring and alerting expectations are not yet canonical enough to sign off operational parity.
   This is now tracked in `#223`.
 

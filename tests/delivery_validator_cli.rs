@@ -191,7 +191,6 @@ summary_kind = "orchestration_reachability"
 summary_verdict = "pass"
 source_refs = ["orchestration_reachability.toml", "ci_surface.toml"]
 rule_version = "v1"
-unreachable_required_job_count = 0
 out_of_surface_required_job_count = 0
 incomplete_case_count = 0
 status = "frozen"
@@ -364,12 +363,6 @@ comparator_kind = "string_eq"
 left_ref = "orchestration_reachability_summary.toml#summary_verdict"
 right_ref = ""
 right_literal = "pass"
-
-[[gates.clauses]]
-comparator_kind = "scalar_eq"
-left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
-right_ref = ""
-right_literal = "0"
 
 [[gates.clauses]]
 comparator_kind = "scalar_eq"
@@ -564,12 +557,6 @@ right_literal = "pass"
 
 [[gates.clauses]]
 comparator_kind = "scalar_eq"
-left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
-right_ref = ""
-right_literal = "0"
-
-[[gates.clauses]]
-comparator_kind = "scalar_eq"
 left_ref = "orchestration_reachability_summary.toml#out_of_surface_required_job_count"
 right_ref = ""
 right_literal = "0"
@@ -715,12 +702,6 @@ comparator_kind = "string_eq"
 left_ref = "orchestration_reachability_summary.toml#summary_verdict"
 right_ref = ""
 right_literal = "pass"
-
-[[gates.clauses]]
-comparator_kind = "scalar_eq"
-left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
-right_ref = ""
-right_literal = "0"
 
 [[gates.clauses]]
 comparator_kind = "scalar_eq"
@@ -918,7 +899,6 @@ summary_kind = "orchestration_reachability"
 summary_verdict = "pass"
 source_refs = ["orchestration_reachability.toml", "ci_surface.toml"]
 rule_version = "v1"
-unreachable_required_job_count = 0
 out_of_surface_required_job_count = 0
 incomplete_case_count = 0
 status = "frozen"
@@ -997,7 +977,6 @@ summary_kind = "orchestration_reachability"
 summary_verdict = "pass"
 source_refs = ["orchestration_reachability.toml", "ci_surface.toml"]
 rule_version = "v1"
-unreachable_required_job_count = 0
 out_of_surface_required_job_count = 0
 incomplete_case_count = 0
 status = "frozen"

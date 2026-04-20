@@ -27,8 +27,15 @@ status = "not_applicable_to_current_subject"
 reason = "the_current_subject_head_predates_the_frozen_validation_protocol"
 
 [future_scientific_validation_rule]
-status = "registered_for_future_run_only"
+status = "active_for_future_subjects_only"
 requires_preregistered_protocol = true
+requires_subject_entry_gates = true
 requires_held_out_benchmarks = true
 requires_external_only_adjudication = true
 minimum_external_reviewers = 3
+minimum_established_votes = 3
+maximum_not_established_votes_for_established = 0
+builder_vote_allowed = false
+
+[future_scientific_validation_not_established_rule]
+applies_when = "any_entry_gate_fails_or_any_external_reviewer_returns_not_established_or_minimum_external_reviewers_is_not_met"

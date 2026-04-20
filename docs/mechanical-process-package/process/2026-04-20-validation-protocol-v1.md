@@ -35,8 +35,9 @@ Why:
 - [2026-04-20-validation-protocol-v1.toml](/Users/spson/Projects/Claude/bolt-v2/.worktrees/issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-validation-protocol-v1.toml:1)
 - [2026-04-20-benchmark-manifest-v1.toml](/Users/spson/Projects/Claude/bolt-v2/.worktrees/issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-benchmark-manifest-v1.toml:1)
 - [2026-04-20-adjudication-rules-v1.toml](/Users/spson/Projects/Claude/bolt-v2/.worktrees/issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-adjudication-rules-v1.toml:1)
+- [2026-04-20-future-scientific-validation-entry-gates-v1.toml](/Users/spson/Projects/Claude/bolt-v2/.worktrees/issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-future-scientific-validation-entry-gates-v1.toml:1)
 
 ## Outcome
 
 This branch defines the protocol.
-It does not execute the adjudication itself.
+It also freezes the entry gates a future scientific-validation subject must satisfy before any run can start.

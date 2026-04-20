@@ -12,6 +12,7 @@ builder_must_not_adjudicate = true
 
 benchmark_manifest_ref = "2026-04-20-benchmark-manifest-v1.toml"
 adjudication_rules_ref = "2026-04-20-adjudication-rules-v1.toml"
+scientific_validation_entry_gates_ref = "2026-04-20-future-scientific-validation-entry-gates-v1.toml"
 
 target_decisions = [
   "keep_prototype",
@@ -41,6 +42,9 @@ requires_subject_head_frozen = true
 
 [success_conditions.scientific_validation]
 requires_preregistration = true
+requires_subject_entry_gates = true
 requires_held_out_benchmarks = true
+requires_protocol_owned_benchmark_execution = true
 requires_external_only_adjudication = true
 requires_threshold_rule = true
+requires_separate_local_and_final_results = true

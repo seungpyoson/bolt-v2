@@ -1,0 +1,100 @@
+version = "v1"
+gate_set_id = "future-scientific-validation-entry-gates"
+status = "frozen"
+applies_to = "future_scientific_validation_subjects_only"
+
+[[gates]]
+gate_id = "SV-ENTRY-1"
+subject = "subject_eligibility"
+predicate = "logic_postdates_protocol"
+required = true
+evidence_fields = [
+  "protocol_frozen_head",
+  "protocol_frozen_at",
+  "subject_head",
+  "first_logic_commit",
+  "first_logic_commit_at",
+  "metadata_only_delta",
+  "harness_logic_delta",
+]
+pass_rule = "first_logic_commit_at must be after protocol freeze; metadata_only_delta must be false; harness_logic_delta must not be none"
+fail_closed_on = [
+  "missing first logic commit evidence",
+  "metadata_only_delta=true",
+  "harness_logic_delta=none",
+]
+
+[[gates]]
+gate_id = "SV-ENTRY-2"
+subject = "benchmark_corpus_timing"
+predicate = "corpus_frozen_before_subject_logic"
+required = true
+evidence_fields = [
+  "benchmark_manifest_head",
+  "benchmark_descriptor_heads",
+  "benchmark_frozen_at",
+  "first_logic_commit_at",
+]
+pass_rule = "benchmark manifest and all benchmark descriptors must be frozen before the first subject logic commit"
+fail_closed_on = [
+  "descriptor freeze after subject logic commit",
+  "mutable corpus after subject start",
+]
+
+[[gates]]
+gate_id = "SV-ENTRY-3"
+subject = "benchmark_independence"
+predicate = "protocol_owned_corpus_and_runner"
+required = true
+evidence_fields = [
+  "descriptor_ref",
+  "fixture_ref",
+  "runner_ref",
+  "fixture_owner",
+  "runner_owner",
+  "subject_test_refs_used",
+]
+pass_rule = "descriptor, fixture, and runner must be protocol-owned validation artifacts; subject-authored tests must not be reused as held-out evidence"
+fail_closed_on = [
+  "base fixture under subject tests",
+  "evidence refs point to subject-authored tests",
+  "runner missing",
+]
+
+[[gates]]
+gate_id = "SV-ENTRY-4"
+subject = "result_framing"
+predicate = "local_run_separated_from_final_verdict"
+required = true
+evidence_fields = [
+  "local_results_ref",
+  "external_adjudication_results_ref",
+  "scientific_validation_status",
+]
+pass_rule = "local benchmark execution may record only benchmark completion; final scientific verdict must be recorded separately after external adjudication"
+fail_closed_on = [
+  "local run labeled established",
+  "single artifact mixes local completion with final establishment",
+]
+
+[[gates]]
+gate_id = "SV-ENTRY-5"
+subject = "external_adjudication"
+predicate = "active_threshold_rule_exists"
+required = true
+evidence_fields = [
+  "future_scientific_validation_rule",
+  "minimum_external_reviewers",
+  "minimum_established_votes",
+  "maximum_not_established_votes_for_established",
+  "builder_vote_allowed",
+]
+pass_rule = "an active future rule must exist before the run; establishment requires 3 external reviewers, 3 established votes, zero not-established votes, and no builder vote"
+fail_closed_on = [
+  "future rule missing",
+  "threshold unspecified",
+  "builder vote counted",
+]
+
+[stop_rule]
+if_any_gate_fails = "scientific_validation_not_started"

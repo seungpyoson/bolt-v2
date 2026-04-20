@@ -189,11 +189,25 @@ uncovered_true_claim_count = 0
 stage = "review"
 summary_kind = "orchestration_reachability"
 summary_verdict = "pass"
-source_refs = ["orchestration_reachability.toml", "ci_surface.toml"]
+source_refs = ["orchestration_reachability.toml", "ci_surface.toml", "workflow_reachability_contract.toml"]
 rule_version = "v1"
+unreachable_required_job_count = 0
 out_of_surface_required_job_count = 0
 incomplete_case_count = 0
 status = "frozen"
+"#,
+    );
+    write_file(
+        &dst.join("workflow_reachability_contract.toml"),
+        r#"
+workflow = "CI"
+contract_version = "v1"
+status = "frozen"
+
+[[reachability]]
+trigger_job = "job-review"
+trigger_result = "success"
+reachable_jobs = ["job-review"]
 "#,
     );
     write_file(
@@ -363,6 +377,12 @@ comparator_kind = "string_eq"
 left_ref = "orchestration_reachability_summary.toml#summary_verdict"
 right_ref = ""
 right_literal = "pass"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
+right_ref = ""
+right_literal = "0"
 
 [[gates.clauses]]
 comparator_kind = "scalar_eq"
@@ -897,11 +917,25 @@ status = "covered"
 stage = "review"
 summary_kind = "orchestration_reachability"
 summary_verdict = "pass"
-source_refs = ["orchestration_reachability.toml", "ci_surface.toml"]
+source_refs = ["orchestration_reachability.toml", "ci_surface.toml", "workflow_reachability_contract.toml"]
 rule_version = "v1"
+unreachable_required_job_count = 0
 out_of_surface_required_job_count = 0
 incomplete_case_count = 0
 status = "frozen"
+"#,
+            );
+            write_file(
+                &dst.join("workflow_reachability_contract.toml"),
+                r#"
+workflow = "CI"
+contract_version = "v1"
+status = "frozen"
+
+[[reachability]]
+trigger_job = "job-review"
+trigger_result = "success"
+reachable_jobs = ["job-review"]
 "#,
             );
             write_file(
@@ -975,11 +1009,25 @@ status = "covered"
 stage = "merge_candidate"
 summary_kind = "orchestration_reachability"
 summary_verdict = "pass"
-source_refs = ["orchestration_reachability.toml", "ci_surface.toml"]
+source_refs = ["orchestration_reachability.toml", "ci_surface.toml", "workflow_reachability_contract.toml"]
 rule_version = "v1"
+unreachable_required_job_count = 0
 out_of_surface_required_job_count = 0
 incomplete_case_count = 0
 status = "frozen"
+"#,
+            );
+            write_file(
+                &dst.join("workflow_reachability_contract.toml"),
+                r#"
+workflow = "CI"
+contract_version = "v1"
+status = "frozen"
+
+[[reachability]]
+trigger_job = "job-merge"
+trigger_result = "success"
+reachable_jobs = ["job-merge"]
 "#,
             );
             write_merge_candidate_ci_gate(dst);
@@ -2057,6 +2105,34 @@ fn synthetic_review_package_blocks_when_reachability_summary_is_missing() {
 }
 
 #[test]
+fn synthetic_review_package_blocks_when_workflow_reachability_contract_is_missing() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    fs::remove_file(dst.join("workflow_reachability_contract.toml"))
+        .expect("workflow_reachability_contract should remove");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when workflow_reachability_contract is missing for replay; output:\n{text}"
+    );
+    assert!(
+        text.contains("workflow_reachability_contract.toml"),
+        "{text}"
+    );
+}
+
+#[test]
 fn synthetic_review_package_blocks_when_reachability_summary_source_refs_are_empty() {
     let temp = tempdir().expect("tempdir should create");
     let dst = temp.path().join("synthetic-review-package");
@@ -2067,7 +2143,7 @@ fn synthetic_review_package_blocks_when_reachability_summary_source_refs_are_emp
     fs::write(
         &summary,
         original.replace(
-            "source_refs = [\"orchestration_reachability.toml\", \"ci_surface.toml\"]",
+            "source_refs = [\"orchestration_reachability.toml\", \"ci_surface.toml\", \"workflow_reachability_contract.toml\"]",
             "source_refs = []",
         ),
     )
@@ -2088,6 +2164,43 @@ fn synthetic_review_package_blocks_when_reachability_summary_source_refs_are_emp
         "review package must fail closed when reachability summary source_refs are empty; output:\n{text}"
     );
     assert!(text.contains("source_refs"), "{text}");
+}
+
+#[test]
+fn synthetic_review_package_blocks_when_reachability_summary_unreachable_count_drifts() {
+    let temp = tempdir().expect("tempdir should create");
+    let dst = temp.path().join("synthetic-review-package");
+    write_minimal_review_package(&dst);
+    let summary = dst.join("orchestration_reachability_summary.toml");
+    let original =
+        fs::read_to_string(&summary).expect("orchestration_reachability_summary should read");
+    fs::write(
+        &summary,
+        original.replace(
+            "unreachable_required_job_count = 0",
+            "unreachable_required_job_count = 1",
+        ),
+    )
+    .expect("mutated orchestration_reachability_summary should write");
+
+    let mut command = validator_command();
+    let output = command
+        .current_dir(repo_root())
+        .arg("--delivery-dir")
+        .arg(&dst)
+        .arg("--stage")
+        .arg("review")
+        .output()
+        .expect("validator command should execute");
+    let text = combined_output(&output);
+    assert!(
+        !output.status.success(),
+        "review package must fail closed when reachability unreachable count drifts from replayed output; output:\n{text}"
+    );
+    assert!(
+        text.contains("does not match recomputed producer output"),
+        "{text}"
+    );
 }
 
 #[test]

@@ -155,6 +155,12 @@ right_literal = "pass"
 
 [[gates.clauses]]
 comparator_kind = "scalar_eq"
+left_ref = "orchestration_reachability_summary.toml#unreachable_required_job_count"
+right_ref = ""
+right_literal = "0"
+
+[[gates.clauses]]
+comparator_kind = "scalar_eq"
 left_ref = "orchestration_reachability_summary.toml#out_of_surface_required_job_count"
 right_ref = ""
 right_literal = "0"

@@ -1,0 +1,16 @@
+version = "v1"
+subject_id = "issue-208-scientific-validation-subject-v1"
+status = "frozen"
+created_at = "2026-04-20"
+
+protocol_ref = "issue-208-validation-protocol/docs/mechanical-process-package/process/2026-04-20-validation-protocol-v1.toml"
+baseline_subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+
+[subject]
+repo = "seungpyoson/bolt-v2"
+branch = "issue-208-scientific-validation-subject"
+harness_logic_delta = "none"
+metadata_only_delta = true
+
+[claim]
+statement = "This subject head is a post-protocol snapshot of the same harness logic as the frozen prototype baseline."

@@ -1,0 +1,57 @@
+version = "v1"
+results_id = "issue-208-scientific-validation-results-v2"
+status = "frozen"
+executed_at = "2026-04-20"
+
+protocol_ref = "2026-04-20-validation-protocol-v1.toml"
+entry_gates_ref = "2026-04-20-future-scientific-validation-entry-gates-v1.toml"
+benchmark_manifest_ref = "2026-04-20-benchmark-manifest-v1.toml"
+adjudication_rules_ref = "2026-04-20-adjudication-rules-v1.toml"
+
+subject_repo = "seungpyoson/bolt-v2"
+subject_branch = "issue-208-scientific-validation-post-protocol"
+subject_logic_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+subject_registration_head = "6b36d1627f3e1db72d7b9beeff6b7f0dcddf4b30"
+registration_ref = "docs/mechanical-process-package/validation/subjects/2026-04-20-post-protocol-subject-registration-v1.toml"
+protocol_snapshot_head = "6ed9711403a482a8698cd7a22721dd0c0c06e2b1"
+
+[local_execution]
+status = "completed"
+runner = "scientific_validation_runner"
+detached_subject_root = ".worktrees/issue-208-scientific-validation-logic-head"
+
+[[benchmarks]]
+benchmark_id = "B4"
+status = "pass"
+executed_on_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B4-unsupported-comparator-kinds.toml"
+
+[[benchmarks]]
+benchmark_id = "B5"
+status = "pass"
+executed_on_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B5-scalar-summary-schema-breaks.toml"
+
+[[benchmarks]]
+benchmark_id = "B6"
+status = "pass"
+executed_on_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B6-summary-replay-drift.toml"
+
+[[benchmarks]]
+benchmark_id = "B7"
+status = "pass"
+executed_on_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B7-producer-contract-schema-breaks.toml"
+
+[scientific_validation]
+status = "eligible_subject_local_benchmark_execution_passed"
+subject_eligible_under_protocol = true
+benchmark_corpus_frozen_enough = true
+benchmark_execution_adequate = true
+external_adjudication_status = "pending"
+final_decision = "pending_external"
+
+[notes]
+local_result_interpretation = "the_first_post_protocol_subject_passed_the_protocol_owned_B4_through_B7_benchmark_layer_but_still_requires_external_adjudication"
+builder_adjudication_performed = false

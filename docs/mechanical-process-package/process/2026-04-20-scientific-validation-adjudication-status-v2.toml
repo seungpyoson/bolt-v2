@@ -1,0 +1,25 @@
+version = "v1"
+status_id = "issue-208-scientific-validation-adjudication-status-v2"
+status = "frozen"
+recorded_at = "2026-04-20"
+
+subject_logic_head = "867d824ffdbe3063fb2bf2eb9993e6077427269d"
+subject_registration_head = "6b36d1627f3e1db72d7b9beeff6b7f0dcddf4b30"
+protocol_snapshot_head = "6ed9711403a482a8698cd7a22721dd0c0c06e2b1"
+
+[local_execution]
+status = "completed"
+B4 = "pass"
+B5 = "pass"
+B6 = "pass"
+B7 = "pass"
+
+[external_adjudication]
+status = "pending"
+minimum_external_reviewers = 3
+completed_external_reviewers = 0
+blocking_reason = "external review collection incomplete"
+
+[notes]
+final_scientific_validation_decision = "pending"
+adjudication_results_ref = ""

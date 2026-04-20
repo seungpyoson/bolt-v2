@@ -1,0 +1,23 @@
+[Unit]
+Description=bolt-v2 Polymarket LiveNode
+After=network-online.target srv-bolt\x2dv2.mount
+Wants=network-online.target
+RequiresMountsFor=/srv/bolt-v2
+
+[Service]
+Type=simple
+User=bolt
+Group=bolt
+WorkingDirectory=/srv/bolt-v2
+ExecStart=/opt/bolt-v2/bolt-v2 run --config /opt/bolt-v2/config/live.toml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+ReadWritePaths=/srv/bolt-v2
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

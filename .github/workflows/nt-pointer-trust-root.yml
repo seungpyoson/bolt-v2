@@ -30,10 +30,25 @@ jobs:
 
       - name: Fetch external trust-root validator
         shell: bash
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
         run: |
-          base_url="https://raw.githubusercontent.com/${TRUST_ROOT_VALIDATOR_REPO}/${TRUST_ROOT_VALIDATOR_SHA}"
-          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt_trust_root_validator.py" "$base_url/lib/bolt_trust_root_validator.py"
-          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" "$base_url/config/bolt-v2-trust-root-policy.json"
+          source_repo="$RUNNER_TEMP/trust-root-source"
+          auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+          rm -rf "$source_repo"
+          git init -q "$source_repo"
+          git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" \
+            git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA"
+          fetched_sha="$(git -C "$source_repo" rev-parse FETCH_HEAD)"
+          if [ "$fetched_sha" != "$TRUST_ROOT_VALIDATOR_SHA" ]; then
+            echo "Fetched trust-root bundle SHA $fetched_sha does not match pinned SHA $TRUST_ROOT_VALIDATOR_SHA" >&2
+            exit 1
+          fi
+          git -C "$source_repo" show "FETCH_HEAD:lib/bolt_trust_root_validator.py" > "$RUNNER_TEMP/bolt_trust_root_validator.py"
+          git -C "$source_repo" show "FETCH_HEAD:config/bolt-v2-trust-root-policy.json" > "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"
           chmod +x "$RUNNER_TEMP/bolt_trust_root_validator.py"
 
       - name: Materialize protected files from PR head

@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
+use bolt_v2::delivery_validator::{Stage, render_report, validate_dir};
 use clap::{Parser, ValueEnum};
-
-#[path = "../delivery_validator.rs"]
-mod delivery_validator;
-
-use delivery_validator::{Stage, render_report, validate_dir};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum StageArg {

@@ -88,7 +88,7 @@ fn build_test_node() -> LiveNode {
 
         [logging]
         stdout_level = "Info"
-        file_level = "Debug"
+        file_level = "Off"
 
         [[data_clients]]
         name = "TESTDATA"

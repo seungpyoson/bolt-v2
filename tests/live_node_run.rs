@@ -37,7 +37,7 @@ fn explicit_live_node_config_path_runs_with_registered_clients() {
 
         [logging]
         stdout_level = "Info"
-        file_level = "Debug"
+        file_level = "Off"
 
         [exec_engine]
         position_check_interval_secs = 0.25
@@ -138,7 +138,7 @@ fn sandbox_startup_path_preserves_environment_when_position_check_is_unset() {
 
         [logging]
         stdout_level = "Info"
-        file_level = "Debug"
+        file_level = "Off"
 
         [[data_clients]]
         name = "TEST"
@@ -215,7 +215,7 @@ fn sandbox_startup_rejects_position_check_interval() {
 
         [logging]
         stdout_level = "Info"
-        file_level = "Debug"
+        file_level = "Off"
 
         [exec_engine]
         position_check_interval_secs = 0.25

@@ -1157,7 +1157,7 @@ mod tests {
             },
             logging: LoggingConfig {
                 stdout_level: "Info".to_string(),
-                file_level: "Debug".to_string(),
+                file_level: "Off".to_string(),
             },
             data_clients: Vec::new(),
             exec_clients: vec![ExecClientEntry {
@@ -1482,7 +1482,7 @@ mod tests {
             },
             logging: LoggingConfig {
                 stdout_level: "Info".to_string(),
-                file_level: "Debug".to_string(),
+                file_level: "Off".to_string(),
             },
             data_clients: Vec::new(),
             exec_clients: Vec::new(),
@@ -1511,7 +1511,7 @@ mod tests {
                 candidate_load_timeout_secs: 7,
             }],
             audit: Some(AuditConfig {
-                local_dir: "var/audit".to_string(),
+                local_dir: "/srv/bolt-v2/var/audit".to_string(),
                 s3_uri: "s3://bucket/audit".to_string(),
                 ship_interval_secs: 1,
                 upload_attempt_timeout_secs: 1,

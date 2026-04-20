@@ -238,7 +238,7 @@ mod tests {
 
             [logging]
             stdout_level = "Info"
-            file_level = "Debug"
+            file_level = "Off"
 
             [[data_clients]]
             name = "POLYMARKET"
@@ -295,7 +295,7 @@ mod tests {
 
             [logging]
             stdout_level = "Info"
-            file_level = "Debug"
+            file_level = "Off"
 
             [exec_engine]
             position_check_interval_secs = 11

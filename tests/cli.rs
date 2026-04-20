@@ -64,7 +64,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TEST"
@@ -126,7 +126,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TEST"
@@ -185,7 +185,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TEST"
@@ -243,7 +243,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TEST"
@@ -303,7 +303,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TESTDATA"
@@ -360,7 +360,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -456,7 +456,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TEST"
@@ -518,7 +518,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TEST"
@@ -577,7 +577,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "TEST"

@@ -693,7 +693,7 @@ fn phase1_ruleset_venue_unknown_value_rejected_during_parse() {
 fn phase1_audit_required_when_rulesets_are_configured() {
     let toml = valid_phase1_toml()
         .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("local_dir = \"/srv/bolt-v2/var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
         .replace("upload_attempt_timeout_secs = 30\n", "")
@@ -1171,7 +1171,7 @@ fn phase1_ruleset_candidate_load_timeout_secs_must_be_positive() {
 fn phase1_audit_paths_must_be_non_empty() {
     let local_dir = replace(
         &valid_phase1_toml(),
-        "local_dir = \"var/audit\"",
+        "local_dir = \"/srv/bolt-v2/var/audit\"",
         "local_dir = \"\"",
     );
     let local_dir_errors = errors_for(&local_dir);
@@ -1265,7 +1265,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "POLYMARKET"
@@ -1337,7 +1337,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -1373,7 +1373,7 @@ tag_slug = "bitcoin"
 "#;
 
 const PHASE1_AUDIT_BLOCK: &str = r#"[audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -1432,7 +1432,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -2008,7 +2008,7 @@ fn phase1_runtime_requires_reference_venues_when_one_ruleset_is_active() {
 fn phase1_runtime_requires_audit_when_ruleset_is_configured() {
     let toml = valid_phase1_runtime_toml()
         .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("local_dir = \"/srv/bolt-v2/var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
         .replace("upload_attempt_timeout_secs = 30\n", "")
@@ -2153,7 +2153,7 @@ strategy_id = "STUB-RUNTIME-002"
 fn phase1_runtime_load_rejects_missing_audit_when_ruleset_is_configured() {
     let toml = valid_phase1_runtime_toml()
         .replace("[audit]\n", "")
-        .replace("local_dir = \"var/audit\"\n", "")
+        .replace("local_dir = \"/srv/bolt-v2/var/audit\"\n", "")
         .replace("s3_uri = \"s3://bolt-runtime-history/phase1\"\n", "")
         .replace("ship_interval_secs = 30\n", "")
         .replace("upload_attempt_timeout_secs = 30\n", "")

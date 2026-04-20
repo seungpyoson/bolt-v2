@@ -24,7 +24,7 @@ delay_shutdown_secs = 5
 
 [logging]
 stdout_level = "Info"
-file_level = "Debug"
+file_level = "Off"
 
 [[data_clients]]
 name = "POLYMARKET"
@@ -181,7 +181,7 @@ candidate_load_timeout_secs = 30
 tag_slug = "ethereum"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30
@@ -272,7 +272,7 @@ candidate_load_timeout_secs = 12
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 45
@@ -318,7 +318,7 @@ max_local_backlog_bytes = 10485760
         value["rulesets"][0]["candidate_load_timeout_secs"].as_integer(),
         Some(12)
     );
-    assert_eq!(value["audit"]["local_dir"].as_str(), Some("var/audit"));
+    assert_eq!(value["audit"]["local_dir"].as_str(), Some("/srv/bolt-v2/var/audit"));
     assert_eq!(
         value["audit"]["upload_attempt_timeout_secs"].as_integer(),
         Some(45)
@@ -391,7 +391,7 @@ candidate_load_timeout_secs = 12
 tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 45

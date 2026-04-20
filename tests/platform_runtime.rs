@@ -197,7 +197,7 @@ fn test_config(audit_dir: &Path) -> Config {
         },
         logging: LoggingConfig {
             stdout_level: "Info".to_string(),
-            file_level: "Debug".to_string(),
+            file_level: "Off".to_string(),
         },
         data_clients: Vec::new(),
         exec_clients: Vec::new(),

@@ -49,7 +49,7 @@ fn parses_runtime_config_with_optional_streaming_section() {
         passphrase = "/pass"
 
         [raw_capture]
-        output_dir = "var/raw"
+        output_dir = "/srv/bolt-v2/var/raw"
 
         [streaming]
         catalog_path = "var/catalog"
@@ -61,7 +61,7 @@ fn parses_runtime_config_with_optional_streaming_section() {
 
     assert_eq!(cfg.node.timeout_connection_secs, 60);
     assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
-    assert_eq!(cfg.raw_capture.output_dir, "var/raw");
+    assert_eq!(cfg.raw_capture.output_dir, "/srv/bolt-v2/var/raw");
     assert_eq!(cfg.streaming.catalog_path, "var/catalog");
     assert_eq!(cfg.streaming.flush_interval_ms, 1000);
     assert_eq!(
@@ -114,7 +114,7 @@ fn runtime_config_parses_ruleset_selector_table() {
         passphrase = "/pass"
 
         [raw_capture]
-        output_dir = "var/raw"
+        output_dir = "/srv/bolt-v2/var/raw"
 
         [reference]
         publish_topic = "platform.reference.default"
@@ -153,7 +153,7 @@ fn runtime_config_parses_ruleset_selector_table() {
         event_slug_prefix = "btc-updown"
 
         [audit]
-        local_dir = "var/audit"
+        local_dir = "/srv/bolt-v2/var/audit"
         s3_uri = "s3://bolt-runtime-history/phase1"
         ship_interval_secs = 30
         upload_attempt_timeout_secs = 30
@@ -318,7 +318,7 @@ fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema
         passphrase = "/pass"
 
         [raw_capture]
-        output_dir = "var/raw"
+        output_dir = "/srv/bolt-v2/var/raw"
 
         [streaming]
         catalog_path = "var/catalog"
@@ -397,7 +397,7 @@ candidate_load_timeout_secs = 12
         tag_slug = "bitcoin"
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 45

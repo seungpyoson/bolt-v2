@@ -37,30 +37,34 @@ expected_exit = 0
 benchmark_id = "B4"
 track = "scientific_validation"
 kind = "held_out_seeded_fault_family"
-status = "registered_not_run"
+status = "frozen_not_run"
 fault_family = "unsupported_comparator_kinds"
 expected_outcome = "fail_closed"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B4-unsupported-comparator-kinds.toml"
 
 [[benchmarks]]
 benchmark_id = "B5"
 track = "scientific_validation"
 kind = "held_out_seeded_fault_family"
-status = "registered_not_run"
+status = "frozen_not_run"
 fault_family = "scalar_summary_schema_breaks"
 expected_outcome = "fail_closed"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B5-scalar-summary-schema-breaks.toml"
 
 [[benchmarks]]
 benchmark_id = "B6"
 track = "scientific_validation"
 kind = "held_out_seeded_fault_family"
-status = "registered_not_run"
+status = "frozen_not_run"
 fault_family = "summary_replay_drift"
 expected_outcome = "fail_closed"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B6-summary-replay-drift.toml"
 
 [[benchmarks]]
 benchmark_id = "B7"
 track = "scientific_validation"
 kind = "held_out_seeded_fault_family"
-status = "registered_not_run"
+status = "frozen_not_run"
 fault_family = "producer_contract_schema_breaks"
 expected_outcome = "fail_closed"
+descriptor_ref = "docs/mechanical-process-package/validation/benchmarks/B7-producer-contract-schema-breaks.toml"

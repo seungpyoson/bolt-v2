@@ -1,0 +1,22 @@
+version = "v1"
+benchmark_id = "B4"
+status = "frozen"
+track = "scientific_validation"
+base_subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+fault_family = "unsupported_comparator_kinds"
+base_fixture = "tests/delivery_validator_cli.rs::write_minimal_review_package"
+mutation_surface = "promotion_gate.toml comparator_kind fields"
+expected_outcome = "fail_closed"
+
+non_redefinable = [
+  "fault_family",
+  "mutation_surface",
+  "expected_outcome",
+]
+
+[seed]
+kind = "string_replacement"
+targets = [
+  "comparator_kind = \"all_of\" -> comparator_kind = \"join_exists\"",
+  "comparator_kind = \"nonempty\" -> comparator_kind = \"graph_walk\"",
+]

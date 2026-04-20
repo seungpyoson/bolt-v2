@@ -1,0 +1,23 @@
+version = "v1"
+benchmark_id = "B6"
+status = "frozen"
+track = "scientific_validation"
+base_subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+fault_family = "summary_replay_drift"
+base_fixture = "tests/delivery_validator_cli.rs::write_minimal_review_package"
+mutation_surface = "replayed scalar summary artifacts"
+expected_outcome = "fail_closed"
+
+non_redefinable = [
+  "fault_family",
+  "mutation_surface",
+  "expected_outcome",
+]
+
+[seed]
+kind = "replay_drift"
+targets = [
+  "claim_enforcement_coverage.covered_true_claim_count drift",
+  "claim_enforcement_coverage.summary_verdict drift",
+  "orchestration_reachability_summary.unreachable_required_job_count drift",
+]

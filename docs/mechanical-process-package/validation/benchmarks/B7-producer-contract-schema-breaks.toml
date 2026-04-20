@@ -1,0 +1,22 @@
+version = "v1"
+benchmark_id = "B7"
+status = "frozen"
+track = "scientific_validation"
+base_subject_head = "c4d182d2482ec56e02e14be112359d285f7abece"
+fault_family = "producer_contract_schema_breaks"
+base_fixture = "tests/delivery_validator_cli.rs::write_minimal_review_package"
+mutation_surface = "workflow_reachability_contract.toml wrapper fields"
+expected_outcome = "fail_closed"
+
+non_redefinable = [
+  "fault_family",
+  "mutation_surface",
+  "expected_outcome",
+]
+
+[seed]
+kind = "schema_break"
+targets = [
+  "workflow_reachability_contract.artifact_kind = \"\"",
+  "workflow_reachability_contract.source_artifacts = []",
+]

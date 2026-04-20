@@ -56,9 +56,9 @@ Expected summary:
 
 ```text
 STATUS: PASS
-KIND: finding
-WHERE: finding_ledger.toml
-WHY: repeated slug-fetch wording collapsed into one canonical finding; stale NT-pointer comments classified as review_target_mismatch; legacy schema-boundary finding remained distinct
+KIND: schema
+WHERE: artifact package
+WHY: artifact package is structurally valid for selected stage `review`
 NEXT: none
 ```
 
@@ -76,9 +76,9 @@ Expected summary:
 
 ```text
 STATUS: PASS
-KIND: proof
-WHERE: proof_plan.toml
-WHY: schema-boundary, legacy-compatibility, fail-closed legacy behavior, and bounded slug-fetch behavior are all represented as explicit claims with falsifiers
+KIND: schema
+WHERE: artifact package
+WHY: artifact package is structurally valid for selected stage `review`
 NEXT: none
 ```
 

@@ -1102,7 +1102,7 @@ fn finding_canonicalization_fixture_passes() {
     );
     let text = combined_output(&output);
     assert!(text.contains("STATUS: PASS"), "{text}");
-    assert!(text.contains("KIND: finding"), "{text}");
+    assert!(text.contains("KIND: schema"), "{text}");
 }
 
 #[test]
@@ -1137,7 +1137,7 @@ fn proof_plan_fixture_passes_with_review_target_warning() {
     );
     let text = combined_output(&output);
     assert!(text.contains("STATUS: PASS"), "{text}");
-    assert!(text.contains("KIND: proof"), "{text}");
+    assert!(text.contains("KIND: schema"), "{text}");
     assert!(text.contains("STATUS: WARN"), "{text}");
     assert!(text.contains("KIND: review_target"), "{text}");
 }

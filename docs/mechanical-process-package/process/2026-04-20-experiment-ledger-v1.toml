@@ -9,8 +9,9 @@ scientific_validation_status = "not_established"
 external_adjudication_status = "not_passed"
 
 [metrics]
-direct_evidence = "Each item in direct_evidence_refs is an exact artifact path or test id used as the primary evidence for the entry."
-regression_evidence = "regression_pass_count is the count of passing tests in regression_suite on the validation snapshot recorded for the entry."
+direct_evidence = "Each item in direct_evidence_refs is an exact artifact path or test id that exists on the commit recorded in commit."
+regression_evidence = "regression_pass_count is the count of passing tests in regression_suite on the exact commit recorded in commit."
+evidence_snapshot_mode = "entry_commit"
 
 [[experiments]]
 experiment_id = "H3"
@@ -168,7 +169,7 @@ direct_evidence_refs = [
   "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_claim_enforcement_coverage_verdict_drifts_from_recomputed_output",
 ]
 regression_suite = "delivery_validator_cli + summary_replay"
-regression_pass_count = 53
+regression_pass_count = 49
 
 [[experiments]]
 experiment_id = "H14"
@@ -191,10 +192,12 @@ result = "pass"
 commit = "d2bebb6"
 primary_artifact_ref = "docs/mechanical-process-package/process/2026-04-20-reachability-replay-reduction-experiment-v1.md"
 direct_evidence_refs = [
-  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_unreachable_count_drifts",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_is_missing",
+  "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_reachability_summary_verdict_is_block",
+  "tests/delivery_validator_cli.rs::synthetic_merge_candidate_blocks_when_reachability_summary_stage_is_wrong",
 ]
 regression_suite = "delivery_validator_cli + summary_replay"
-regression_pass_count = 53
+regression_pass_count = 49
 
 [[experiments]]
 experiment_id = "H16"
@@ -209,7 +212,7 @@ direct_evidence_refs = [
   "src/summary_replay.rs::tests::reachability_summary_blocks_incomplete_case",
 ]
 regression_suite = "delivery_validator_cli + summary_replay"
-regression_pass_count = 53
+regression_pass_count = 52
 
 [[experiments]]
 experiment_id = "H17"
@@ -223,7 +226,7 @@ direct_evidence_refs = [
   "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_workflow_reachability_contract_is_missing",
 ]
 regression_suite = "delivery_validator_cli + summary_replay"
-regression_pass_count = 53
+regression_pass_count = 55
 
 [[experiments]]
 experiment_id = "H18"
@@ -237,4 +240,4 @@ direct_evidence_refs = [
   "tests/delivery_validator_cli.rs::synthetic_review_package_blocks_when_workflow_contract_source_artifacts_are_empty",
 ]
 regression_suite = "delivery_validator_cli + summary_replay"
-regression_pass_count = 53
+regression_pass_count = 57

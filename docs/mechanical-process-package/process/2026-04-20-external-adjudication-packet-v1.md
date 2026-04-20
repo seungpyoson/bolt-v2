@@ -4,7 +4,7 @@
 
 - repo: `seungpyoson/bolt-v2`
 - branch: `issue-208-process-validator`
-- exact head: `0e29b5a4276074fe48541bcc9b9057fde263ec30`
+- exact head: `94a5053aa6eff969c29947d92f7ae0727a1384e5`
 
 ## Scope
 

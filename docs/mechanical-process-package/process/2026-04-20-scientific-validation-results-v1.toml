@@ -15,6 +15,8 @@ metadata_only_delta = true
 
 [local_execution]
 status = "completed"
+scope = "benchmark_families_B4_through_B7_only"
+scientific_verdict_claimed = false
 
 [[benchmarks]]
 benchmark_id = "B4"
@@ -54,6 +56,14 @@ evidence_refs = [
 ]
 
 [scientific_validation]
-status = "local_benchmark_execution_passed"
-external_adjudication_status = "pending"
-final_decision = "pending_external"
+status = "not_established"
+subject_eligible_under_protocol = false
+benchmark_corpus_frozen_enough = false
+benchmark_execution_adequate = false
+external_adjudication_status = "completed"
+external_adjudication_results_ref = "2026-04-20-scientific-validation-adjudication-results-v1.toml"
+final_decision = "scientific_validation_not_established"
+
+[notes]
+local_result_interpretation = "the_local_B4_through_B7_benchmark_run_completed_but_does_not_establish_scientific_validation"
+primary_failure_mode = "subject_ineligible_under_frozen_protocol"

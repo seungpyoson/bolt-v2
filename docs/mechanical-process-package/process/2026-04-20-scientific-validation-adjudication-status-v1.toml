@@ -4,7 +4,7 @@ status = "frozen"
 recorded_at = "2026-04-20"
 
 subject_head = "50c0fca5c21ea4a4b94ce1136ab68aed0ab3e105"
-protocol_head = "54498ce9e734f2d9930651aee4704a8c39dcba9d"
+protocol_snapshot_head = "30bc9675fe35386acefcfa39831cbb209332cdc6"
 
 [local_execution]
 status = "completed"
@@ -12,12 +12,14 @@ delivery_validator_cli = "pass"
 summary_replay = "pass"
 
 [external_adjudication]
-status = "pending"
+status = "completed"
 minimum_external_reviewers = 3
-completed_external_reviewers = 0
-blocking_reason = "external review collection incomplete"
+completed_external_reviewers = 3
+blocking_reason = "none"
 
 [notes]
-gemini_status = "capacity_exhausted_during_attempt"
-claude_status = "no_result_recorded_yet"
-final_scientific_validation_decision = "pending"
+claude_status = "not_established"
+gemini_status = "not_established"
+glm_status = "not_established"
+final_scientific_validation_decision = "not_established"
+adjudication_results_ref = "2026-04-20-scientific-validation-adjudication-results-v1.toml"

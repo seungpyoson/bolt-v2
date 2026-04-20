@@ -38,10 +38,12 @@ The available evidence is enough to define the approval bar, but not enough to p
 - `#222` now materially covers the old-host baseline needed for host-parity comparison.
 - `#223` now materially covers the minimum monitoring/alerting contract needed for
   operational-parity signoff.
-- The remaining blocker is the actual candidate-host exercise:
-  there is still **no live replacement-host validation evidence** showing startup, feeds, selector,
-  reference health, strategy readiness, and disk behavior on a rebuilt instance.
-  That remaining work is now tracked in `#224`.
+- `#224` now materially covers the first real candidate-host exercise and proves that the merged
+  `#215` host/storage/service baseline can be provisioned on a fresh EC2 instance.
+- The remaining blocker is now the concrete runtime-startup failure exposed by `#224`:
+  the candidate host was **not** approved because Binance failed its startup WebSocket connect and
+  the trader never reached trading-ready startup.
+  That concrete blocker is now tracked in `#225`.
 
 ## 1. Rebuild/Cutover Parity Checklist
 

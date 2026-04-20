@@ -398,6 +398,19 @@ impl RealizedVolEstimator {
         }
     }
 
+    fn empty_like(&self) -> Self {
+        Self {
+            window_ms: self.window_ms,
+            gap_reset_ms: self.gap_reset_ms,
+            min_observations: self.min_observations,
+            bridge_valid_ms: self.bridge_valid_ms,
+            active_venue_name: None,
+            samples: VecDeque::new(),
+            last_ready_vol: None,
+            last_ready_ts_ms: None,
+        }
+    }
+
     fn reset(&mut self) {
         self.active_venue_name = None;
         self.samples.clear();
@@ -513,6 +526,8 @@ struct PricingState {
     last_reference_fair_value: Option<f64>,
     fast_spot: Option<FastSpotObservation>,
     realized_vol: RealizedVolEstimator,
+    realized_vol_source_venue: Option<String>,
+    realized_vol_by_venue: BTreeMap<String, RealizedVolEstimator>,
     venue_timing: BTreeMap<String, VenueTimingState>,
     last_lead_gap_probability: Option<f64>,
     last_jitter_penalty_probability: Option<f64>,
@@ -825,6 +840,8 @@ impl PricingState {
             last_reference_fair_value: None,
             fast_spot: None,
             realized_vol: RealizedVolEstimator::from_config(config),
+            realized_vol_source_venue: None,
+            realized_vol_by_venue: BTreeMap::new(),
             venue_timing: BTreeMap::new(),
             last_lead_gap_probability: None,
             last_jitter_penalty_probability: None,
@@ -850,6 +867,7 @@ impl PricingState {
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
+        self.observe_realized_vol_candidates(&candidates);
         self.lead_quality_policy_applied = true;
         if let Some(candidate) =
             arbitrate_lead_reference(&candidates, min_agreement_corr, max_jitter_ms)
@@ -863,7 +881,12 @@ impl PricingState {
                     .observed_ts_ms
                     .expect("selected lead venue should carry timestamp"),
             };
-            let _ = self.realized_vol.observe(&fast_spot);
+            self.realized_vol = self
+                .realized_vol_by_venue
+                .get(&candidate.venue_name)
+                .cloned()
+                .unwrap_or_else(|| self.realized_vol.empty_like());
+            self.realized_vol_source_venue = Some(candidate.venue_name.clone());
             self.fast_spot = Some(fast_spot);
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
             self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
@@ -886,11 +909,46 @@ impl PricingState {
         }
     }
 
+    fn observe_realized_vol_candidates(&mut self, candidates: &[LeadVenueSignal]) {
+        let estimator_template = self.realized_vol.empty_like();
+
+        for candidate in candidates {
+            let (Some(price), Some(observed_ts_ms)) = (candidate.price, candidate.observed_ts_ms)
+            else {
+                continue;
+            };
+
+            let estimator = self
+                .realized_vol_by_venue
+                .entry(candidate.venue_name.clone())
+                .or_insert_with(|| estimator_template.clone());
+            let _ = estimator.observe(&FastSpotObservation {
+                venue_name: candidate.venue_name.clone(),
+                price,
+                observed_ts_ms,
+            });
+        }
+    }
+
     fn spot_price(&self) -> Option<f64> {
         self.fast_spot
             .as_ref()
             .map(|spot| spot.price)
             .or(self.last_reference_fair_value)
+    }
+
+    fn current_realized_vol_source_at(&self, now_ms: u64) -> (Option<String>, Option<u64>) {
+        if self.realized_vol.current_vol_at(now_ms).is_none() {
+            return (None, None);
+        }
+
+        (
+            self.realized_vol_source_venue
+                .clone()
+                .or_else(|| self.fast_spot.as_ref().map(|spot| spot.venue_name.clone()))
+                .or_else(|| self.realized_vol.active_venue_name.clone()),
+            self.realized_vol.last_ready_ts_ms,
+        )
     }
 
     fn build_lead_venue_signals(&mut self, snapshot: &ReferenceSnapshot) -> Vec<LeadVenueSignal> {
@@ -1780,6 +1838,8 @@ impl EthChainlinkTaker {
             .as_ref()
             .map(|spot| spot.venue_name.clone());
         let fast_venue_available = spot_venue_name.is_some();
+        let (realized_vol_source_venue, realized_vol_source_ts_ms) =
+            self.pricing.current_realized_vol_source_at(now_ms);
 
         EntryEvaluationLogFields {
             market_id: self.active.market_id.clone(),
@@ -1792,6 +1852,8 @@ impl EthChainlinkTaker {
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
+            realized_vol_source_venue,
+            realized_vol_source_ts_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
             theta_decay_factor: self.config.theta_decay_factor,
             theta_scaled_min_edge_bps: evaluation
@@ -1866,7 +1928,7 @@ impl EthChainlinkTaker {
                 );
             }
             log::warn!(
-                "eth_chainlink_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} expected_ev_per_usdc={:?} max_position_usdc={} risk_lambda={} book_impact_cap_bps={} book_impact_cap_usdc={:?} sized_notional_usdc={:?} selected_side={:?} fast_venue_available={} fast_venue_fallback_to_reference={} lead_quality_policy_applied={} lead_quality_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "eth_chainlink_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} expected_ev_per_usdc={:?} max_position_usdc={} risk_lambda={} book_impact_cap_bps={} book_impact_cap_usdc={:?} sized_notional_usdc={:?} selected_side={:?} fast_venue_available={} fast_venue_fallback_to_reference={} lead_quality_policy_applied={} lead_quality_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -1878,6 +1940,8 @@ impl EthChainlinkTaker {
                 fields.interval_open,
                 fields.seconds_to_expiry,
                 fields.realized_vol,
+                fields.realized_vol_source_venue,
+                fields.realized_vol_source_ts_ms,
                 fields.pricing_kurtosis,
                 fields.theta_decay_factor,
                 fields.theta_scaled_min_edge_bps,
@@ -1921,7 +1985,7 @@ impl EthChainlinkTaker {
             );
         } else {
             log::info!(
-                "eth_chainlink_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} expected_ev_per_usdc={:?} max_position_usdc={} risk_lambda={} book_impact_cap_bps={} book_impact_cap_usdc={:?} sized_notional_usdc={:?} selected_side={:?} fast_venue_available={} fast_venue_fallback_to_reference={} lead_quality_policy_applied={} lead_quality_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "eth_chainlink_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} expected_ev_per_usdc={:?} max_position_usdc={} risk_lambda={} book_impact_cap_bps={} book_impact_cap_usdc={:?} sized_notional_usdc={:?} selected_side={:?} fast_venue_available={} fast_venue_fallback_to_reference={} lead_quality_policy_applied={} lead_quality_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -1933,6 +1997,8 @@ impl EthChainlinkTaker {
                 fields.interval_open,
                 fields.seconds_to_expiry,
                 fields.realized_vol,
+                fields.realized_vol_source_venue,
+                fields.realized_vol_source_ts_ms,
                 fields.pricing_kurtosis,
                 fields.theta_decay_factor,
                 fields.theta_scaled_min_edge_bps,
@@ -2542,6 +2608,8 @@ impl EthChainlinkTaker {
         let open_position = self.managed_position().map(|managed| &managed.position);
         let (historical_entry_fee_rate_known, historical_entry_fee_rate_reason) =
             self.historical_entry_fee_log_fields();
+        let (realized_vol_source_venue, realized_vol_source_ts_ms) =
+            self.pricing.current_realized_vol_source_at(now_ms);
         ExitEvaluationLogFields {
             market_id: self.current_position_market_id(),
             phase: self.active.phase,
@@ -2561,6 +2629,8 @@ impl EthChainlinkTaker {
             interval_open: open_position.and_then(|position| position.interval_open),
             seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
+            realized_vol_source_venue,
+            realized_vol_source_ts_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
             exit_hysteresis_bps: self.config.exit_hysteresis_bps,
             fair_probability_up: self.current_position_fair_probability_up_at(now_ms),
@@ -2597,7 +2667,7 @@ impl EthChainlinkTaker {
         if blocked {
             if should_warn_on_exit_submission_block(fields.submission_blocked_reason) {
                 log::warn!(
-                    "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                    "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                     self.config.strategy_id,
                     fields.market_id,
                     fields.phase,
@@ -2613,6 +2683,8 @@ impl EthChainlinkTaker {
                     fields.interval_open,
                     fields.seconds_to_expiry,
                     fields.realized_vol,
+                    fields.realized_vol_source_venue,
+                    fields.realized_vol_source_ts_ms,
                     fields.pricing_kurtosis,
                     fields.exit_hysteresis_bps,
                     fields.fair_probability_up,
@@ -2640,7 +2712,7 @@ impl EthChainlinkTaker {
                 );
             } else {
                 log::debug!(
-                    "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                    "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                     self.config.strategy_id,
                     fields.market_id,
                     fields.phase,
@@ -2656,6 +2728,8 @@ impl EthChainlinkTaker {
                     fields.interval_open,
                     fields.seconds_to_expiry,
                     fields.realized_vol,
+                    fields.realized_vol_source_venue,
+                    fields.realized_vol_source_ts_ms,
                     fields.pricing_kurtosis,
                     fields.exit_hysteresis_bps,
                     fields.fair_probability_up,
@@ -2684,7 +2758,7 @@ impl EthChainlinkTaker {
             }
         } else {
             log::info!(
-                "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "eth_chainlink_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} maker_rebate_available={} maker_rebate_reason={} category_available={} category_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2700,6 +2774,8 @@ impl EthChainlinkTaker {
                 fields.interval_open,
                 fields.seconds_to_expiry,
                 fields.realized_vol,
+                fields.realized_vol_source_venue,
+                fields.realized_vol_source_ts_ms,
                 fields.pricing_kurtosis,
                 fields.exit_hysteresis_bps,
                 fields.fair_probability_up,
@@ -4082,6 +4158,8 @@ struct EntryEvaluationLogFields {
     interval_open: Option<f64>,
     seconds_to_expiry: Option<u64>,
     realized_vol: Option<f64>,
+    realized_vol_source_venue: Option<String>,
+    realized_vol_source_ts_ms: Option<u64>,
     pricing_kurtosis: f64,
     theta_decay_factor: f64,
     theta_scaled_min_edge_bps: Option<f64>,
@@ -4162,6 +4240,8 @@ struct ExitEvaluationLogFields {
     interval_open: Option<f64>,
     seconds_to_expiry: Option<u64>,
     realized_vol: Option<f64>,
+    realized_vol_source_venue: Option<String>,
+    realized_vol_source_ts_ms: Option<u64>,
     pricing_kurtosis: f64,
     exit_hysteresis_bps: i64,
     fair_probability_up: Option<f64>,
@@ -5359,6 +5439,211 @@ mod tests {
         );
         assert_eq!(estimator.samples.len(), 1);
         assert!(estimator.last_ready_vol.is_none());
+    }
+
+    #[test]
+    fn realized_vol_estimator_ignores_non_monotonic_samples_within_same_venue() {
+        let mut config = test_strategy().config.clone();
+        config.vol_min_observations = 1;
+        let mut estimator = RealizedVolEstimator::from_config(&config);
+
+        assert!(
+            estimator
+                .observe(&fast_spot("bybit", 3_100.0, 1_000))
+                .is_none()
+        );
+        let ready_vol = estimator
+            .observe(&fast_spot("bybit", 3_101.0, 2_000))
+            .expect("vol should be ready after min observations");
+        let sample_count = estimator.samples.len();
+
+        assert_eq!(
+            estimator.observe(&fast_spot("bybit", 3_200.0, 1_500)),
+            Some(ready_vol)
+        );
+        assert_eq!(estimator.samples.len(), sample_count);
+        assert_eq!(
+            estimator.samples.back().map(|sample| sample.ts_ms),
+            Some(2_000)
+        );
+        assert_eq!(estimator.last_ready_ts_ms, Some(2_000));
+    }
+
+    #[test]
+    fn realized_vol_warms_across_lead_venue_switches_when_each_venue_has_history() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.vol_min_observations = 3;
+        strategy.pricing = PricingState::from_config(&strategy.config);
+
+        for (ts_ms, venue_name, fair_value, fast_price) in [
+            (1_000, "bybit", 3_100.0, 3_100.0),
+            (1_100, "okx", 3_100.2, 3_100.2),
+            (2_000, "bybit", 3_101.0, 3_101.0),
+            (2_100, "okx", 3_101.2, 3_101.2),
+            (3_000, "bybit", 3_102.0, 3_102.0),
+            (3_100, "okx", 3_102.2, 3_102.2),
+            (4_000, "bybit", 3_103.0, 3_103.0),
+        ] {
+            strategy.observe_reference_snapshot(&ReferenceSnapshot {
+                ts_ms,
+                topic: "platform.reference.test.chainlink".to_string(),
+                fair_value: Some(fair_value),
+                confidence: 1.0,
+                venues: vec![
+                    oracle_venue("chainlink", 1.0, fair_value, ts_ms),
+                    orderbook_venue(venue_name, 0.9, fast_price, ts_ms),
+                ],
+            });
+        }
+
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("bybit", 3_103.0, 4_000))
+        );
+        assert!(
+            strategy.current_realized_vol_at(4_000).is_some(),
+            "selected venue should be able to reuse its own warmed history across lead switches"
+        );
+    }
+
+    #[test]
+    fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.vol_min_observations = 2;
+        strategy.pricing = PricingState::from_config(&strategy.config);
+
+        for (ts_ms, fair_value, fast_price) in [
+            (1_000, 3_100.0, 3_100.0),
+            (2_000, 3_101.0, 3_101.0),
+            (3_000, 3_102.0, 3_102.0),
+        ] {
+            strategy.observe_reference_snapshot(&ReferenceSnapshot {
+                ts_ms,
+                topic: "platform.reference.test.chainlink".to_string(),
+                fair_value: Some(fair_value),
+                confidence: 1.0,
+                venues: vec![
+                    oracle_venue("chainlink", 1.0, fair_value, ts_ms),
+                    orderbook_venue("bybit", 0.9, fast_price, ts_ms),
+                ],
+            });
+        }
+
+        assert!(
+            strategy.current_realized_vol_at(3_000).is_some(),
+            "bybit should be warmed before the lead venue changes"
+        );
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 3_100,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_102.2),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("chainlink", 1.0, 3_102.2, 3_100),
+                orderbook_venue("okx", 0.9, 3_102.2, 3_100),
+            ],
+        });
+
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("okx", 3_102.2, 3_100))
+        );
+        assert!(
+            strategy.current_realized_vol_at(3_100).is_none(),
+            "selected venue should not inherit warmed vol from another venue"
+        );
+    }
+
+    #[test]
+    fn realized_vol_resets_per_venue_after_gap_even_if_other_venue_keeps_warming() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.vol_min_observations = 1;
+        strategy.config.vol_gap_reset_secs = 1;
+        strategy.config.vol_bridge_valid_secs = 10;
+        strategy.config.lead_jitter_max_ms = 10_000;
+        strategy.pricing = PricingState::from_config(&strategy.config);
+
+        for (ts_ms, venue_name, fair_value, fast_price) in [
+            (1_000, "bybit", 3_100.0, 3_100.0),
+            (1_500, "bybit", 3_101.0, 3_101.0),
+            (2_600, "okx", 3_101.5, 3_101.5),
+            (3_100, "okx", 3_102.0, 3_102.0),
+        ] {
+            strategy.observe_reference_snapshot(&ReferenceSnapshot {
+                ts_ms,
+                topic: "platform.reference.test.chainlink".to_string(),
+                fair_value: Some(fair_value),
+                confidence: 1.0,
+                venues: vec![
+                    oracle_venue("chainlink", 1.0, fair_value, ts_ms),
+                    orderbook_venue(venue_name, 0.9, fast_price, ts_ms),
+                ],
+            });
+        }
+
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("okx", 3_102.0, 3_100))
+        );
+        assert!(
+            strategy.current_realized_vol_at(3_100).is_some(),
+            "okx should warm independently while bybit is absent"
+        );
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 4_201,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_102.5),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("chainlink", 1.0, 3_102.5, 4_201),
+                orderbook_venue("bybit", 0.9, 3_102.5, 4_201),
+            ],
+        });
+
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("bybit", 3_102.5, 4_201))
+        );
+        assert!(
+            strategy.current_realized_vol_at(4_201).is_none(),
+            "bybit should reset after its own gap instead of bridging stale or other-venue vol"
+        );
+    }
+
+    #[test]
+    fn pricing_state_reports_realized_vol_source_during_bridge_without_fast_spot() {
+        let config = test_strategy().config.clone();
+        let mut pricing = PricingState::from_config(&config);
+        pricing.realized_vol_source_venue = Some("bybit".to_string());
+        pricing.realized_vol.last_ready_vol = Some(1.5);
+        pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+
+        assert_eq!(
+            pricing.current_realized_vol_source_at(1_300),
+            (Some("bybit".to_string()), Some(1_200))
+        );
+        assert_eq!(pricing.current_realized_vol_source_at(12_201), (None, None));
+    }
+
+    #[test]
+    fn entry_evaluation_log_fields_keep_realized_vol_source_when_fast_spot_is_unavailable() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.pricing.fast_spot = None;
+        strategy.pricing.last_reference_fair_value = Some(3_101.0);
+        strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
+        strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+        strategy.pricing.realized_vol_source_venue = Some("bybit".to_string());
+
+        let submission = strategy.entry_submission_decision_at(1_200);
+        let fields = strategy.entry_evaluation_log_fields_at(1_200, &submission);
+
+        assert_eq!(fields.spot_venue_name, None);
+        assert_eq!(fields.spot_price, Some(3_101.0));
+        assert_eq!(fields.realized_vol, Some(2.5));
+        assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
+        assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
     }
 
     #[test]
@@ -7780,6 +8065,8 @@ mod tests {
         assert_eq!(fields.reference_fair_value, Some(3_100.5));
         assert_eq!(fields.interval_open, Some(3_100.0));
         assert_eq!(fields.realized_vol, Some(2.5));
+        assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
+        assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
         assert_eq!(fields.fair_probability_up, evaluation.fair_probability_up);
         assert_eq!(fields.selected_side, evaluation.selected_side);
         assert!(fields.uncertainty_band_probability.is_some());
@@ -7843,6 +8130,7 @@ mod tests {
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
         strategy.active.interval_open = Some(3_200.0);
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 2_000));
+        strategy.pricing.realized_vol_source_venue = Some("bybit".to_string());
         strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(2_000);
 
@@ -7852,6 +8140,8 @@ mod tests {
         assert_eq!(fields.market_id.as_deref(), Some("MKT-1"));
         assert_eq!(fields.interval_open, Some(3_100.0));
         assert_eq!(fields.seconds_to_expiry, Some(299));
+        assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
+        assert_eq!(fields.realized_vol_source_ts_ms, Some(2_000));
         assert_eq!(fields.up_fee_bps, Some(1.0));
         assert_eq!(fields.down_fee_bps, Some(2.0));
     }

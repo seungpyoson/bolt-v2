@@ -2,7 +2,7 @@
 
 ## 1. Current answer
 
-**Not repairable for trusted launch: the current host should not be repaired in place and trusted again for launch.**
+**Not approved for trusted launch on the existing host.**
 
 ## 2. Evidence
 
@@ -29,8 +29,8 @@
 
 ## 3. Exact repair path if repairable
 
-- None. I do **not** have an evidence-backed in-place repair path that would make the current host
-  trustworthy again for launch.
+- None within this launch job / timebox. I do **not** have an evidence-backed in-place repair path
+  that restores trust in the existing host enough for launch.
 
 ## 4. Exact stop condition if not repairable
 

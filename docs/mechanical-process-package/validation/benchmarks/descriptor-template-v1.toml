@@ -1,0 +1,27 @@
+version = "v1"
+benchmark_id = "REPLACE_ME"
+status = "template"
+track = "scientific_validation"
+base_subject_head = "REPLACE_ME"
+fault_family = "REPLACE_ME"
+fixture_ref = "REPLACE_ME"
+fixture_owner = "protocol_validation"
+runner_ref = "REPLACE_ME"
+runner_owner = "protocol_validation"
+subject_test_refs_used = false
+mutation_surface = "REPLACE_ME"
+expected_outcome = "fail_closed"
+
+non_redefinable = [
+  "fault_family",
+  "fixture_ref",
+  "runner_ref",
+  "mutation_surface",
+  "expected_outcome",
+]
+
+[seed]
+kind = "REPLACE_ME"
+targets = [
+  "REPLACE_ME",
+]

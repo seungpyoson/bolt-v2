@@ -1,0 +1,35 @@
+version = "v1"
+subject_id = "REPLACE_ME"
+status = "template"
+
+protocol_ref = "docs/mechanical-process-package/process/2026-04-20-validation-protocol-v1.toml"
+entry_gates_ref = "docs/mechanical-process-package/process/2026-04-20-future-scientific-validation-entry-gates-v1.toml"
+benchmark_manifest_ref = "docs/mechanical-process-package/process/2026-04-20-benchmark-manifest-v1.toml"
+
+[protocol]
+frozen_head = "REPLACE_ME"
+frozen_at = "REPLACE_ME"
+
+[subject]
+repo = "REPLACE_ME"
+branch = "REPLACE_ME"
+head = "REPLACE_ME"
+first_logic_commit = "REPLACE_ME"
+first_logic_commit_at = "REPLACE_ME"
+harness_logic_delta = "REPLACE_ME"
+metadata_only_delta = false
+
+[benchmark_corpus]
+manifest_head = "REPLACE_ME"
+descriptor_heads = [
+  "REPLACE_ME",
+]
+frozen_at = "REPLACE_ME"
+
+[benchmark_execution]
+fixture_owner = "protocol_validation"
+runner_owner = "protocol_validation"
+subject_test_refs_used = false
+
+[claim]
+statement = "This subject is eligible to start scientific validation under the frozen protocol."

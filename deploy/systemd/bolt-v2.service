@@ -8,6 +8,7 @@ Type=simple
 User=bolt
 Group=bolt
 WorkingDirectory=/srv/bolt-v2
+ExecStartPre=/usr/bin/mountpoint -q /srv/bolt-v2
 ExecStart=/opt/bolt-v2/bolt-v2 run --config /opt/bolt-v2/config/live.toml
 Restart=on-failure
 RestartSec=5

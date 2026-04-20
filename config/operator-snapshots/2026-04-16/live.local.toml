@@ -32,7 +32,7 @@ api_secret = "/bolt/polymarket/api-secret"
 passphrase = "/bolt/polymarket/api-passphrase"
 
 [raw_capture]
-output_dir = "var/raw"
+output_dir = "/srv/bolt-v2/var/raw"
 
 [streaming]
 catalog_path = ""
@@ -149,7 +149,7 @@ lead_agreement_min_corr = 0.8
 lead_jitter_max_ms = 250
 
 [audit]
-local_dir = "var/audit"
+local_dir = "/srv/bolt-v2/var/audit"
 s3_uri = "s3://bolt-runtime-history/phase1"
 ship_interval_secs = 30
 upload_attempt_timeout_secs = 30

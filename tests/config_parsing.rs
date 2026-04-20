@@ -202,7 +202,7 @@ fn runtime_config_parses_ruleset_selector_table() {
         event_slug_prefix = "btc-updown"
 
         [audit]
-        local_dir = "var/audit"
+        local_dir = "/srv/bolt-v2/var/audit"
         s3_uri = "s3://bolt-runtime-history/phase1"
         ship_interval_secs = 30
         upload_attempt_timeout_secs = 30

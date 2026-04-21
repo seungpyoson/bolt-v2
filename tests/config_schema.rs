@@ -6,6 +6,13 @@ use std::fs;
 use support::{TempCaseDir, repo_path};
 use toml::Value;
 
+const CANONICAL_CHAINLINK_TESTNET_WS_URL: &str = "wss://ws.testnet-dataengine.chain.link";
+const CORRECT_ETH_TESTNET_FEED_ID: &str =
+    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
+const BTC_TESTNET_FEED_ID: &str =
+    "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+const STALE_CHAINLINK_WS_URL: &str = "wss://streams.chain.link";
+
 #[test]
 fn parses_minimal_polymarket_wrapper_config() {
     let raw = r#"
@@ -97,6 +104,46 @@ fn tracked_template_materializes_to_parseable_runtime_config() {
 }
 
 #[test]
+fn tracked_chainlink_testnet_sources_use_canonical_contract_values() {
+    for relative_path in [
+        "config/live.local.example.toml",
+        "config/operator-snapshots/2026-04-16/live.local.toml",
+    ] {
+        let source = fs::read_to_string(repo_path(relative_path))
+            .expect("tracked chainlink source should be readable");
+
+        assert!(
+            source.contains(CANONICAL_CHAINLINK_TESTNET_WS_URL),
+            "{relative_path} should use the canonical Chainlink testnet websocket origin"
+        );
+        assert!(
+            !source.contains(STALE_CHAINLINK_WS_URL),
+            "{relative_path} should not retain the stale Chainlink websocket origin"
+        );
+    }
+
+    let operator_snapshot = fs::read_to_string(repo_path(
+        "config/operator-snapshots/2026-04-16/live.local.toml",
+    ))
+    .expect("tracked chainlink operator snapshot should be readable");
+    assert!(
+        operator_snapshot.contains(CORRECT_ETH_TESTNET_FEED_ID),
+        "operator snapshot should encode the canonical ETH testnet feed id"
+    );
+    assert!(
+        !operator_snapshot.contains(BTC_TESTNET_FEED_ID),
+        "operator snapshot should not map the BTC testnet feed id onto the ETH lane"
+    );
+
+    let live_example = fs::read_to_string(repo_path("config/live.local.example.toml"))
+        .expect("tracked chainlink example should be readable");
+    assert!(
+        live_example.contains(BTC_TESTNET_FEED_ID),
+        "commented live example should remain a BTC example"
+    );
+}
+
+#[test]
 fn tracked_ruleset_template_materializes_runtime_strategy_template() {
     let tempdir = TempCaseDir::new("config-schema-ruleset-template");
     let input_path = tempdir.path().join("live.local.toml");
@@ -130,7 +177,7 @@ min_publish_interval_ms = 100
 region = "eu-west-1"
 api_key = "/bolt/chainlink/api-key"
 api_secret = "/bolt/chainlink/api-secret"
-ws_url = "wss://streams.chain.link"
+ws_url = "wss://ws.testnet-dataengine.chain.link"
 ws_reconnect_alert_threshold = 5
 
 [[reference.venues]]
@@ -141,7 +188,7 @@ base_weight = 1.0
 stale_after_ms = 1500
 disable_after_ms = 5000
 [reference.venues.chainlink]
-feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
 price_scale = 18
 
 [[strategies]]

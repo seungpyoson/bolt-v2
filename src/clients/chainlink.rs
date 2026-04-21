@@ -16,14 +16,14 @@ use chainlink_data_streams_report::{
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use nautilus_common::{
-    cache::Cache,
-    clients::DataClient,
-    clock::Clock,
-    msgbus::{publish_any, switchboard::get_custom_topic},
+    cache::Cache, clients::DataClient, clock::Clock, live::runner::get_data_event_sender,
+    messages::DataEvent, msgbus::switchboard::get_custom_topic,
 };
 use nautilus_core::{Params, UnixNanos};
 use nautilus_model::{
-    data::{CustomData, CustomDataTrait, DataType, HasTsInit, ensure_custom_data_json_registered},
+    data::{
+        CustomData, CustomDataTrait, Data, DataType, HasTsInit, ensure_custom_data_json_registered,
+    },
     identifiers::ClientId,
 };
 use nautilus_system::factories::{ClientConfig, DataClientFactory};
@@ -295,6 +295,7 @@ pub fn chainlink_topic_for_venue(
 struct ChainlinkReferenceDataClient {
     client_id: ClientId,
     shared: ChainlinkSharedRuntimeConfig,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     connected: bool,
     subscriptions: BTreeMap<String, DataType>,
     feed_configs_by_topic: BTreeMap<String, ChainlinkReferenceFeedConfig>,
@@ -322,6 +323,7 @@ impl ChainlinkReferenceDataClient {
         Self {
             client_id,
             shared: config.shared,
+            data_sender: get_data_event_sender(),
             connected: false,
             subscriptions: BTreeMap::new(),
             feed_configs_by_topic,
@@ -357,6 +359,7 @@ impl ChainlinkReferenceDataClient {
             self.shared.clone(),
             selected_feeds,
             cancellation.clone(),
+            self.data_sender.clone(),
         ));
         self.worker = Some(ChainlinkWorkerHandle { cancellation, task });
         Ok(())
@@ -445,6 +448,7 @@ async fn run_chainlink_stream_worker(
     shared: ChainlinkSharedRuntimeConfig,
     selected_feeds: Vec<(ChainlinkReferenceFeedConfig, DataType)>,
     cancellation: CancellationToken,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
 ) {
     let mut feed_routes = BTreeMap::new();
     let mut feed_ids = Vec::with_capacity(selected_feeds.len());
@@ -466,7 +470,10 @@ async fn run_chainlink_stream_worker(
                 async move { connect_chainlink_stream_session(&shared, &feed_ids).await }
             }
         },
-        |report| publish_chainlink_report(&feed_routes, report),
+        {
+            let data_sender = data_sender.clone();
+            move |report| publish_chainlink_report(&feed_routes, data_sender.clone(), report)
+        },
     )
     .await;
 }
@@ -752,6 +759,7 @@ fn current_timestamp_ms() -> Result<u128> {
 
 fn publish_chainlink_report(
     feed_routes: &BTreeMap<String, (ChainlinkReferenceFeedConfig, DataType)>,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     report: ChainlinkWebSocketReport,
 ) -> Result<()> {
     let feed_id = report.report.feed_id.to_hex_string();
@@ -775,6 +783,7 @@ fn publish_chainlink_report(
             &report.report,
             &report_blob,
             epoch_and_round,
+            &data_sender,
         ),
         version => Err(anyhow!(
             "unsupported Chainlink Data Streams feed version {} for {} ({})",
@@ -800,6 +809,7 @@ fn publish_v3_report(
     report: &chainlink_data_streams_report::report::Report,
     report_blob: &[u8],
     epoch_and_round: u64,
+    data_sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
 ) -> Result<()> {
     let report_data = ReportDataV3::decode(report_blob)
         .with_context(|| format!("failed to decode v3 report for {}", feed.venue_name))?;
@@ -822,7 +832,9 @@ fn publish_v3_report(
         }),
         data_type.clone(),
     );
-    publish_any(get_custom_topic(data_type), &custom);
+    data_sender
+        .send(DataEvent::Data(Data::Custom(custom)))
+        .map_err(|error| anyhow!("failed to emit Chainlink custom data event: {error}"))?;
     Ok(())
 }
 
@@ -862,6 +874,8 @@ fn scale_decimal_string_to_f64(raw: &str, scale: u8) -> Result<f64> {
 mod tests {
     use super::*;
     use anyhow::anyhow;
+    use nautilus_common::messages::DataEvent;
+    use nautilus_model::data::Data;
     use std::{
         collections::{BTreeSet, VecDeque},
         path::Path,
@@ -893,6 +907,92 @@ mod tests {
                 observations_timestamp,
                 full_report: "0x00".to_string(),
             },
+        }
+    }
+
+    fn encode_full_report(report_context: [[u8; 32]; 3], report_blob: &[u8]) -> String {
+        let mut payload = Vec::new();
+        for context in report_context {
+            payload.extend_from_slice(&context);
+        }
+
+        let mut offset = [0_u8; 32];
+        let offset_value: usize = 96 + 32;
+        offset[24..32].copy_from_slice(&offset_value.to_be_bytes());
+        payload.extend_from_slice(&offset);
+
+        let mut length = [0_u8; 32];
+        length[24..32].copy_from_slice(&report_blob.len().to_be_bytes());
+        payload.extend_from_slice(&length);
+        payload.extend_from_slice(report_blob);
+
+        format!("0x{}", hex::encode(payload))
+    }
+
+    #[tokio::test]
+    async fn publish_chainlink_report_emits_custom_data_event() {
+        let feed_id =
+            ID::from_hex_str("0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472")
+                .unwrap();
+        let feed = ChainlinkReferenceFeedConfig {
+            venue_name: "CHAINLINK".to_string(),
+            instrument_id: "BTC-USD".to_string(),
+            feed_id,
+            price_scale: 2,
+        };
+        let data_type = chainlink_data_type_for_venue(&feed.venue_name, &feed.instrument_id);
+        let report_blob = hex::decode(concat!(
+            "00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472",
+            "0000000000000000000000000000000000000000000000000000000066741d8c",
+            "0000000000000000000000000000000000000000000000000000000066741d8c",
+            "000000000000000000000000000000000000000000000000000000000000000a",
+            "000000000000000000000000000000000000000000000000000000000000000a",
+            "0000000000000000000000000000000000000000000000000000000066741df0",
+            "0000000000000000000000000000000000000000000000000000000000003039",
+            "0000000000000000000000000000000000000000000000000000000000003034",
+            "000000000000000000000000000000000000000000000000000000000000303e"
+        ))
+        .unwrap();
+        let mut epoch_and_round = [0_u8; 32];
+        epoch_and_round[26..28].copy_from_slice(&0x0102_u16.to_be_bytes());
+        epoch_and_round[28..32].copy_from_slice(&0x03040506_u32.to_be_bytes());
+        let report = ChainlinkWebSocketReport {
+            report: Report {
+                feed_id,
+                valid_from_timestamp: 1_718_885_772,
+                observations_timestamp: 1_718_885_772,
+                full_report: encode_full_report(
+                    [[0_u8; 32], epoch_and_round, [0_u8; 32]],
+                    &report_blob,
+                ),
+            },
+        };
+        let feed_routes =
+            BTreeMap::from([(feed_id.to_hex_string(), (feed.clone(), data_type.clone()))]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        publish_chainlink_report(&feed_routes, tx.clone(), report).unwrap();
+
+        let event = timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .expect("expected a data event")
+            .expect("channel should stay open");
+        match event {
+            DataEvent::Data(Data::Custom(custom)) => {
+                assert_eq!(custom.data_type, data_type);
+                let update = custom
+                    .data
+                    .as_any()
+                    .downcast_ref::<ChainlinkOracleUpdate>()
+                    .expect("expected ChainlinkOracleUpdate payload");
+                assert_eq!(update.venue_name, feed.venue_name);
+                assert_eq!(update.instrument_id, feed.instrument_id);
+                assert_eq!(update.price, 123.45);
+                assert_eq!(update.round_id, "1108152157446");
+                assert_eq!(update.updated_at_ms, 1_718_885_772_000);
+                assert!(update.ts_init.as_u64() > 0);
+            }
+            other => panic!("expected Data::Custom event, got {other:?}"),
         }
     }
 

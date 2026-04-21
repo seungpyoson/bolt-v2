@@ -11,6 +11,10 @@ use std::{
 use bolt_v2::{MaterializationOutcome, config::Config, materialize_live_config};
 use support::{TempCaseDir, live_local_chainlink_operator_input, repo_path};
 
+const CANONICAL_CHAINLINK_TESTNET_WS_URL: &str = "wss://ws.testnet-dataengine.chain.link";
+const CORRECT_ETH_TESTNET_FEED_ID: &str =
+    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
+
 #[test]
 fn materialize_live_config_creates_read_only_output() {
     let tempdir = TempCaseDir::new("create-output");
@@ -575,7 +579,7 @@ fn materialize_live_config_renders_nested_chainlink_reference_settings() {
     assert_eq!(shared.region, "us-east-1");
     assert_eq!(shared.api_key, "/bolt/chainlink/api_key");
     assert_eq!(shared.api_secret, "/bolt/chainlink/api_secret");
-    assert_eq!(shared.ws_url, "wss://streams.chain.link");
+    assert_eq!(shared.ws_url, CANONICAL_CHAINLINK_TESTNET_WS_URL);
     assert_eq!(shared.ws_reconnect_alert_threshold, 5);
     assert_eq!(
         chainlink.feed_id,
@@ -590,7 +594,7 @@ fn materialize_live_config_preserves_valid_chainlink_ws_fallback_origins() {
     let input_path = tempdir.path().join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
     let input = live_local_chainlink_operator_input().replace(
-        "ws_url = \"wss://streams.chain.link\"",
+        "ws_url = \"wss://ws.testnet-dataengine.chain.link\"",
         "ws_url = \"wss://primary.chain.link,wss://fallback.chain.link\"",
     );
 
@@ -618,7 +622,7 @@ fn materialize_live_config_rejects_invalid_chainlink_ws_fallback_origin() {
     let input_path = tempdir.path().join("live.local.toml");
     let output_path = tempdir.path().join("live.toml");
     let input = live_local_chainlink_operator_input().replace(
-        "ws_url = \"wss://streams.chain.link\"",
+        "ws_url = \"wss://ws.testnet-dataengine.chain.link\"",
         "ws_url = \"wss://primary.chain.link,ws://fallback.chain.link\"",
     );
 
@@ -676,7 +680,7 @@ min_publish_interval_ms = 100
 region = "eu-west-1"
 api_key = "/bolt/chainlink/api-key"
 api_secret = "/bolt/chainlink/api-secret"
-ws_url = "wss://streams.chain.link"
+ws_url = "wss://ws.testnet-dataengine.chain.link"
 ws_reconnect_alert_threshold = 5
 
 [[reference.venues]]
@@ -687,7 +691,7 @@ base_weight = 1.0
 stale_after_ms = 1500
 disable_after_ms = 5000
 [reference.venues.chainlink]
-feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
 price_scale = 18
 
 [[strategies]]
@@ -746,11 +750,22 @@ max_local_backlog_bytes = 10485760
 
     let rendered = fs::read_to_string(&output_path).expect("rendered config should be readable");
     let cfg: Config = toml::from_str(&rendered).expect("rendered config should parse");
+    let shared = cfg
+        .reference
+        .chainlink
+        .as_ref()
+        .expect("rendered shared chainlink config should be present");
+    let chainlink = cfg.reference.venues[0]
+        .chainlink
+        .as_ref()
+        .expect("rendered chainlink config should be present");
 
     assert!(
         rendered.contains("[[strategies]]"),
         "eth taker operator config should render a runtime strategy template"
     );
+    assert_eq!(shared.ws_url, CANONICAL_CHAINLINK_TESTNET_WS_URL);
+    assert_eq!(chainlink.feed_id, CORRECT_ETH_TESTNET_FEED_ID);
     assert_eq!(cfg.strategies.len(), 1);
     assert_eq!(cfg.strategies[0].kind, "eth_chainlink_taker");
     assert_eq!(

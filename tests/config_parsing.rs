@@ -505,7 +505,7 @@ fn parses_runtime_config_with_nested_chainlink_reference_settings() {
 region = "us-east-1"
 api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
+ws_url = "wss://ws.testnet-dataengine.chain.link"
 ws_reconnect_alert_threshold = 5"#,
         r#"[[reference.venues]]
 name = "CHAINLINK-BTC"
@@ -534,7 +534,7 @@ price_scale = 8"#,
     assert_eq!(shared.region, "us-east-1");
     assert_eq!(shared.api_key, "/bolt/chainlink/api_key");
     assert_eq!(shared.api_secret, "/bolt/chainlink/api_secret");
-    assert_eq!(shared.ws_url, "wss://streams.chain.link");
+    assert_eq!(shared.ws_url, "wss://ws.testnet-dataengine.chain.link");
     assert_eq!(shared.ws_reconnect_alert_threshold, 5);
     assert_eq!(
         chainlink.feed_id,
@@ -550,7 +550,7 @@ fn runtime_config_rejects_incomplete_chainlink_shared_settings_at_parse_time() {
 region = "us-east-1"
 api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link""#,
+ws_url = "wss://ws.testnet-dataengine.chain.link""#,
         r#"[[reference.venues]]
 name = "CHAINLINK-BTC"
 type = "chainlink"
@@ -580,7 +580,7 @@ fn runtime_config_rejects_chainlink_venue_without_nested_chainlink_settings() {
 region = "us-east-1"
 api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
+ws_url = "wss://ws.testnet-dataengine.chain.link"
 ws_reconnect_alert_threshold = 5"#,
         r#"[[reference.venues]]
 name = "CHAINLINK-BTC"
@@ -636,7 +636,7 @@ fn runtime_config_rejects_orphaned_chainlink_settings_on_non_chainlink_venue() {
 region = "us-east-1"
 api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
+ws_url = "wss://ws.testnet-dataengine.chain.link"
 ws_reconnect_alert_threshold = 5"#,
         r#"[[reference.venues]]
 name = "BINANCE-BTC"

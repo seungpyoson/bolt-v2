@@ -51,6 +51,9 @@ url = "2"
 arrow = "58.1.0"
 tempfile = "3"
 
+[patch."https://github.com/nautechsystems/nautilus_trader.git"]
+nautilus-polymarket = { path = "patches/nautilus_trader_pinned/crates/adapters/polymarket" }
+
 [profile.release]
 lto = "thin"
 strip = true

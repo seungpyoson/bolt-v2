@@ -586,6 +586,9 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
         submissions[0].instrument_id,
         InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
     );
+    assert_eq!(submissions[0].order_type, OrderType::Market);
+    assert!(submissions[0].is_quote_quantity);
+    assert_eq!(submissions[0].price, Some(Price::from("0.450")));
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
 }
 
@@ -825,6 +828,9 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
     assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
+    assert_eq!(submissions[0].order_type, OrderType::Market);
+    assert!(!submissions[0].is_quote_quantity);
+    assert_eq!(submissions[0].price, Some(Price::from("0.430")));
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
 }
 

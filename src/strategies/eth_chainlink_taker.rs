@@ -881,11 +881,7 @@ impl PricingState {
                     .observed_ts_ms
                     .expect("selected lead venue should carry timestamp"),
             };
-            self.realized_vol = self
-                .realized_vol_by_venue
-                .get(&candidate.venue_name)
-                .cloned()
-                .expect("selected lead venue should already have realized-vol state");
+            self.realized_vol = self.selected_realized_vol_for_candidate(candidate);
             self.realized_vol_source_venue = Some(candidate.venue_name.clone());
             self.fast_spot = Some(fast_spot);
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
@@ -936,6 +932,22 @@ impl PricingState {
                 observed_ts_ms,
             });
         }
+    }
+
+    fn selected_realized_vol_for_candidate(
+        &self,
+        candidate: &LeadVenueSignal,
+    ) -> RealizedVolEstimator {
+        self.realized_vol_by_venue
+            .get(&candidate.venue_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                log::error!(
+                    "eth_chainlink_taker selected lead venue missing realized-vol state: venue={}",
+                    candidate.venue_name
+                );
+                self.realized_vol.empty_like()
+            })
     }
 
     fn spot_price(&self) -> Option<f64> {
@@ -5475,6 +5487,18 @@ mod tests {
             Some(2_000)
         );
         assert_eq!(estimator.last_ready_ts_ms, Some(2_000));
+    }
+
+    #[test]
+    fn selected_realized_vol_for_candidate_falls_closed_when_state_is_missing() {
+        let config = test_strategy().config.clone();
+        let pricing = PricingState::from_config(&config);
+
+        let estimator = pricing
+            .selected_realized_vol_for_candidate(&lead_signal("bybit", 0, 0, 1.0, 1.0, 0.01));
+
+        assert!(estimator.last_ready_vol.is_none());
+        assert_eq!(estimator.current_vol_at(1_000), None);
     }
 
     #[test]

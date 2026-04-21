@@ -867,7 +867,7 @@ impl PricingState {
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
-        self.observe_realized_vol_candidates(&candidates);
+        self.observe_realized_vol_candidates(&candidates, min_agreement_corr, max_jitter_ms);
         self.lead_quality_policy_applied = true;
         if let Some(candidate) =
             arbitrate_lead_reference(&candidates, min_agreement_corr, max_jitter_ms)
@@ -885,7 +885,7 @@ impl PricingState {
                 .realized_vol_by_venue
                 .get(&candidate.venue_name)
                 .cloned()
-                .unwrap_or_else(|| self.realized_vol.empty_like());
+                .expect("selected lead venue should already have realized-vol state");
             self.realized_vol_source_venue = Some(candidate.venue_name.clone());
             self.fast_spot = Some(fast_spot);
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
@@ -909,10 +909,18 @@ impl PricingState {
         }
     }
 
-    fn observe_realized_vol_candidates(&mut self, candidates: &[LeadVenueSignal]) {
+    fn observe_realized_vol_candidates(
+        &mut self,
+        candidates: &[LeadVenueSignal],
+        min_agreement_corr: f64,
+        max_jitter_ms: u64,
+    ) {
         let estimator_template = self.realized_vol.empty_like();
 
         for candidate in candidates {
+            if !candidate.is_eligible(min_agreement_corr, max_jitter_ms) {
+                continue;
+            }
             let (Some(price), Some(observed_ts_ms)) = (candidate.price, candidate.observed_ts_ms)
             else {
                 continue;
@@ -5503,6 +5511,117 @@ mod tests {
         assert!(
             strategy.current_realized_vol_at(4_000).is_some(),
             "selected venue should be able to reuse its own warmed history across lead switches"
+        );
+    }
+
+    #[test]
+    fn realized_vol_warms_for_eligible_nonlead_candidates_before_selection() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.vol_min_observations = 2;
+        strategy.config.lead_agreement_min_corr = 0.999;
+        strategy.pricing = PricingState::from_config(&strategy.config);
+
+        for (ts_ms, fair_value, bybit_price, okx_price) in [
+            (1_000, 3_100.0, 3_100.0, 3_100.3),
+            (2_000, 3_101.0, 3_101.0, 3_101.3),
+            (3_000, 3_102.0, 3_102.0, 3_102.3),
+            (4_000, 3_103.0, 3_103.0, 3_103.3),
+        ] {
+            strategy.observe_reference_snapshot(&ReferenceSnapshot {
+                ts_ms,
+                topic: "platform.reference.test.chainlink".to_string(),
+                fair_value: Some(fair_value),
+                confidence: 1.0,
+                venues: vec![
+                    oracle_venue("chainlink", 1.0, fair_value, ts_ms),
+                    orderbook_venue("bybit", 0.9, bybit_price, ts_ms),
+                    orderbook_venue("okx", 0.8, okx_price, ts_ms),
+                ],
+            });
+        }
+
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("bybit", 3_103.0, 4_000))
+        );
+        assert!(
+            strategy
+                .pricing
+                .realized_vol_by_venue
+                .get("okx")
+                .is_some_and(|estimator| estimator.current_vol_at(4_000).is_some()),
+            "eligible non-lead venues should keep warming their own realized-vol state"
+        );
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 5_000,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_104.0),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("chainlink", 1.0, 3_104.0, 5_000),
+                orderbook_venue("okx", 0.8, 3_104.3, 5_000),
+            ],
+        });
+
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("okx", 3_104.3, 5_000))
+        );
+        assert!(
+            strategy.current_realized_vol_at(5_000).is_some(),
+            "an eligible venue should be ready immediately once it becomes the selected lead"
+        );
+    }
+
+    #[test]
+    fn realized_vol_does_not_prewarm_ineligible_nonlead_candidates() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.vol_min_observations = 2;
+        strategy.config.lead_agreement_min_corr = 0.999;
+        strategy.pricing = PricingState::from_config(&strategy.config);
+
+        for (ts_ms, fair_value, bybit_price, okx_price) in [
+            (1_000, 3_100.0, 3_100.0, 3_000.0),
+            (2_000, 3_101.0, 3_101.0, 3_001.0),
+            (3_000, 3_102.0, 3_102.0, 3_002.0),
+        ] {
+            strategy.observe_reference_snapshot(&ReferenceSnapshot {
+                ts_ms,
+                topic: "platform.reference.test.chainlink".to_string(),
+                fair_value: Some(fair_value),
+                confidence: 1.0,
+                venues: vec![
+                    oracle_venue("chainlink", 1.0, fair_value, ts_ms),
+                    orderbook_venue("bybit", 0.9, bybit_price, ts_ms),
+                    orderbook_venue("okx", 0.8, okx_price, ts_ms),
+                ],
+            });
+        }
+
+        assert!(
+            strategy.pricing.realized_vol_by_venue.get("okx").is_none(),
+            "non-eligible venues should not warm in the background"
+        );
+
+        strategy.observe_reference_snapshot(&ReferenceSnapshot {
+            ts_ms: 4_000,
+            topic: "platform.reference.test.chainlink".to_string(),
+            fair_value: Some(3_103.0),
+            confidence: 1.0,
+            venues: vec![
+                oracle_venue("chainlink", 1.0, 3_103.0, 4_000),
+                orderbook_venue("okx", 0.8, 3_103.0, 4_000),
+            ],
+        });
+
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("okx", 3_103.0, 4_000))
+        );
+        assert!(
+            strategy.current_realized_vol_at(4_000).is_none(),
+            "a venue that was previously ineligible should still cold-start when it first becomes eligible"
         );
     }
 

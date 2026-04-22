@@ -25,9 +25,10 @@ use nautilus_common::{
 };
 use nautilus_model::{
     accounts::AccountAny,
-    enums::OmsType,
+    enums::{OmsType, OrderType},
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
-    types::{AccountBalance, MarginBalance},
+    orders::Order,
+    types::{AccountBalance, MarginBalance, Price},
 };
 use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
@@ -57,6 +58,9 @@ pub struct RecordedSubmitOrder {
     pub strategy_id: StrategyId,
     pub instrument_id: InstrumentId,
     pub client_order_id: ClientOrderId,
+    pub order_type: OrderType,
+    pub is_quote_quantity: bool,
+    pub price: Option<Price>,
 }
 
 pub fn clear_mock_exec_submissions() {
@@ -334,7 +338,7 @@ impl ExecutionClientFactory for MockExecutionClientFactory {
         &self,
         _name: &str,
         config: &dyn ClientConfig,
-        _cache: Rc<RefCell<Cache>>,
+        cache: Rc<RefCell<Cache>>,
     ) -> anyhow::Result<Box<dyn ExecutionClient>> {
         let cfg = config
             .as_any()
@@ -348,6 +352,7 @@ impl ExecutionClientFactory for MockExecutionClientFactory {
             AccountId::from(cfg.account_id.as_str()),
             Venue::from(cfg.venue.as_str()),
             OmsType::Netting,
+            cache,
         )))
     }
 
@@ -383,16 +388,24 @@ struct MockExecutionClient {
     account_id: AccountId,
     venue: Venue,
     oms_type: OmsType,
+    cache: Rc<RefCell<Cache>>,
     connected: bool,
 }
 
 impl MockExecutionClient {
-    fn new(client_id: ClientId, account_id: AccountId, venue: Venue, oms_type: OmsType) -> Self {
+    fn new(
+        client_id: ClientId,
+        account_id: AccountId,
+        venue: Venue,
+        oms_type: OmsType,
+        cache: Rc<RefCell<Cache>>,
+    ) -> Self {
         Self {
             client_id,
             account_id,
             venue,
             oms_type,
+            cache,
             connected: false,
         }
     }
@@ -528,6 +541,12 @@ impl ExecutionClient for MockExecutionClient {
     }
 
     fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
+        let order = self
+            .cache
+            .borrow()
+            .order(&cmd.client_order_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("mock execution client missing cached order"))?;
         mock_exec_submissions()
             .lock()
             .unwrap()
@@ -536,6 +555,9 @@ impl ExecutionClient for MockExecutionClient {
                 strategy_id: cmd.strategy_id,
                 instrument_id: cmd.instrument_id,
                 client_order_id: cmd.client_order_id,
+                order_type: order.order_type(),
+                is_quote_quantity: order.is_quote_quantity(),
+                price: order.price(),
             });
         Ok(())
     }

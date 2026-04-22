@@ -18,11 +18,12 @@ use nautilus_model::{
     enums::{BookAction, OrderSide, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
+    orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
 use toml::Value;
 
@@ -2850,17 +2851,11 @@ impl EthChainlinkTaker {
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
         self.log_exit_evaluation(now_ms, &decision);
-        let order = self.core.order_factory().limit(
+        let order = self.core.order_factory().market(
             instrument_id,
             order_side,
             quantity,
-            price,
             Some(TimeInForce::Fok),
-            None,
-            None,
-            None,
-            None,
-            None,
             None,
             None,
             None,
@@ -2868,6 +2863,7 @@ impl EthChainlinkTaker {
             None,
             Some(client_order_id),
         );
+        let order = with_market_protection_price(order, price)?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         let Some(managed_position) = self.managed_position().cloned() else {
@@ -2884,7 +2880,7 @@ impl EthChainlinkTaker {
             },
         });
         log::info!(
-            "eth_chainlink_taker exit submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
+            "eth_chainlink_taker exit submit: strategy_id={} instrument_id={} order_side={:?} cap_price={} quantity={} client_order_id={}",
             self.config.strategy_id,
             instrument_id,
             order_side,
@@ -3034,6 +3030,12 @@ impl EthChainlinkTaker {
             .current_instrument(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("entry instrument missing from cache"))?;
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
+        let sized_notional_usdc = decision
+            .evaluation
+            .sized_notional_usdc
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .ok_or_else(|| anyhow::anyhow!("entry quote amount missing from evaluation"))?;
+        let quote_amount = trunc_quantity_dp(sized_notional_usdc, 2)?;
 
         if self.exposure_occupancy().is_some() {
             let _ = self.enforce_one_position_invariant();
@@ -3042,24 +3044,19 @@ impl EthChainlinkTaker {
 
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
-        let order = self.core.order_factory().limit(
+        let order = self.core.order_factory().market(
             instrument_id,
             order_side,
-            quantity,
-            price,
+            quote_amount,
             Some(TimeInForce::Fok),
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Some(true),
             None,
             None,
             None,
             Some(client_order_id),
         );
+        let order = with_market_protection_price(order, price)?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         self.exposure = ExposureState::PendingEntry(PendingEntryState {
@@ -3087,11 +3084,12 @@ impl EthChainlinkTaker {
             },
         });
         log::info!(
-            "eth_chainlink_taker entry submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
+            "eth_chainlink_taker entry submit: strategy_id={} instrument_id={} order_side={:?} cap_price={} quote_amount_usdc={} estimated_base_quantity={} client_order_id={}",
             self.config.strategy_id,
             instrument_id,
             order_side,
             price,
+            quote_amount,
             quantity,
             client_order_id,
         );
@@ -4353,6 +4351,31 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
         reason,
         Some("no_open_position" | "exit_already_pending" | "exit_hold")
     )
+}
+
+fn trunc_quantity_dp(value: f64, precision: u32) -> Result<Quantity> {
+    let decimal = Decimal::from_f64_retain(value)
+        .ok_or_else(|| anyhow::anyhow!("value {value} could not be represented as Decimal"))?;
+    let truncated = decimal.trunc_with_scale(precision);
+    let quantity = Quantity::from_decimal_dp(truncated, precision as u8)?;
+    anyhow::ensure!(
+        quantity.as_f64().is_finite() && quantity.as_f64() > 0.0,
+        "value {value} truncated to non-positive quantity {quantity}"
+    );
+    Ok(quantity)
+}
+
+fn with_market_protection_price(mut order: OrderAny, protection_price: Price) -> Result<OrderAny> {
+    match &mut order {
+        OrderAny::Market(market) => {
+            market.protection_price = Some(protection_price);
+            Ok(order)
+        }
+        _ => anyhow::bail!(
+            "expected Market order for protection price, got {:?}",
+            order.order_type()
+        ),
+    }
 }
 
 fn evaluate_exit_decision(

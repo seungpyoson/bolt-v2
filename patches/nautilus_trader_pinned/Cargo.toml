@@ -1,0 +1,131 @@
+[workspace]
+resolver = "2"
+members = ["crates/adapters/polymarket"]
+
+[workspace.package]
+version = "0.55.0"
+edition = "2024"
+rust-version = "1.94.1"
+authors = ["Nautech Systems <info@nautechsystems.io>"]
+license = "LGPL-3.0-or-later"
+readme = "README.md"
+description = "A high-performance algorithmic trading platform and event-driven backtester"
+categories = ["finance", "simulation", "asynchronous"]
+keywords = [
+  "finance",
+  "trading",
+  "trading-platform",
+  "algorithmic-trading",
+  "quantitative-finance",
+]
+documentation = "https://nautilustrader.io/docs"
+repository = "https://github.com/nautechsystems/nautilus_trader"
+homepage = "https://nautilustrader.io"
+
+[workspace.dependencies]
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb", features = ["live"] }
+nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-live = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-network = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-system = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-testkit = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+
+ahash = { version = "0.8.12", features = ["serde"] }
+alloy = { version = "1.8.3", default-features = false, features = [
+  "sol-types",
+  "contract",
+  "signers",
+  "signer-local",
+] }
+alloy-primitives = { version = "1.5.7", default-features = false, features = [
+  "std",
+  "serde",
+] }
+anyhow = "1.0.102"
+arc-swap = "1.9.1"
+async-trait = "0.1.89"
+aws-lc-rs = { version = "1.16.2", default-features = false, features = [
+  "non-fips",
+] }
+axum = { version = "0.8.8", default-features = false, features = [
+  "tokio",
+  "http1",
+  "json",
+  "query",
+  "ws",
+] }
+base64 = "0.22.1"
+bon = "3.9.1"
+chrono = { version = "0.4.44", default-features = false, features = [
+  "serde",
+  "std",
+  "clock",
+] }
+dashmap = "6.1.0"
+derive_builder = { version = "0.20.2", default-features = false, features = [
+  "alloc",
+] }
+dotenvy = "0.15.7"
+futures-util = { version = "0.3.32", default-features = false, features = [
+  "std",
+  "async-await",
+  "sink",
+] }
+hex = "0.4.3"
+log = { version = "0.4.29", features = [
+  "std",
+  "kv_unstable",
+  "serde",
+  "release_max_level_debug",
+] }
+pyo3 = { version = "0.28.3", default-features = false, features = [
+  "chrono",
+  "hashbrown",
+  "indexmap",
+  "macros",
+  "multiple-pymethods",
+  "rust_decimal",
+  "serde",
+] }
+pyo3-async-runtimes = { version = "0.28.0", default-features = false, features = [
+  "attributes",
+  "tokio",
+  "tokio-runtime",
+] }
+pyo3-stub-gen = { version = "=0.20.0", default-features = false, features = [
+  "rust_decimal",
+] }
+rstest = "0.26.1"
+rust_decimal = { version = "1.41.0", features = ["serde-with-float"] }
+rust_decimal_macros = "1.40.0"
+serde = { version = "1.0.228", default-features = false, features = [
+  "derive",
+  "std",
+  "rc",
+] }
+serde_json = { version = "1.0.149", default-features = false, features = [
+  "std",
+] }
+serde_repr = "0.1.20"
+strum = { version = "0.28.0", features = ["derive"] }
+thiserror = "2.0.18"
+tokio = { version = "1.51.0", default-features = false, features = [
+  "rt-multi-thread",
+  "sync",
+  "fs",
+  "io-util",
+  "net",
+  "time",
+  "macros",
+  "signal",
+] }
+tokio-tungstenite = { version = "0.29.0", features = [
+  "rustls-tls-webpki-roots",
+] }
+tokio-util = { version = "0.7.18", default-features = false, features = ["io"] }
+url = { version = "2.5.8", default-features = false }
+ustr = { version = "1.1.0", features = ["serde"] }
+uuid = { version = "1.23.0", features = ["v4", "serde"] }
+zeroize = { version = "1.8.2", features = ["alloc", "zeroize_derive"] }

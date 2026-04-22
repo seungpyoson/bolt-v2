@@ -22,17 +22,136 @@ fn fixture(path: &str) -> PathBuf {
 }
 
 fn external_claude_config_root() -> Option<PathBuf> {
-    [
-        repo_root().join("../worktrees/claude-config/feat-565-bolt-v2-trust-root-guard"),
-        repo_root().join("../../claude-config"),
-    ]
-    .into_iter()
-    .find(|candidate| {
+    let mut candidates = Vec::new();
+    for ancestor in repo_root().ancestors() {
+        candidates.push(ancestor.join("worktrees/claude-config/feat-565-bolt-v2-trust-root-guard"));
+        candidates.push(ancestor.join("claude-config"));
+    }
+
+    candidates.into_iter().find(|candidate| {
         candidate.join("lib/bolt_trust_root_validator.py").exists()
             && candidate
                 .join("config/bolt-v2-trust-root-policy.json")
                 .exists()
     })
+}
+
+fn trust_root_policy_path(root: &Path) -> PathBuf {
+    root.join("config/bolt-v2-trust-root-policy.json")
+}
+
+fn trust_root_validator_path(root: &Path) -> PathBuf {
+    root.join("lib/bolt_trust_root_validator.py")
+}
+
+fn protected_policy_paths(policy_root: &Path) -> Vec<String> {
+    let policy: JsonValue = serde_json::from_str(
+        &fs::read_to_string(trust_root_policy_path(policy_root)).expect("trust-root policy should load"),
+    )
+    .expect("trust-root policy should parse");
+
+    policy["protected_entries"]
+        .as_array()
+        .expect("protected_entries should be an array")
+        .iter()
+        .map(|entry| {
+            entry["path"]
+                .as_str()
+                .expect("protected entry path should be a string")
+                .to_string()
+        })
+        .collect()
+}
+
+fn git_show_file(repo: &Path, git_ref: &str, relative_path: &str) -> Vec<u8> {
+    let output = Command::new("git")
+        .args(["show", &format!("{git_ref}:{relative_path}")])
+        .current_dir(repo)
+        .output()
+        .expect("git show should run");
+    assert!(
+        output.status.success(),
+        "git show should succeed for {git_ref}:{relative_path}: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+fn materialize_policy_snapshot_for_git_ref(repo: &Path, policy_root: &Path, git_ref: &str) -> TempDir {
+    let tempdir = tempfile::tempdir().expect("snapshot tempdir should create");
+
+    for relative_path in protected_policy_paths(policy_root) {
+        let destination = tempdir.path().join(&relative_path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).expect("snapshot parent dir should create");
+        }
+        fs::write(destination, git_show_file(repo, git_ref, &relative_path))
+            .expect("snapshot file should write");
+    }
+
+    tempdir
+}
+
+fn run_external_validator(repo_snapshot: &Path, policy_root: &Path) -> std::process::Output {
+    Command::new("python3")
+        .arg(trust_root_validator_path(policy_root))
+        .arg("--repo")
+        .arg(repo_snapshot)
+        .arg("--policy")
+        .arg(trust_root_policy_path(policy_root))
+        .output()
+        .expect("external validator should run")
+}
+
+fn init_temp_trust_root_repo_from_ref(source_repo: &Path, policy_root: &Path, git_ref: &str) -> TempDir {
+    let tempdir = tempfile::tempdir().expect("temp git repo should create");
+
+    for relative_path in protected_policy_paths(policy_root) {
+        let destination = tempdir.path().join(&relative_path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).expect("repo parent dir should create");
+        }
+        fs::write(destination, git_show_file(source_repo, git_ref, &relative_path))
+            .expect("repo file should write");
+    }
+
+    for command in [
+        ["init"].as_slice(),
+        ["config", "user.name", "fixture"].as_slice(),
+        ["config", "user.email", "fixture@example.com"].as_slice(),
+        ["add", "."].as_slice(),
+        ["commit", "--no-verify", "-m", "base"].as_slice(),
+        ["branch", "-M", "main"].as_slice(),
+    ] {
+        let status = Command::new("git")
+            .args(command)
+            .current_dir(tempdir.path())
+            .status()
+            .expect("git command should run");
+        assert!(status.success(), "git command should succeed: {:?}", command);
+    }
+
+    let head_sha = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(tempdir.path())
+            .output()
+            .expect("git rev-parse should run")
+            .stdout,
+    )
+    .expect("rev-parse output should be utf-8")
+    .trim()
+    .to_string();
+
+    let status = Command::new("git")
+        .args(["update-ref", "refs/remotes/origin/main", &head_sha])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git update-ref should run");
+    assert!(status.success(), "git update-ref should succeed");
+
+    tempdir
 }
 
 fn copy_fixture_tree(source: &Path, destination: &Path) {
@@ -937,20 +1056,103 @@ fn current_external_snapshot_validator_matches_local_checkout() {
         return;
     };
 
-    let output = std::process::Command::new("python3")
-        .arg(root.join("lib/bolt_trust_root_validator.py"))
-        .arg("--repo")
-        .arg(repo_root())
-        .arg("--policy")
-        .arg(root.join("config/bolt-v2-trust-root-policy.json"))
-        .output()
-        .expect("external validator should run");
+    let snapshot = materialize_policy_snapshot_for_git_ref(&repo_root(), &root, "refs/remotes/origin/main");
+    let output = run_external_validator(snapshot.path(), &root);
 
     assert!(
         output.status.success(),
         "external validator failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn external_snapshot_validator_uses_origin_main_snapshot_not_feature_branch_checkout() {
+    let Some(root) = external_claude_config_root() else {
+        return;
+    };
+
+    let tempdir = init_temp_trust_root_repo_from_ref(&repo_root(), &root, "refs/remotes/origin/main");
+
+    fs::write(
+        tempdir.path().join("tests/nt_pointer_probe_control_plane.rs"),
+        "// feature branch local modification\n",
+    )
+    .expect("protected test file should write");
+
+    let snapshot = materialize_policy_snapshot_for_git_ref(tempdir.path(), &root, "refs/remotes/origin/main");
+    let output = run_external_validator(snapshot.path(), &root);
+
+    assert!(
+        output.status.success(),
+        "validator should accept when origin/main still matches policy even if the feature branch checkout changes a protected file: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn external_snapshot_validator_still_fails_when_origin_main_drifts_from_policy() {
+    let Some(root) = external_claude_config_root() else {
+        return;
+    };
+
+    let tempdir = init_temp_trust_root_repo_from_ref(&repo_root(), &root, "refs/remotes/origin/main");
+
+    fs::write(
+        tempdir.path().join("tests/nt_pointer_probe_control_plane.rs"),
+        "// origin main drift\n",
+    )
+    .expect("protected test file should write");
+
+    let status = Command::new("git")
+        .args(["add", "tests/nt_pointer_probe_control_plane.rs"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git add should run");
+    assert!(status.success(), "git add should succeed");
+
+    let status = Command::new("git")
+        .args(["commit", "--no-verify", "-m", "drift"])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git commit should run");
+    assert!(status.success(), "git commit should succeed");
+
+    let head_sha = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(tempdir.path())
+            .output()
+            .expect("git rev-parse should run")
+            .stdout,
+    )
+    .expect("rev-parse output should be utf-8")
+    .trim()
+    .to_string();
+
+    let status = Command::new("git")
+        .args(["update-ref", "refs/remotes/origin/main", &head_sha])
+        .current_dir(tempdir.path())
+        .status()
+        .expect("git update-ref should run");
+    assert!(status.success(), "git update-ref should succeed");
+
+    let snapshot = materialize_policy_snapshot_for_git_ref(tempdir.path(), &root, "refs/remotes/origin/main");
+    let output = run_external_validator(snapshot.path(), &root);
+
+    assert!(
+        !output.status.success(),
+        "validator must still fail when origin/main itself drifts from policy"
+    );
+}
+
+#[test]
+fn external_claude_config_root_resolves_from_nested_issue_worktree() {
+    assert!(
+        external_claude_config_root().is_some(),
+        "nested issue worktrees must still resolve the external claude-config trust-root bundle"
     );
 }
 

@@ -1,0 +1,33 @@
+issue_id = "185"
+title = "Decouple trust-root validator gate from developer checkout"
+repo = "bolt-v2"
+slice_id = "trust-root-origin-main-snapshot"
+status = "draft"
+problem_statement = "The local trust-root gate currently validates the active checkout instead of an origin/main snapshot, which can self-block feature branches that modify protected files even when origin/main still matches policy."
+
+required_outcomes = [
+  "feature-branch protected-file edits do not fail the local trust-root gate when origin/main still matches policy",
+  "origin/main drift against policy still fails the gate",
+  "the gate remains data-only and does not execute PR-head code",
+]
+
+non_goals = [
+  "no changes to the external validator bundle in claude-config",
+  "no policy refresh content changes",
+  "no workflow auth-path work from issue #182",
+]
+
+allowed_surfaces = [
+  "tests/nt_pointer_probe_control_plane.rs",
+  "docs/mechanical-process-package/candidate-185-trust-root-origin-main/**",
+]
+
+forbidden_surfaces = [
+  "src/**",
+  ".github/**",
+]
+
+assumptions = [
+  "The external validator remains authoritative and unchanged; bolt-v2 only changes what snapshot it presents to that validator",
+  "A local origin/main ref is available in normal developer workflows or can be required explicitly by the gate",
+]

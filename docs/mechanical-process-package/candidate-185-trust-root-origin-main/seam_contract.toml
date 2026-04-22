@@ -1,0 +1,40 @@
+status = "blocked"
+
+[[seams]]
+seam_id = "SEAM-VALIDATED-SNAPSHOT-SOURCE"
+semantic_term = "trust_root_snapshot_source"
+writer_path = "tests/nt_pointer_probe_control_plane.rs"
+writer_symbol = "current_external_snapshot_validator_matches_local_checkout"
+reader_path = "external validator invocation"
+reader_symbol = "python validator --repo <snapshot-root>"
+storage_field = "snapshot_root_presented_to_external_validator"
+authoritative_source = "UNFROZEN"
+allowed_sources = [
+  "materialized origin/main protected-file snapshot",
+]
+forbidden_sources = [
+  "active feature-branch working tree",
+]
+fallback_order = []
+freshness_clock = "N/A"
+status = "ambiguous"
+
+[[seams]]
+seam_id = "SEAM-POLICY-SCOPE-IDENTITY"
+semantic_term = "policy_scope_identity"
+writer_path = "tests/nt_pointer_probe_control_plane.rs"
+writer_symbol = "trust-root local gate"
+reader_path = "external validator policy match"
+reader_symbol = "expected protected-file hashes"
+storage_field = "which_git_ref_the_policy_is_asserted_against"
+authoritative_source = "UNFROZEN"
+allowed_sources = [
+  "origin/main only",
+]
+forbidden_sources = [
+  "feature-branch HEAD",
+  "mixed branch-local filesystem state",
+]
+fallback_order = []
+freshness_clock = "N/A"
+status = "ambiguous"

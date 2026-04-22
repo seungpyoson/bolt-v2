@@ -1,0 +1,75 @@
+status = "blocked"
+
+[[claims]]
+claim_id = "C185-1"
+claim_text = "the_current_local_gate_validates_the_active_checkout_instead_of_an_origin_main_snapshot"
+claim_kind = "snapshot_source_identity"
+covered_by = [
+  "E185-1",
+  "E185-2",
+  "E185-3",
+]
+falsified_by = [
+  "FX185-1",
+]
+required_before = "implementation"
+status = "mapped"
+
+[[claims]]
+claim_id = "C185-2"
+claim_text = "an_accepted_change_must_make_feature_branch_protected_file_edits_non_blocking_when_origin_main_matches_policy"
+claim_kind = "feature_branch_non_blocking"
+covered_by = [
+  "E185-1",
+  "E185-2",
+]
+falsified_by = [
+  "FX185-2",
+]
+required_before = "implementation"
+status = "open"
+
+[[claims]]
+claim_id = "C185-3"
+claim_text = "an_accepted_change_must_still_fail_when_origin_main_drifts_from_policy"
+claim_kind = "main_drift_detection"
+covered_by = [
+  "E185-1",
+  "E185-3",
+]
+falsified_by = [
+  "FX185-3",
+]
+required_before = "implementation"
+status = "open"
+
+[[claims]]
+claim_id = "C185-4"
+claim_text = "the_gate_remains_data_only_and_does_not_execute_feature_branch_code"
+claim_kind = "data_only_trust_root_gate"
+covered_by = [
+  "E185-1",
+  "E185-2",
+  "E185-3",
+]
+falsified_by = [
+  "FX185-4",
+]
+required_before = "implementation"
+status = "open"
+
+[[falsifiers]]
+falsifier_id = "FX185-1"
+description = "The current gate already validates a materialized origin/main snapshot rather than the active checkout."
+
+[[falsifiers]]
+falsifier_id = "FX185-2"
+description = "A feature branch that changes protected files still fails the local trust-root gate even though origin/main matches policy."
+
+[[falsifiers]]
+falsifier_id = "FX185-3"
+description = "origin/main can drift from policy without the gate failing."
+
+[[falsifiers]]
+falsifier_id = "FX185-4"
+description = "The accepted change executes feature-branch code or otherwise widens the trust-root model beyond data-only validation."

@@ -1,0 +1,44 @@
+status = "collected"
+
+[[evidence]]
+evidence_id = "E185-1"
+type = "external_artifact"
+producer = "github_issue"
+subject = "issue_185_problem_statement"
+artifact_ref = "https://github.com/seungpyoson/bolt-v2/issues/185"
+proves = [
+  "C185-1",
+  "C185-2",
+  "C185-3",
+  "C185-4",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E185-2"
+type = "repo_source_ref"
+producer = "local_repo"
+subject = "current_local_gate_invokes_external_validator_against_repo_root"
+artifact_ref = "tests/nt_pointer_probe_control_plane.rs:935-947"
+proves = [
+  "C185-1",
+  "C185-2",
+  "C185-4",
+]
+contradicts = []
+captured_at = "2026-04-19"
+
+[[evidence]]
+evidence_id = "E185-3"
+type = "external_artifact"
+producer = "external_validator_source"
+subject = "external_validator_hashes_files_from_passed_repo_path"
+artifact_ref = "/Users/spson/Projects/Claude/worktrees/claude-config/feat-565-bolt-v2-trust-root-guard/lib/bolt_trust_root_validator.py"
+proves = [
+  "C185-1",
+  "C185-3",
+  "C185-4",
+]
+contradicts = []
+captured_at = "2026-04-19"

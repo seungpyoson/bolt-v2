@@ -1,0 +1,32 @@
+status = "open"
+
+[[findings]]
+finding_id = "185|semantic_ambiguity|snapshot_root|validated_snapshot_source_unfrozen|tests/nt_pointer_probe_control_plane.rs"
+kind = "semantic_ambiguity"
+subject = "snapshot_root"
+predicate = "validated_snapshot_source_unfrozen"
+locus = "tests/nt_pointer_probe_control_plane.rs"
+source_refs = [
+  "E185-1",
+  "E185-2",
+  "E185-3",
+]
+duplicates = []
+status = "open"
+resolution_kind = "UNSET"
+resolved_by = []
+
+[[findings]]
+finding_id = "185|missing_proof|feature_branch_gate|feature_branch_non_blocking_not_proven|tests/nt_pointer_probe_control_plane.rs"
+kind = "missing_proof"
+subject = "feature_branch_gate"
+predicate = "feature_branch_non_blocking_not_proven"
+locus = "tests/nt_pointer_probe_control_plane.rs"
+source_refs = [
+  "E185-1",
+  "E185-2",
+]
+duplicates = []
+status = "open"
+resolution_kind = "UNSET"
+resolved_by = []

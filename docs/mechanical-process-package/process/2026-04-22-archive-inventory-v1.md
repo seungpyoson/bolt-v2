@@ -15,16 +15,25 @@ It tells you:
 
 Primary archive branch:
 
-- `issue-208-validation-protocol` @ `b6f24d1274f7ea6d6cb10892728e574120531604`
+- `issue-208-validation-protocol`
 
 Subject-under-test branch:
 
-- `issue-208-scientific-validation-post-protocol` @ `6b36d16ab235329c2f7d4c3f469ab4ab813bf231`
+- `issue-208-scientific-validation-post-protocol`
+
+Prototype baseline branch:
+
+- `issue-208-process-validator`
 
 Archive tags:
 
+- `issue-208-process-validator-c4d182d`
+- `issue-208-scientific-validation-subject-50c0fca`
 - `issue-208-validation-protocol-b6f24d1`
 - `issue-208-scientific-validation-post-protocol-6b36d16`
+
+Use the branches as moving archive entry points.
+Use the tags as immutable checkpoints.
 
 ## Archive Summary
 

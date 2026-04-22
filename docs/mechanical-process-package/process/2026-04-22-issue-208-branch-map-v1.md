@@ -33,10 +33,6 @@ Use this branch if you want:
 - the protocol/control-plane history
 - the cleanest archive entry point
 
-Current saved head:
-
-- `7ebe27fb1196ccafaee84dc4ce5b2c80eadfd619`
-
 ### 2. `issue-208-process-validator`
 
 Role:
@@ -51,10 +47,6 @@ Use this branch if you want:
 
 - the baseline snapshot before the protocol/archive split
 - the exact prototype reference point
-
-Current saved head:
-
-- `c4d182d2482ec56e02e14be112359d285f7abece`
 
 ### 3. `issue-208-scientific-validation-post-protocol`
 
@@ -71,10 +63,6 @@ Use this branch if you want:
 
 - the subject that was used for the later local scientific-validation attempt
 - the exact subject-side state, separate from the protocol branch
-
-Current saved head:
-
-- `6b36d16ab235329c2f7d4c3f469ab4ab813bf231`
 
 ## Archived Tags
 
@@ -139,3 +127,11 @@ Think of the saved refs like this:
 - `issue-208-validation-protocol` = protocol archive
 - `issue-208-scientific-validation-post-protocol` = subject under test
 - tags = frozen historical checkpoints
+
+## Ref Rule
+
+For long-lived docs:
+
+- use branch names for moving archive entry points
+- use tags for immutable checkpoints
+- avoid embedding mutable branch head SHAs in explanatory docs

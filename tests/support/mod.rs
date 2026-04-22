@@ -209,7 +209,7 @@ min_publish_interval_ms = 100
 region = "us-east-1"
 api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://ws.testnet-dataengine.chain.link"
+ws_url = "wss://streams.chain.link"
 ws_reconnect_alert_threshold = 5
 
 [[reference.venues]]

@@ -356,9 +356,12 @@ The first-live realized-volatility estimator is defined as:
   - if the gap between consecutive midpoint samples exceeds `target.retry_interval_seconds` seconds, reset the estimator state
 - readiness rule:
   - at least two midpoint samples are required
+  - sample timestamps used for the estimator must be strictly increasing
+  - `elapsed_seconds`, measured from the first retained sample timestamp to the last retained sample timestamp, must be strictly positive
 - return formula:
   - for each consecutive midpoint pair, compute `log(current_midpoint / previous_midpoint)`
 - annualization formula:
+  - `SECONDS_PER_YEAR = 31_536_000`
   - `realized_volatility = sqrt((sum_squared_log_returns / elapsed_seconds) * SECONDS_PER_YEAR)`
 - bridge-valid rule:
   - if the last ready realized-volatility value is older than `target.retry_interval_seconds` seconds, realized volatility is not ready
@@ -375,6 +378,7 @@ The first-live entry evaluation is:
 2. first-live fair-probability formula:
    - `d2 = (ln(spot_price / strike_price) - (realized_volatility^2 / 2) * time_to_expiry_years) / (realized_volatility * sqrt(time_to_expiry_years))`
    - `fair_probability_up = standard_normal_cdf(d2)`
+   - if `realized_volatility <= 0` or `time_to_expiry_years <= 0`, fair probability is unavailable and entry evaluation skips as not ready
 3. derive side success probability:
    - `Up`: `fair_probability_up`
    - `Down`: `1.0 - fair_probability_up`

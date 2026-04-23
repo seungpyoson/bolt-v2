@@ -63,7 +63,10 @@ fn pinned_custom_data_round_trips_through_local_catalog() {
     match &loaded[0] {
         Data::Custom(decoded) => {
             assert_eq!(decoded.data_type.type_name(), "VerificationDecisionEvent");
-            assert_eq!(decoded.data_type.identifier(), Some(instrument_id.to_string().as_str()));
+            assert_eq!(
+                decoded.data_type.identifier(),
+                Some(instrument_id.to_string().as_str())
+            );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
     }

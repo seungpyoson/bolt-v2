@@ -72,9 +72,9 @@
   Custom-data registration and catalog wiring helpers.
 
 - `src/v3/strategies/mod.rs`
-  Compile-time archetype match for `threshold_binary_quoter`.
+  Compile-time archetype match for `binary_oracle_edge_taker`.
 
-- `src/v3/strategies/threshold_binary_quoter.rs`
+- `src/v3/strategies/binary_oracle_edge_taker.rs`
   First-live archetype implementation using NT-native order construction.
 
 - `src/v3/runtime.rs`
@@ -91,7 +91,7 @@
 - `tests/bolt_v3_polymarket_filters.rs`
 - `tests/bolt_v3_custom_data_catalog.rs`
 - `tests/bolt_v3_check.rs`
-- `tests/bolt_v3_threshold_binary_quoter.rs`
+- `tests/bolt_v3_binary_oracle_edge_taker.rs`
 - `tests/issue_239_panic_matrix.rs`
 
 ### Modified files
@@ -360,7 +360,7 @@ websocket_max_subscriptions_per_connection = 200
 [venues.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x0000000000000000000000000000000000000000"
+funder_address = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
@@ -384,7 +384,7 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
         r#"
 schema_version = 1
 strategy_instance_identifier = "bitcoin_updown_main"
-strategy_archetype = "threshold_binary_quoter"
+strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
 venue = "polymarket_main"
@@ -420,7 +420,6 @@ quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
-risk_lambda = "0.10"
 "#,
     )
     .unwrap();
@@ -430,7 +429,7 @@ risk_lambda = "0.10"
 }
 
 #[test]
-fn threshold_binary_quoter_requires_primary_reference_data() {
+fn binary_oracle_edge_taker_requires_primary_reference_data() {
     let temp = TempDir::new().unwrap();
     let root_path = temp.path().join("root.toml");
     let strategy_path = temp.path().join("strategy.toml");
@@ -500,7 +499,7 @@ websocket_max_subscriptions_per_connection = 200
 [venues.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x0000000000000000000000000000000000000000"
+funder_address = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
@@ -526,7 +525,7 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
         r#"
 schema_version = 1
 strategy_instance_identifier = "bitcoin_updown_main"
-strategy_archetype = "threshold_binary_quoter"
+strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
 venue = "polymarket_main"
@@ -558,7 +557,6 @@ quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
-risk_lambda = "0.10"
 "#,
     )
     .unwrap();
@@ -731,7 +729,6 @@ pub struct ParametersConfig {
     pub edge_threshold_basis_points: i64,
     pub order_notional_target: String,
     pub maximum_position_notional: String,
-    pub risk_lambda: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -784,8 +781,8 @@ pub fn load_root_and_strategies(root_path: &Path) -> Result<LoadedConfig> {
         if !seen_tags.insert(strategy.order_id_tag.clone()) {
             bail!("duplicate order_id_tag {}", strategy.order_id_tag);
         }
-        if strategy.strategy_archetype == "threshold_binary_quoter" && !strategy.reference_data.contains_key("primary") {
-            bail!("threshold_binary_quoter requires reference_data.primary");
+        if strategy.strategy_archetype == "binary_oracle_edge_taker" && !strategy.reference_data.contains_key("primary") {
+            bail!("binary_oracle_edge_taker requires reference_data.primary");
         }
 
         strategies.push((path, strategy));
@@ -807,7 +804,7 @@ Expected:
 
 ```text
 test strategy_paths_are_resolved_relative_to_root_file ... ok
-test threshold_binary_quoter_requires_primary_reference_data ... ok
+test binary_oracle_edge_taker_requires_primary_reference_data ... ok
 ```
 
 - [ ] **Step 5: Commit schema and loader**
@@ -1428,24 +1425,24 @@ git add src/v3/check.rs src/v3/app.rs justfile tests/bolt_v3_check.rs
 git commit -m "feat: add bolt-v3 check result model and single-path validation entrypoint"
 ```
 
-### Task 7: Implement the first-live threshold binary quoter and live node assembly
+### Task 7: Implement the first-live binary oracle edge taker and live node assembly
 
 **Files:**
 - Create: `src/v3/strategies/mod.rs`
-- Create: `src/v3/strategies/threshold_binary_quoter.rs`
+- Create: `src/v3/strategies/binary_oracle_edge_taker.rs`
 - Create: `src/v3/runtime.rs`
-- Test: `tests/bolt_v3_threshold_binary_quoter.rs`
+- Test: `tests/bolt_v3_binary_oracle_edge_taker.rs`
 
 - [ ] **Step 1: Write the failing archetype configuration test**
 
 ```rust
-// tests/bolt_v3_threshold_binary_quoter.rs
+// tests/bolt_v3_binary_oracle_edge_taker.rs
 use bolt_v2::v3::strategies::strategy_id_for;
 
 #[test]
 fn strategy_id_is_derived_from_archetype_and_order_id_tag() {
-    let id = strategy_id_for("threshold_binary_quoter", "001");
-    assert_eq!(id, "threshold_binary_quoter-001");
+    let id = strategy_id_for("binary_oracle_edge_taker", "001");
+    assert_eq!(id, "binary_oracle_edge_taker-001");
 }
 ```
 
@@ -1454,7 +1451,7 @@ fn strategy_id_is_derived_from_archetype_and_order_id_tag() {
 Run:
 
 ```bash
-cargo test --test bolt_v3_threshold_binary_quoter -- --nocapture
+cargo test --test bolt_v3_binary_oracle_edge_taker -- --nocapture
 ```
 
 Expected:
@@ -1467,7 +1464,7 @@ error[E0432]: unresolved import `bolt_v2::v3::strategies`
 
 ```rust
 // src/v3/strategies/mod.rs
-pub mod threshold_binary_quoter;
+pub mod binary_oracle_edge_taker;
 
 pub fn strategy_id_for(archetype: &str, order_id_tag: &str) -> String {
     format!("{archetype}-{order_id_tag}")
@@ -1475,10 +1472,10 @@ pub fn strategy_id_for(archetype: &str, order_id_tag: &str) -> String {
 ```
 
 ```rust
-// src/v3/strategies/threshold_binary_quoter.rs
-pub struct ThresholdBinaryQuoter;
+// src/v3/strategies/binary_oracle_edge_taker.rs
+pub struct BinaryOracleEdgeTaker;
 
-impl ThresholdBinaryQuoter {
+impl BinaryOracleEdgeTaker {
     pub fn new() -> Self {
         Self
     }
@@ -1499,7 +1496,7 @@ pub fn assemble_live_node() -> Result<()> {
 Run:
 
 ```bash
-cargo test --test bolt_v3_threshold_binary_quoter -- --nocapture
+cargo test --test bolt_v3_binary_oracle_edge_taker -- --nocapture
 ```
 
 Expected:
@@ -1511,8 +1508,8 @@ test strategy_id_is_derived_from_archetype_and_order_id_tag ... ok
 - [ ] **Step 5: Commit the archetype/runtime scaffold**
 
 ```bash
-git add src/v3/strategies/mod.rs src/v3/strategies/threshold_binary_quoter.rs src/v3/runtime.rs tests/bolt_v3_threshold_binary_quoter.rs
-git commit -m "feat: scaffold bolt-v3 threshold binary quoter and runtime assembly"
+git add src/v3/strategies/mod.rs src/v3/strategies/binary_oracle_edge_taker.rs src/v3/runtime.rs tests/bolt_v3_binary_oracle_edge_taker.rs
+git commit -m "feat: scaffold bolt-v3 binary oracle edge taker and runtime assembly"
 ```
 
 ### Task 8: Add the `#239` panic gate harness
@@ -1591,7 +1588,7 @@ git commit -m "test: scaffold issue-239 panic gate matrix"
 Run:
 
 ```bash
-cargo test --test bolt_v3_cli --test bolt_v3_schema --test bolt_v3_secrets --test bolt_v3_polymarket_filters --test bolt_v3_custom_data_catalog --test bolt_v3_check --test bolt_v3_threshold_binary_quoter --test issue_239_panic_matrix -- --nocapture
+cargo test --test bolt_v3_cli --test bolt_v3_schema --test bolt_v3_secrets --test bolt_v3_polymarket_filters --test bolt_v3_custom_data_catalog --test bolt_v3_check --test bolt_v3_binary_oracle_edge_taker --test issue_239_panic_matrix -- --nocapture
 ```
 
 Expected:

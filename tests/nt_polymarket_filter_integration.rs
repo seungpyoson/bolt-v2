@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use nautilus_network::retry::RetryConfig;
 use nautilus_polymarket::{
-    filters::MarketSlugFilter,
-    http::gamma::PolymarketGammaHttpClient,
+    filters::MarketSlugFilter, http::gamma::PolymarketGammaHttpClient,
     providers::PolymarketInstrumentProvider,
 };
 

@@ -5,8 +5,8 @@ path = "crates/model/src/"
 match = "prefix"
 non_overlap_proof = "Invalid fixture: shared NT crate prefixes must never be safe-listed broadly."
 approved_by = "fixture"
-approved_at = "2099-01-01"
-revalidate_after = "2099-01-30"
+approved_at = "2026-04-23"
+revalidate_after = "2026-05-14"
 
 [entries.condition]
 kind = "upstream-path-kind"

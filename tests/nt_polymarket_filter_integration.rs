@@ -6,6 +6,8 @@ use nautilus_polymarket::{
     providers::PolymarketInstrumentProvider,
 };
 
+// This is a pin-surface test, not a bolt-v3 runtime implementation.
+// The documented slug contract is mirrored here only to prove the pinned NT filter accepts it.
 fn first_live_updown_slugs(
     underlying_asset: &str,
     cadence_seconds: u64,

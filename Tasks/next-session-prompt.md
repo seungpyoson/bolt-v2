@@ -48,7 +48,7 @@ bolt-v2 is a Polymarket trading system built on NautilusTrader's Rust `LiveNode`
 ### Files in Repo
 ```
 bolt-v2/
-  Cargo.toml           # Rust deps (NT git rev af2aefc2)
+  Cargo.toml           # Rust deps (NT git rev 48d1c126)
   Cargo.lock           # Pinned deps
   src/main.rs          # Entry point — CLI with `run` and `secrets` subcommands
   src/config.rs        # Config parsing + secret resolution (SSM only after Task 1)

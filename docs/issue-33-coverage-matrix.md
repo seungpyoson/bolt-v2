@@ -44,9 +44,9 @@ Explicitly ruled out for this branch, even though they are inventoried below:
   - `src/normalized_sink.rs`
   - `src/lake_batch.rs`
 - Pinned NT exposes the missing execution-state surfaces:
-  - `~/.cargo/git/checkouts/nautilus_trader-*/af2aefc/crates/trading/src/strategy/mod.rs`
-  - `~/.cargo/git/checkouts/nautilus_trader-*/af2aefc/crates/common/src/msgbus/api.rs`
-  - `~/.cargo/git/checkouts/nautilus_trader-*/af2aefc/crates/common/src/msgbus/switchboard.rs`
-  - `~/.cargo/git/checkouts/nautilus_trader-*/af2aefc/crates/adapters/polymarket/src/websocket/messages.rs`
-  - `~/.cargo/git/checkouts/nautilus_trader-*/af2aefc/crates/adapters/polymarket/src/websocket/dispatch.rs`
-  - `~/.cargo/git/checkouts/nautilus_trader-*/af2aefc/crates/adapters/polymarket/src/execution/reconciliation.rs`
+  - `~/.cargo/git/checkouts/nautilus_trader-*/48d1c126/crates/trading/src/strategy/mod.rs`
+  - `~/.cargo/git/checkouts/nautilus_trader-*/48d1c126/crates/common/src/msgbus/api.rs`
+  - `~/.cargo/git/checkouts/nautilus_trader-*/48d1c126/crates/common/src/msgbus/switchboard.rs`
+  - `~/.cargo/git/checkouts/nautilus_trader-*/48d1c126/crates/adapters/polymarket/src/websocket/messages.rs`
+  - `~/.cargo/git/checkouts/nautilus_trader-*/48d1c126/crates/adapters/polymarket/src/websocket/dispatch.rs`
+  - `~/.cargo/git/checkouts/nautilus_trader-*/48d1c126/crates/adapters/polymarket/src/execution/reconciliation.rs`

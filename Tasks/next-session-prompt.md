@@ -63,7 +63,7 @@ bolt-v2/
 - `Dockerfile`, `.dockerignore`, `run.sh` — Docker was needed for Python (macOS segfault). Rust binary runs natively on both macOS and Linux. No Docker needed. Deploy native binary via controlplane helper.
 
 ### Key Technical Details
-- NT git rev: `af2aefc24451ed5c51b94e64459421f1dd540bfb` (pinned in Cargo.toml)
+- NT git rev: `48d1c126335b82812ba691c5661aeb2e912cde24` (pinned in Cargo.toml)
 - Rust toolchain: 1.94.1, edition 2024
 - NT version at this rev: 1.225.0 (Rust crate, different from pip 1.224.0)
 - `signature_type_id` is `u8`: 0=EOA, 1=PolyProxy, 2=PolyGnosisSafe

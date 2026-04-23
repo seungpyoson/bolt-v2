@@ -19,7 +19,7 @@ This spec does **not** define alpha features, strategy logic, dashboards, or a f
 ## Upstream Baseline
 
 - NautilusTrader GitHub: `https://github.com/nautechsystems/nautilus_trader`
-- NT commit baseline for this design: `af2aefc24451ed5c51b94e64459421f1dd540bfb`
+- NT commit baseline for this design: `48d1c126335b82812ba691c5661aeb2e912cde24`
 - Current local runtime path: [src/main.rs](/Users/spson/Projects/Claude/bolt-v2/src/main.rs:108)
 
 ## Design Principles

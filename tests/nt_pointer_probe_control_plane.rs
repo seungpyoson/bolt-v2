@@ -157,7 +157,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb" }
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "48d1c126335b82812ba691c5661aeb2e912cde24" }
 "#,
     )
     .expect("fixture Cargo.toml should write");
@@ -286,7 +286,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "af2aefc24451ed5c51b94e64459421f1dd540bfb", features = ["extra-surface"] }
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "48d1c126335b82812ba691c5661aeb2e912cde24", features = ["extra-surface"] }
 "#,
     )
     .expect("mutated Cargo.toml should write");
@@ -1690,7 +1690,9 @@ nt_crates = [
   "nautilus-network",
   "nautilus-okx",
   "nautilus-persistence",
+  "nautilus-persistence-macros",
   "nautilus-polymarket",
+  "nautilus-serialization",
   "nautilus-system",
   "nautilus-trading",
   "nautilus-execution",
@@ -1815,7 +1817,9 @@ updates:
       - dependency-name: "nautilus-network"
       - dependency-name: "nautilus-okx"
       - dependency-name: "nautilus-persistence"
+      - dependency-name: "nautilus-persistence-macros"
       - dependency-name: "nautilus-polymarket"
+      - dependency-name: "nautilus-serialization"
       - dependency-name: "nautilus-system"
       - dependency-name: "nautilus-trading"
       - dependency-name: "nautilus-execution"

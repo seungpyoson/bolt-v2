@@ -53,7 +53,7 @@ Today those seams are:
 There is also an upstream dependency constraint that affects scope:
 
 - Polymarket Gamma JSON includes `resolutionSource`
-- the pinned `nautilus-polymarket` `GammaMarket` struct in NT `af2aefc` does **not** expose that field, so the current runtime seam only has `description`
+- the pinned `nautilus-polymarket` `GammaMarket` struct in NT `48d1c126` does **not** expose that field, so the current runtime seam only has `description`
 
 Issue `#109` therefore fixes the typed matching problem on the metadata we actually have in-process today, and explicitly tracks adapter surfacing of `resolutionSource` as immediate follow-on work.
 

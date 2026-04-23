@@ -60,8 +60,8 @@ This section belongs in `config/live.local.toml` and is currently ignored by ser
 
 ### Cargo.toml
 ```toml
-nautilus-live = { git = "...", rev = "af2aefc...", features = ["streaming"] }
-nautilus-persistence = { git = "...", rev = "af2aefc..." }
+nautilus-live = { git = "...", rev = "48d1c126335b82812ba691c5661aeb2e912cde24", features = ["streaming"] }
+nautilus-persistence = { git = "...", rev = "48d1c126335b82812ba691c5661aeb2e912cde24" }
 ```
 
 ### src/config.rs

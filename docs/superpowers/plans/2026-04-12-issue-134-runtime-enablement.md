@@ -6,7 +6,7 @@
 
 **Architecture:** Replace the hardcoded `exec_tester` runtime path with explicit registry, snapshot, and fee-provider seams in small verified slices. Keep the first slice narrow, keep `main.rs`/`validate.rs`/runtime dispatch untouched until the plan reaches those items, and delete `exec_tester` only in a single focused purge near the end.
 
-**Tech Stack:** Rust 2024, Nautilus Trader `af2aefc`, TOML config validation, NT msgbus, Polymarket Gamma + CLOB adapters.
+**Tech Stack:** Rust 2024, Nautilus Trader `48d1c126`, TOML config validation, NT msgbus, Polymarket Gamma + CLOB adapters.
 
 ---
 

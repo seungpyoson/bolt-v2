@@ -17,6 +17,10 @@ use nautilus_okx::config::OKXDataClientConfig;
 use nautilus_system::factories::ClientConfig;
 use serde::Deserialize;
 
+const CANONICAL_CHAINLINK_TESTNET_WS_URL: &str = "wss://ws.testnet-dataengine.chain.link";
+const CORRECT_ETH_TESTNET_FEED_ID: &str =
+    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
+
 #[derive(Deserialize)]
 struct ReferenceOnlyConfig {
     reference: ReferenceConfig,
@@ -114,7 +118,7 @@ min_publish_interval_ms = 100
 region = "us-east-1"
 api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
+ws_url = "wss://ws.testnet-dataengine.chain.link"
 ws_reconnect_alert_threshold = 5
 
 [[reference.venues]]
@@ -136,7 +140,7 @@ base_weight = 0.4
 stale_after_ms = 1500
 disable_after_ms = 5000
 [reference.venues.chainlink]
-feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
 price_scale = 18
 "#;
     let config: ReferenceOnlyConfig =
@@ -156,9 +160,13 @@ price_scale = 18
         .as_any()
         .downcast_ref::<bolt_v2::clients::chainlink::ChainlinkReferenceClientConfig>()
         .expect("config should downcast to chainlink reference client config");
-    assert_eq!(cfg.shared.ws_url, "wss://streams.chain.link");
+    assert_eq!(cfg.shared.ws_url, CANONICAL_CHAINLINK_TESTNET_WS_URL);
     assert_eq!(cfg.shared.ws_reconnect_alert_threshold, 5);
     assert_eq!(cfg.feeds.len(), 2);
+    assert_eq!(
+        cfg.feeds[1].feed_id.to_hex_string(),
+        CORRECT_ETH_TESTNET_FEED_ID
+    );
     assert_eq!(
         cfg.feeds
             .iter()
@@ -178,7 +186,7 @@ min_publish_interval_ms = 100
 region = "us-east-1"
 api_key = "/bolt/chainlink/api_key"
 api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
+ws_url = "wss://ws.testnet-dataengine.chain.link"
 ws_reconnect_alert_threshold = 5
 
 [[reference.venues]]

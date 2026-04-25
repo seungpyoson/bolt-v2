@@ -17,12 +17,16 @@ use nautilus_common::{
     },
     cache::Cache,
     clock::TestClock,
-    msgbus::{self, MessageBus, ShareableMessageHandler, switchboard::get_quotes_topic},
+    msgbus::{
+        self, MessageBus, ShareableMessageHandler,
+        switchboard::{MessagingSwitchboard, get_quotes_topic},
+    },
     runner::{SyncDataCommandSender, replace_data_cmd_sender},
 };
 use nautilus_core::{UUID4, UnixNanos};
+use nautilus_data::engine::DataEngine;
 use nautilus_model::{
-    data::CustomData,
+    data::{CustomData, Data},
     identifiers::{ActorId, ClientId, InstrumentId, TraderId},
     stubs::TestDefault,
     types::{Price, Quantity},
@@ -94,6 +98,14 @@ fn collect_snapshots(topic: &str) -> Rc<RefCell<Vec<ReferenceSnapshot>>> {
     });
     msgbus::subscribe_any(topic.into(), handler, None);
     snapshots
+}
+
+fn register_data_engine() -> Rc<RefCell<DataEngine>> {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::new(None, None)));
+    let data_engine = Rc::new(RefCell::new(DataEngine::new(clock, cache, None)));
+    DataEngine::register_msgbus_handlers(&data_engine);
+    data_engine
 }
 
 fn set_actor_clock_ms(actor: &mut ReferenceActor, ts_ms: u64) {
@@ -736,6 +748,63 @@ fn chainlink_custom_data_updates_latest_oracle_observation_and_publishes_snapsho
     assert_eq!(
         data_type,
         chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK")
+    );
+}
+
+#[test]
+fn chainlink_custom_data_reaches_reference_actor_via_data_engine_process_data() {
+    let publish_topic = "platform.reference.test.chainlink-data-engine";
+    let actor_id = register_reference_actor(
+        actor_config(
+            publish_topic,
+            0,
+            vec![subscription(
+                "CHAINLINK-BTC",
+                "BTCUSD.CHAINLINK",
+                "CHAINLINK",
+            )],
+        ),
+        vec![ReferenceVenueEntry {
+            name: "CHAINLINK-BTC".into(),
+            kind: ReferenceVenueKind::Chainlink,
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            base_weight: 1.0,
+            stale_after_ms: 1_000,
+            disable_after_ms: 5_000,
+            chainlink: None,
+        }],
+    );
+    let _data_engine = register_data_engine();
+    let snapshots = collect_snapshots(publish_topic);
+
+    let mut actor = get_actor_unchecked::<ReferenceActor>(&actor_id.inner());
+    actor.start().unwrap();
+    set_actor_clock_ms(&mut actor, 9_500);
+
+    let custom = CustomData::new(
+        Arc::new(ChainlinkOracleUpdate {
+            venue_name: "CHAINLINK-BTC".into(),
+            instrument_id: "BTCUSD.CHAINLINK".into(),
+            price: 104_250.0,
+            round_id: "18446744073709551617".into(),
+            updated_at_ms: 9_000,
+            ts_init: UnixNanos::from(9_500_000_000),
+        }),
+        chainlink_data_type_for_venue("CHAINLINK-BTC", "BTCUSD.CHAINLINK"),
+    );
+
+    msgbus::send_data(
+        MessagingSwitchboard::data_engine_process_data(),
+        Data::Custom(custom),
+    );
+
+    let snapshots = snapshots.borrow();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].fair_value, Some(104_250.0));
+    assert_eq!(snapshots[0].venues[0].observed_ts_ms, Some(9_500));
+    assert_eq!(
+        snapshots[0].venues[0].venue_kind,
+        bolt_v2::platform::reference::VenueKind::Oracle
     );
 }
 

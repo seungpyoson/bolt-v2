@@ -47,7 +47,7 @@ The root file owns:
 The root file does not own:
 
 - strategy target choice
-- strategy retry/block timing for series market selection
+- strategy retry/block timing for rotating-market selection
 - strategy pricing thresholds
 - strategy order parameters
 - strategy-specific sizing policy
@@ -214,12 +214,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - required: yes
 - current allowed value for live trading:
   - `live`
-
-Rationale:
-
-- the root schema owns runtime mode
-- paper and backtest are architecturally planned but not required before live trading
-- until those paths are shipped, selecting them must fail in validation
+- any other value fails validation
 
 ### `[nautilus]`
 
@@ -317,11 +312,8 @@ This section exists because strategy-local limits are not enough by themselves.
 
 - type: decimal string
 - required: yes
-
-Meaning:
-
-- bolt synchronizes this root-level default into the Nautilus per-instrument `max_notional_per_order` map for the currently loaded instrument set of each keyed execution venue
-- this is explicit bolt assembly logic because Nautilus expects instrument-specific notional caps and the current live-trading strategies may use rotating instrument identifiers
+- root-level entity per-order notional cap
+- runtime synchronization to NautilusTrader per-instrument `max_notional_per_order` maps is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 4
 
 ### `[logging]`
 
@@ -365,9 +357,7 @@ Meaning:
 
 - type: absolute path string
 - required: yes
-
-This directory is required because live-trading structured decision events are persisted locally before later Amazon Simple Storage Service archival.
-It is the local Nautilus catalog root used by the current decision-event persistence path.
+- local Nautilus catalog root; persistence behavior and local-evidence requirement are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6 and 10
 
 ### `[persistence.streaming]`
 
@@ -481,7 +471,7 @@ Presence of `[data]` means a data client is configured.
 - type: positive integer
 - required: yes
 - background Polymarket adapter refresh interval only
-- not the sole mechanism keeping current rotating series data loaded
+- not the sole mechanism keeping current rotating-market data loaded
 
 ##### `websocket_max_subscriptions_per_connection`
 
@@ -616,8 +606,8 @@ venue = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
-kind = "series"
-series_family = "updown"
+kind = "rotating_market"
+rotating_market_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300
 market_selection_rule = "active_or_next"
@@ -719,7 +709,7 @@ It is configuration, not a selected-market identifier.
 - type: string enum
 - required: yes
 - current allowed values:
-  - `series`
+  - `rotating_market`
 
 #### Instrument target fields
 
@@ -728,12 +718,12 @@ Instrument targets are not part of the current frozen target-stack model.
 
 If `kind = "instrument"`, validation must fail until a future contract slice defines the configured-target shape, selected-market facts boundary, and event projection.
 
-#### Series target fields
+#### Rotating-market target fields
 
-If `kind = "series"`:
+If `kind = "rotating_market"`:
 
 - `configured_target_id` is required
-- `series_family` is required
+- `rotating_market_family` is required
 - `underlying_asset` is required
 - `cadence_seconds` is required
 - `market_selection_rule` is required
@@ -741,7 +731,7 @@ If `kind = "series"`:
 - `blocked_after_seconds` is required
 - `instrument_identifier` is forbidden
 
-##### `series_family`
+##### `rotating_market_family`
 
 - type: string enum
 - current allowed value:
@@ -751,7 +741,8 @@ If `kind = "series"`:
 
 - type: string
 - required: yes
-- must be a non-empty configured `updown` asset symbol
+- length: 1 to 32 characters
+- must be a configured `updown` asset symbol
 - allowed characters:
   - uppercase ASCII letters
   - digits
@@ -764,7 +755,8 @@ If `kind = "series"`:
 - required: yes
 - must be positive
 - must be divisible by `60`
-- runtime slug derivation converts this value to `cadence_minutes = cadence_seconds / 60`
+- each supported value must have an explicit runtime slug-token mapping before it can trade
+- current runtime slug-token mappings are defined in `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 5.3
 
 ##### `market_selection_rule`
 
@@ -775,35 +767,21 @@ If `kind = "series"`:
 ##### `retry_interval_seconds`
 
 - type: positive integer
-- required for series targets
+- required for rotating-market targets
 - current expected value:
   - `5`
 
 ##### `blocked_after_seconds`
 
 - type: positive integer
-- required for series targets
+- required for rotating-market targets
 - current expected value:
   - `60`
 
 These fields live in the strategy file because they control that strategy's market-selection behavior.
 The schema does not hardcode `BTC`, `ETH`, or `300` as the only supported `updown` target values; those may appear in examples only.
 
-Runtime projection for current `updown`:
-
-- the strategy-file `[target]` block plus the top-level `venue` field becomes `configured_updown_target`
-- exact fields are:
-  - `configured_target_id`
-  - `target_kind`
-  - `venue_config_key`
-  - `venue_kind`
-  - `series_family`
-  - `underlying_asset`
-  - `cadence_seconds`
-  - `market_selection_rule`
-  - `retry_interval_seconds`
-  - `blocked_after_seconds`
-- this projection must not include selected-market identifiers, current/next role, generated market slugs, event-page slugs, price-to-beat fields, order fields, position fields, or strategy-decision fields
+The runtime projection of the strategy-file `[target]` block plus the top-level `venue` field into `configured_updown_target` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 6.1.
 
 ### `[reference_data.<name>]`
 
@@ -905,35 +883,25 @@ For the current `binary_oracle_edge_taker` archetype:
 
 - type: integer
 - required
-
-Meaning:
-
 - minimum selected-side edge required before the strategy may enter
-- for the current `binary_oracle_edge_taker`, this is compared against `worst_case_edge_basis_points`
-- current rule: `worst_case_edge_basis_points = expected_edge_basis_points` because no additional uncertainty haircut is applied in the archetype contract
+- runtime evaluation against `worst_case_edge_basis_points` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
 #### `order_notional_target`
 
 - type: decimal string
 - required
-
-Meaning:
-
 - strategy-local desired notional target used by the archetype's sizing logic
 - not the global hard cap
 - validation requires `order_notional_target <= root risk.default_max_notional_per_order`
-- for the current `binary_oracle_edge_taker`, this is also the default entry notional once the selected side clears the edge threshold
+- runtime sizing usage is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
 #### `maximum_position_notional`
 
 - type: decimal string
 - required
-
-Meaning:
-
 - maximum cumulative gross USDC entry-cost exposure the strategy may target for the selected market
 - fees are not included in this cap
-- for the current `binary_oracle_edge_taker`, capacity subtracts confirmed filled entry-cost exposure and open buy-order entry-cost exposure from NautilusTrader state
+- runtime capacity computation is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
 ## 8. Validation Rules
 
@@ -952,10 +920,11 @@ Must fail if:
 - two listed strategy files declare the same `order_id_tag`
 - two configured targets declare the same `configured_target_id`
 - `signature_type` is not one of the allowed strings
-- `target.kind = "series"` includes fields not valid for series
+- `target.kind = "rotating_market"` includes fields not valid for rotating-market targets
 - `target.kind = "instrument"` is selected before instrument targets are added by a future contract slice
-- `target.underlying_asset` is empty or contains characters outside uppercase ASCII letters, digits, and underscore
+- `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
 - `target.cadence_seconds` is not positive or is not divisible by `60`
+- `target.cadence_seconds` does not have a runtime-contract-defined slug-token mapping
 - a field appears under `[venues.<identifier>.data]` or `[venues.<identifier>.execution]` that is not allowed for that venue `kind`
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
@@ -964,19 +933,7 @@ Must fail if:
 
 ### Live validation
 
-Must fail if:
-
-- any required Amazon Web Services Systems Manager secret cannot be resolved
-- forbidden venue-kind environment-variable secret fallbacks are present
-- venue config cannot be assembled into NautilusTrader client config
-- current `updown` target-derived venue/instrument loading cannot be assembled
-- current `updown` order-readiness proof has `event_page_mapping_missing`, `price_to_beat_unavailable`, or `price_to_beat_ambiguous`
-- root risk config cannot be synchronized to the current instrument set loaded for keyed execution venues
-
-Must warn loudly, but not fail, if:
-
-- current market selection cannot produce exactly one valid `active_or_next` result for each configured live-trading strategy
-- current market selection fails with `request_instruments_failed`, `instruments_not_in_cache`, `no_selected_market`, or `ambiguous_selected_market`
+Live validation behavior, fatal-vs-warning classification, and the full failure-reason taxonomy are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 2 Phase 2.
 
 ## 9. Canonical Example: Minimal Live-Trading Pair
 
@@ -1091,8 +1048,8 @@ venue = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
-kind = "series"
-series_family = "updown"
+kind = "rotating_market"
+rotating_market_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300
 market_selection_rule = "active_or_next"

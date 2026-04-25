@@ -2,7 +2,7 @@
 
 Status: draft for architecture review
 
-This document defines the current candidate TOML schemas for first live trade.
+This document defines the current candidate TOML schemas for live trading.
 
 Rules:
 
@@ -47,7 +47,7 @@ The root file owns:
 The root file does not own:
 
 - strategy target choice
-- strategy retry/block timing for series resolution
+- strategy retry/block timing for series market selection
 - strategy pricing thresholds
 - strategy order parameters
 - strategy-specific sizing policy
@@ -191,7 +191,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
   - keyed execution-client `trader_id` fields which require it
   - state namespace
   - runtime identity in forensic events
-- first-live rule:
+- current live-trading rule:
   - Nautilus node name is set equal to this value
 
 #### `strategy_files`
@@ -212,13 +212,13 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 - type: string enum
 - required: yes
-- current allowed value for first-live release:
+- current allowed value for live trading:
   - `live`
 
 Rationale:
 
 - the root schema owns runtime mode
-- paper and backtest are architecturally planned but not required before first live trade
+- paper and backtest are architecturally planned but not required before live trading
 - until those paths are shipped, selecting them must fail in validation
 
 ### `[nautilus]`
@@ -286,7 +286,7 @@ This section exists because strategy-local limits are not enough by themselves.
 - type: boolean
 - required: yes
 - must be explicit
-- first-live expectation:
+- current expectation:
   - `false`
 
 #### `max_order_submit_count`
@@ -321,7 +321,7 @@ This section exists because strategy-local limits are not enough by themselves.
 Meaning:
 
 - bolt synchronizes this root-level default into the Nautilus per-instrument `max_notional_per_order` map for the currently loaded instrument set of each keyed execution venue
-- this is explicit bolt assembly logic because Nautilus expects instrument-specific notional caps and first-live strategies may resolve rotating instrument identifiers
+- this is explicit bolt assembly logic because Nautilus expects instrument-specific notional caps and the current live-trading strategies may use rotating instrument identifiers
 
 ### `[logging]`
 
@@ -366,40 +366,40 @@ Meaning:
 - type: absolute path string
 - required: yes
 
-This directory is required because first-live structured decision events are persisted locally before later Amazon Simple Storage Service archival.
-It also passes through to Nautilus `StreamingConfig.catalog_path`.
+This directory is required because live-trading structured decision events are persisted locally before later Amazon Simple Storage Service archival.
+It is the local Nautilus catalog root used by the current decision-event persistence path.
 
 ### `[persistence.streaming]`
 
-This section maps to Nautilus `StreamingConfig`.
-It is required in first-live scope.
+This section carries the current local catalog writer settings.
+It is required in the current live-trading scope.
 
 #### `catalog_fs_protocol`
 
 - type: string enum
 - required: yes
-- first-live allowed value:
+- current allowed value:
   - `file`
 
 #### `flush_interval_milliseconds`
 
 - type: positive integer
 - required: yes
-- maps to Nautilus `StreamingConfig.flush_interval_ms`
+- controls the current decision-event catalog flush cadence
 
 #### `replace_existing`
 
 - type: boolean
 - required: yes
-- maps to Nautilus `StreamingConfig.replace_existing`
+- controls whether existing catalog evidence files may be replaced
 
 #### `rotation_kind`
 
 - type: string enum
 - required: yes
-- first-live allowed value:
+- current allowed value:
   - `none`
-- maps to Nautilus `RotationConfig::NoRotation`
+- maps to the local catalog writer no-rotation behavior
 
 ### `[aws]`
 
@@ -427,7 +427,7 @@ It is not the trader identifier.
 
 - type: string enum
 - required: yes
-- first-live allowed values:
+- current allowed values:
   - `polymarket`
   - `binance`
 
@@ -481,16 +481,16 @@ Presence of `[data]` means a data client is configured.
 - type: positive integer
 - required: yes
 - background Polymarket adapter refresh interval only
-- not the sole mechanism keeping first-live rotating series current
+- not the sole mechanism keeping current rotating series data loaded
 
 ##### `websocket_max_subscriptions_per_connection`
 
 - type: positive integer
 - required: yes
 
-No other Polymarket data-client fields are exposed in the first-live schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
+No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
 
-For first-live reference-data venues other than Polymarket, each venue kind defines its own allowed `[data]` field set.
+For current reference-data venues other than Polymarket, each venue kind defines its own allowed `[data]` field set.
 Unknown fields fail validation against the venue-kind-specific set in Section 8.
 
 ### `[venues.<identifier>.execution]`
@@ -549,7 +549,7 @@ bolt parses this string enum and maps it to the current pinned Nautilus/Polymark
 
 #### Additional Polymarket execution fields
 
-The first-live schema also requires these pinned adapter fields to be explicit:
+The current schema also requires these pinned adapter fields to be explicit:
 
 - `base_url_http`
 - `base_url_ws`
@@ -574,7 +574,7 @@ All are:
 
 No environment-variable fallback is allowed.
 
-For first-live Binance reference-data use:
+For current Binance reference-data use:
 
 - `api_key_ssm_path` and `api_secret_ssm_path` are required
 - the expected credential type is Ed25519, matching the pinned Binance data-client requirement for SBE WebSocket streams
@@ -585,7 +585,7 @@ For first-live Binance reference-data use:
 
 - type: array of string enums
 - required: yes
-- first-live allowed value:
+- current allowed value:
   - `spot`
 - maps to Nautilus `BinanceDataClientConfig.product_types`
 
@@ -593,7 +593,7 @@ For first-live Binance reference-data use:
 
 - type: string enum
 - required: yes
-- first-live allowed value:
+- current allowed value:
   - `mainnet`
 - maps to Nautilus `BinanceDataClientConfig.environment`
 
@@ -615,11 +615,12 @@ oms_type = "netting"
 venue = "polymarket_main"
 
 [target]
+configured_target_id = "btc_updown_5m"
 kind = "series"
 series_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300
-rotation_policy = "active_or_next"
+market_selection_rule = "active_or_next"
 retry_interval_seconds = 5
 blocked_after_seconds = 60
 
@@ -668,13 +669,13 @@ maximum_position_notional = "10.00"
 
 - type: string enum
 - required: yes
-- first-live supported value:
+- current supported value:
   - `binary_oracle_edge_taker`
 
 This string binds to a compile-time Rust match in bolt's assembler.
 There is no dynamic registry framework.
 
-Nautilus strategy identity mapping for first live trade:
+Nautilus strategy identity mapping for live trading:
 
 - Nautilus `StrategyId` is derived as `"{strategy_archetype}-{order_id_tag}"`
 - `strategy_instance_identifier` remains the operator-facing config and forensic identifier
@@ -690,7 +691,7 @@ Nautilus strategy identity mapping for first live trade:
 
 - type: string enum
 - required: yes
-- first-live allowed value:
+- current allowed value:
   - `netting`
 - maps directly to Nautilus `StrategyConfig.oms_type`
 
@@ -702,29 +703,40 @@ Nautilus strategy identity mapping for first live trade:
 
 ### `[target]`
 
+#### `configured_target_id`
+
+- type: string
+- required: yes
+- unique within a trader process
+- maps to runtime `configured_updown_target.configured_target_id`
+- reused on every decision event emitted for this configured target
+
+This is the operator-facing target identifier used for forensics.
+It is configuration, not a selected-market identifier.
+
 #### `kind`
 
 - type: string enum
 - required: yes
-- first-live allowed values:
-  - `instrument`
+- current allowed values:
   - `series`
 
 #### Instrument target fields
 
-If `kind = "instrument"`:
+Deferred.
+Instrument targets are not part of the current frozen target-stack model.
 
-- `instrument_identifier` is required
-- all series-only fields are forbidden
+If `kind = "instrument"`, validation must fail until a future contract slice defines the configured-target shape, selected-market facts boundary, and event projection.
 
 #### Series target fields
 
 If `kind = "series"`:
 
+- `configured_target_id` is required
 - `series_family` is required
 - `underlying_asset` is required
 - `cadence_seconds` is required
-- `rotation_policy` is required
+- `market_selection_rule` is required
 - `retry_interval_seconds` is required
 - `blocked_after_seconds` is required
 - `instrument_identifier` is forbidden
@@ -732,43 +744,66 @@ If `kind = "series"`:
 ##### `series_family`
 
 - type: string enum
-- first-live allowed value:
+- current allowed value:
   - `updown`
 
 ##### `underlying_asset`
 
-- type: string enum
-- first-live allowed values:
-  - `BTC`
-  - `ETH`
+- type: string
+- required: yes
+- must be a non-empty configured `updown` asset symbol
+- allowed characters:
+  - uppercase ASCII letters
+  - digits
+  - underscore
+- runtime slug derivation lowercases this value for the `updown` market-slug asset segment
 
 ##### `cadence_seconds`
 
 - type: integer
-- first-live allowed value:
-  - `300`
+- required: yes
+- must be positive
+- must be divisible by `60`
+- runtime slug derivation converts this value to `cadence_minutes = cadence_seconds / 60`
 
-##### `rotation_policy`
+##### `market_selection_rule`
 
 - type: string enum
-- first-live allowed value:
+- current allowed value:
   - `active_or_next`
 
 ##### `retry_interval_seconds`
 
 - type: positive integer
 - required for series targets
-- first-live expected value:
+- current expected value:
   - `5`
 
 ##### `blocked_after_seconds`
 
 - type: positive integer
 - required for series targets
-- first-live expected value:
+- current expected value:
   - `60`
 
-These fields live in the strategy file because they control that strategy's target-resolution behavior.
+These fields live in the strategy file because they control that strategy's market-selection behavior.
+The schema does not hardcode `BTC`, `ETH`, or `300` as the only supported `updown` target values; those may appear in examples only.
+
+Runtime projection for current `updown`:
+
+- the strategy-file `[target]` block plus the top-level `venue` field becomes `configured_updown_target`
+- exact fields are:
+  - `configured_target_id`
+  - `target_kind`
+  - `venue_config_key`
+  - `venue_kind`
+  - `series_family`
+  - `underlying_asset`
+  - `cadence_seconds`
+  - `market_selection_rule`
+  - `retry_interval_seconds`
+  - `blocked_after_seconds`
+- this projection must not include selected-market identifiers, current/next role, generated market slugs, event-page slugs, price-to-beat fields, order fields, position fields, or strategy-decision fields
 
 ### `[reference_data.<name>]`
 
@@ -778,7 +813,7 @@ If present:
 
 - each block references a root venue that includes `[data]`
 - each block declares the exact instrument identifier the strategy subscribes to
-- for first-live `binary_oracle_edge_taker`, the required role name is `primary`
+- for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
 Fields:
 
@@ -807,14 +842,14 @@ They must map directly to NautilusTrader-native order semantics used by the arch
 #### `order_type`
 
 - type: string enum
-- allowed values for first-live archetype:
+- allowed values for the current archetype:
   - `limit`
   - `market`
 
 #### `time_in_force`
 
 - type: string enum
-- first-live allowed values:
+- current allowed values:
   - `gtc`
   - `fok`
   - `ioc`
@@ -838,11 +873,11 @@ Meaning:
 
 - this is the NautilusTrader-native quote/base quantity toggle used by the archetype
 - it is not a bolt-owned translation field
-- for the first-live `binary_oracle_edge_taker` archetype, the only allowed value is `false`
+- for the current `binary_oracle_edge_taker` archetype, the only allowed value is `false`
 
-### First-live valid order combinations for `binary_oracle_edge_taker`
+### Current valid order combinations for `binary_oracle_edge_taker`
 
-To avoid hidden policy, the first-live archetype supports only these combinations:
+To avoid hidden policy, the current archetype supports only these combinations:
 
 - `[parameters.entry_order]`
   - `order_type = "limit"`
@@ -864,7 +899,7 @@ Any other combination fails validation for this archetype.
 
 This block is archetype-specific.
 
-For the first-live `binary_oracle_edge_taker` archetype:
+For the current `binary_oracle_edge_taker` archetype:
 
 #### `edge_threshold_basis_points`
 
@@ -874,8 +909,8 @@ For the first-live `binary_oracle_edge_taker` archetype:
 Meaning:
 
 - minimum selected-side edge required before the strategy may enter
-- for first-live `binary_oracle_edge_taker`, this is compared against `worst_case_edge_basis_points`
-- first-live v1 rule: `worst_case_edge_basis_points = expected_edge_basis_points` because no additional uncertainty haircut is applied in the archetype contract
+- for the current `binary_oracle_edge_taker`, this is compared against `worst_case_edge_basis_points`
+- current rule: `worst_case_edge_basis_points = expected_edge_basis_points` because no additional uncertainty haircut is applied in the archetype contract
 
 #### `order_notional_target`
 
@@ -887,7 +922,7 @@ Meaning:
 - strategy-local desired notional target used by the archetype's sizing logic
 - not the global hard cap
 - validation requires `order_notional_target <= root risk.default_max_notional_per_order`
-- for first-live `binary_oracle_edge_taker`, this is also the default entry notional once the selected side clears the edge threshold
+- for the current `binary_oracle_edge_taker`, this is also the default entry notional once the selected side clears the edge threshold
 
 #### `maximum_position_notional`
 
@@ -896,9 +931,9 @@ Meaning:
 
 Meaning:
 
-- maximum cumulative gross USDC entry-cost exposure the strategy may target for the resolved market shell
+- maximum cumulative gross USDC entry-cost exposure the strategy may target for the selected market
 - fees are not included in this cap
-- for first-live `binary_oracle_edge_taker`, capacity subtracts confirmed filled entry-cost exposure and open buy-order entry-cost exposure from NautilusTrader state
+- for the current `binary_oracle_edge_taker`, capacity subtracts confirmed filled entry-cost exposure and open buy-order entry-cost exposure from NautilusTrader state
 
 ## 8. Validation Rules
 
@@ -915,9 +950,12 @@ Must fail if:
 - a reference-data venue points to a venue without `[data]`
 - two listed strategy files declare the same `strategy_instance_identifier`
 - two listed strategy files declare the same `order_id_tag`
+- two configured targets declare the same `configured_target_id`
 - `signature_type` is not one of the allowed strings
 - `target.kind = "series"` includes fields not valid for series
-- `target.kind = "instrument"` includes fields not valid for instrument
+- `target.kind = "instrument"` is selected before instrument targets are added by a future contract slice
+- `target.underlying_asset` is empty or contains characters outside uppercase ASCII letters, digits, and underscore
+- `target.cadence_seconds` is not positive or is not divisible by `60`
 - a field appears under `[venues.<identifier>.data]` or `[venues.<identifier>.execution]` that is not allowed for that venue `kind`
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
@@ -931,14 +969,16 @@ Must fail if:
 - any required Amazon Web Services Systems Manager secret cannot be resolved
 - forbidden venue-kind environment-variable secret fallbacks are present
 - venue config cannot be assembled into NautilusTrader client config
-- series resolution cannot load enough state to verify the configured target form
+- current `updown` target-derived venue/instrument loading cannot be assembled
+- current `updown` order-readiness proof has `event_page_mapping_missing`, `price_to_beat_unavailable`, or `price_to_beat_ambiguous`
 - root risk config cannot be synchronized to the current instrument set loaded for keyed execution venues
 
 Must warn loudly, but not fail, if:
 
-- current target resolution cannot produce exactly one valid `active_or_next` result for each configured live-trading strategy
+- current market selection cannot produce exactly one valid `active_or_next` result for each configured live-trading strategy
+- current market selection fails with `request_instruments_failed`, `instruments_not_in_cache`, `no_selected_market`, or `ambiguous_selected_market`
 
-## 9. Canonical Example: Minimal First-Live Pair
+## 9. Canonical Example: Minimal Live-Trading Pair
 
 This example is structural.
 It is not live-valid until the operator supplies real paths, SSM parameters, account identifiers, wallet addresses, writable directories, and venue credentials.
@@ -1050,11 +1090,12 @@ oms_type = "netting"
 venue = "polymarket_main"
 
 [target]
+configured_target_id = "btc_updown_5m"
 kind = "series"
 series_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300
-rotation_policy = "active_or_next"
+market_selection_rule = "active_or_next"
 retry_interval_seconds = 5
 blocked_after_seconds = 60
 

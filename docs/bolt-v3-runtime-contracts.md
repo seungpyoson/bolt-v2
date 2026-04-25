@@ -7,7 +7,7 @@ This document defines the exact runtime contracts which must not be left to inte
 It covers:
 
 - validation behavior
-- target resolution behavior
+- market selection behavior
 - strategy / execution boundary
 - forensic event contracts
 - deploy/runtime controls
@@ -69,8 +69,11 @@ It validates:
 - forbidden venue-kind environment-variable fallbacks are absent
 - keyed venue config can be converted into NautilusTrader client config
 - required reference-data venues and instruments are resolvable
-- current target-resolution machinery can load NautilusTrader venue/instrument state and attempt resolution through that state only
+- current market-selection machinery can load NautilusTrader venue/instrument state and attempt selection through that state only
 - root risk config can be synchronized to the current instrument set loaded for keyed execution venues
+- current `updown` market-identity readiness gates for each configured `updown` target
+- local catalog evidence can round-trip a registered fixed decision-event type
+- release identity manifest exists and matches the selected artifact set
 - a NautilusTrader node can be assembled without starting the live event loop
 
 Live validation must not:
@@ -79,17 +82,36 @@ Live validation must not:
 - connect the full live node and run indefinitely
 - start background processes that survive the command
 
-If the current market state does not yield a resolvable `active_or_next` target:
+If the current market state does not yield a selectable `active_or_next` target:
 
-- live validation reports `unresolved_current_target`
+- live validation reports `no_selected_market`
 - this is loud and explicit
 - this is a live operational warning, not a fatal live-validation failure
-- this does not by itself block process startup, because runtime target retry is part of the first-live design
+- this does not by itself block process startup, because runtime target retry is part of the current design
 
 Implementation rule:
 
-- live validation must call the same target-resolution and venue-instrument-loading functions used by runtime startup
+- live validation must call the same market-selection and venue-instrument-loading functions used by runtime startup
 - it must not implement a second discovery path
+
+Current `updown` readiness gates:
+
+- for each configured `updown` target, derive the current and next `updown` market slugs from the NautilusTrader node clock and the current slug rule
+- for each selected market, consume the implementation-proven `event_page_slug`
+- for each `event_page_slug`, call Gamma `GET /events?slug=<event_page_slug>`
+- each response must return HTTP 200
+- each response must contain exactly one event
+- `.[0].eventMetadata.priceToBeat` must exist, parse as numeric, and be positive
+- the returned event must link back to the selected NautilusTrader / Polymarket CLOB market by the mapping contract in Section 6.4
+- if this path is missing, null, non-numeric, non-positive, or ambiguous, live validation fails for order readiness
+- no readiness check may use broad Gamma polling, standalone market-selection services, midpoint/spot/question/threshold fallback, or strategy-side discovery HTTP
+
+Market-selection validation result classes:
+
+- no currently selectable `active_or_next` market is a live operational warning
+- `request_instruments_failed`, `instruments_not_in_cache`, `no_selected_market`, and `ambiguous_selected_market` are live operational warning failures
+- `event_page_mapping_missing`, `price_to_beat_unavailable`, and `price_to_beat_ambiguous` are fatal order-readiness failures for the current `updown` live-trading scope
+- all runtime market-selection failures emit `market_selection_result` evidence and keep the strategy non-trading for that configured target
 
 ## 3. Secret Resolution Contract
 
@@ -104,7 +126,7 @@ Rules:
 
 For every keyed venue which declares a `[secrets]` block, bolt must fail live validation and startup if any canonical credential environment variables for that venue kind are present.
 
-For first-live Polymarket, the forbidden variables are:
+For current Polymarket live trading, the forbidden variables are:
 
 - `POLYMARKET_PK`
 - `POLYMARKET_FUNDER`
@@ -112,13 +134,16 @@ For first-live Polymarket, the forbidden variables are:
 - `POLYMARKET_API_SECRET`
 - `POLYMARKET_PASSPHRASE`
 
-For first-live Binance reference-data use, the forbidden variables are:
+For current Binance reference-data use, the forbidden variables are:
 
+- `BINANCE_ED25519_API_KEY`
+- `BINANCE_ED25519_API_SECRET`
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
 
 This per-venue environment-variable blocklist belongs to the venue-kind handler in bolt code.
 It is not a generic secret framework.
+The handler must derive the effective blocklist from the configured venue kind, environment, and product type before any NautilusTrader client constructor is called.
 
 ## 4. Root Risk Contract
 
@@ -156,57 +181,80 @@ Mechanism:
 - instrument removal or expiry is learned from `data.close.{venue}.*`
 - there is no separate bolt poll loop and no strategy-to-bolt callback for this
 
-## 5. Target Resolution Contract
+### 4.1 NautilusTrader Portfolio and Bolt allocation state
+
+`NT Portfolio` means the NautilusTrader-owned source of truth for account, position, order, fill, balance, average-price, and exposure state.
+
+`Bolt allocation state` means strategy-local allocation facts computed from `NT Portfolio`, NautilusTrader cache state, and TOML configuration for a single decision evaluation.
+
+Current `Bolt allocation state` projections include:
+
+- `entry_filled_notional`
+- `open_entry_notional`
+- `strategy_remaining_entry_capacity`
+- `has_selected_market_open_orders`
+- the inputs used to emit `position_limit_reached`
+
+`Bolt allocation state` is not a Bolt portfolio, execution ledger, or source of truth for fills, orders, positions, balances, average prices, or exposure.
+It must be computed fresh for each decision evaluation.
+It may be retained only as decision evidence.
+It must not be event-sourced, reconciled, incrementally updated from fills or orders, or persisted as independent live-trading truth.
+
+A future dashboard or analytics layer may maintain a separate append-only performance store, but that store is reporting-only and must never be submit authority.
+
+## 5. Market Selection Contract
 
 ### 5.1 Supported target kinds
 
-Only these target kinds are supported in first live trade:
+The current frozen target-stack model supports only this live-trading target kind:
 
-- `instrument`
 - `series`
+
+Instrument targets are deferred until a future contract slice defines their configured-target shape, selected-market facts boundary, and event projection.
 
 ### 5.2 Strategy ownership
 
 The strategy owns:
 
-- when target resolution runs
+- when market selection runs
 - the retry loop
 - the blocked/degraded state
 
-There is no standalone selector service.
+There is no standalone market-selection service.
 
-### 5.3 Resolution source of truth
+### 5.3 Market-selection source of truth
 
-Resolution order:
+Market-selection input order:
 
 1. NautilusTrader-loaded venue and instrument state
-2. narrow Polymarket Gamma supplement for first-live `updown` anchor extraction only
+2. narrow Polymarket Gamma supplement for current `updown` `price_to_beat_value` extraction only
 
-First-live rule:
+Current rule:
 
-- bolt may call Gamma `GET /events?slug=<event_slug>` only to extract `eventMetadata.priceToBeat` for an already-declared first-live `updown` event slug
-- this supplement must not be used for broad discovery, order state, prices, portfolio, reference data, or strategy-side HTTP
-- if `eventMetadata.priceToBeat` is missing, non-numeric, non-positive, or ambiguous, target resolution fails loud and the strategy remains non-trading
+- bolt may call Gamma `GET /events?slug=<event_page_slug>` only to extract `eventMetadata.priceToBeat` for an implementation-proven current `updown` event page slug
+- this supplement must not be used for broad discovery, order state, prices, `NT Portfolio` state, reference data, or strategy-side HTTP
+- if `eventMetadata.priceToBeat` is missing, non-numeric, non-positive, or ambiguous, market selection fails loud and the strategy remains non-trading
+- if implementation evidence cannot map a selected NautilusTrader / Polymarket CLOB market to an `event_page_slug`, market selection fails loud and the strategy remains non-trading
 
-First-live Polymarket loading contract:
+Current Polymarket loading contract:
 
 - bolt derives NautilusTrader-native Polymarket instrument filters from the configured strategy targets
-- for first-live `updown`, bolt installs a dynamic NautilusTrader `MarketSlugFilter` closure in the pinned `PolymarketDataClientConfig.filters`
+- for current `updown`, bolt installs a dynamic NautilusTrader `MarketSlugFilter` closure in the pinned `PolymarketDataClientConfig.filters`
 - on each evaluation of that closure, it yields market slugs for the current and next cadence windows for each configured `underlying_asset`
 - bolt invokes NautilusTrader's `request_instruments` path at startup and when the generated current/next slug pair changes under the NautilusTrader node clock
 - normal retry ticks read NautilusTrader cache only
 - if the `request_instruments` call for the current slug pair fails, retry that request at `target.retry_interval_seconds` until it succeeds or the slug pair changes
-- `subscribe_new_markets` remains `false` in first-live scope
+- `subscribe_new_markets` remains `false` in the current live-trading scope
 - broad Polymarket instrument loading without target-derived filters is forbidden
 
-First-live `updown` slug derivation rule:
+Current `updown` slug derivation rule:
 
 - slug format: `"{underlying_asset_lowercase}-updown-{cadence_minutes}m-{period_start_unix_seconds}"`
 - `cadence_minutes = cadence_seconds / 60`
 - `now_unix_seconds` comes from the NautilusTrader node clock
 - `current_period_start_unix_seconds = floor(now_unix_seconds / cadence_seconds) * cadence_seconds`
 - `next_period_start_unix_seconds = current_period_start_unix_seconds + cadence_seconds`
-- the first-live resolver's dynamic filter yields exactly two market slugs per configured `updown` target on each evaluation:
+- the current market-selection process yields exactly two market slugs per configured `updown` target on each evaluation:
   - current-period slug
   - next-period slug
 
@@ -214,37 +262,39 @@ This keeps the loading path inside the NautilusTrader Polymarket adapter rather 
 
 ### 5.4 `active_or_next` semantics
 
-For `rotation_policy = "active_or_next"`:
+For `market_selection_rule = "active_or_next"`:
 
-- if exactly one active tradable market exists in the declared series, use it
-- otherwise, if exactly one next tradable market exists in the declared series, use it
-- otherwise, fail that resolution attempt loudly
+- if exactly one loaded market satisfies the current role in the declared series, select it
+- if more than one loaded market satisfies the current role in the declared series, fail with `ambiguous_selected_market` and do not evaluate the next role
+- if zero loaded markets satisfy the current role in the declared series, evaluate the next role
+- if exactly one loaded market satisfies the next role in the declared series, select it
+- if more than one loaded market satisfies the next role in the declared series, fail with `ambiguous_selected_market`
+- if zero loaded markets satisfy the next role in the declared series, fail with `no_selected_market`
 
-For first-live `updown`:
+For current `updown`:
 
-- `active tradable market` means the single market in the declared series whose `tradable` flag is true and whose time window satisfies `market_start_timestamp_milliseconds <= resolver_time_milliseconds < market_end_timestamp_milliseconds`
+- `current` means the role whose selected market time window satisfies `polymarket_market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds < polymarket_market_end_timestamp_milliseconds`
 
-- `next tradable market` means the single market in the declared series whose `market_start_timestamp_milliseconds` is the smallest value greater than the current resolver time and whose `tradable` flag is true
+- `next` means the role whose selected market `polymarket_market_start_timestamp_milliseconds` is the smallest value greater than `market_selection_timestamp_milliseconds`
 
 Prohibited behaviors:
 
-- guessing among multiple candidates
+- guessing among multiple matching loaded markets
 - broadening search outside the declared series
 - selecting a fallback market
 - silently suppressing ambiguity
 
 ### 5.5 Retry behavior
 
-If a series target cannot be resolved:
+If a series target cannot be selected:
 
-- emit `selector_retry`
+- emit `market_selection_result`
 - remain non-trading
 - retry at `target.retry_interval_seconds`
 - no backoff
 
 If unresolved for `target.blocked_after_seconds`:
 
-- emit `strategy_blocked`
 - mark the strategy blocked/degraded
 - continue retrying at `target.retry_interval_seconds` unless the strategy is stopped
 
@@ -252,61 +302,222 @@ Blocked/degraded operational behavior:
 
 - the strategy continues to receive NautilusTrader callbacks
 - the strategy must skip target-dependent evaluation and must not submit orders while blocked
-- the strategy may continue target-resolution retry attempts on its timer path
+- the strategy may continue market-selection retry attempts on its timer path
 
-## 6. Resolved Target Contract
+## 6. Target-Stack Data Model
 
-The resolver must produce a concrete resolved target object before the strategy trades.
+The target stack has five exact in-process shapes.
+They are separate boundaries:
 
-### 6.1 Universal resolved-target fields
+- `configured_updown_target`
+- `selected_market`
+- `updown_selected_market_facts`
+- `market_selection_result`
+- `updown_market_mechanical_result`
 
-Every resolved target must contain:
+Do not merge these shapes into a generic target envelope, market-selection framework, runtime gate service, or executable-order schema.
+
+### 6.1 `configured_updown_target`
+
+`configured_updown_target` is the runtime projection of one strategy-file `[target]` block for the current `updown` series scope.
+It contains configuration only.
+
+Exact fields:
+
+- `configured_target_id`
+- `target_kind`
+- `venue_config_key`
+- `venue_kind`
+- `series_family`
+- `underlying_asset`
+- `cadence_seconds`
+- `market_selection_rule`
+- `retry_interval_seconds`
+- `blocked_after_seconds`
+
+Field constraints:
+
+- `target_kind = "series"`
+- `venue_config_key` is the exact strategy-file `venue` reference
+- `venue_kind = "polymarket"` for the current `updown` scope
+- `series_family = "updown"`
+- `market_selection_rule = "active_or_next"`
+
+Boundary:
+
+- no selected-market identifiers
+- no current/next role
+- no generated market slugs
+- no `event_page_slug` or `polymarket_event_slug`
+- no price-to-beat fields
+- no order, position, edge, readiness, or rejection fields
+
+### 6.2 `selected_market`
+
+The market-selection process must produce one concrete selected market before the strategy trades.
+`selected_market` is identity and market-boundary data only.
+It is not an observed-facts object and it does not include entry readiness or strategy decision fields.
+
+#### Universal selected-market fields
+
+Every selected market must contain:
 
 - `target_kind`
-- `venue_key`
+- `venue_config_key`
 - `venue_kind`
-- `resolved_market_identifier`
-- `tradable`
 
-If the resolved target carries a bounded market window, it must also contain:
+#### Current updown-series fields
 
-- `market_start_timestamp_milliseconds`
-- `market_end_timestamp_milliseconds`
+If `target_kind = "series"` and `series_family = "updown"`, the selected market must also contain:
 
-### 6.2 Instrument-target fields
-
-If `target_kind = "instrument"`, the resolved target must also contain:
-
-- `instrument_identifier`
-- `resolved_market_identifier = instrument_identifier`
-- `market_start_timestamp_milliseconds` may be null
-- `market_end_timestamp_milliseconds` may be null
-
-### 6.3 First-live updown-series fields
-
-If `target_kind = "series"` and `series_family = "updown"`, the resolved target must also contain:
-
-- `condition_identifier`
-- `event_slug`
-- `market_slug`
-- `up_instrument_identifier`
-- `down_instrument_identifier`
-- `anchor_price`
-- `anchor_source`
+- `series_family`
+- `polymarket_condition_id`
+- `polymarket_market_slug`
+- `polymarket_question_id`
+- `nautilus_up_instrument_id`
+- `nautilus_down_instrument_id`
+- `polymarket_market_start_timestamp_milliseconds`
+- `polymarket_market_end_timestamp_milliseconds`
 
 Definitions:
 
-- `condition_identifier` = the Polymarket condition identifier string for the resolved market shell
-- `resolved_market_identifier = condition_identifier` for first-live `updown`
-- `up_instrument_identifier` = the literal NautilusTrader instrument identifier string for the `Up` instrument
-- `down_instrument_identifier` = the literal NautilusTrader instrument identifier string for the `Down` instrument
-- `anchor_price` = Gamma `eventMetadata.priceToBeat` from `GET /events?slug=<event_slug>`
-- `anchor_source` first-live value:
+- `series_family` = `updown`
+- `polymarket_condition_id` = the Polymarket condition identifier string for the selected market
+- `polymarket_market_slug` = the Polymarket CLOB market slug used for instrument loading
+- `polymarket_question_id` = the Polymarket question identifier string for the selected market
+- `nautilus_up_instrument_id` = the literal NautilusTrader instrument identifier string for the `Up` instrument
+- `nautilus_down_instrument_id` = the literal NautilusTrader instrument identifier string for the `Down` instrument
+- `polymarket_market_start_timestamp_milliseconds` = selected market start timestamp in Unix milliseconds
+- `polymarket_market_end_timestamp_milliseconds` = selected market end timestamp in Unix milliseconds
+
+Boundary:
+
+- no `event_page_slug` or `polymarket_event_slug`
+- no `selected_market_observed_timestamp`
+- no price-to-beat fields
+- no `has_selected_market_open_orders`
+- no entry-readiness summary field
+- no generic market-status summary field
+
+The strategy must not fetch venue metadata directly to fill missing selected-market fields.
+
+### 6.3 `updown_selected_market_facts`
+
+`updown_selected_market_facts` is the observed-facts layer for a selected `updown` market.
+It contains the selected market plus the reference-price cluster needed by the current `binary_oracle_edge_taker`.
+
+Exact fields:
+
+- `selected_market`
+- `selected_market_observed_timestamp`
+- `price_to_beat_value`
+- `price_to_beat_observed_timestamp`
+- `price_to_beat_source`
+
+Definitions:
+
+- `selected_market` = the `selected_market` shape from Section 6.2
+- `selected_market_observed_timestamp` = the timestamp when the selected market facts were observed
+- `price_to_beat_value` = Gamma `eventMetadata.priceToBeat` from `GET /events?slug=<event_page_slug>`
+- `price_to_beat_observed_timestamp` = the timestamp when `price_to_beat_value` was observed
+- `price_to_beat_source` current launch-scope value:
   - `event_metadata.priceToBeat`
 
-For first-live `binary_oracle_edge_taker`, anchor metadata is required.
+Boundary:
 
-The strategy must not fetch venue metadata directly to fill missing resolved-target fields.
+- no `event_page_slug` or `polymarket_event_slug`
+- no midpoint or spot fallback
+- no open-order predicate
+- no strategy edge, side, sizing, order, or rejection fields
+- no entry-readiness summary field
+- no generic market-status summary field
+
+For the current `binary_oracle_edge_taker`, the price-to-beat cluster is required.
+
+### 6.4 `market_selection_result`
+
+`market_selection_result` is the market-selection output for a configured target.
+Current and next are result roles, not object types.
+
+Allowed variants:
+
+- `current`
+- `next`
+- `failed`
+
+`market_selection_timestamp_milliseconds` is the NautilusTrader node-clock Unix millisecond timestamp used for the market-selection attempt and for classifying a selected market as `current` or `next`.
+
+`current` and `next` variants contain:
+
+- `configured_updown_target`
+- `market_selection_timestamp_milliseconds`
+- `updown_selected_market_facts`
+
+`selected_market` is reachable through `updown_selected_market_facts.selected_market`.
+Do not duplicate it as a sibling field in a successful `market_selection_result`.
+
+The `failed` variant contains:
+
+- `configured_updown_target`
+- `market_selection_timestamp_milliseconds`
+- `market_selection_failure_reason`
+
+Allowed `market_selection_failure_reason` values:
+
+- `request_instruments_failed`
+- `instruments_not_in_cache`
+- `no_selected_market`
+- `ambiguous_selected_market`
+- `event_page_mapping_missing`
+- `price_to_beat_unavailable`
+- `price_to_beat_ambiguous`
+
+The price-to-beat failure reasons belong here only because the current `updown` launch scope requires `updown_selected_market_facts` before market selection can succeed.
+
+The `event_page_slug` used to fetch `price_to_beat_value` is mapping evidence only.
+It is not a field on `selected_market` or `updown_selected_market_facts`.
+The runtime contract reserves canonical ownership of the `event_page_slug` mapping rule.
+The rule is currently unset.
+S1 implementation evidence may prove the deterministic mapping from NautilusTrader-loaded market identity to the Gamma event page used for `price_to_beat_value`, but evidence artifacts do not own the rule.
+Until that rule is written into this runtime contract, current `updown` live order readiness is blocked.
+
+### 6.5 `updown_market_mechanical_result`
+
+`updown_market_mechanical_result` is the family mechanical evaluation result for a selected `updown` market before strategy edge, side, sizing, and order construction.
+It is not an order-readiness or pre-submit result.
+
+Exact common fields:
+
+- `updown_selected_market_facts`
+- `seconds_to_market_end`
+- `has_selected_market_open_orders`
+- `updown_market_mechanical_outcome`
+- `updown_market_mechanical_rejection_reason`
+
+Allowed `updown_market_mechanical_outcome` values:
+
+- `accepted`
+- `rejected`
+
+`updown_market_mechanical_rejection_reason` must be null when `updown_market_mechanical_outcome = "accepted"`.
+It must be non-null when `updown_market_mechanical_outcome = "rejected"`.
+
+Allowed `updown_market_mechanical_rejection_reason` values:
+
+- `market_not_started`
+- `market_ended`
+- `selected_market_open_orders_present`
+
+Boundary:
+
+- no selected side
+- no edge metrics
+- no sizing
+- no order fields
+- no `client_order_id`
+- no pre-submit rejection reason
+- no entry-readiness summary field
+- no generic market-status summary field
 
 ## 7. Reference Data Contract
 
@@ -318,7 +529,7 @@ If an archetype requires reference data:
 
 There is no bolt-owned reference actor.
 
-For first-live `binary_oracle_edge_taker`:
+For the current `binary_oracle_edge_taker`:
 
 - the declared reference-data instrument is subscribed as quote ticks
 - the archetype derives spot-price input from that declared quote-tick stream
@@ -328,25 +539,23 @@ Reference-data resolution rule for validation:
 - `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_identifier` exists in the NautilusTrader instrument cache for the referenced keyed venue
 - `resolvable` does not require receiving a live quote before `just check` completes
 
-### 7.1 First-live `binary_oracle_edge_taker` pricing inputs
+### 7.1 Current `binary_oracle_edge_taker` pricing inputs
 
-For first-live `binary_oracle_edge_taker`, the reference stream and pricing inputs are mechanical:
+For the current `binary_oracle_edge_taker`, the reference stream and pricing inputs are mechanical:
 
 - `spot_price`
   - derived from the latest two-sided midpoint on `reference_data.primary`
   - midpoint formula: `(best_bid_price + best_ask_price) / 2`
   - if the latest quote tick does not contain both sides, midpoint is unavailable
   - if the latest midpoint sample is older than `target.retry_interval_seconds` seconds, the reference quote is stale
-- `strike_price`
-  - `resolved_target.anchor_price`
-- `strike_source`
+- `price_to_beat_source`
   - `event_metadata.priceToBeat`
 
-There is no first-live fallback from missing anchor metadata to midpoint.
+There is no fallback from missing price-to-beat metadata to midpoint.
 
-### 7.2 First-live `binary_oracle_edge_taker` realized volatility
+### 7.2 Current `binary_oracle_edge_taker` realized volatility
 
-The first-live realized-volatility estimator is defined as:
+The current realized-volatility estimator is defined as:
 
 - input samples:
   - midpoint samples from `reference_data.primary`
@@ -366,29 +575,29 @@ The first-live realized-volatility estimator is defined as:
 - bridge-valid rule:
   - if the last ready realized-volatility value is older than `target.retry_interval_seconds` seconds, realized volatility is not ready
 
-### 7.3 First-live `binary_oracle_edge_taker` entry evaluation
+### 7.3 Current `binary_oracle_edge_taker` entry evaluation
 
-The first-live entry evaluation is:
+The current entry evaluation is:
 
 1. compute `fair_probability_up` from:
    - `spot_price`
-   - `strike_price`
-   - `seconds_to_expiry`
+   - `price_to_beat_value`
+   - `seconds_to_market_end`
    - `realized_volatility`
-2. first-live fair-probability formula:
-   - `d2 = (ln(spot_price / strike_price) - (realized_volatility^2 / 2) * time_to_expiry_years) / (realized_volatility * sqrt(time_to_expiry_years))`
+2. current fair-probability formula:
+   - `d2 = (ln(spot_price / price_to_beat_value) - (realized_volatility^2 / 2) * time_to_expiry_years) / (realized_volatility * sqrt(time_to_expiry_years))`
    - `fair_probability_up = standard_normal_cdf(d2)`
    - if `realized_volatility <= 0` or `time_to_expiry_years <= 0`, fair probability is unavailable and entry evaluation skips as not ready
 3. derive side success probability:
    - `Up`: `fair_probability_up`
    - `Down`: `1.0 - fair_probability_up`
 4. derive executable entry cost:
-   - `Up`: current best ask on `up_instrument_identifier`
-   - `Down`: current best ask on `down_instrument_identifier`
+   - `Up`: current best ask on `nautilus_up_instrument_id`
+   - `Down`: current best ask on `nautilus_down_instrument_id`
 5. compute edge:
    - fee rate for the selected token must be available from the pinned Polymarket fee-rate path before entry may proceed
    - `expected_edge_basis_points` must account for the applicable Polymarket fee rate
-   - first-live v1 rule: `worst_case_edge_basis_points = expected_edge_basis_points`
+   - current rule: `worst_case_edge_basis_points = expected_edge_basis_points`
 6. side selection:
    - choose the single side with the higher `worst_case_edge_basis_points`
    - if neither side is strictly greater than `parameters.edge_threshold_basis_points`, skip
@@ -397,9 +606,9 @@ The first-live entry evaluation is:
    - notional fields are gross USDC entry-cost terms before fees
    - filled entry-cost exposure comes from NautilusTrader confirmed position state: `position.quantity * position.avg_px_open`
    - open buy-order entry-cost exposure comes from NautilusTrader open/inflight order state: `order.leaves_qty * order.price`
-   - remaining capacity = `parameters.maximum_position_notional - filled_entry_cost_exposure - open_buy_entry_cost_exposure`
-   - `sizing_cap = min(parameters.order_notional_target, remaining_capacity, root risk.default_max_notional_per_order)`
-   - if `remaining_capacity <= 0`, skip with `position_limit_reached`
+   - remaining capacity = `parameters.maximum_position_notional - entry_filled_notional - open_entry_notional`
+   - `sizing_cap = min(parameters.order_notional_target, strategy_remaining_entry_capacity, root risk.default_max_notional_per_order)`
+   - if `strategy_remaining_entry_capacity <= 0`, skip with `position_limit_reached`
    - if the selected side clears the edge threshold, `sized_notional = sizing_cap`
 8. quantity conversion:
    - `quantity_raw = sized_notional / executable_entry_cost`
@@ -407,11 +616,11 @@ The first-live entry evaluation is:
    - local rejection if conversion fails or the resulting quantity is not positive
 9. order construction:
    - entry price = current best ask of the selected side instrument
-   - entry order uses the locked first-live archetype order combination from the strategy schema
+   - entry order uses the locked archetype order combination from the strategy schema
 
-### 7.4 First-live `binary_oracle_edge_taker` exit evaluation
+### 7.4 Current `binary_oracle_edge_taker` exit evaluation
 
-The first-live exit rule is intentionally thin:
+The current exit rule is intentionally thin:
 
 - no blind exits
 - no bolt-owned exit engine
@@ -449,10 +658,10 @@ For exits:
 - current position and sellable state must come from NautilusTrader cache and venue-confirmed state
 - if exit quantity cannot be validated locally, fail loud before submit when possible
 
-For first-live Polymarket, because the pinned adapter rejects reduce-only orders:
+For current Polymarket trading, because the pinned adapter rejects reduce-only orders:
 
-- before emitting `exit_submit_intent`, the strategy must read `authoritative_position_quantity` and `authoritative_sellable_quantity`
-- if intended exit quantity exceeds `authoritative_sellable_quantity`, emit `exit_submit_rejected_local`
+- before emitting `exit_order_submission`, the strategy must read `authoritative_position_quantity` and `authoritative_sellable_quantity`
+- if intended exit quantity exceeds `authoritative_sellable_quantity`, emit `exit_pre_submit_rejection`
 - required local rejection reason: `insufficient_sellable_quantity`
 - in that case, do not submit an order
 
@@ -482,209 +691,226 @@ Where an event may be emitted for more than one target kind, target-kind-specifi
 These fields are required on every structured decision event:
 
 - `schema_version`
-- `event_kind`
+- `decision_event_type`
 - `event_timestamp_milliseconds`
-- `decision_trace_identifier`
+- `decision_trace_id`
 - `strategy_instance_identifier`
 - `strategy_archetype`
 - `trader_identifier`
-- `venue`
+- `venue_config_key`
 - `runtime_mode`
 - `release_identifier`
 - `config_hash`
 - `nautilus_trader_revision`
-- `resolved_target_identifier`
+- `configured_target_id`
 
 Definitions:
 
 - `schema_version`
   - the event-schema version
-  - first-live value: `1`
+  - current value: `1`
 - `event_timestamp_milliseconds`
   - wall-clock UTC Unix timestamp in milliseconds at emission time
-- `decision_trace_identifier`
-  - generated once at the first selector/evaluation step for a potential trading lifecycle
+- `decision_trace_id`
+  - generated once at the first market-selection or evaluation step for a potential trading lifecycle
   - format: UUID4 string
   - reused on all subsequent decision events for that lifecycle
+  - for unresolved series targets, one trace covers the current/next slug pair across market-selection retries
+  - when the current/next slug pair changes, the next market-selection attempt starts a new trace
   - the lifecycle ends when the strategy reaches a terminal outcome for that opportunity: skip, local submit rejection, or flat-after-exit
 - `strategy_archetype`
   - the exact `strategy_archetype` value from the strategy file
 - `trader_identifier`
   - the exact root-file `trader_identifier` value
-- `venue`
+- `venue_config_key`
   - the keyed trading venue reference from the strategy file
   - not a reference-data venue key
 - `runtime_mode`
   - the exact root-file `[runtime].mode` value
 - `release_identifier`
   - the exact deployed release directory name selected by deploy automation
-  - first-live deployment rule: release directory names are the git commit SHA string for the built artifact
+  - current deployment rule: release directory names are the git commit SHA string for the built artifact
 - `config_hash`
   - SHA-256 of the concatenation of:
     1. root-file bytes with line endings normalized to LF
     2. each listed strategy-file bytes in root `strategy_files` order, with line endings normalized to LF
+  - if a file starts with a UTF-8 byte order mark, strip it before hashing
+  - each normalized file byte sequence is hashed as if it ends with exactly one LF
+  - files are concatenated with no separator
+  - the emitted digest is lowercase hexadecimal
   - file paths are not included
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - first-live value: `48d1c126335b82812ba691c5661aeb2e912cde24`
-- `resolved_target_identifier`
-  - deterministic string built from the resolved target's universal identity fields
-  - first-live series shape: `"{venue_key}:{resolved_market_identifier}"`
-  - first-live instrument-target shape: `"{venue_key}:{instrument_identifier}"`
-  - nullable on unresolved selector events and blocked target-resolution events
+  - current value: `48d1c126335b82812ba691c5661aeb2e912cde24`
+- `configured_target_id`
+  - the exact configured target identifier from the strategy configuration
+  - reused on all decision events for the same configured target
 
-### 9.4 First-live-trade event type list
+### 9.4 Event type list
 
-First-live-trade event types are:
+Event types are:
 
-- `selector_decision`
-- `selector_retry`
-- `strategy_blocked`
+- `market_selection_result`
 - `entry_evaluation`
-- `entry_submit_intent`
-- `entry_submit_rejected_local`
+- `entry_order_submission`
+- `entry_pre_submit_rejection`
 - `exit_evaluation`
-- `exit_submit_intent`
-- `exit_submit_rejected_local`
+- `exit_order_submission`
+- `exit_pre_submit_rejection`
 
-Extensions later are allowed, but these are the fixed first-live types.
+Extensions later are allowed, but these are the fixed current types.
 
-`event_kind` values are the exact lowercase underscore-separated strings listed in this section.
+`decision_event_type` values are the exact lowercase underscore-separated strings listed in this section.
 Event schema version is independent of root-file and strategy-file schema versions.
-First-live event-schema version is `1`.
+Event-schema version is `1`.
 
 ### 9.5 Event-specific required fields
 
-#### `selector_decision`
+#### `market_selection_result`
 
 Required additional fields:
 
 - `target_kind`
-- `resolved_market_identifier`
-- `market_start_timestamp_milliseconds`
-- `market_end_timestamp_milliseconds`
-- `resolution_result`
-- `failure_reason`
+- `market_selection_timestamp_milliseconds`
+- `market_selection_outcome`
+- `market_selection_failure_reason`
 
-`failure_reason` may be null on success.
-`resolved_market_identifier`, `market_start_timestamp_milliseconds`, and `market_end_timestamp_milliseconds` may be null on a failed resolution attempt.
+`market_selection_failure_reason` must be null when `market_selection_outcome` is `current` or `next`.
+`market_selection_failure_reason` must be non-null when `market_selection_outcome = "failed"`.
+`market_selection_timestamp_milliseconds` is the NautilusTrader node-clock Unix millisecond timestamp used to classify the selected market as `current` or `next`.
 
-Allowed `resolution_result` values for first live:
+Allowed `market_selection_outcome` values:
 
-- `resolved_active`
-- `resolved_next`
+- `current`
+- `next`
 - `failed`
 
-Allowed `failure_reason` values for first live:
+Allowed `market_selection_failure_reason` values:
 
 - `request_instruments_failed`
-- `cache_unresolved`
-- `no_candidate`
-- `multiple_candidates`
-- `target_not_tradable`
+- `instruments_not_in_cache`
+- `no_selected_market`
+- `ambiguous_selected_market`
+- `event_page_mapping_missing`
+- `price_to_beat_unavailable`
+- `price_to_beat_ambiguous`
 
-If `target_kind = "series"` and resolution succeeds, the event must also contain:
-
-- `series_family`
-- `underlying_asset`
-- `cadence_seconds`
-- `rotation_policy`
-- `condition_identifier`
-- `up_instrument_identifier`
-- `down_instrument_identifier`
-
-If `target_kind = "instrument"` and resolution succeeds, the event must also contain:
-
-- `instrument_identifier`
-
-#### `selector_retry`
-
-Required additional fields:
-
-- `target_kind`
-- `failure_reason`
-- `next_retry_timestamp_milliseconds`
-
-If `target_kind = "series"`, the event must also contain:
+If `target_kind = "series"`, the event must also contain these configured target fields:
 
 - `series_family`
 - `underlying_asset`
 - `cadence_seconds`
-- `rotation_policy`
+- `market_selection_rule`
+- `retry_interval_seconds`
+- `blocked_after_seconds`
 
-If `target_kind = "instrument"`, the event must also contain:
+If `target_kind = "series"` and market selection succeeds, the event must also contain these selected market and selected market facts fields:
 
-- `instrument_identifier`
-
-#### `strategy_blocked`
-
-Required additional fields:
-
-- `blocked_reason`
-- `blocked_since_timestamp_milliseconds`
-- `last_failure_reason`
-
-Allowed `blocked_reason` values for first live:
-
-- `target_resolution_timeout`
+- `polymarket_condition_id`
+- `polymarket_market_slug`
+- `polymarket_question_id`
+- `nautilus_up_instrument_id`
+- `nautilus_down_instrument_id`
+- `selected_market_observed_timestamp`
+- `polymarket_market_start_timestamp_milliseconds`
+- `polymarket_market_end_timestamp_milliseconds`
+- `price_to_beat_value`
+- `price_to_beat_observed_timestamp`
+- `price_to_beat_source`
 
 #### `entry_evaluation`
 
+`entry_evaluation` is emitted only after `market_selection_result` has succeeded for the same configured target and decision trace.
+Market-selection failure is represented by `market_selection_result` only and does not emit `entry_evaluation`.
+If market selection succeeds and `updown` mechanical evaluation rejects, `entry_evaluation` is still emitted with `entry_decision = "no_action"` and `entry_no_action_reason = "updown_market_mechanical_rejection"`.
+
 Required additional fields:
 
-- `selected_side`
-- `decision_result`
-- `skip_reason`
-- `seconds_to_expiry`
+- `updown_side`
+- `entry_decision`
+- `entry_no_action_reason`
+- `seconds_to_market_end`
+- `has_selected_market_open_orders`
+- `updown_market_mechanical_outcome`
+- `updown_market_mechanical_rejection_reason`
+- `entry_filled_notional`
+- `open_entry_notional`
+- `strategy_remaining_entry_capacity`
 - `archetype_metrics`
 
-`skip_reason` may be null if `decision_result` is enter.
-`selected_side` may be null if `decision_result` is skip.
+`entry_no_action_reason` must be null when `entry_decision = "enter"`.
+`entry_no_action_reason` must be non-null when `entry_decision = "no_action"`.
+`updown_side` must be non-null when `entry_decision = "enter"`.
+`updown_side` must be null when `entry_decision = "no_action"` unless a later archetype-specific contract explicitly allows retaining a computed side for no-action evidence.
+`updown_market_mechanical_rejection_reason` must be null when `updown_market_mechanical_outcome = "accepted"`.
+`updown_market_mechanical_rejection_reason` must be non-null when `updown_market_mechanical_outcome = "rejected"`.
+`has_selected_market_open_orders` must be false when `updown_market_mechanical_outcome = "accepted"`.
+`has_selected_market_open_orders` must be true when `updown_market_mechanical_rejection_reason = "selected_market_open_orders_present"`.
+`entry_filled_notional`, `open_entry_notional`, and `strategy_remaining_entry_capacity` are gross USDC entry-cost terms before fees.
 
-Allowed `decision_result` values for first live:
+Allowed `entry_decision` values:
 
 - `enter`
-- `skip`
+- `no_action`
 
-Allowed `skip_reason` values for first live:
+Allowed `entry_no_action_reason` values:
 
-- `blocked_strategy`
-- `target_not_tradable`
+- `updown_market_mechanical_rejection`
 - `missing_reference_quote`
 - `stale_reference_quote`
+- `fee_rate_unavailable`
+- `fair_probability_unavailable`
 - `insufficient_edge`
 - `position_limit_reached`
 
-For first-live `binary_oracle_edge_taker`, `archetype_metrics` must contain:
+Allowed `updown_market_mechanical_outcome` values:
+
+- `accepted`
+- `rejected`
+
+Allowed `updown_market_mechanical_rejection_reason` values:
+
+- `market_not_started`
+- `market_ended`
+- `selected_market_open_orders_present`
+
+For the current `binary_oracle_edge_taker`, `archetype_metrics` must contain:
 
 - `spot_price`
-- `strike_price`
-- `strike_source`
+- `price_to_beat_value`
+- `price_to_beat_source`
 - `realized_volatility`
 - `expected_edge_basis_points`
 - `worst_case_edge_basis_points`
+- `fee_rate_basis_points`
+- `reference_quote_timestamp_milliseconds`
 
-Definitions for first-live `binary_oracle_edge_taker` metrics:
+Definitions for the current `binary_oracle_edge_taker` metrics:
 
 - `spot_price`
   - latest valid midpoint from `reference_data.primary`
-- `strike_price`
-  - resolved target anchor when present, otherwise `spot_price`
+- `price_to_beat_value`
+  - selected market reference price used for updown evaluation
 - `realized_volatility`
   - output of the realized-volatility estimator defined in Section 7.2
 - `expected_edge_basis_points`
   - selected-side edge from Section 7.3 before any additional uncertainty haircut
 - `worst_case_edge_basis_points`
   - selected-side edge used for thresholding and sizing
-  - first-live v1 rule: equal to `expected_edge_basis_points`
+  - current rule: equal to `expected_edge_basis_points`
+- `fee_rate_basis_points`
+  - selected-side fee rate used by Section 7.3
+- `reference_quote_timestamp_milliseconds`
+  - `ts_event` of the quote tick which produced `spot_price`
 
-When `decision_result` is `skip`, any unavailable first-live `binary_oracle_edge_taker` metric fields may be null rather than synthesized.
+For the current `binary_oracle_edge_taker`, all listed metric keys must be present.
+When `entry_decision` is `no_action`, values available at evaluation time must be non-null, and unavailable values must be serialized as explicit null rather than omitted or synthesized.
 
-Allowed `strike_source` values for first live:
+Allowed `price_to_beat_source` values:
 
 - `event_metadata.priceToBeat`
 
-#### `entry_submit_intent`
+#### `entry_order_submission`
 
 Required additional fields:
 
@@ -698,65 +924,81 @@ Required additional fields:
 - `post_only`
 - `reduce_only`
 
-This event records the exact NautilusTrader-native order semantics being submitted.
+This event records the exact NautilusTrader-native order semantics for a submit attempt.
 
 This event must also contain:
 
-- `client_order_identifier`
+- `client_order_id`
 
-`client_order_identifier` may be null when the rejection happens before a NautilusTrader order object is constructed.
+`client_order_id` is required and non-null.
+This event is emitted only after a NautilusTrader-native order object has been constructed.
 
-Allowed `local_rejection_reason` values for first live:
+#### `entry_pre_submit_rejection`
 
-- `target_unresolved`
-- `strategy_blocked`
+Required additional fields:
+
+- `order_type`
+- `time_in_force`
+- `instrument_identifier`
+- `side`
+- `price`
+- `quantity`
+- `quote_quantity`
+- `post_only`
+- `reduce_only`
+- `entry_pre_submit_rejection_reason`
+
+This event must also contain:
+
+- `client_order_id`
+
+`client_order_id` may be null when local rejection happens before a NautilusTrader order object is constructed.
+
+Allowed `entry_pre_submit_rejection_reason` values:
+
 - `invalid_price`
 - `invalid_quantity`
 - `exceeds_order_notional_cap`
 
-#### `entry_submit_rejected_local`
-
-Required additional fields:
-
-- `order_type`
-- `time_in_force`
-- `instrument_identifier`
-- `side`
-- `price`
-- `quantity`
-- `quote_quantity`
-- `post_only`
-- `reduce_only`
-- `local_rejection_reason`
-
-This event must also contain:
-
-- `client_order_identifier`
+Pre-order states such as missing selected market or market-selection failure are not submit-rejection events.
+Market-selection failure is represented by `market_selection_result` only.
+No `entry_evaluation`, `entry_pre_submit_rejection`, or `entry_order_submission` event is emitted for that failed entry path.
 
 #### `exit_evaluation`
 
 Required additional fields:
 
-- `decision_result`
-- `exit_reason`
+- `exit_decision`
+- `exit_trigger_reason`
+- `exit_hold_reason`
 - `authoritative_position_quantity`
 - `authoritative_sellable_quantity`
 - `archetype_metrics`
 
-For first-live `binary_oracle_edge_taker`, `archetype_metrics` may be an empty object.
+For the current `binary_oracle_edge_taker`, `archetype_metrics` may be an empty object.
 
-Allowed `decision_result` values for first live:
+Allowed `exit_decision` values:
 
 - `exit`
 - `hold`
 
-Allowed `exit_reason` values for first live:
+Allowed `exit_trigger_reason` values:
 
 - `market_end`
 - `strategy_exit_signal`
 - `position_safety_exit`
 
-#### `exit_submit_intent`
+`exit_trigger_reason` is required if `exit_decision = "exit"` and must be null if `exit_decision = "hold"`.
+
+Allowed `exit_hold_reason` values:
+
+- `no_position`
+- `insufficient_signal`
+- `exit_construction_unavailable`
+
+`exit_hold_reason` is required if `exit_decision = "hold"` and must be null if `exit_decision = "exit"`.
+
+#### `exit_order_submission`
 
 Required additional fields:
 
@@ -774,67 +1016,110 @@ Required additional fields:
 
 This event must also contain:
 
-- `client_order_identifier`
+- `client_order_id`
 
-`client_order_identifier` may be null when the rejection happens before a NautilusTrader order object is constructed.
+`client_order_id` is required and non-null.
+This event is emitted only after a NautilusTrader-native order object has been constructed.
 
-Allowed `local_rejection_reason` values for first live:
+#### `exit_pre_submit_rejection`
+
+Required additional fields:
+
+- `order_type`
+- `time_in_force`
+- `instrument_identifier`
+- `side`
+- `price`
+- `quantity`
+- `quote_quantity`
+- `post_only`
+- `reduce_only`
+- `authoritative_position_quantity`
+- `authoritative_sellable_quantity`
+- `exit_pre_submit_rejection_reason`
+
+This event must also contain:
+
+- `client_order_id`
+
+`client_order_id` may be null when local rejection happens before a NautilusTrader order object is constructed.
+
+Allowed `exit_pre_submit_rejection_reason` values:
 
 - `insufficient_sellable_quantity`
 - `invalid_quantity`
-
-#### `exit_submit_rejected_local`
-
-Required additional fields:
-
-- `order_type`
-- `time_in_force`
-- `instrument_identifier`
-- `side`
-- `price`
-- `quantity`
-- `quote_quantity`
-- `post_only`
-- `reduce_only`
-- `authoritative_position_quantity`
-- `authoritative_sellable_quantity`
-- `local_rejection_reason`
-
-This event must also contain:
-
-- `client_order_identifier`
 
 ### 9.6 Transport
 
 Primary machine-readable decision evidence:
 
-- structured decision events emitted as NautilusTrader custom-data events on the Nautilus message bus
+- structured decision events encoded as NautilusTrader registered custom-data values
 
-For first live trade, these events are persisted to the local catalog directory as machine-readable evidence.
+For live trading, these events are persisted to the local catalog directory as machine-readable evidence.
 
 Registration and persistence mechanism:
 
 - bolt registers the fixed decision-event custom-data types with NautilusTrader at startup
-- registration happens before the Nautilus catalog/streaming path is initialized
-- bolt configures NautilusTrader `StreamingConfig` from `[persistence.streaming]`
-- bolt enables catalog persistence for those registered custom-data event types through NautilusTrader's streaming path
-- bolt does not implement a second event writer or subscriber-writer persistence loop
+- registration happens before any strategy can emit decision evidence
+- the current live-trading persistence path uses one canonical bolt call site which hands registered custom-data values to NautilusTrader's catalog API
+- `[persistence.streaming]` supplies the catalog protocol, flush interval, replace behavior, and no-rotation policy for this call site
+- bolt does not implement a second writer, subscriber-writer loop, or parallel persistence path
+
+Every decision event must be constructed as the fixed registered NautilusTrader custom-data value before emission.
+The constructed value must include all Section 9.3 common fields and all Section 9.5 event-type-specific required fields, populated according to their stated nullability rules.
+
+For submit-gating events, the constructed value must be accepted by the single canonical in-process persistence handoff before the NautilusTrader order submit may proceed.
+Submit-gating events are `entry_order_submission`, `entry_pre_submit_rejection`, `exit_order_submission`, and `exit_pre_submit_rejection`.
+
+Accepted handoff means the registered custom-data value has been accepted by the canonical in-process catalog handoff without registration, encoding, capacity, or path rejection.
+Accepted handoff does not require durable catalog flush completion.
+If construction, encoding, registration lookup, or accepted handoff fails for a submit-gating event, the current submit is blocked.
+
+For non-submit-gating events, construction or handoff failure follows the Section 9.7 `persistence_failed` behavior: loud structured log, emitting strategy blocked/degraded, and no future submits until recovery.
+If the process crashes after order submit but before durable catalog flush, the venue order remains live and local decision evidence for that submit may be absent; recovery authority comes from NautilusTrader state reconciliation and venue-confirmed state.
+
+If a future NautilusTrader pin exposes a Rust live-node bus-to-catalog writer with equivalent failure behavior, migration to that path is a dedicated pin-update slice and not an implicit behavior change.
+
+Fixed custom-data type contract:
+
+- each decision event type in Section 9.4 has one Rust custom-data type
+- each type must be registered with NautilusTrader before startup can trade
+- every common field from Section 9.3 is represented on every type
+- event-specific fields from Section 9.5 are represented on the corresponding type
+- required event fields are non-optional Rust fields
+- nullable event fields are `Option` fields and must serialize as explicit null when absent
+- the NautilusTrader custom-data `ts_event` field is the event timestamp
+- the NautilusTrader custom-data `ts_init` field is the timestamp when bolt constructs the custom-data value
 
 Join rule:
 
-- decision events join to NautilusTrader-native execution events through `client_order_identifier`
-- if a local rejection occurs before order creation and `client_order_identifier` is null, the terminal local-rejection event is joined by `decision_trace_identifier` only
+- decision events join to NautilusTrader-native execution events through `client_order_id`
+- if a local rejection occurs before order creation and `client_order_id` is null, the terminal local-rejection event is joined by `decision_trace_id` only
 - `venue_order_identifier` is owned by NautilusTrader-native execution events once the venue acknowledges the order
 
 Readable mirror:
 
-- logs containing the same `decision_trace_identifier` and key fields
+- logs containing the same `decision_trace_id` and key fields
 
 No strategy may invent its own ad hoc forensic schema.
 
+### 9.7 Catalog Failure Behavior
+
+Decision-event persistence is a live-trading safety gate.
+
+If decision-event construction, accepted handoff, or durable catalog persistence fails because of registration, encoding, write, flush, rotation, permission, path, or capacity error:
+
+- emit a loud structured log with `decision_trace_id` when available
+- mark the emitting strategy blocked/degraded with reason `persistence_failed`
+- do not submit new orders while that strategy is in `persistence_failed`
+- continue allowing market-selection retries and non-order callbacks
+- require operator intervention or process restart to clear the state
+
+`just check` Phase 2 must prove catalog write/read readiness by round-tripping a registered test decision-event custom-data value in the configured catalog directory.
+
 ## 10. Local Disk and Later Archival
 
-Before first live trade:
+Before live trading:
 
 - local machine-readable decision evidence must exist
 - local logs must exist
@@ -847,7 +1132,7 @@ Immediate follow-up:
 
 ## 11. Deploy / Runtime Contract
 
-### 11.1 Required controls before first live trade
+### 11.1 Required controls before live trading
 
 - artifact verification before startup
 - versioned release directories
@@ -867,12 +1152,19 @@ The manifest must contain at minimum:
 - `release_identifier`
 - `git_commit_sha`
 - `nautilus_trader_revision`
+- `binary_sha256`
+- `cargo_lock_sha256`
+- `config_hash`
+- `build_profile`
+- `artifact_sha256`
 
 Runtime rule:
 
 - bolt reads `release_identifier` from that release manifest at startup
 - bolt does not derive release identity from process working directory or ad hoc path parsing
-- bolt does not perform a second manifest-signature verification step in first-live scope; trust comes from the verified artifact set plus the deploy-identity-controlled release directory
+- bolt does not perform a second manifest-signature verification step in the current live-trading scope; trust comes from the verified artifact set plus the deploy-identity-controlled release directory
+- deploy automation verifies every `artifact_sha256` entry before startup
+- bolt verifies that manifest `nautilus_trader_revision` matches the compiled pin before startup can trade
 
 ### 11.3 Required writable paths
 
@@ -884,6 +1176,33 @@ The allow-list must include exactly the paths bolt needs to write:
 - runtime temporary directory used by the service wrapper
 
 No other write path is allowed.
+
+### 11.4 Current systemd policy
+
+The current panic gate must run against a concrete systemd policy.
+The accepted policy for the current live-trading scope is:
+
+- `Restart=on-failure`
+- `RestartSec=5s`
+- `StartLimitIntervalSec=300s`
+- `StartLimitBurst=3`
+- `LimitCORE=0`
+
+If deploy automation uses a different policy, live trading is blocked until this section and the panic-gate evidence are updated together.
+
+### 11.5 NautilusTrader pin governance
+
+The NautilusTrader pin is part of the runtime contract because bolt is a thin Rust layer over the pinned NautilusTrader behavior.
+
+Governance rules:
+
+- Cargo dependency metadata and lock/build metadata are the dependency source of truth
+- Section 9.3 records the same `nautilus_trader_revision` value for emitted decision evidence and must match the compiled pin
+- the release manifest `nautilus_trader_revision` must match the compiled pin before startup can trade
+- a NautilusTrader pin change is a dedicated verification slice, not an incidental dependency update
+- each pin-change slice must update the recorded revision, rerun the CLOB V2 readiness gate, rerun the panic gate test matrix, and update the contract ledger
+- `just check` Phase 1 must fail if the recorded Section 9.3 revision disagrees with the Cargo dependency revision
+- startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 ## 12. Panic Gate: Issue `#239`
 
@@ -903,7 +1222,7 @@ Must run on:
 
 - the exact pinned NautilusTrader revision
 - the exact release build profile
-- the exact systemd restart policy intended for first live trade
+- the exact systemd restart policy intended for live trading
 
 ### 12.3 Required observations
 
@@ -920,7 +1239,7 @@ For each injected panic, record:
 
 ### 12.4 Acceptance rule
 
-First live trade is allowed only if:
+Live trading is allowed only if:
 
 - panic behavior is empirically tested
 - blast radius is documented
@@ -928,14 +1247,27 @@ First live trade is allowed only if:
 
 Unknown panic behavior is not acceptable.
 
-## 13. First-Live-Trade Invariants
+## 13. CLOB V2 Readiness Gate
+
+Polymarket CLOB signing compatibility is a live-trading launch gate.
+
+Live trading is allowed only if:
+
+- the pinned NautilusTrader Polymarket adapter is verified against the currently required Polymarket CLOB signing version
+- the verification records the order signing version, contract/domain requirements, collateral assumptions, and fee behavior checked
+- `just check` Phase 2 reports the gate result
+- the release manifest records the verified CLOB signing version
+
+If the pinned adapter is not verified for the current Polymarket CLOB requirement, live capital is blocked.
+
+## 14. Current Live-Trading Invariants
 
 The following invariants must remain true:
 
 - no mixins
 - no dual paths
 - no bolt-owned order schema
-- no bolt-owned selector service
+- no bolt-owned standalone market-selection service
 - no bolt-owned observability stack
 - no strategy-specific venue shaping
 - no hidden identity overlap

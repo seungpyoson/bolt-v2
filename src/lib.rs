@@ -1,3 +1,4 @@
+pub mod bolt_v3_adapters;
 pub mod bolt_v3_config;
 pub mod bolt_v3_live_node;
 pub mod bolt_v3_secrets;

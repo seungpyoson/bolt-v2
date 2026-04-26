@@ -22,6 +22,7 @@ use nautilus_live::{
 use nautilus_model::identifiers::TraderId;
 
 use crate::{
+    bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
     bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
@@ -35,6 +36,7 @@ use crate::{
 pub enum BoltV3LiveNodeError {
     ForbiddenEnv(ForbiddenEnvVarError),
     SecretResolution(BoltV3SecretError),
+    AdapterMapping(BoltV3AdapterMappingError),
     Build(anyhow::Error),
 }
 
@@ -44,6 +46,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ForbiddenEnv(error) => write!(f, "{error}"),
             BoltV3LiveNodeError::SecretResolution(error) => {
                 write!(f, "bolt-v3 secret resolution failed: {error}")
+            }
+            BoltV3LiveNodeError::AdapterMapping(error) => {
+                write!(f, "bolt-v3 adapter config mapping failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
         }
@@ -55,6 +60,7 @@ impl std::error::Error for BoltV3LiveNodeError {
         match self {
             BoltV3LiveNodeError::ForbiddenEnv(error) => Some(error),
             BoltV3LiveNodeError::SecretResolution(error) => Some(error),
+            BoltV3LiveNodeError::AdapterMapping(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
         }
     }
@@ -65,8 +71,10 @@ pub fn build_bolt_v3_live_node(
 ) -> Result<LiveNode, BoltV3LiveNodeError> {
     check_no_forbidden_credential_env_vars(&loaded.root)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
-    let _resolved =
+    let resolved =
         resolve_bolt_v3_secrets(loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let _adapters =
+        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     build_live_node_after_env_check(loaded)
 }
 
@@ -86,8 +94,10 @@ where
 {
     check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
-    let _resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
+    let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let _adapters =
+        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     build_live_node_after_env_check(loaded)
 }
 

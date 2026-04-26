@@ -12,7 +12,7 @@ use std::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -255,6 +255,7 @@ impl Drop for TempCaseDir {
 pub struct MockDataClientConfig {
     client_id: String,
     venue: String,
+    connect_delay: Duration,
 }
 
 impl MockDataClientConfig {
@@ -262,7 +263,13 @@ impl MockDataClientConfig {
         Self {
             client_id: client_id.to_string(),
             venue: venue.to_string(),
+            connect_delay: Duration::ZERO,
         }
+    }
+
+    pub fn with_connect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+        self.connect_delay = Duration::from_millis(milliseconds);
+        self
     }
 }
 
@@ -314,6 +321,7 @@ impl DataClientFactory for MockDataClientFactory {
         Ok(Box::new(MockDataClient::new(
             ClientId::from(cfg.client_id.as_str()),
             Venue::from(cfg.venue.as_str()),
+            cfg.connect_delay,
         )))
     }
 
@@ -365,14 +373,16 @@ struct MockDataClient {
     client_id: ClientId,
     venue: Venue,
     connected: bool,
+    connect_delay: Duration,
 }
 
 impl MockDataClient {
-    fn new(client_id: ClientId, venue: Venue) -> Self {
+    fn new(client_id: ClientId, venue: Venue, connect_delay: Duration) -> Self {
         Self {
             client_id,
             venue,
             connected: false,
+            connect_delay,
         }
     }
 }
@@ -437,6 +447,9 @@ impl DataClient for MockDataClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
+        if !self.connect_delay.is_zero() {
+            tokio::time::sleep(self.connect_delay).await;
+        }
         self.connected = true;
         Ok(())
     }

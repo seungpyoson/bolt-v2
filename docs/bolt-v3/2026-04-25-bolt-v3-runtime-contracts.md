@@ -1355,6 +1355,22 @@ Governance rules:
 - `just check` Phase 1 must fail if the recorded Section 9.3 revision disagrees with the Cargo dependency revision
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
+### 11.6 Controlled-connect boundary
+
+The bolt-v3 build path returns a `LiveNode` in `Idle` state with NT data and execution clients registered but not connected. NT's connect dispatchers (`NautilusKernel::connect_data_clients` and `NautilusKernel::connect_exec_clients`) are reachable from bolt-v3 only through the explicit `connect_bolt_v3_clients` boundary defined in `src/bolt_v3_live_node.rs`.
+
+Boundary contract:
+
+- opt-in: `build_bolt_v3_live_node` and its `_with` / `_with_summary` siblings do not invoke this boundary; a caller must call it explicitly on a node previously returned by one of those builders
+- bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_seconds`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }` and the caller owns subsequent disconnect/teardown
+- pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().connect_data_clients` and `LiveNode::kernel_mut().connect_exec_clients` (the pinned NT controlled-connect API surface)
+- no-trade: the boundary never enters NT's runner loop, never starts NT's trader, never registers strategies, never selects markets, never constructs orders, and never submits orders; `NodeState` therefore remains in whatever state the node was in before the call (typically `Idle`)
+- credential-log filter preserved: in a bolt-v3-only process, NT's first-wins logger has already been initialized by the bolt-v3 `LoggerConfig` passed through `LiveNodeBuilder::build`, so the `NT_CREDENTIAL_LOG_MODULES` filter remains active during the connect dispatch; the future production v3 entrypoint must preserve this first-initializer ordering
+
+Errors from individual NT client `connect()` calls are surfaced via NT's logger; NT's engine-level dispatchers in `nautilus_data::engine::DataEngine::connect` and `nautilus_execution::engine::ExecutionEngine::connect` log individual `Err` values rather than propagating them, so the bolt-v3 boundary returns `Ok(())` once both dispatchers have returned and the timeout bound has not fired.
+
+The controlled-connect boundary alone does not enable live trading: order submission, strategy actors, reconciliation, and the runner loop remain blocked behind the still-absent supervised live-trading transition.
+
 ## 12. Panic Gate: Issue `#239`
 
 ### 12.1 Required test matrix

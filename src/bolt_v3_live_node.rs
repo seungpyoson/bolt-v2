@@ -19,7 +19,7 @@
 //!   instrument topics. None of these steps open a network connection
 //!   or run the event loop.
 //! - returns the resulting `nautilus_live::node::LiveNode` to the caller
-//!   without calling `node.run()`
+//!   without entering the NT runner loop
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
 //! - installs module-level logger filters that suppress NT credential
@@ -80,6 +80,21 @@ pub enum BoltV3LiveNodeError {
     AdapterMapping(BoltV3AdapterMappingError),
     ClientRegistration(BoltV3ClientRegistrationError),
     Build(anyhow::Error),
+    /// The bolt-v3 controlled-connect boundary
+    /// ([`connect_bolt_v3_clients`]) bounds the dispatched
+    /// `NautilusKernel::connect_data_clients` and
+    /// `NautilusKernel::connect_exec_clients` calls by the
+    /// `nautilus.timeout_connection_seconds` value from the loaded
+    /// bolt-v3 config. A `ConnectTimeout` is surfaced when that bound
+    /// elapses before NT's engine-level connect dispatchers return,
+    /// instead of the controlled-connect call hanging indefinitely.
+    /// The wrapped value is the configured timeout the boundary
+    /// applied (in seconds), captured so log/audit consumers can
+    /// distinguish a 1-second test timeout from a 30-second
+    /// production timeout without re-reading the source config.
+    ConnectTimeout {
+        timeout_seconds: u64,
+    },
 }
 
 impl std::fmt::Display for BoltV3LiveNodeError {
@@ -96,6 +111,11 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 write!(f, "bolt-v3 client registration failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
+            BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => write!(
+                f,
+                "bolt-v3 controlled-connect exceeded the configured \
+                 nautilus.timeout_connection_seconds bound ({timeout_seconds}s)"
+            ),
         }
     }
 }
@@ -108,6 +128,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::AdapterMapping(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
+            BoltV3LiveNodeError::ConnectTimeout { .. } => None,
         }
     }
 }
@@ -262,6 +283,63 @@ pub fn wire_bolt_v3_runtime_capture(
             .flush_interval_milliseconds,
         None,
     )
+}
+
+/// Bolt-v3 controlled-connect boundary.
+///
+/// Drives the pinned NautilusTrader controlled-connect API
+/// (`NautilusKernel::connect_data_clients` followed by
+/// `NautilusKernel::connect_exec_clients`) on every NT data and
+/// execution client that the bolt-v3 client-registration boundary added
+/// to `node`, bounded by the bolt-v3
+/// `nautilus.timeout_connection_seconds` value from `loaded`.
+///
+/// This boundary is **opt-in**: `build_bolt_v3_live_node` and its
+/// `_with` / `_with_summary` siblings deliberately do not invoke it.
+/// A caller must explicitly call this function on a node previously
+/// returned by one of those builders. In a bolt-v3-only process, NT's
+/// first-wins logger is initialized by the bolt-v3 `LoggerConfig`
+/// passed through `LiveNodeBuilder::build`, so the
+/// `NT_CREDENTIAL_LOG_MODULES` filter remains active during connect.
+/// A future production v3 entrypoint must preserve that ordering.
+///
+/// This boundary is **bounded**: the dispatched engine-level connect
+/// futures are wrapped in `tokio::time::timeout` driven by
+/// `nautilus.timeout_connection_seconds`. If the bound elapses before
+/// both engines finish dispatching connect to their registered clients
+/// the function returns [`BoltV3LiveNodeError::ConnectTimeout`] and
+/// the `LiveNode` is left in whatever partially-connected state NT
+/// produced; the caller owns subsequent disconnect/teardown.
+///
+/// This boundary is **no-trade**: it never enters NT's runner loop
+/// and never starts NT's trader, so no strategy actor is started, no
+/// reconciliation runs, and the runner loop is never entered.
+/// `NodeState` therefore remains in whatever state the node was in
+/// before the call (typically `Idle`). The boundary does not register
+/// strategies, select markets, construct orders, or submit orders.
+///
+/// Errors from individual NT client `connect()` calls are surfaced
+/// via NT's logger (the engine-level dispatchers in
+/// `nautilus_data::engine::DataEngine::connect` and
+/// `nautilus_execution::engine::ExecutionEngine::connect` log
+/// individual `Err` values rather than propagating them). The bolt-v3
+/// boundary returns `Ok(())` once both dispatchers have returned and
+/// the `tokio::time::timeout` bound has not fired.
+pub async fn connect_bolt_v3_clients(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let timeout_seconds = loaded.root.nautilus.timeout_connection_seconds;
+    let bound = Duration::from_secs(timeout_seconds);
+    let connect = async {
+        let kernel = node.kernel_mut();
+        kernel.connect_data_clients().await;
+        kernel.connect_exec_clients().await;
+    };
+    match tokio::time::timeout(bound, connect).await {
+        Ok(()) => Ok(()),
+        Err(_) => Err(BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }),
+    }
 }
 
 #[cfg(test)]

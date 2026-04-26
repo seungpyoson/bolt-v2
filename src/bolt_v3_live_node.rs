@@ -2,27 +2,39 @@
 //! market selection, order construction, or submit paths.
 //!
 //! This module is a no-trade boundary. It only:
-//! - validates the forbidden credential env-var blocklist before constructing
-//!   any NautilusTrader client
-//! - builds a `nautilus_live::node::LiveNode` from validated bolt-v3 root
-//!   config without calling `node.run()`
+//! - validates the forbidden credential env-var blocklist before
+//!   constructing any NautilusTrader client
+//! - resolves SSM secrets via the bolt-v3 secret resolver
+//! - maps the validated bolt-v3 venue blocks into NT-native adapter
+//!   configs
+//! - registers the per-venue NT data and execution client factories on a
+//!   `nautilus_live::builder::LiveNodeBuilder` via the
+//!   [`crate::bolt_v3_client_registration`] boundary
+//! - finalizes the builder into a `nautilus_live::node::LiveNode`
+//!   without calling `node.run()`
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
 //!
-//! The caller owns the `LiveNode`; this module never starts the event loop.
+//! The caller owns the `LiveNode`; this module never starts the event
+//! loop, opens a network connection, subscribes to market data,
+//! constructs orders, or enables any submit path.
 
 use std::time::Duration;
 
 use anyhow::Result;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::{
+    builder::LiveNodeBuilder,
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle},
 };
 use nautilus_model::identifiers::TraderId;
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_client_registration::{
+        BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
+    },
     bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
@@ -37,6 +49,7 @@ pub enum BoltV3LiveNodeError {
     ForbiddenEnv(ForbiddenEnvVarError),
     SecretResolution(BoltV3SecretError),
     AdapterMapping(BoltV3AdapterMappingError),
+    ClientRegistration(BoltV3ClientRegistrationError),
     Build(anyhow::Error),
 }
 
@@ -50,6 +63,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::AdapterMapping(error) => {
                 write!(f, "bolt-v3 adapter config mapping failed: {error}")
             }
+            BoltV3LiveNodeError::ClientRegistration(error) => {
+                write!(f, "bolt-v3 client registration failed: {error}")
+            }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
         }
     }
@@ -61,6 +77,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ForbiddenEnv(error) => Some(error),
             BoltV3LiveNodeError::SecretResolution(error) => Some(error),
             BoltV3LiveNodeError::AdapterMapping(error) => Some(error),
+            BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
         }
     }
@@ -73,9 +90,10 @@ pub fn build_bolt_v3_live_node(
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved =
         resolve_bolt_v3_secrets(loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
-    let _adapters =
+    let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_after_env_check(loaded)
+    let (node, _summary) = build_live_node_with_clients(loaded, &adapters)?;
+    Ok(node)
 }
 
 /// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller
@@ -92,21 +110,68 @@ where
     R: FnMut(&str, &str) -> Result<String, E>,
     E: std::fmt::Display,
 {
+    let (node, _summary) = build_bolt_v3_live_node_with_summary(loaded, env_is_set, resolver)?;
+    Ok(node)
+}
+
+/// Same as [`build_bolt_v3_live_node_with`] but also returns the
+/// [`BoltV3RegistrationSummary`] so tests can assert which NT client
+/// kinds the registration boundary added before the builder finalized
+/// the node. Not intended for production code paths; production reads
+/// the summary by other means if it ever needs to.
+pub fn build_bolt_v3_live_node_with_summary<F, R, E>(
+    loaded: &LoadedBoltV3Config,
+    env_is_set: F,
+    resolver: R,
+) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError>
+where
+    F: FnMut(&str) -> bool,
+    R: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
+{
     check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
-    let _adapters =
+    let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_after_env_check(loaded)
+    build_live_node_with_clients(loaded, &adapters)
 }
 
-fn build_live_node_after_env_check(
+fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
-) -> Result<LiveNode, BoltV3LiveNodeError> {
-    let live_config = make_live_node_config(loaded);
-    LiveNode::build(loaded.root.trader_id.clone(), Some(live_config))
-        .map_err(BoltV3LiveNodeError::Build)
+    adapters: &BoltV3AdapterConfigs,
+) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let builder = make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::Build)?;
+    let (builder, summary) = register_bolt_v3_clients(builder, adapters)
+        .map_err(BoltV3LiveNodeError::ClientRegistration)?;
+    let node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    Ok((node, summary))
+}
+
+/// Translates a validated bolt-v3 config into an NT-native
+/// [`LiveNodeBuilder`] with no clients added. Field translation goes
+/// through [`make_live_node_config`] so the bolt-v3 → NT field mapping
+/// has a single source of truth that the existing per-field tests can
+/// keep exercising.
+pub fn make_bolt_v3_live_node_builder(
+    loaded: &LoadedBoltV3Config,
+) -> anyhow::Result<LiveNodeBuilder> {
+    let cfg = make_live_node_config(loaded);
+    let mut builder = LiveNode::builder(cfg.trader_id, cfg.environment)?
+        .with_logging(cfg.logging.clone())
+        .with_load_state(cfg.load_state)
+        .with_save_state(cfg.save_state)
+        .with_timeout_connection(cfg.timeout_connection.as_secs())
+        .with_timeout_reconciliation(cfg.timeout_reconciliation.as_secs())
+        .with_timeout_portfolio(cfg.timeout_portfolio.as_secs())
+        .with_timeout_disconnection_secs(cfg.timeout_disconnection.as_secs())
+        .with_delay_post_stop_secs(cfg.delay_post_stop.as_secs())
+        .with_delay_shutdown_secs(cfg.timeout_shutdown.as_secs());
+    if let Some(mins) = cfg.exec_engine.reconciliation_lookback_mins {
+        builder = builder.with_reconciliation_lookback_mins(mins);
+    }
+    Ok(builder)
 }
 
 pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {

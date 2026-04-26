@@ -548,14 +548,28 @@ impl ExecutionClient for MockExecutionClient {
 const FAKE_BOLT_V3_BINANCE_API_SECRET: &str =
     "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
 
+/// 32-byte secp256k1 private key in hex (with the `0x` prefix the NT
+/// Polymarket adapter accepts). The NT `PolymarketExecutionClient::new`
+/// constructor parses this into an EVM signer at registration time, so
+/// the fake resolver must hand back a value that decodes to a valid
+/// secp256k1 scalar; the all-`0x42` byte sequence is well within the
+/// curve order and is shared across bolt-v3 build-path tests.
+const FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY: &str =
+    "0x4242424242424242424242424242424242424242424242424242424242424242";
+
 /// Synthetic SSM resolver for bolt-v3 LiveNode build tests. Returns
 /// per-path placeholder values that satisfy the polymarket and binance
 /// secret schemas declared in `tests/fixtures/bolt_v3/root.toml` so the
-/// build path can run all the way through `LiveNode::build` without
-/// reaching the network.
+/// build path can run all the way through `LiveNodeBuilder::build`
+/// (which invokes the real NT `factory.create` for every registered
+/// client) without reaching the network. The polymarket private key
+/// must be a valid 32-byte secp256k1 hex value because NT's
+/// `PolymarketExecutionClient::new` parses it into a signer; the
+/// polymarket api_secret must be valid base64 because NT's
+/// `Credential::new` decodes it into HMAC key material.
 pub fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
     match path {
-        "/bolt/polymarket_main/private_key" => Ok("polymarket-private-key".to_string()),
+        "/bolt/polymarket_main/private_key" => Ok(FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY.to_string()),
         "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
         "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
         "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),

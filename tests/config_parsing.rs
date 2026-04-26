@@ -795,7 +795,11 @@ fn rejects_forbidden_polymarket_env_vars_before_client_build() {
         "POLYMARKET_API_SECRET",
         "POLYMARKET_PASSPHRASE",
     ] {
-        let result = build_bolt_v3_live_node_with(&loaded, |var| var == forbidden);
+        let result = build_bolt_v3_live_node_with(
+            &loaded,
+            |var| var == forbidden,
+            support::fake_bolt_v3_resolver,
+        );
         let error = result.expect_err("forbidden env var must block LiveNode build");
         match error {
             BoltV3LiveNodeError::ForbiddenEnv(report) => {

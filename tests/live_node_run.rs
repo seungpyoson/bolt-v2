@@ -290,8 +290,9 @@ fn builds_bolt_v3_livenode_without_running_event_loop() {
     let loaded: LoadedBoltV3Config =
         load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    // No forbidden env vars are set in the test predicate so the build proceeds.
-    let node = build_bolt_v3_live_node_with(&loaded, |_| false)
+    // No forbidden env vars are set in the test predicate, and the fake
+    // resolver supplies all configured SSM paths, so the build proceeds.
+    let node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("v3 LiveNode should build without entering the event loop");
 
     assert_eq!(node.environment(), Environment::Live);
@@ -351,8 +352,9 @@ fn wires_runtime_capture_from_bolt_v3_persistence_config() {
             strategies: loaded.strategies.clone(),
         };
 
-        let node = build_bolt_v3_live_node_with(&routed_loaded, |_| false)
-            .expect("v3 LiveNode should build for runtime-capture wiring");
+        let node =
+            build_bolt_v3_live_node_with(&routed_loaded, |_| false, support::fake_bolt_v3_resolver)
+                .expect("v3 LiveNode should build for runtime-capture wiring");
         let handle = node.handle();
         let guards = wire_bolt_v3_runtime_capture(&node, handle.clone(), &routed_loaded)
             .expect("runtime capture should wire from v3 persistence config");

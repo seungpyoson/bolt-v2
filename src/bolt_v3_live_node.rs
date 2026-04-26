@@ -24,8 +24,9 @@ use nautilus_model::identifiers::TraderId;
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
     bolt_v3_secrets::{
-        ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
-        check_no_forbidden_credential_env_vars_with,
+        BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
+        check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets,
+        resolve_bolt_v3_secrets_with,
     },
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
 };
@@ -33,6 +34,7 @@ use crate::{
 #[derive(Debug)]
 pub enum BoltV3LiveNodeError {
     ForbiddenEnv(ForbiddenEnvVarError),
+    SecretResolution(BoltV3SecretError),
     Build(anyhow::Error),
 }
 
@@ -40,6 +42,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BoltV3LiveNodeError::ForbiddenEnv(error) => write!(f, "{error}"),
+            BoltV3LiveNodeError::SecretResolution(error) => {
+                write!(f, "bolt-v3 secret resolution failed: {error}")
+            }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
         }
     }
@@ -49,6 +54,7 @@ impl std::error::Error for BoltV3LiveNodeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             BoltV3LiveNodeError::ForbiddenEnv(error) => Some(error),
+            BoltV3LiveNodeError::SecretResolution(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
         }
     }
@@ -59,21 +65,29 @@ pub fn build_bolt_v3_live_node(
 ) -> Result<LiveNode, BoltV3LiveNodeError> {
     check_no_forbidden_credential_env_vars(&loaded.root)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let _resolved =
+        resolve_bolt_v3_secrets(loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
     build_live_node_after_env_check(loaded)
 }
 
 /// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller
-/// inject the environment-variable predicate. Production code must use
-/// [`build_bolt_v3_live_node`], which queries `std::env`.
-pub fn build_bolt_v3_live_node_with<F>(
+/// inject the environment-variable predicate and the SSM resolver. Production
+/// code must use [`build_bolt_v3_live_node`], which queries `std::env` and
+/// invokes the real Amazon Web Services Systems Manager resolver.
+pub fn build_bolt_v3_live_node_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
+    resolver: R,
 ) -> Result<LiveNode, BoltV3LiveNodeError>
 where
     F: FnMut(&str) -> bool,
+    R: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
 {
     check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let _resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
+        .map_err(BoltV3LiveNodeError::SecretResolution)?;
     build_live_node_after_env_check(loaded)
 }
 

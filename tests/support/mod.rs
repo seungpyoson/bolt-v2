@@ -540,3 +540,27 @@ impl ExecutionClient for MockExecutionClient {
         Ok(())
     }
 }
+
+/// PKCS8-wrapped Ed25519 private key, base64-encoded. The bolt-v3 binance
+/// shape validator (`crate::secrets::validate_binance_api_secret_shape`)
+/// requires that the resolved api_secret decode as a valid PKCS8 Ed25519
+/// key, so the fake resolver must hand back a value that satisfies it.
+const FAKE_BOLT_V3_BINANCE_API_SECRET: &str =
+    "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
+
+/// Synthetic SSM resolver for bolt-v3 LiveNode build tests. Returns
+/// per-path placeholder values that satisfy the polymarket and binance
+/// secret schemas declared in `tests/fixtures/bolt_v3/root.toml` so the
+/// build path can run all the way through `LiveNode::build` without
+/// reaching the network.
+pub fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
+    match path {
+        "/bolt/polymarket_main/private_key" => Ok("polymarket-private-key".to_string()),
+        "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
+        "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
+        "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
+        "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
+        "/bolt/binance_reference/api_secret" => Ok(FAKE_BOLT_V3_BINANCE_API_SECRET.to_string()),
+        _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
+    }
+}

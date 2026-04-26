@@ -103,7 +103,7 @@ pub(crate) fn binance_secret_config_contract(
     }
 }
 
-fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
+pub(crate) fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
     let output = std::process::Command::new("aws")
         .args([
             "ssm",
@@ -137,7 +137,7 @@ fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
         .map_err(|e| SecretError(format!("Invalid UTF-8 from SSM for {ssm_path}: {e}")))
 }
 
-fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), SecretError> {
+pub(crate) fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), SecretError> {
     if api_secret.trim().is_empty() {
         return Err(SecretError(
             "resolved Binance api_secret is empty".to_string(),
@@ -153,7 +153,7 @@ fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), SecretError
         })
 }
 
-fn pad_base64(mut secret: String) -> String {
+pub(crate) fn pad_base64(mut secret: String) -> String {
     let pad_len = (4 - secret.len() % 4) % 4;
     secret.extend(std::iter::repeat_n('=', pad_len));
     secret

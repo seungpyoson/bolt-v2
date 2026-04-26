@@ -684,3 +684,425 @@ disable_after_ms = 5000"#,
 
     assert!(error.contains("selector_poll_intrvl_ms"));
 }
+
+#[test]
+fn parses_minimal_bolt_v3_root_and_strategy_config() {
+    use bolt_v2::bolt_v3_config::{
+        ArchetypeOrderType, ArchetypeTimeInForce, RuntimeMode, StrategyArchetype, TargetKind,
+        VenueKind, load_bolt_v3_config,
+    };
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
+
+    assert_eq!(loaded.root.schema_version, 1);
+    assert_eq!(loaded.root.trader_id, "BOLT-001");
+    assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
+    assert_eq!(
+        loaded.root.venues["polymarket_main"].kind,
+        VenueKind::Polymarket
+    );
+    assert_eq!(
+        loaded.root.venues["binance_reference"].kind,
+        VenueKind::Binance
+    );
+    assert!(loaded.root.venues["polymarket_main"].execution.is_some());
+    assert!(loaded.root.venues["binance_reference"].execution.is_none());
+
+    assert_eq!(loaded.strategies.len(), 1);
+    let strategy = &loaded.strategies[0].config;
+    assert_eq!(
+        strategy.strategy_archetype,
+        StrategyArchetype::BinaryOracleEdgeTaker
+    );
+    assert_eq!(strategy.target.kind, TargetKind::RotatingMarket);
+    assert_eq!(strategy.target.cadence_seconds, 300);
+    assert_eq!(
+        strategy.parameters.entry_order.order_type,
+        ArchetypeOrderType::Limit
+    );
+    assert_eq!(
+        strategy.parameters.entry_order.time_in_force,
+        ArchetypeTimeInForce::Fok
+    );
+    assert_eq!(
+        strategy.parameters.exit_order.order_type,
+        ArchetypeOrderType::Market
+    );
+    assert_eq!(
+        strategy.parameters.exit_order.time_in_force,
+        ArchetypeTimeInForce::Ioc
+    );
+    assert!(strategy.reference_data.contains_key("primary"));
+    assert_eq!(
+        strategy.reference_data["primary"].venue,
+        "binance_reference"
+    );
+}
+
+#[test]
+fn rejects_unknown_bolt_v3_config_fields() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mutated = fixture.replace(
+        "schema_version = 1",
+        "schema_version = 1\nunexpected_root_field = \"nope\"",
+    );
+
+    let error = toml::from_str::<BoltV3RootConfig>(&mutated)
+        .expect_err("unknown root field should fail to parse")
+        .to_string();
+    assert!(
+        error.contains("unexpected_root_field"),
+        "error should name the unknown field, got: {error}"
+    );
+
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "[parameters]\nedge_threshold_basis_points = 100",
+        "[parameters]\nedge_threshold_basis_points = 100\nbogus_parameter = 7",
+    );
+
+    let strategy_error =
+        toml::from_str::<bolt_v2::bolt_v3_config::BoltV3StrategyConfig>(&mutated_strategy)
+            .expect_err("unknown strategy field should fail to parse")
+            .to_string();
+    assert!(
+        strategy_error.contains("bogus_parameter"),
+        "error should name the unknown strategy field, got: {strategy_error}"
+    );
+}
+
+#[test]
+fn rejects_forbidden_polymarket_env_vars_before_client_build() {
+    use bolt_v2::{
+        bolt_v3_config::load_bolt_v3_config,
+        bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
+    };
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    for forbidden in [
+        "POLYMARKET_PK",
+        "POLYMARKET_FUNDER",
+        "POLYMARKET_API_KEY",
+        "POLYMARKET_API_SECRET",
+        "POLYMARKET_PASSPHRASE",
+    ] {
+        let result = build_bolt_v3_live_node_with(&loaded, |var| var == forbidden);
+        let error = result.expect_err("forbidden env var must block LiveNode build");
+        match error {
+            BoltV3LiveNodeError::ForbiddenEnv(report) => {
+                assert_eq!(report.findings.len(), 1, "{report}");
+                assert_eq!(report.findings[0].venue_key, "polymarket_main");
+                assert_eq!(report.findings[0].env_var, forbidden);
+            }
+            other => panic!("expected ForbiddenEnv error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn rejects_polymarket_execution_venue_missing_secrets_block() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let toml_text = r#"
+schema_version = 1
+trader_id = "BOLT-001"
+strategy_files = ["strategies/binary_oracle.toml"]
+
+[runtime]
+mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+timeout_connection_seconds = 30
+timeout_reconciliation_seconds = 60
+reconciliation_lookback_mins = 0
+timeout_portfolio_seconds = 10
+timeout_disconnection_seconds = 10
+delay_post_stop_seconds = 5
+timeout_shutdown_seconds = 10
+
+[risk]
+bypass = false
+max_order_submit_count = 20
+max_order_submit_interval_seconds = 1
+max_order_modify_count = 20
+max_order_modify_interval_seconds = 1
+default_max_notional_per_order = "10.00"
+
+[logging]
+standard_output_level = "INFO"
+file_level = "INFO"
+log_directory = "/var/log/bolt"
+
+[persistence]
+state_directory = "/var/lib/bolt/state"
+catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_milliseconds = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-1"
+
+[venues.polymarket_main]
+kind = "polymarket"
+
+[venues.polymarket_main.execution]
+account_id = "POLYMARKET-001"
+signature_type = "poly_proxy"
+funder_address = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 60
+max_retries = 3
+retry_delay_initial_milliseconds = 250
+retry_delay_max_milliseconds = 2000
+ack_timeout_seconds = 5
+"#;
+
+    let root: BoltV3RootConfig =
+        toml::from_str(toml_text).expect("polymarket-execution-only TOML should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("[execution]")
+            && m.contains("required [secrets] block")),
+        "expected missing-secrets failure for polymarket execution venue, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_reference_data_venue_missing_secrets_block() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let toml_text = r#"
+schema_version = 1
+trader_id = "BOLT-001"
+strategy_files = ["strategies/binary_oracle.toml"]
+
+[runtime]
+mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+timeout_connection_seconds = 30
+timeout_reconciliation_seconds = 60
+reconciliation_lookback_mins = 0
+timeout_portfolio_seconds = 10
+timeout_disconnection_seconds = 10
+delay_post_stop_seconds = 5
+timeout_shutdown_seconds = 10
+
+[risk]
+bypass = false
+max_order_submit_count = 20
+max_order_submit_interval_seconds = 1
+max_order_modify_count = 20
+max_order_modify_interval_seconds = 1
+default_max_notional_per_order = "10.00"
+
+[logging]
+standard_output_level = "INFO"
+file_level = "INFO"
+log_directory = "/var/log/bolt"
+
+[persistence]
+state_directory = "/var/lib/bolt/state"
+catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_milliseconds = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-1"
+
+[venues.binance_reference]
+kind = "binance"
+
+[venues.binance_reference.data]
+product_types = ["spot"]
+environment = "mainnet"
+instrument_status_poll_seconds = 3600
+"#;
+
+    let root: BoltV3RootConfig =
+        toml::from_str(toml_text).expect("binance-data-only TOML should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("[data]")
+            && m.contains("required [secrets] block")),
+        "expected missing-secrets failure for binance reference-data venue, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_venue_numeric_fields_at_zero() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let toml_text = r#"
+schema_version = 1
+trader_id = "BOLT-001"
+strategy_files = ["strategies/binary_oracle.toml"]
+
+[runtime]
+mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+timeout_connection_seconds = 30
+timeout_reconciliation_seconds = 60
+reconciliation_lookback_mins = 0
+timeout_portfolio_seconds = 10
+timeout_disconnection_seconds = 10
+delay_post_stop_seconds = 5
+timeout_shutdown_seconds = 10
+
+[risk]
+bypass = false
+max_order_submit_count = 20
+max_order_submit_interval_seconds = 1
+max_order_modify_count = 20
+max_order_modify_interval_seconds = 1
+default_max_notional_per_order = "10.00"
+
+[logging]
+standard_output_level = "INFO"
+file_level = "INFO"
+log_directory = "/var/log/bolt"
+
+[persistence]
+state_directory = "/var/lib/bolt/state"
+catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_milliseconds = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-1"
+
+[venues.polymarket_main]
+kind = "polymarket"
+
+[venues.polymarket_main.data]
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_gamma = "https://gamma-api.polymarket.com"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 0
+ws_timeout_seconds = 0
+subscribe_new_markets = false
+update_instruments_interval_minutes = 0
+websocket_max_subscriptions_per_connection = 0
+
+[venues.polymarket_main.execution]
+account_id = "POLYMARKET-001"
+signature_type = "poly_proxy"
+funder_address = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 0
+max_retries = 0
+retry_delay_initial_milliseconds = 0
+retry_delay_max_milliseconds = 0
+ack_timeout_seconds = 0
+
+[venues.polymarket_main.secrets]
+private_key_ssm_path = "/bolt/polymarket_main/private_key"
+api_key_ssm_path = "/bolt/polymarket_main/api_key"
+api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
+passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+"#;
+
+    let root: BoltV3RootConfig =
+        toml::from_str(toml_text).expect("polymarket bounds TOML should parse");
+    let messages = validate_root_only(&root);
+    let expected = [
+        "venues.polymarket_main.data.http_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.data.ws_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
+        "venues.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
+        "venues.polymarket_main.execution.http_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.execution.max_retries must be a positive integer",
+        "venues.polymarket_main.execution.retry_delay_initial_milliseconds must be a positive integer",
+        "venues.polymarket_main.execution.retry_delay_max_milliseconds must be a positive integer",
+        "venues.polymarket_main.execution.ack_timeout_seconds must be a positive integer",
+    ];
+    for needle in expected {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_unsupported_root_and_strategy_schema_versions() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::{validate_root_only, validate_strategies},
+    };
+
+    let mutated_root =
+        std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable")
+            .replace("schema_version = 1", "schema_version = 2");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated_root).expect("mutated root should parse with raw u32");
+    let root_messages = validate_root_only(&root);
+    assert!(
+        root_messages
+            .iter()
+            .any(|m| m.contains("root schema_version=2 is unsupported")),
+        "expected unsupported root schema version, got: {root_messages:#?}"
+    );
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace("schema_version = 1", "schema_version = 7");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&mutated_strategy).expect("mutated strategy should parse with raw u32");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let strategy_messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        strategy_messages
+            .iter()
+            .any(|m| m.contains("schema_version=7 is unsupported")),
+        "expected unsupported strategy schema version, got: {strategy_messages:#?}"
+    );
+}

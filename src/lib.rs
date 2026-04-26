@@ -1,3 +1,7 @@
+pub mod bolt_v3_config;
+pub mod bolt_v3_live_node;
+pub mod bolt_v3_secrets;
+pub mod bolt_v3_validate;
 pub mod clients;
 pub mod config;
 pub mod execution_state;

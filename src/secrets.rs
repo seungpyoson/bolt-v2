@@ -1,5 +1,8 @@
-use crate::config::{BinanceSharedConfig, ChainlinkSharedConfig, ExecClientSecrets};
+use aws_config::BehaviorVersion;
+use aws_sdk_ssm::{Client as SsmClient, config::Region};
 use nautilus_binance::common::credential::Ed25519Credential;
+
+use crate::config::{BinanceSharedConfig, ChainlinkSharedConfig, ExecClientSecrets};
 
 #[derive(Debug)]
 pub struct SecretError(String);
@@ -104,37 +107,48 @@ pub(crate) fn binance_secret_config_contract(
 }
 
 pub(crate) fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
-    let output = std::process::Command::new("aws")
-        .args([
-            "ssm",
-            "get-parameter",
-            "--region",
-            region,
-            "--name",
-            ssm_path,
-            "--with-decryption",
-            "--query",
-            "Parameter.Value",
-            "--output",
-            "text",
-        ])
-        .output()
-        .map_err(|e| {
+    let region_owned = region.to_string();
+    let ssm_path_owned = ssm_path.to_string();
+    // Production startup is synchronous (see `fn main` in src/main.rs and
+    // `bolt_v3_live_node::build_bolt_v3_live_node`), so the AWS SDK's async
+    // GetParameter call is bridged through a contained current-thread Tokio
+    // runtime here rather than propagating async-ness through every caller.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
             SecretError(format!(
-                "Failed to run aws ssm get-parameter for {ssm_path}: {e}"
+                "failed to build Tokio runtime for SSM resolution at {ssm_path_owned}: {error}"
             ))
         })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SecretError(format!(
-            "aws ssm get-parameter failed for {ssm_path}: {stderr}"
-        )));
-    }
-
-    String::from_utf8(output.stdout)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| SecretError(format!("Invalid UTF-8 from SSM for {ssm_path}: {e}")))
+    runtime.block_on(async move {
+        let aws_config = aws_config::defaults(BehaviorVersion::latest())
+            .region(Region::new(region_owned))
+            .load()
+            .await;
+        let client = SsmClient::new(&aws_config);
+        let response = client
+            .get_parameter()
+            .name(&ssm_path_owned)
+            .with_decryption(true)
+            .send()
+            .await
+            .map_err(|error| {
+                SecretError(format!(
+                    "AWS SSM GetParameter failed for {ssm_path_owned}: {}",
+                    aws_sdk_ssm::error::DisplayErrorContext(&error),
+                ))
+            })?;
+        response
+            .parameter()
+            .and_then(|parameter| parameter.value())
+            .map(|raw| raw.trim().to_string())
+            .ok_or_else(|| {
+                SecretError(format!(
+                    "AWS SSM GetParameter returned no value for {ssm_path_owned}"
+                ))
+            })
+    })
 }
 
 pub(crate) fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), SecretError> {
@@ -450,5 +464,24 @@ mod tests {
         let error = validate_binance_api_secret_shape("not-a-valid-binance-secret")
             .expect_err("plain invalid string should fail");
         assert!(error.to_string().contains("valid Ed25519 key material"));
+    }
+
+    #[test]
+    fn production_resolve_secret_does_not_shell_out_to_aws_cli() {
+        let source = include_str!("secrets.rs");
+        assert!(
+            !source.contains("std::process::Command::new(\"aws\")"),
+            "bolt-v3 contract: production resolver must not invoke the AWS CLI; \
+             it must use the Rust AWS SDK"
+        );
+        assert!(
+            !source.contains("\"get-parameter\""),
+            "bolt-v3 contract: production resolver must not pass `get-parameter` \
+             to a subprocess; it must call the Rust SSM client"
+        );
+        assert!(
+            source.contains("aws_sdk_ssm::"),
+            "bolt-v3 contract: production resolver must use the aws-sdk-ssm crate"
+        );
     }
 }

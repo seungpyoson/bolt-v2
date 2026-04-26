@@ -473,8 +473,9 @@ bolt parses this string enum and maps it to the current pinned Nautilus/Polymark
 
 #### `funder_address`
 
-- type: string
-- required: yes for Polymarket execution when the signature path requires it
+- type: optional string
+- required: yes for Polymarket execution when `signature_type` is `poly_proxy` or `poly_gnosis_safe`
+- allowed absent for `signature_type = "eoa"`
 - this is a public address, not a secret value
 - it lives in the root venue execution config, not in `[secrets]`
 - zero address is invalid when the selected signature path requires a real funder wallet
@@ -512,6 +513,10 @@ The current schema also requires these pinned adapter fields to be explicit:
 ### `[venues.<identifier>.secrets]`
 
 Presence of `[secrets]` means the venue requires credential resolution.
+The block must be consumed by an adapter in the same venue:
+
+- Polymarket `[secrets]` is allowed only when `[execution]` is present
+- Binance `[secrets]` is allowed only when `[data]` is present
 
 For Polymarket:
 
@@ -549,6 +554,20 @@ For current Binance reference-data use:
 - current allowed value:
   - `mainnet`
 - maps to Nautilus `BinanceDataClientConfig.environment`
+
+##### `base_url_http`
+
+- type: string
+- required: yes
+- maps to Nautilus `BinanceDataClientConfig.base_url_http`
+- explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance HTTP URL
+
+##### `base_url_ws`
+
+- type: string
+- required: yes
+- maps to Nautilus `BinanceDataClientConfig.base_url_ws`
+- explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance WebSocket URL
 
 ##### `instrument_status_poll_seconds`
 
@@ -880,10 +899,15 @@ Must fail if:
 - a venue reference points to a missing venue
 - a strategy `venue` points to a data-only venue
 - a reference-data venue points to a venue without `[data]`
+- more than one `[venues.<identifier>]` block declares the same `kind` in the current one-venue-per-kind slice
+- a `[secrets]` block is present without the same venue-kind's consuming adapter block
+- an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
 - two listed strategy files declare the same `order_id_tag`
 - two configured targets declare the same `configured_target_id`
 - `signature_type` is not one of the allowed strings
+- Polymarket `signature_type = "poly_proxy"` or `signature_type = "poly_gnosis_safe"` is missing a non-zero `funder_address`
+- Polymarket `funder_address`, when present, is not a `0x`-prefixed 40-hex-character non-zero EVM address
 - `target.kind = "rotating_market"` includes fields not valid for rotating-market targets
 - `target.kind = "instrument"` is selected before instrument targets are added by a future contract slice
 - `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
@@ -902,7 +926,7 @@ Live validation behavior, fatal-vs-warning classification, and the full failure-
 ## 9. Canonical Example: Minimal Live-Trading Pair
 
 This example is structural.
-It is not live-valid until the operator supplies real paths, SSM parameters, account identifiers, wallet addresses, writable directories, and venue credentials.
+It is not live-valid until the operator supplies real paths, SSM parameters, account identifiers, wallet addresses, a writable catalog directory, and venue credentials.
 
 ### Root
 

@@ -1116,7 +1116,7 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     assert!(
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[secrets]")
-            && m.contains("neither [data] nor [execution] is configured")),
+            && m.contains("no [data] block is configured")),
         "expected orphan-secrets validation error, got: {messages:#?}"
     );
 }
@@ -1155,6 +1155,25 @@ fn rejects_polymarket_funder_address_with_invalid_evm_syntax() {
             && m.contains("funder_address")
             && m.contains("not a valid EVM public address")),
         "expected EVM-syntax validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_funder_address_zero_address() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"",
+        "funder_address = \"0x0000000000000000000000000000000000000000\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder_address")
+            && m.contains("zero address")),
+        "expected zero-address validation error, got: {messages:#?}"
     );
 }
 
@@ -1214,6 +1233,23 @@ fn rejects_binance_data_zero_instrument_status_poll_seconds() {
             && m.contains("instrument_status_poll_seconds")
             && m.contains("must be a positive integer")),
         "expected positive-integer poll-interval validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_data_only_venue_with_secrets_block() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let execution_block = "[venues.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
+    let mutated = replace_in_fixture_root(execution_block, "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("[secrets]")
+            && m.contains("[execution]")),
+        "expected Polymarket data-only secrets validation error, got: {messages:#?}"
     );
 }
 

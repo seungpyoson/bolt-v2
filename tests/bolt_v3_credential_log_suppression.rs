@@ -87,6 +87,7 @@ fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams()
     // forbidden modules; the filter must drop every one of them.
     let build_result =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver);
+    let build_error = build_result.as_ref().err().map(ToString::to_string);
 
     // Drop the node (if any) before restoring fds so the LogGuard
     // owned by the LiveNode flushes any buffered NT log lines into
@@ -124,6 +125,11 @@ fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams()
     stderr_capture
         .read_to_string(&mut stderr_text)
         .expect("stderr read");
+
+    assert!(
+        build_error.is_none(),
+        "v3 LiveNode build must succeed so this test reaches NT credential constructors; error={build_error:?}"
+    );
 
     for marker in FORBIDDEN_CREDENTIAL_MARKERS {
         assert!(

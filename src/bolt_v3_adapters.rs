@@ -43,7 +43,7 @@ use crate::{
 /// section is present in the validated config.
 #[derive(Clone, Debug)]
 pub enum BoltV3VenueAdapterConfig {
-    Polymarket(BoltV3PolymarketAdapters),
+    Polymarket(Box<BoltV3PolymarketAdapters>),
     Binance(BoltV3BinanceAdapters),
 }
 
@@ -192,9 +192,9 @@ fn map_polymarket_venue(
         }
         None => None,
     };
-    Ok(BoltV3VenueAdapterConfig::Polymarket(
+    Ok(BoltV3VenueAdapterConfig::Polymarket(Box::new(
         BoltV3PolymarketAdapters { data, execution },
-    ))
+    )))
 }
 
 fn map_binance_venue(

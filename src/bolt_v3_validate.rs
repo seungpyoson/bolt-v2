@@ -170,10 +170,11 @@ fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
     }
     // The current bolt-v3 scope is one venue per kind. Multi-venue
     // routing (multiple keyed Polymarket or Binance venues) is not yet
-    // covered by the NT venue-routing path or by bolt-v3 strategy
-    // validation, so we fail closed rather than silently let two
-    // venues of the same kind compete for the same NT registration
-    // namespace.
+    // covered by the NT typed-venue routing path or by bolt-v3 strategy
+    // validation. NT client registration names can differ, but engine
+    // instrument subscriptions still key on typed venues such as
+    // POLYMARKET/BINANCE, so we fail closed until that routing is
+    // explicitly designed.
     let mut kind_counts: BTreeMap<&'static str, Vec<&str>> = BTreeMap::new();
     for (key, venue) in venues {
         kind_counts
@@ -237,17 +238,14 @@ fn validate_polymarket_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
         }
     }
     if let Some(secrets) = &venue.secrets {
-        // An orphan `[secrets]` block (no `[data]` and no `[execution]`)
-        // has no consumer in the current bolt-v3 scope. The secret-block
-        // requirement exists to gate the env-var blocklist for the
-        // matching adapter; carrying secrets without an adapter means
-        // either the operator forgot to declare the adapter or copied
-        // a stale block. Either way it is a misconfiguration, not a
-        // silent no-op.
-        if venue.data.is_none() && venue.execution.is_none() {
+        // Only Polymarket execution consumes Polymarket credentials in
+        // this slice. A data-only Polymarket venue with `[secrets]`
+        // would carry credential paths that no adapter uses, which is a
+        // misconfiguration rather than a silent no-op.
+        if venue.execution.is_none() {
             errors.push(format!(
-                "venues.{key} (kind=polymarket) declares [secrets] but neither [data] nor [execution] is configured; \
-                 a [secrets] block is only allowed alongside an adapter that consumes it"
+                "venues.{key} (kind=polymarket) declares [secrets] but no [execution] block is configured; \
+                 Polymarket [secrets] are only allowed alongside the execution adapter that consumes them"
             ));
         }
         match secrets.clone().try_into::<PolymarketSecretsConfig>() {
@@ -283,10 +281,10 @@ fn validate_binance_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
         }
     }
     if let Some(secrets) = &venue.secrets {
-        if venue.data.is_none() && venue.execution.is_none() {
+        if venue.data.is_none() {
             errors.push(format!(
-                "venues.{key} (kind=binance) declares [secrets] but neither [data] nor [execution] is configured; \
-                 a [secrets] block is only allowed alongside an adapter that consumes it"
+                "venues.{key} (kind=binance) declares [secrets] but no [data] block is configured; \
+                 Binance [secrets] are only allowed alongside the data adapter that consumes them"
             ));
         }
         match secrets.clone().try_into::<BinanceSecretsConfig>() {
@@ -334,6 +332,9 @@ fn check_evm_address_syntax(value: &str) -> Result<(), &'static str> {
     }
     if !rest.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("must contain only hex characters after `0x`");
+    }
+    if rest.chars().all(|c| c == '0') {
+        return Err("zero address is not allowed");
     }
     Ok(())
 }
@@ -671,12 +672,11 @@ fn validate_archetype_parameters(
     }
     if let (Some(order_target), Some(default_max)) =
         (order_target_decimal.as_ref(), default_max_notional)
+        && order_target > default_max
     {
-        if order_target > default_max {
-            errors.push(format!(
-                "{context}: parameters.order_notional_target ({order_target}) must be <= root risk.default_max_notional_per_order ({default_max})"
-            ));
-        }
+        errors.push(format!(
+            "{context}: parameters.order_notional_target ({order_target}) must be <= root risk.default_max_notional_per_order ({default_max})"
+        ));
     }
 
     errors

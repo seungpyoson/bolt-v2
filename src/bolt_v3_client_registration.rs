@@ -103,7 +103,8 @@ pub fn register_bolt_v3_clients(
     let mut venues = BTreeMap::new();
     for (venue_key, venue) in &adapters.venues {
         let registered = match venue {
-            BoltV3VenueAdapterConfig::Polymarket(BoltV3PolymarketAdapters { data, execution }) => {
+            BoltV3VenueAdapterConfig::Polymarket(inner) => {
+                let BoltV3PolymarketAdapters { data, execution } = inner.as_ref();
                 let mut data_added = false;
                 let mut exec_added = false;
                 if let Some(cfg) = data {
@@ -278,7 +279,7 @@ mod tests {
         let adapters = BoltV3AdapterConfigs {
             venues: BTreeMap::from([(
                 "polymarket_data_only".to_string(),
-                BoltV3VenueAdapterConfig::Polymarket(BoltV3PolymarketAdapters {
+                BoltV3VenueAdapterConfig::Polymarket(Box::new(BoltV3PolymarketAdapters {
                     data: Some(nautilus_polymarket::config::PolymarketDataClientConfig {
                         base_url_http: Some("https://clob.polymarket.com".to_string()),
                         base_url_ws: Some(
@@ -295,7 +296,7 @@ mod tests {
                         new_market_filter: None,
                     }),
                     execution: None,
-                }),
+                })),
             )]),
         };
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), &adapters)

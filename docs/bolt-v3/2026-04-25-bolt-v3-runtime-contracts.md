@@ -112,6 +112,11 @@ Rules:
 
 For every keyed venue which declares a `[secrets]` block, bolt must fail live validation and startup if any canonical credential environment variables for that venue kind are present.
 
+Structural validation also rejects secret blocks that no configured adapter consumes:
+
+- Polymarket `[secrets]` is allowed only alongside `[execution]`
+- Binance `[secrets]` is allowed only alongside `[data]`
+
 For current Polymarket live trading, the forbidden variables are:
 
 - `POLYMARKET_PK`
@@ -1316,10 +1321,10 @@ Runtime rule:
 
 The allow-list must include exactly the paths bolt needs to write:
 
-- log directory
-- state directory
 - catalog directory
 - runtime temporary directory used by the service wrapper
+
+Current bolt-v3 config deliberately does not accept `log_directory` or `state_directory` fields because the pinned NT live API does not expose a supported wiring path for them. They must not appear in the write allow-list until a future slice adds real wiring and tests.
 
 No other write path is allowed.
 

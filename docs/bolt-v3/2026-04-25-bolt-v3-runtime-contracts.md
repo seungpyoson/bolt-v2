@@ -681,6 +681,28 @@ For current Polymarket trading, because the pinned adapter rejects reduce-only o
 - required local rejection reason: `exit_quantity_exceeds_sellable_quantity`
 - in that case, do not submit an order
 
+### 8.5 Strategy modularity boundary
+
+Bolt-v3 must not port the current monolithic strategy shape directly.
+The current `binary_oracle_edge_taker` behavior is the behavioral reference, not the file or module structure to copy.
+
+The strategy actor orchestrates NautilusTrader interaction and runtime state updates.
+It must not own every strategy concern internally.
+
+Pricing, reference-data fusion, market identity, risk and sizing, decision evaluation, and execution mapping must live behind separately testable module boundaries.
+Examples of concerns that belong outside the strategy actor body:
+
+- active market selection, slug / cadence / asset mapping, and instrument identity
+- Chainlink / reference feed handling, fused reference price, staleness, and timestamps
+- strategy input snapshot assembly
+- fair probability, realized volatility, kurtosis adjustment, theta scaling, and uncertainty-band math
+- notional caps, exposure limits, sizing, and forced-flat predicates
+- entry / exit decision evaluation from typed inputs to typed outputs
+- conversion of accepted decisions into NautilusTrader-native order construction inputs
+
+The strategy actor may compose these modules, maintain actor-local runtime state, emit decision evidence, and call the execution boundary.
+It must remain thin enough that pricing, reference data, risk, decision, and execution behavior can be tested without running NautilusTrader.
+
 ## 9. Forensic Event Contract
 
 ### 9.1 Principle

@@ -83,6 +83,16 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 - implementation status:
   - contract accepted; event-schema and allocation-state tests required
 
+## 6b. Strategy modularity boundary
+
+- invariant:
+  - current strategy behavior is the behavioral reference, not the monolithic file structure to copy
+  - pricing, reference-data fusion, market identity, risk and sizing, decision evaluation, and execution mapping live behind separately testable module boundaries
+- canonical owner:
+  - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 8.5
+- implementation status:
+  - contract accepted; strategy-related implementation slices must preserve thin actor orchestration and module-level tests
+
 ## 7. Target-stack data model
 
 - invariant:

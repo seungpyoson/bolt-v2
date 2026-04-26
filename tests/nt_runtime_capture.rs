@@ -1,5 +1,8 @@
 use std::io::Cursor;
 
+use arrow::array::{
+    Array, FixedSizeBinaryArray, RecordBatch, StringArray, UInt8Array, UInt64Array,
+};
 use arrow::ipc::reader::StreamReader;
 use bolt_v2::{
     execution_state::{OrderEventRow, PositionEventRow},
@@ -8,27 +11,35 @@ use bolt_v2::{
 mod support;
 use nautilus_common::{
     enums::Environment,
+    messages::system::TradingStateChanged,
     msgbus::{
-        publish_account_state, publish_any, publish_bar, publish_funding_rate, publish_order_event,
-        publish_position_event, publish_quote, switchboard,
+        publish_account_state, publish_any, publish_bar, publish_deltas, publish_depth10,
+        publish_funding_rate, publish_index_price, publish_mark_price, publish_order_event,
+        publish_position_event, publish_quote, publish_trade, switchboard,
     },
 };
 use nautilus_core::UUID4;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    data::{Bar, FundingRateUpdate, InstrumentStatus, QuoteTick, bar::BarType},
+    data::{
+        Bar, BookOrder, FundingRateUpdate, IndexPriceUpdate, InstrumentClose, InstrumentStatus,
+        MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+        bar::BarType,
+    },
     enums::{
-        AccountType, BarAggregation, LiquiditySide, MarketStatusAction, OrderSide, OrderType,
-        PositionAdjustmentType, PriceType,
+        AccountType, AggressorSide, AssetClass, BarAggregation, BookAction, InstrumentCloseType,
+        LiquiditySide, MarketStatusAction, OrderSide, OrderType, PositionAdjustmentType, PriceType,
+        TradingState,
     },
     events::{
         AccountState, OrderEventAny, OrderFilled, OrderSubmitted, PositionAdjusted, PositionEvent,
         PositionOpened,
     },
     identifiers::{
-        AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
+        AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol, TradeId, TraderId,
         VenueOrderId,
     },
+    instruments::{InstrumentAny, binary_option::BinaryOption},
     types::{Currency, Money, Price, Quantity},
 };
 use support::repo_path;
@@ -50,6 +61,107 @@ fn collect_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
 
     paths
+}
+
+fn find_per_instrument_feather_file(
+    spool_root: &std::path::Path,
+    type_dir: &str,
+    instrument_id: &str,
+) -> std::path::PathBuf {
+    let all_paths = collect_paths(spool_root);
+    all_paths
+        .iter()
+        .find(|path| {
+            path.extension().and_then(|ext| ext.to_str()) == Some("feather")
+                && path
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    == Some(instrument_id)
+                && path
+                    .parent()
+                    .and_then(|parent| parent.parent())
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    == Some(type_dir)
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!("expected feather file at {type_dir}/{instrument_id}; spool tree: {all_paths:?}")
+        })
+}
+
+fn assert_schema_instrument_id(file: &std::path::Path, expected_instrument_id: &str) {
+    let bytes = std::fs::read(file).unwrap();
+    assert!(
+        !bytes.is_empty(),
+        "feather file should not be empty: {file:?}"
+    );
+    let reader = StreamReader::try_new(Cursor::new(bytes), None).unwrap();
+    let metadata = reader.schema().metadata().clone();
+    assert_eq!(
+        metadata.get("instrument_id").map(String::as_str),
+        Some(expected_instrument_id),
+        "expected metadata instrument_id={expected_instrument_id} in {file:?}"
+    );
+}
+
+fn read_record_batches(file: &std::path::Path) -> Vec<RecordBatch> {
+    let bytes = std::fs::read(file).unwrap();
+    let reader = StreamReader::try_new(Cursor::new(bytes), None).unwrap();
+    reader
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decode feather record batches")
+}
+
+fn read_jsonl_values(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn fixed_binary_col(batch: &RecordBatch, name: &str) -> Vec<Vec<u8>> {
+    let array = batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing FixedSizeBinary column {name}"))
+        .as_any()
+        .downcast_ref::<FixedSizeBinaryArray>()
+        .unwrap_or_else(|| panic!("column {name} is not FixedSizeBinaryArray"));
+    (0..array.len()).map(|i| array.value(i).to_vec()).collect()
+}
+
+fn u64_col(batch: &RecordBatch, name: &str) -> Vec<u64> {
+    let array = batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing UInt64 column {name}"))
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap_or_else(|| panic!("column {name} is not UInt64Array"));
+    (0..array.len()).map(|i| array.value(i)).collect()
+}
+
+fn u8_col(batch: &RecordBatch, name: &str) -> Vec<u8> {
+    let array = batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing UInt8 column {name}"))
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .unwrap_or_else(|| panic!("column {name} is not UInt8Array"));
+    (0..array.len()).map(|i| array.value(i)).collect()
+}
+
+fn str_col(batch: &RecordBatch, name: &str) -> Vec<String> {
+    let array = batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing Utf8 column {name}"))
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap_or_else(|| panic!("column {name} is not StringArray"));
+    (0..array.len())
+        .map(|i| array.value(i).to_string())
+        .collect()
 }
 
 #[test]
@@ -84,7 +196,7 @@ async fn rejects_non_local_catalog_paths() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn accepts_valid_contract_path_on_sink_startup() {
+async fn accepts_valid_contract_path_on_capture_startup() {
     let local = LocalSet::new();
 
     local
@@ -111,7 +223,7 @@ async fn accepts_valid_contract_path_on_sink_startup() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rejects_missing_contract_path_on_sink_startup() {
+async fn rejects_missing_contract_path_on_capture_startup() {
     let local = LocalSet::new();
 
     local
@@ -140,7 +252,7 @@ async fn rejects_missing_contract_path_on_sink_startup() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rejects_invalid_contract_path_on_sink_startup() {
+async fn rejects_invalid_contract_path_on_capture_startup() {
     let local = LocalSet::new();
 
     local
@@ -173,7 +285,7 @@ async fn rejects_invalid_contract_path_on_sink_startup() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn captures_broad_nt_runtime_sidecars_outside_hot_path() {
+async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
     let local = LocalSet::new();
 
     local
@@ -249,20 +361,38 @@ async fn captures_broad_nt_runtime_sidecars_outside_hot_path() {
             guards.shutdown().await.unwrap();
 
             let spool_root = catalog_root.join("live").join(instance_id);
-            let status_text =
-                std::fs::read_to_string(spool_root.join("status").join("instrument_status.jsonl"))
-                    .unwrap();
-            assert!(status_text.contains("halted by venue"));
+            let status_rows =
+                read_jsonl_values(&spool_root.join("status").join("instrument_status.jsonl"));
+            assert_eq!(status_rows.len(), 1);
+            let status_row = &status_rows[0];
+            assert_eq!(status_row["instrument_id"], "0xbroad-123456789.POLYMARKET");
+            assert_eq!(status_row["action"], "PAUSE");
+            assert_eq!(status_row["reason"], "halted by venue");
+            assert_eq!(status_row["is_trading"], false);
+            assert_eq!(status_row["ts_event"], 2);
+            assert_eq!(status_row["ts_init"], 2);
 
-            let account_text =
-                std::fs::read_to_string(spool_root.join("accounts").join("account_state.jsonl"))
-                    .unwrap();
-            assert!(account_text.contains("POLYMARKET-001"));
+            let account_rows =
+                read_jsonl_values(&spool_root.join("accounts").join("account_state.jsonl"));
+            assert_eq!(account_rows.len(), 1);
+            let account_row = &account_rows[0];
+            assert_eq!(account_row["account_id"], "POLYMARKET-001");
+            assert_eq!(account_row["account_type"], "BETTING");
+            assert_eq!(account_row["base_currency"], "USD");
+            assert_eq!(account_row["is_reported"], true);
+            assert_eq!(account_row["ts_event"], 3);
+            assert_eq!(account_row["ts_init"], 3);
 
-            let funding_text =
-                std::fs::read_to_string(spool_root.join("funding_rates").join("updates.jsonl"))
-                    .unwrap();
-            assert!(funding_text.contains("0xbroad-123456789.POLYMARKET"));
+            let funding_rows =
+                read_jsonl_values(&spool_root.join("funding_rates").join("updates.jsonl"));
+            assert_eq!(funding_rows.len(), 1);
+            let funding_row = &funding_rows[0];
+            assert_eq!(funding_row["instrument_id"], "0xbroad-123456789.POLYMARKET");
+            assert_eq!(funding_row["rate"], "0.0001");
+            assert_eq!(funding_row["interval"], 60);
+            assert_eq!(funding_row["next_funding_ns"], 4);
+            assert_eq!(funding_row["ts_event"], 4);
+            assert_eq!(funding_row["ts_init"], 4);
         })
         .await;
 }
@@ -355,7 +485,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn captures_execution_state_sidecars_for_order_and_position_events() {
+async fn captures_execution_state_jsonl_records_for_order_and_position_events() {
     let local = LocalSet::new();
 
     local
@@ -592,6 +722,26 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
                 metadata.get("instrument_id").map(String::as_str),
                 Some("0xabc-123456789.POLYMARKET")
             );
+
+            let batches = read_record_batches(quote_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            let schema = batch.schema();
+            let column_names: Vec<&str> =
+                schema.fields().iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(
+                column_names,
+                vec![
+                    "bid_price",
+                    "ask_price",
+                    "bid_size",
+                    "ask_size",
+                    "ts_event",
+                    "ts_init"
+                ],
+            );
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
         })
         .await;
 }
@@ -678,6 +828,41 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
 
             assert_eq!(metadata.get("instrument_id"), None);
             assert_eq!(metadata.get("bar_type"), None);
+
+            let batches = read_record_batches(bar_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            let schema = batch.schema();
+            let column_names: Vec<&str> =
+                schema.fields().iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(
+                column_names,
+                vec![
+                    "open", "high", "low", "close", "volume", "ts_event", "ts_init"
+                ],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "open"),
+                vec![Price::from("0.40").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "high"),
+                vec![Price::from("0.55").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "low"),
+                vec![Price::from("0.35").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "close"),
+                vec![Price::from("0.50").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "volume"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
         })
         .await;
 }
@@ -745,6 +930,631 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
 
             assert!(feather_files.is_empty(), "spool tree: {all_paths:?}");
             assert!(!status_path.exists(), "spool tree: {all_paths:?}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_trading_state_changed_to_risk_jsonl_record() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let event = TradingStateChanged::new(
+                    TraderId::from("TESTER-001"),
+                    TradingState::Halted,
+                    Default::default(),
+                    UUID4::default(),
+                    7.into(),
+                    8.into(),
+                );
+                publish_any("events.risk".into(), &event);
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let risk_path = spool_root.join("risk").join("trading_state_changed.jsonl");
+            let risk_text = std::fs::read_to_string(&risk_path).unwrap();
+            let lines: Vec<&str> = risk_text.lines().collect();
+            assert_eq!(lines.len(), 1, "{risk_text}");
+
+            let row: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+            assert_eq!(row["type"], "TradingStateChanged");
+            assert_eq!(row["trader_id"], "TESTER-001");
+            assert_eq!(row["state"], "HALTED");
+            assert_eq!(row["ts_event"], 7);
+            assert_eq!(row["ts_init"], 8);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_trade_tick_to_per_instrument_feather_spool() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xtrade-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let trade = TradeTick::new(
+                    instrument_id,
+                    Price::from("0.50"),
+                    Quantity::from("100"),
+                    AggressorSide::Buyer,
+                    TradeId::from("T-T01"),
+                    1.into(),
+                    1.into(),
+                );
+                publish_trade(switchboard::get_trades_topic(instrument_id), &trade);
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let trade_file = find_per_instrument_feather_file(
+                &spool_root,
+                "trades",
+                "0xtrade-123456789.POLYMARKET",
+            );
+            assert_schema_instrument_id(&trade_file, "0xtrade-123456789.POLYMARKET");
+
+            let batches = read_record_batches(&trade_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            assert_eq!(str_col(batch, "trade_id"), vec!["T-T01".to_string()]);
+            // AggressorSide::Buyer = 1
+            assert_eq!(u8_col(batch, "aggressor_side"), vec![1u8]);
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_order_book_deltas_to_per_instrument_feather_spool() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xdeltas-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let bid = BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from("0.49"),
+                    Quantity::from("100"),
+                    1,
+                );
+                let ask = BookOrder::new(
+                    OrderSide::Sell,
+                    Price::from("0.51"),
+                    Quantity::from("100"),
+                    2,
+                );
+                let bid_delta = OrderBookDelta::new(
+                    instrument_id,
+                    BookAction::Add,
+                    bid,
+                    0,
+                    1,
+                    1.into(),
+                    1.into(),
+                );
+                let ask_delta = OrderBookDelta::new(
+                    instrument_id,
+                    BookAction::Add,
+                    ask,
+                    0,
+                    2,
+                    2.into(),
+                    2.into(),
+                );
+                let deltas = OrderBookDeltas::new(instrument_id, vec![bid_delta, ask_delta]);
+                publish_deltas(switchboard::get_book_deltas_topic(instrument_id), &deltas);
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let deltas_file = find_per_instrument_feather_file(
+                &spool_root,
+                "order_book_deltas",
+                "0xdeltas-123456789.POLYMARKET",
+            );
+            assert_schema_instrument_id(&deltas_file, "0xdeltas-123456789.POLYMARKET");
+
+            // Each FeatherWriter::write() produces its own RecordBatch (no aggregation
+            // across calls), so the two deltas land in two single-row batches.
+            let batches = read_record_batches(&deltas_file);
+            assert_eq!(batches.len(), 2);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
+
+            // Bid delta — first write
+            let bid_batch = &batches[0];
+            // BookAction::Add = 1, OrderSide::Buy = 1
+            assert_eq!(u8_col(bid_batch, "action"), vec![1u8]);
+            assert_eq!(u8_col(bid_batch, "side"), vec![1u8]);
+            assert_eq!(u64_col(bid_batch, "order_id"), vec![1u64]);
+            assert_eq!(u64_col(bid_batch, "sequence"), vec![1u64]);
+            assert_eq!(u64_col(bid_batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(bid_batch, "ts_init"), vec![1u64]);
+
+            // Ask delta — second write
+            let ask_batch = &batches[1];
+            // OrderSide::Sell = 2
+            assert_eq!(u8_col(ask_batch, "action"), vec![1u8]);
+            assert_eq!(u8_col(ask_batch, "side"), vec![2u8]);
+            assert_eq!(u64_col(ask_batch, "order_id"), vec![2u64]);
+            assert_eq!(u64_col(ask_batch, "sequence"), vec![2u64]);
+            assert_eq!(u64_col(ask_batch, "ts_event"), vec![2u64]);
+            assert_eq!(u64_col(ask_batch, "ts_init"), vec![2u64]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xdepth-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let bid = BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from("0.49"),
+                    Quantity::from("100"),
+                    1,
+                );
+                let ask = BookOrder::new(
+                    OrderSide::Sell,
+                    Price::from("0.51"),
+                    Quantity::from("100"),
+                    2,
+                );
+                let depth = OrderBookDepth10::new(
+                    instrument_id,
+                    [bid; 10],
+                    [ask; 10],
+                    [1u32; 10],
+                    [1u32; 10],
+                    0,
+                    1,
+                    1.into(),
+                    1.into(),
+                );
+                publish_depth10(switchboard::get_book_depth10_topic(instrument_id), &depth);
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let depth_file = find_per_instrument_feather_file(
+                &spool_root,
+                "order_book_depths",
+                "0xdepth-123456789.POLYMARKET",
+            );
+            assert_schema_instrument_id(&depth_file, "0xdepth-123456789.POLYMARKET");
+
+            let batches = read_record_batches(&depth_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            let schema = batch.schema();
+            let column_names: Vec<&str> =
+                schema.fields().iter().map(|f| f.name().as_str()).collect();
+            // Depth10 expands each side/level into its own column (0..9).
+            assert!(column_names.contains(&"bid_price_0"));
+            assert!(column_names.contains(&"bid_price_9"));
+            assert!(column_names.contains(&"ask_size_0"));
+            assert!(column_names.contains(&"ask_count_9"));
+            assert_eq!(u8_col(batch, "flags"), vec![0u8]);
+            assert_eq!(u64_col(batch, "sequence"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_mark_price_update_to_per_instrument_feather_spool() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xmark-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let mark =
+                    MarkPriceUpdate::new(instrument_id, Price::from("0.50"), 1.into(), 1.into());
+                publish_mark_price(switchboard::get_mark_price_topic(instrument_id), &mark);
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let mark_file = find_per_instrument_feather_file(
+                &spool_root,
+                "mark_prices",
+                "0xmark-123456789.POLYMARKET",
+            );
+            assert_schema_instrument_id(&mark_file, "0xmark-123456789.POLYMARKET");
+
+            let batches = read_record_batches(&mark_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            let schema = batch.schema();
+            let column_names: Vec<&str> =
+                schema.fields().iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(column_names, vec!["value", "ts_event", "ts_init"]);
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_index_price_update_to_per_instrument_feather_spool() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xindex-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let index =
+                    IndexPriceUpdate::new(instrument_id, Price::from("0.50"), 1.into(), 1.into());
+                publish_index_price(switchboard::get_index_price_topic(instrument_id), &index);
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let index_file = find_per_instrument_feather_file(
+                &spool_root,
+                "index_prices",
+                "0xindex-123456789.POLYMARKET",
+            );
+            assert_schema_instrument_id(&index_file, "0xindex-123456789.POLYMARKET");
+
+            let batches = read_record_batches(&index_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            let schema = batch.schema();
+            let column_names: Vec<&str> =
+                schema.fields().iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(column_names, vec!["value", "ts_event", "ts_init"]);
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_instrument_any_to_per_instrument_feather_spool() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xinstr-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let binary = BinaryOption::new(
+                    instrument_id,
+                    Symbol::from("0xinstr"),
+                    AssetClass::Alternative,
+                    Currency::USDC(),
+                    0.into(),
+                    0.into(),
+                    3,
+                    2,
+                    Price::from("0.001"),
+                    Quantity::from("0.01"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    1.into(),
+                    1.into(),
+                );
+                let instrument = InstrumentAny::BinaryOption(binary);
+                publish_any(
+                    switchboard::get_instrument_topic(instrument_id),
+                    &instrument,
+                );
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let instrument_file = find_per_instrument_feather_file(
+                &spool_root,
+                "instruments",
+                "0xinstr-123456789.POLYMARKET",
+            );
+            assert_schema_instrument_id(&instrument_file, "0xinstr-123456789.POLYMARKET");
+
+            let batches = read_record_batches(&instrument_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            assert_eq!(
+                str_col(batch, "id"),
+                vec!["0xinstr-123456789.POLYMARKET".to_string()]
+            );
+            assert_eq!(str_col(batch, "raw_symbol"), vec!["0xinstr".to_string()]);
+            // BinaryOption encoder maps AssetClass::Alternative to the literal "Alternative"
+            // (CamelCase), not the strum SCREAMING_SNAKE_CASE form.
+            assert_eq!(
+                str_col(batch, "asset_class"),
+                vec!["Alternative".to_string()]
+            );
+            assert_eq!(u8_col(batch, "price_precision"), vec![3u8]);
+            assert_eq!(u8_col(batch, "size_precision"), vec![2u8]);
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_instrument_close_to_per_instrument_feather_spool() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xclose-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let close = InstrumentClose::new(
+                    instrument_id,
+                    Price::from("0.50"),
+                    InstrumentCloseType::EndOfSession,
+                    1.into(),
+                    1.into(),
+                );
+                publish_any(
+                    switchboard::get_instrument_close_topic(instrument_id),
+                    &close,
+                );
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let close_file = find_per_instrument_feather_file(
+                &spool_root,
+                "instrument_closes",
+                "0xclose-123456789.POLYMARKET",
+            );
+            assert_schema_instrument_id(&close_file, "0xclose-123456789.POLYMARKET");
+
+            let batches = read_record_batches(&close_file);
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            let batch = &batches[0];
+            let schema = batch.schema();
+            let column_names: Vec<&str> =
+                schema.fields().iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(
+                column_names,
+                vec!["close_price", "close_type", "ts_event", "ts_init"],
+            );
+            // InstrumentCloseType::EndOfSession = 1
+            assert_eq!(u8_col(batch, "close_type"), vec![1u8]);
+            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
+            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
         })
         .await;
 }

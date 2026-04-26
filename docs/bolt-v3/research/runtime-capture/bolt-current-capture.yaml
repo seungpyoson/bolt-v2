@@ -1,0 +1,157 @@
+# Compact coverage map of NT runtime capture in bolt-v2.
+# Source files inspected:
+#   src/nt_runtime_capture.rs
+#   tests/nt_runtime_capture.rs
+#
+# Spool root: <catalog_path>/live/<instance_id>/
+# Per-instrument Feather streams land under <stream>/<instrument_id>/*.feather
+# (driven by per_instrument_stream_types()). Bars stay flat as bars_*.feather.
+# JSONL captures are appended via JsonlAppender.
+captured_streams:
+  - stream: quotes
+    nt_message_type: nautilus_model::data::QuoteTick
+    subscription_or_topic: subscribe_quotes("data.quotes.*.*")
+    storage_path: live/<instance_id>/quotes/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage:
+      - captures_typed_quote_and_close_status_and_flushes_on_shutdown
+      - writes_quote_spool_with_per_instrument_layout_and_metadata
+    missing_assertions:
+      - Feather record payload (bid/ask price, sizes, ts_event/ts_init) is never decoded and compared
+      - Only schema metadata "instrument_id" is asserted; no row count or field-level check
+
+  - stream: trades
+    nt_message_type: nautilus_model::data::TradeTick
+    subscription_or_topic: subscribe_trades("data.trades.*.*")
+    storage_path: live/<instance_id>/trades/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage: []
+    missing_assertions:
+      - No test publishes a TradeTick; subscription, layout, and Feather payload are entirely unverified
+
+  - stream: bars
+    nt_message_type: nautilus_model::data::Bar
+    subscription_or_topic: subscribe_bars("data.bars.*")
+    storage_path: live/<instance_id>/bars_*.feather   # flat legacy contract (excluded from per_instrument_stream_types)
+    storage_format: Feather
+    test_coverage:
+      - keeps_bars_on_flat_legacy_spool_contract
+    missing_assertions:
+      - Bar payload (open/high/low/close/volume, bar_type) never decoded; only path layout + absence of metadata keys asserted
+      - No coverage that two distinct bar_types for one instrument do not collide (the very motivation for the flat contract)
+
+  - stream: order_book_deltas
+    nt_message_type: nautilus_model::data::OrderBookDeltas (written as individual OrderBookDelta rows)
+    subscription_or_topic: subscribe_book_deltas("data.book.deltas.*.*")
+    storage_path: live/<instance_id>/order_book_deltas/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage: []
+    missing_assertions:
+      - No test publishes OrderBookDeltas; the deltas-fan-out write loop is unverified
+      - No assertion that an empty-deltas batch is a no-op vs. a flush
+
+  - stream: order_book_depth10
+    nt_message_type: nautilus_model::data::OrderBookDepth10
+    subscription_or_topic: subscribe_book_depth10("data.book.depth10.*.*")
+    storage_path: live/<instance_id>/order_book_depths/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage: []
+    missing_assertions:
+      - No test publishes OrderBookDepth10; subscription wiring and Feather write are unverified
+
+  - stream: mark_prices
+    nt_message_type: nautilus_model::data::MarkPriceUpdate
+    subscription_or_topic: subscribe_mark_prices("data.mark_prices.*.*")
+    storage_path: live/<instance_id>/mark_prices/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage: []
+    missing_assertions:
+      - No test publishes a MarkPriceUpdate; subscription and Feather write are unverified
+
+  - stream: index_prices
+    nt_message_type: nautilus_model::data::IndexPriceUpdate
+    subscription_or_topic: subscribe_index_prices("data.index_prices.*.*")
+    storage_path: live/<instance_id>/index_prices/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage: []
+    missing_assertions:
+      - No test publishes an IndexPriceUpdate; subscription and Feather write are unverified
+
+  - stream: funding_rates
+    nt_message_type: nautilus_model::data::FundingRateUpdate
+    subscription_or_topic: subscribe_funding_rates("data.funding_rates.*.*")
+    storage_path: live/<instance_id>/funding_rates/updates.jsonl
+    storage_format: JSONL
+    test_coverage:
+      - captures_broad_nt_runtime_jsonl_records_outside_hot_path
+    missing_assertions:
+      - Only a substring match on instrument_id; rate value, next_funding_ns, ts_event, ts_init are not asserted
+      - No assertion of single-line-per-event or JSON shape
+
+  - stream: instruments
+    nt_message_type: nautilus_model::instruments::InstrumentAny
+    subscription_or_topic: subscribe_instruments("data.instrument.*.*")  # registered via subscribe_any with downcast
+    storage_path: live/<instance_id>/instruments/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage: []
+    missing_assertions:
+      - No test publishes an InstrumentAny; the downcast branch in the Any handler is never exercised
+      - write_instrument code path is entirely uncovered
+
+  - stream: instrument_closes
+    nt_message_type: nautilus_model::data::close::InstrumentClose
+    subscription_or_topic: subscribe_instrument_close("data.close.*.*")  # registered via subscribe_any with downcast
+    storage_path: live/<instance_id>/instrument_closes/<instrument_id>/*.feather
+    storage_format: Feather
+    test_coverage: []
+    missing_assertions:
+      - The "close" in `captures_typed_quote_and_close_status_...` is a MarketStatusAction::Close on InstrumentStatus, NOT an InstrumentClose data event — so InstrumentClose is uncovered
+      - No assertion that the downcast branch ignores non-InstrumentClose payloads
+
+  - stream: instrument_statuses
+    nt_message_type: nautilus_model::data::InstrumentStatus
+    subscription_or_topic: subscribe_any("data.status.*.*")  # downcast to InstrumentStatus
+    storage_path: live/<instance_id>/status/instrument_status.jsonl
+    storage_format: JSONL
+    test_coverage:
+      - captures_broad_nt_runtime_jsonl_records_outside_hot_path
+      - captures_typed_quote_and_close_status_and_flushes_on_shutdown
+      - does_not_persist_startup_buffer_if_running_was_never_reached  # negative case
+    missing_assertions:
+      - Only substring matches ("halted by venue", instrument_id); MarketStatusAction, ts_event, ts_init, trading/halted flags not field-asserted
+      - No assertion that the downcast Any handler ignores non-InstrumentStatus payloads
+
+  - stream: order_events
+    nt_message_type: nautilus_model::events::OrderEventAny
+    subscription_or_topic: subscribe_order_events("events.order.*")
+    storage_path: live/<instance_id>/order_events/events.jsonl   # via execution_state::order_events_path
+    storage_format: JSONL
+    test_coverage:
+      - captures_execution_state_jsonl_records_for_order_and_position_events
+    missing_assertions:
+      - Only Submitted+Filled covered; Accepted/Canceled/Rejected/Expired/Triggered/Updated/Denied/etc. variants are unexercised
+      - Filled fee/commission, last_qty, last_px, liquidity_side, ts_event/ts_init not asserted on the row
+      - No assertion that order_event_row errors propagate as record_failure
+
+  - stream: position_events
+    nt_message_type: nautilus_model::events::PositionEvent
+    subscription_or_topic: subscribe_position_events("events.position.*")
+    storage_path: live/<instance_id>/position_events/events.jsonl   # via execution_state::position_events_path
+    storage_format: JSONL
+    test_coverage:
+      - captures_execution_state_jsonl_records_for_order_and_position_events
+    missing_assertions:
+      - Only PositionOpened+PositionAdjusted covered; PositionChanged and PositionClosed variants unexercised
+      - signed_qty, avg_px_open, last_qty, last_px, ts_event/ts_init not asserted on the row
+      - No assertion that position_event_row errors propagate as record_failure
+
+  - stream: account_states
+    nt_message_type: nautilus_model::events::AccountState
+    subscription_or_topic: subscribe_account_state("events.account.*")
+    storage_path: live/<instance_id>/accounts/account_state.jsonl
+    storage_format: JSONL
+    test_coverage:
+      - captures_broad_nt_runtime_jsonl_records_outside_hot_path
+    missing_assertions:
+      - Only substring match on AccountId; account_type, balances, margins, base_currency, reported flag, ts_event, ts_init not asserted
+      - No coverage for AccountState with non-empty balances/margins vectors

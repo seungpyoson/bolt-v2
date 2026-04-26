@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
+use nautilus_common::messages::system::TradingStateChanged;
 use nautilus_common::msgbus::{
     MStr, ShareableMessageHandler, TypedHandler, subscribe_account_state, subscribe_any,
     subscribe_bars, subscribe_book_deltas, subscribe_book_depth10, subscribe_funding_rates,
@@ -59,22 +60,25 @@ struct AnyHandlers {
     instruments: ShareableMessageHandler,
     instrument_closes: ShareableMessageHandler,
     instrument_statuses: ShareableMessageHandler,
+    trading_state_changed: ShareableMessageHandler,
 }
 
-struct SidecarPaths {
+struct JsonlCapturePaths {
     status: PathBuf,
     account_states: PathBuf,
     funding_rates: PathBuf,
     order_events: PathBuf,
     position_events: PathBuf,
+    trading_state_changed: PathBuf,
 }
 
-struct SidecarWriters {
+struct JsonlCaptureWriters {
     status: JsonlAppender,
     account_states: JsonlAppender,
     funding_rates: JsonlAppender,
     order_events: JsonlAppender,
     position_events: JsonlAppender,
+    trading_state_changed: JsonlAppender,
 }
 
 #[derive(Clone)]
@@ -154,6 +158,7 @@ enum CaptureMessage {
     OrderEvent(Box<OrderEventAny>),
     PositionEvent(Box<PositionEvent>),
     AccountState(Box<AccountState>),
+    TradingStateChanged(Box<TradingStateChanged>),
 }
 
 pub struct NtRuntimeCaptureGuards {
@@ -223,6 +228,10 @@ impl NtRuntimeCaptureGuards {
             unsubscribe_instruments(instruments_pattern(), &any.instruments);
             unsubscribe_instrument_close(instrument_closes_pattern(), &any.instrument_closes);
             unsubscribe_any(instrument_statuses_pattern(), &any.instrument_statuses);
+            unsubscribe_any(
+                trading_state_changed_events_pattern(),
+                &any.trading_state_changed,
+            );
         }
     }
 }
@@ -285,6 +294,12 @@ fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
 
 fn account_states_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("events.account.*")
+}
+
+fn trading_state_changed_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    // The risk engine publishes the literal topic `events.risk` (not a wildcard subtopic),
+    // so subscribe with the same literal pattern.
+    MStr::pattern("events.risk")
 }
 
 fn per_instrument_stream_types() -> HashSet<String> {
@@ -390,8 +405,8 @@ fn send_capture_message(
 async fn run_capture_worker(
     mut receiver: UnboundedReceiver<CaptureMessage>,
     mut writer: FeatherWriter,
-    mut sidecar_writers: SidecarWriters,
-    sidecar_paths: SidecarPaths,
+    mut jsonl_writers: JsonlCaptureWriters,
+    jsonl_paths: JsonlCapturePaths,
     failure_state: CaptureFailureState,
 ) -> Result<()> {
     let mut primary_error: Option<anyhow::Error> = None;
@@ -438,7 +453,7 @@ async fn run_capture_worker(
         }
 
         if let Err(error) =
-            write_capture_message(&mut writer, &mut sidecar_writers, &sidecar_paths, message).await
+            write_capture_message(&mut writer, &mut jsonl_writers, &jsonl_paths, message).await
         {
             failure_state.record_failure(error.to_string());
             primary_error = Some(error);
@@ -456,7 +471,7 @@ async fn run_capture_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.status.close() {
+    if let Err(error) = jsonl_writers.status.close() {
         let close_error = anyhow!("Failed to close instrument status JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
@@ -466,7 +481,7 @@ async fn run_capture_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.account_states.close() {
+    if let Err(error) = jsonl_writers.account_states.close() {
         let close_error = anyhow!("Failed to close account state JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
@@ -476,7 +491,7 @@ async fn run_capture_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.funding_rates.close() {
+    if let Err(error) = jsonl_writers.funding_rates.close() {
         let close_error = anyhow!("Failed to close funding rates JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
@@ -486,7 +501,7 @@ async fn run_capture_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.order_events.close() {
+    if let Err(error) = jsonl_writers.order_events.close() {
         let close_error = anyhow!("Failed to close order event JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
@@ -496,8 +511,18 @@ async fn run_capture_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.position_events.close() {
+    if let Err(error) = jsonl_writers.position_events.close() {
         let close_error = anyhow!("Failed to close position event JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = jsonl_writers.trading_state_changed.close() {
+        let close_error = anyhow!("Failed to close TradingStateChanged JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
             primary_error = Some(close_error);
@@ -515,8 +540,8 @@ async fn run_capture_worker(
 
 async fn write_capture_message(
     writer: &mut FeatherWriter,
-    sidecar_writers: &mut SidecarWriters,
-    sidecar_paths: &SidecarPaths,
+    jsonl_writers: &mut JsonlCaptureWriters,
+    jsonl_paths: &JsonlCapturePaths,
     message: CaptureMessage,
 ) -> Result<()> {
     match message {
@@ -553,9 +578,9 @@ async fn write_capture_message(
             .write(price)
             .await
             .map_err(|e| anyhow!("IndexPriceUpdate write failed: {e}")),
-        CaptureMessage::FundingRate(funding_rate) => sidecar_writers
+        CaptureMessage::FundingRate(funding_rate) => jsonl_writers
             .funding_rates
-            .append(&sidecar_paths.funding_rates, &funding_rate)
+            .append(&jsonl_paths.funding_rates, &funding_rate)
             .map_err(|e| anyhow!("FundingRateUpdate JSONL write failed: {e}")),
         CaptureMessage::Instrument(instrument) => writer
             .write_instrument(*instrument)
@@ -565,30 +590,34 @@ async fn write_capture_message(
             .write(close)
             .await
             .map_err(|e| anyhow!("InstrumentClose write failed: {e}")),
-        CaptureMessage::InstrumentStatus(status) => sidecar_writers
+        CaptureMessage::InstrumentStatus(status) => jsonl_writers
             .status
-            .append(&sidecar_paths.status, &status)
+            .append(&jsonl_paths.status, &status)
             .map_err(|e| anyhow!("InstrumentStatus JSONL write failed: {e}")),
         CaptureMessage::OrderEvent(event) => {
             let row = execution_state::order_event_row(&event)
                 .map_err(|e| anyhow!("OrderEvent summary failed: {e}"))?;
-            sidecar_writers
+            jsonl_writers
                 .order_events
-                .append(&sidecar_paths.order_events, &row)
+                .append(&jsonl_paths.order_events, &row)
                 .map_err(|e| anyhow!("OrderEvent JSONL write failed: {e}"))
         }
         CaptureMessage::PositionEvent(event) => {
             let row = execution_state::position_event_row(&event)
                 .map_err(|e| anyhow!("PositionEvent summary failed: {e}"))?;
-            sidecar_writers
+            jsonl_writers
                 .position_events
-                .append(&sidecar_paths.position_events, &row)
+                .append(&jsonl_paths.position_events, &row)
                 .map_err(|e| anyhow!("PositionEvent JSONL write failed: {e}"))
         }
-        CaptureMessage::AccountState(state) => sidecar_writers
+        CaptureMessage::AccountState(state) => jsonl_writers
             .account_states
-            .append(&sidecar_paths.account_states, &state)
+            .append(&jsonl_paths.account_states, &state)
             .map_err(|e| anyhow!("AccountState JSONL write failed: {e}")),
+        CaptureMessage::TradingStateChanged(event) => jsonl_writers
+            .trading_state_changed
+            .append(&jsonl_paths.trading_state_changed, &event)
+            .map_err(|e| anyhow!("TradingStateChanged JSONL write failed: {e}")),
     }
 }
 
@@ -614,7 +643,7 @@ pub fn wire_nt_runtime_capture(
     fs::create_dir_all(&spool_root)?;
     let (object_store, base_path, _uri) = create_object_store_from_path(&spool_root, None)?;
     let spool_root_path = PathBuf::from(&spool_root);
-    let sidecar_paths = SidecarPaths {
+    let jsonl_paths = JsonlCapturePaths {
         status: spool_root_path
             .join("status")
             .join("instrument_status.jsonl"),
@@ -622,6 +651,9 @@ pub fn wire_nt_runtime_capture(
         funding_rates: spool_root_path.join("funding_rates").join("updates.jsonl"),
         order_events: execution_state::order_events_path(&spool_root_path),
         position_events: execution_state::position_events_path(&spool_root_path),
+        trading_state_changed: spool_root_path
+            .join("risk")
+            .join("trading_state_changed.jsonl"),
     };
 
     let writer = FeatherWriter::new(
@@ -634,22 +666,23 @@ pub fn wire_nt_runtime_capture(
         Some(flush_interval_ms),
     );
 
-    // Unbounded is intentional: sink handlers must never block the NT message bus.
-    // If the sink falls behind, memory can grow until the process is stopped.
+    // Unbounded is intentional: capture handlers must never block the NT message bus.
+    // If capture falls behind, memory can grow until the process is stopped.
     // This is an accepted Task 3 tradeoff for current local-first Polymarket capture.
     let (sender, receiver) = unbounded_channel();
     let (failure_state, failure_receiver) = CaptureFailureState::new(stop_handle);
     let worker_handle = spawn_local(run_capture_worker(
         receiver,
         writer,
-        SidecarWriters {
+        JsonlCaptureWriters {
             status: JsonlAppender::new(),
             account_states: JsonlAppender::new(),
             funding_rates: JsonlAppender::new(),
             order_events: JsonlAppender::new(),
             position_events: JsonlAppender::new(),
+            trading_state_changed: JsonlAppender::new(),
         },
-        sidecar_paths,
+        jsonl_paths,
         failure_state.clone(),
     ));
     let supervisor_failure_state = failure_state.clone();
@@ -848,6 +881,25 @@ pub fn wire_nt_runtime_capture(
         None,
     );
 
+    let trading_state_changed_sender = sender.clone();
+    let trading_state_changed_failure_state = failure_state.clone();
+    let trading_state_changed =
+        ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
+            if let Some(event) = message.downcast_ref::<TradingStateChanged>() {
+                send_capture_message(
+                    &trading_state_changed_sender,
+                    CaptureMessage::TradingStateChanged(Box::new(event.clone())),
+                    "TradingStateChanged",
+                    &trading_state_changed_failure_state,
+                );
+            }
+        });
+    subscribe_any(
+        trading_state_changed_events_pattern(),
+        trading_state_changed.clone(),
+        None,
+    );
+
     Ok(NtRuntimeCaptureGuards {
         sender: Some(sender),
         supervisor_handle: Some(supervisor_handle),
@@ -868,6 +920,7 @@ pub fn wire_nt_runtime_capture(
             instruments,
             instrument_closes,
             instrument_statuses,
+            trading_state_changed,
         }),
         failure_state,
         failure_receiver: Some(failure_receiver),
@@ -898,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn send_failure_marks_sink_unhealthy() {
+    fn send_failure_marks_capture_unhealthy() {
         let handle = LiveNodeHandle::new();
         let (state, _receiver) = CaptureFailureState::new(handle.clone());
         let (sender, receiver) = unbounded_channel();

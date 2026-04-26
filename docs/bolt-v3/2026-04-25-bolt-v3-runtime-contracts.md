@@ -551,7 +551,7 @@ For the current `binary_oracle_edge_taker`:
 
 Reference-data resolution rule for validation:
 
-- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_identifier` exists in the NautilusTrader instrument cache for the referenced keyed venue
+- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_id` exists in the NautilusTrader instrument cache for the referenced keyed venue
 - `resolvable` does not require receiving a live quote before `just check` completes
 
 ### 7.1 Current `binary_oracle_edge_taker` pricing inputs
@@ -691,6 +691,41 @@ bolt adds only:
 
 - minimal structured strategy-decision events
 - mirrored readable logs
+
+Raw NautilusTrader facts are not re-modeled as bolt facts.
+When NautilusTrader already provides a type, field, enum, identifier, timestamp, order state, report, or lifecycle concept, bolt documentation, emitted evidence, and persisted records use the NautilusTrader name unless the value is a bolt-derived calculation.
+Derived bolt fields must identify the NautilusTrader source fact by identifier, timestamp, and type-specific key sufficient to find the raw record in local evidence.
+
+For every NautilusTrader-owned fact, the canonical evidence name is the pinned Rust API path plus the Rust field or method name.
+This rule applies across all bolt configuration mappings, structured decision events, raw capture records, logs, tests, and docs.
+It is not limited to market data or order identifiers.
+
+Examples are illustrative, not exhaustive:
+
+- `nautilus_model::identifiers::InstrumentId`
+- `nautilus_model::data::QuoteTick::instrument_id`
+- `nautilus_model::data::QuoteTick::ts_event`
+- `nautilus_model::events::order::OrderEventAny::venue_order_id()`
+- `nautilus_model::reports::OrderStatusReport`
+
+Configuration may use the corresponding snake-case field key only when it maps one-to-one to that NautilusTrader Rust name.
+For example, a TOML `instrument_id` field maps to `nautilus_model::identifiers::InstrumentId`.
+Aliases such as `instrument_identifier`, `venue_order_identifier`, or renamed quote timestamps are forbidden for NautilusTrader-owned facts.
+
+Before implementation is considered complete, every structured decision-event field and every TOML field that represents a NautilusTrader-owned fact must be audited against the pinned NautilusTrader Rust API path.
+Fields that fail the one-to-one naming rule must be renamed before launch unless they are explicitly documented as bolt-derived calculations or venue/product facts not modeled by NautilusTrader.
+
+Save broadly, decide narrowly:
+
+- for every configured venue, target, and instrument that bolt activates, bolt subscribes to every NautilusTrader data, execution, order, position, account, report, and lifecycle stream exposed by the pinned Rust APIs for that activated scope
+- if the pinned adapter does not expose a stream, the stream is recorded as unavailable evidence rather than silently ignored
+- local evidence captures every NautilusTrader fact that reaches the live node through those broad subscriptions, and every NautilusTrader fact bolt emits, submits, or reads
+- raw capture preserves NautilusTrader-native names, values, timestamps, identifiers, and event/report boundaries
+- broad subscription and raw capture are outside the submit-critical hot path
+- hot-path strategy decisions read only the minimal NautilusTrader cache, portfolio, risk, quote, book, clock, and configuration facts required by the current decision contract
+- structured decision events stay compact and contain only strategy decisions, mechanical classifications, and derived fields needed to explain a decision
+- structured decision events must not be the only owner of a raw NautilusTrader fact used by a decision
+- raw capture is evidence and replay material, not submit authority; submit authority remains NautilusTrader cache, portfolio, risk, execution, and venue-confirmed state
 
 There is no generic event framework.
 
@@ -892,7 +927,7 @@ For the current `binary_oracle_edge_taker`, `archetype_metrics` must contain:
 - `expected_edge_basis_points`
 - `worst_case_edge_basis_points`
 - `fee_rate_basis_points`
-- `reference_quote_timestamp_milliseconds`
+- `reference_quote_ts_event`
 
 Definitions for the current `binary_oracle_edge_taker` metrics:
 
@@ -909,7 +944,7 @@ Definitions for the current `binary_oracle_edge_taker` metrics:
   - current rule defined in Section 7.3 step 5
 - `fee_rate_basis_points`
   - selected-side fee rate used by Section 7.3
-- `reference_quote_timestamp_milliseconds`
+- `reference_quote_ts_event`
   - `ts_event` of the quote tick which produced `spot_price`
 
 For the current `binary_oracle_edge_taker`, all listed metric keys must be present.
@@ -925,7 +960,7 @@ Required additional fields:
 
 - `order_type`
 - `time_in_force`
-- `instrument_identifier`
+- `instrument_id`
 - `side`
 - `price`
 - `quantity`
@@ -948,7 +983,7 @@ Required additional fields:
 
 - `order_type`
 - `time_in_force`
-- `instrument_identifier`
+- `instrument_id`
 - `side`
 - `price`
 - `quantity`
@@ -1050,7 +1085,7 @@ Required additional fields:
 
 - `order_type`
 - `time_in_force`
-- `instrument_identifier`
+- `instrument_id`
 - `side`
 - `price`
 - `quantity`
@@ -1076,7 +1111,7 @@ Required additional fields:
 
 - `order_type`
 - `time_in_force`
-- `instrument_identifier`
+- `instrument_id`
 - `side`
 - `price`
 - `quantity`
@@ -1154,7 +1189,8 @@ Join rule:
 
 - decision events join to NautilusTrader-native execution events through `client_order_id`
 - if a local rejection occurs before order creation and `client_order_id` is null, the terminal local-rejection event is joined by `decision_trace_id` only
-- `venue_order_identifier` is owned by NautilusTrader-native execution events once the venue acknowledges the order
+- `venue_order_id` is owned by NautilusTrader-native execution events once the venue acknowledges the order
+- if NautilusTrader uses a different canonical Rust field name for a joined fact at the pinned revision, the NautilusTrader name wins and bolt aliases are forbidden
 
 Readable mirror:
 
@@ -1181,9 +1217,31 @@ If decision-event construction, accepted handoff, or durable catalog persistence
 Before live trading:
 
 - local machine-readable decision evidence must exist
+- local machine-readable raw NautilusTrader evidence must exist
 - local logs must exist
 - local evidence must be sufficient for reconstruction without relying on Amazon Simple Storage Service
-- machine-readable decision evidence lives in the configured catalog directory
+- machine-readable decision evidence and raw NautilusTrader evidence live in the configured catalog directory
+
+Raw NautilusTrader capture scope:
+
+- every NautilusTrader market-data record from every subscribed or requested stream exposed by the pinned adapter for the activated venue, target, and instrument scope
+- every NautilusTrader execution command, execution report, order event, position event, account event, and lifecycle message visible to bolt through the pinned Rust APIs
+- every NautilusTrader cache, portfolio, risk, and execution state snapshot explicitly read to compute a strategy decision
+- every NautilusTrader adapter configuration value after TOML-to-NT mapping, excluding secrets
+- unavailable subscribed-stream attempts, including the NautilusTrader Rust API path or adapter capability that was missing
+
+Broad capture callbacks must hand off raw facts to the catalog path without performing strategy evaluation, order construction, or broad synchronous scans.
+The submit-critical hot path must not wait on non-required broad-capture streams, historical backfill, archive export, or dashboard/reporting work.
+
+Raw capture must preserve the NautilusTrader Rust API path, type name, field names, identifier values, `ts_event`, `ts_init` when present, and the pinned `nautilus_trader_revision`.
+If a raw fact does not have `ts_event` or `ts_init`, capture uses the closest NautilusTrader-provided timestamp and records the field name that supplied it.
+If no NautilusTrader timestamp is available, capture records the bolt node-clock capture timestamp as a bolt capture timestamp, not as a replacement NautilusTrader timestamp.
+
+The catalog writer configured by `[persistence]` and `[persistence.streaming]` is the single local persistence path for both structured decision events and raw NautilusTrader capture.
+bolt must not add a second raw-data writer, side database, subscriber-writer loop, or parallel persistence path.
+
+Raw capture failure is a persistence failure.
+If raw capture construction, encoding, accepted handoff, or durable catalog persistence fails because of registration, schema, write, flush, rotation, permission, path, or capacity error, Section 9.7 applies.
 
 Immediate follow-up:
 

@@ -357,12 +357,15 @@ This section exists because strategy-local limits are not enough by themselves.
 
 - type: absolute path string
 - required: yes
-- local Nautilus catalog root; persistence behavior and local-evidence requirement are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6 and 10
+- local Nautilus catalog root for structured decision events and raw NautilusTrader capture
+- persistence behavior and local-evidence requirements are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
 
 ### `[persistence.streaming]`
 
 This section carries the current local catalog writer settings.
 It is required in the current live-trading scope.
+These settings apply to the single local persistence path for both structured decision events and raw NautilusTrader capture.
+The schema does not expose a separate raw-capture backend, rotation policy, or writer path.
 
 #### `catalog_fs_protocol`
 
@@ -375,7 +378,7 @@ It is required in the current live-trading scope.
 
 - type: positive integer
 - required: yes
-- controls the current decision-event catalog flush cadence
+- controls the current catalog flush cadence for structured decision events and raw NautilusTrader capture
 
 #### `replace_existing`
 
@@ -616,7 +619,7 @@ blocked_after_seconds = 60
 
 [reference_data.primary]
 venue = "binance_reference"
-instrument_identifier = "BTCUSDT.BINANCE"
+instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]
 order_type = "limit"
@@ -729,7 +732,7 @@ If `kind = "rotating_market"`:
 - `market_selection_rule` is required
 - `retry_interval_seconds` is required
 - `blocked_after_seconds` is required
-- `instrument_identifier` is forbidden
+- `instrument_id` is forbidden
 
 ##### `rotating_market_family`
 
@@ -790,7 +793,7 @@ This section is optional.
 If present:
 
 - each block references a root venue that includes `[data]`
-- each block declares the exact instrument identifier the strategy subscribes to
+- each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
 - for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
 Fields:
@@ -800,12 +803,13 @@ Fields:
 - type: keyed reference string
 - required
 
-#### `instrument_identifier`
+#### `instrument_id`
 
 - type: string
 - required
 
-The TOML value is the literal NautilusTrader instrument identifier string.
+The TOML value is the literal NautilusTrader `InstrumentId` string.
+The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases such as `instrument_identifier` are forbidden.
 bolt does not define a second identifier format here.
 
 No archetype may hardcode its reference data source in code.
@@ -1058,7 +1062,7 @@ blocked_after_seconds = 60
 
 [reference_data.primary]
 venue = "binance_reference"
-instrument_identifier = "BTCUSDT.BINANCE"
+instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]
 order_type = "limit"

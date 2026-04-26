@@ -133,13 +133,13 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 ## 10. Local evidence persistence
 
 - invariant:
-  - decision-event persistence handoff contract and submit-blocking failure semantics
+  - broad NautilusTrader subscription/capture outside the lean submit-critical hot path; NT-owned facts retain NT names
 - canonical owner:
-  - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
+  - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.1, 9.6, 9.7, and 10
 - dependent references:
   - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section 5 `[persistence]` and `[persistence.streaming]`
 - implementation status:
-  - contract accepted; catalog round-trip and failure tests required
+  - contract accepted; broad-subscription evidence, raw-capture catalog round-trip, persistence-failure tests, and full NT-owned field naming audit required
 
 ## 11. Release identity and deploy trust
 

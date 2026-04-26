@@ -381,8 +381,8 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"`, th
 - `polymarket_condition_id`
 - `polymarket_market_slug`
 - `polymarket_question_id`
-- `nautilus_up_instrument_id`
-- `nautilus_down_instrument_id`
+- `up_instrument_id`
+- `down_instrument_id`
 - `polymarket_market_start_timestamp_milliseconds`
 - `polymarket_market_end_timestamp_milliseconds`
 
@@ -392,8 +392,8 @@ Definitions:
 - `polymarket_condition_id` = the Polymarket condition identifier string for the selected market
 - `polymarket_market_slug` = the Polymarket CLOB market slug used for instrument loading
 - `polymarket_question_id` = the Polymarket question identifier string for the selected market
-- `nautilus_up_instrument_id` = the literal NautilusTrader instrument identifier string for the `Up` instrument
-- `nautilus_down_instrument_id` = the literal NautilusTrader instrument identifier string for the `Down` instrument
+- `up_instrument_id` = the literal NautilusTrader instrument identifier string for the `Up` instrument
+- `down_instrument_id` = the literal NautilusTrader instrument identifier string for the `Down` instrument
 - `polymarket_market_start_timestamp_milliseconds` = selected market start timestamp in Unix milliseconds
 - `polymarket_market_end_timestamp_milliseconds` = selected market end timestamp in Unix milliseconds
 
@@ -607,8 +607,8 @@ The current entry evaluation is:
    - `Up`: `fair_probability_up`
    - `Down`: `1.0 - fair_probability_up`
 4. derive executable entry cost:
-   - `Up`: current best ask on `nautilus_up_instrument_id`
-   - `Down`: current best ask on `nautilus_down_instrument_id`
+   - `Up`: current best ask on `up_instrument_id`
+   - `Down`: current best ask on `down_instrument_id`
 5. compute edge:
    - fee rate for the selected token must be available from the pinned Polymarket fee-rate path before entry may proceed
    - `expected_edge_basis_points` must account for the applicable Polymarket fee rate
@@ -710,7 +710,7 @@ Examples are illustrative, not exhaustive:
 
 Configuration may use the corresponding snake-case field key only when it maps one-to-one to that NautilusTrader Rust name.
 For example, a TOML `instrument_id` field maps to `nautilus_model::identifiers::InstrumentId`.
-Aliases such as `instrument_identifier`, `venue_order_identifier`, or renamed quote timestamps are forbidden for NautilusTrader-owned facts.
+Aliases and renamed timestamps are forbidden for NautilusTrader-owned facts.
 
 Before implementation is considered complete, every structured decision-event field and every TOML field that represents a NautilusTrader-owned fact must be audited against the pinned NautilusTrader Rust API path.
 Fields that fail the one-to-one naming rule must be renamed before launch unless they are explicitly documented as bolt-derived calculations or venue/product facts not modeled by NautilusTrader.
@@ -743,15 +743,15 @@ These fields are required on every structured decision event:
 
 - `schema_version`
 - `decision_event_type`
-- `event_timestamp_milliseconds`
+- `ts_event`
 - `decision_trace_id`
-- `strategy_instance_identifier`
+- `strategy_instance_id`
 - `strategy_archetype`
-- `trader_identifier`
+- `trader_id`
 - `venue_config_key`
 - `venue_name`
 - `runtime_mode`
-- `release_identifier`
+- `release_id`
 - `config_hash`
 - `nautilus_trader_revision`
 - `configured_target_id`
@@ -761,8 +761,9 @@ Definitions:
 - `schema_version`
   - the event-schema version
   - current value: `1`
-- `event_timestamp_milliseconds`
-  - wall-clock UTC Unix timestamp in milliseconds at emission time
+- `ts_event`
+  - NautilusTrader event timestamp for the decision custom-data value
+  - serialized as the pinned NautilusTrader `UnixNanos` integer value
 - `decision_trace_id`
   - generated once at the first market-selection or evaluation step for a potential trading lifecycle
   - format: UUID4 string
@@ -772,8 +773,8 @@ Definitions:
   - the lifecycle ends when the strategy reaches a terminal outcome for that opportunity: skip, local submit rejection, or flat-after-exit
 - `strategy_archetype`
   - the exact `strategy_archetype` value from the strategy file
-- `trader_identifier`
-  - the exact root-file `trader_identifier` value
+- `trader_id`
+  - the exact root-file `trader_id` value
 - `venue_config_key`
   - the keyed trading venue reference from the strategy file
   - not a reference-data venue key
@@ -783,7 +784,7 @@ Definitions:
   - describes the implicit execution leg in the Phase 1 execution-leg model
 - `runtime_mode`
   - the exact root-file `[runtime].mode` value
-- `release_identifier`
+- `release_id`
   - the exact deployed release directory name selected by deploy automation
   - current deployment rule: release directory names are the git commit SHA string for the built artifact
 - `config_hash`
@@ -853,8 +854,8 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and
 - `polymarket_condition_id`
 - `polymarket_market_slug`
 - `polymarket_question_id`
-- `nautilus_up_instrument_id`
-- `nautilus_down_instrument_id`
+- `up_instrument_id`
+- `down_instrument_id`
 - `selected_market_observed_timestamp`
 - `polymarket_market_start_timestamp_milliseconds`
 - `polymarket_market_end_timestamp_milliseconds`
@@ -964,9 +965,9 @@ Required additional fields:
 - `side`
 - `price`
 - `quantity`
-- `quote_quantity`
-- `post_only`
-- `reduce_only`
+- `is_quote_quantity`
+- `is_post_only`
+- `is_reduce_only`
 
 This event records the exact NautilusTrader-native order semantics for a submit attempt.
 
@@ -987,9 +988,9 @@ Required additional fields:
 - `side`
 - `price`
 - `quantity`
-- `quote_quantity`
-- `post_only`
-- `reduce_only`
+- `is_quote_quantity`
+- `is_post_only`
+- `is_reduce_only`
 - `entry_pre_submit_rejection_reason`
 
 This event must also contain:
@@ -1089,9 +1090,9 @@ Required additional fields:
 - `side`
 - `price`
 - `quantity`
-- `quote_quantity`
-- `post_only`
-- `reduce_only`
+- `is_quote_quantity`
+- `is_post_only`
+- `is_reduce_only`
 - `authoritative_position_quantity`
 - `authoritative_sellable_quantity`
 - `open_exit_order_quantity`
@@ -1115,9 +1116,9 @@ Required additional fields:
 - `side`
 - `price`
 - `quantity`
-- `quote_quantity`
-- `post_only`
-- `reduce_only`
+- `is_quote_quantity`
+- `is_post_only`
+- `is_reduce_only`
 - `authoritative_position_quantity`
 - `authoritative_sellable_quantity`
 - `open_exit_order_quantity`
@@ -1266,7 +1267,7 @@ Deploy automation writes a release identity manifest inside the selected release
 
 The manifest must contain at minimum:
 
-- `release_identifier`
+- `release_id`
 - `git_commit_sha`
 - `nautilus_trader_revision`
 - `binary_sha256`
@@ -1277,7 +1278,7 @@ The manifest must contain at minimum:
 
 Runtime rule:
 
-- bolt reads `release_identifier` from that release manifest at startup
+- bolt reads `release_id` from that release manifest at startup
 - bolt does not derive release identity from process working directory or ad hoc path parsing
 - bolt does not perform a second manifest-signature verification step in the current live-trading scope; trust comes from the verified artifact set plus the deploy-identity-controlled release directory
 - deploy automation verifies every `artifact_sha256` entry before startup

@@ -80,7 +80,7 @@ Values such as paths, SSM parameter names, account identifiers, wallet addresses
 
 ```toml
 schema_version = 1
-trader_identifier = "BOLT-001"
+trader_id = "BOLT-001"
 
 strategy_files = [
   "strategies/bitcoin_updown_main.toml",
@@ -182,7 +182,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - required: yes
 - meaning: version of the root-file schema only
 
-#### `trader_identifier`
+#### `trader_id`
 
 - type: string
 - required: yes
@@ -601,7 +601,7 @@ For current Binance reference-data use:
 
 ```toml
 schema_version = 1
-strategy_instance_identifier = "bitcoin_updown_main"
+strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
@@ -624,16 +624,16 @@ instrument_id = "BTCUSDT.BINANCE"
 [parameters.entry_order]
 order_type = "limit"
 time_in_force = "fok"
-post_only = false
-reduce_only = false
-quote_quantity = false
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
 
 [parameters.exit_order]
 order_type = "market"
 time_in_force = "ioc"
-post_only = false
-reduce_only = false
-quote_quantity = false
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
 
 [parameters]
 edge_threshold_basis_points = 100
@@ -651,7 +651,7 @@ maximum_position_notional = "10.00"
 - required: yes
 - versions the strategy-file schema only
 
-#### `strategy_instance_identifier`
+#### `strategy_instance_id`
 
 - type: string
 - required: yes
@@ -671,14 +671,14 @@ There is no dynamic registry framework.
 Nautilus strategy identity mapping for live trading:
 
 - Nautilus `StrategyId` is derived as `"{strategy_archetype}-{order_id_tag}"`
-- `strategy_instance_identifier` remains the operator-facing config and forensic identifier
+- `strategy_instance_id` remains the operator-facing config and forensic identifier
 
 #### `order_id_tag`
 
 - type: string
 - required: yes
 - maps directly to Nautilus `StrategyConfig.order_id_tag`
-- must be unique among all strategies under the same `trader_identifier`
+- must be unique among all strategies under the same `trader_id`
 
 #### `oms_type`
 
@@ -809,7 +809,7 @@ Fields:
 - required
 
 The TOML value is the literal NautilusTrader `InstrumentId` string.
-The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases such as `instrument_identifier` are forbidden.
+The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases are forbidden.
 bolt does not define a second identifier format here.
 
 No archetype may hardcode its reference data source in code.
@@ -836,17 +836,17 @@ They must map directly to NautilusTrader-native order semantics used by the arch
   - `fok`
   - `ioc`
 
-#### `post_only`
+#### `is_post_only`
 
 - type: boolean
 - required
 
-#### `reduce_only`
+#### `is_reduce_only`
 
 - type: boolean
 - required
 
-#### `quote_quantity`
+#### `is_quote_quantity`
 
 - type: boolean
 - required
@@ -864,16 +864,16 @@ To avoid hidden policy, the current archetype supports only these combinations:
 - `[parameters.entry_order]`
   - `order_type = "limit"`
   - `time_in_force = "fok"`
-  - `post_only = false`
-  - `reduce_only = false`
-  - `quote_quantity = false`
+  - `is_post_only = false`
+  - `is_reduce_only = false`
+  - `is_quote_quantity = false`
 
 - `[parameters.exit_order]`
   - `order_type = "market"`
   - `time_in_force = "ioc"`
-  - `post_only = false`
-  - `reduce_only = false`
-  - `quote_quantity = false`
+  - `is_post_only = false`
+  - `is_reduce_only = false`
+  - `is_quote_quantity = false`
 
 Any other combination fails validation for this archetype.
 
@@ -920,7 +920,7 @@ Must fail if:
 - a venue reference points to a missing venue
 - a strategy `venue` points to a data-only venue
 - a reference-data venue points to a venue without `[data]`
-- two listed strategy files declare the same `strategy_instance_identifier`
+- two listed strategy files declare the same `strategy_instance_id`
 - two listed strategy files declare the same `order_id_tag`
 - two configured targets declare the same `configured_target_id`
 - `signature_type` is not one of the allowed strings
@@ -948,7 +948,7 @@ It is not live-valid until the operator supplies real paths, SSM parameters, acc
 
 ```toml
 schema_version = 1
-trader_identifier = "BOLT-001"
+trader_id = "BOLT-001"
 
 strategy_files = [
   "strategies/bitcoin_updown_main.toml",
@@ -1044,7 +1044,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ```toml
 schema_version = 1
-strategy_instance_identifier = "bitcoin_updown_main"
+strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
@@ -1067,16 +1067,16 @@ instrument_id = "BTCUSDT.BINANCE"
 [parameters.entry_order]
 order_type = "limit"
 time_in_force = "fok"
-post_only = false
-reduce_only = false
-quote_quantity = false
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
 
 [parameters.exit_order]
 order_type = "market"
 time_in_force = "ioc"
-post_only = false
-reduce_only = false
-quote_quantity = false
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
 
 [parameters]
 edge_threshold_basis_points = 100

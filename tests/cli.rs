@@ -287,8 +287,6 @@ region = "eu-west-1"
 
 #[test]
 fn secrets_resolve_surfaces_binance_ssm_failure() {
-    use std::os::unix::fs::PermissionsExt;
-
     let path = write_temp_config(
         r#"
 [node]
@@ -375,43 +373,24 @@ roll_max_secs = 300
 max_local_backlog_bytes = 10485760
 "#,
     );
-    let tempdir = tempdir().expect("tempdir should be created");
-    let aws_path = tempdir.path().join("aws");
-    fs::write(
-        &aws_path,
-        r#"#!/bin/sh
-name=""
-while [ $# -gt 0 ]; do
-  if [ "$1" = "--name" ]; then
-    name="$2"
-    shift 2
-    continue
-  fi
-  shift
-done
-case "$name" in
-  /bolt/binance/api-key)
-    printf '%s\n' "binance-api-key"
-    ;;
-  /bolt/binance/api-secret)
-    printf '%s\n' "simulated binance ssm failure" >&2
-    exit 1
-    ;;
-  *)
-    printf '%s\n' "unexpected aws request: $name" >&2
-    exit 1
-    ;;
-esac
-"#,
-    )
-    .expect("fake aws script should be written");
-    let mut perms = fs::metadata(&aws_path)
-        .expect("metadata should load")
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&aws_path, perms).expect("permissions should be set");
 
-    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    // The bolt-v2 secrets resolution path now uses the AWS Rust SDK
+    // (`aws-sdk-ssm`) directly, not a subprocess `aws` CLI, so the
+    // previous fake-script-on-PATH mock is no longer reachable from
+    // production code. Reserve a localhost ephemeral port and drop
+    // the listener so any TCP connection to that port is refused
+    // immediately; pointing the SDK's SSM endpoint at it forces every
+    // GetParameter call to fail at the dispatch layer without
+    // touching real AWS.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("ephemeral port reservation should succeed");
+    let unused_port = listener
+        .local_addr()
+        .expect("local addr should be readable")
+        .port();
+    drop(listener);
+    let unreachable_endpoint = format!("http://127.0.0.1:{unused_port}");
+
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "secrets",
@@ -419,27 +398,37 @@ esac
             "--config",
             path.to_str().expect("utf-8 path"),
         ])
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                tempdir.path().display(),
-                path_var.to_string_lossy()
-            ),
-        )
+        // SDK endpoint override for SSM only; leaves other AWS
+        // services unaffected.
+        .env("AWS_ENDPOINT_URL_SSM", &unreachable_endpoint)
+        // Bogus credentials short-circuit the credential provider
+        // chain so the SDK does not query IMDS, profiles, or SSO and
+        // the test stays fully offline. The connection to
+        // `unreachable_endpoint` fails before any signed request
+        // would matter.
+        .env("AWS_ACCESS_KEY_ID", "fake-access-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
+        .env("AWS_REGION", "us-east-1")
+        // Cap retries so the test does not pay for the SDK's default
+        // exponential backoff against a deliberately refused port.
+        .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("secrets resolve should run");
 
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // `secrets::resolve_binance_with` resolves api_secret first so
+    // failures localize to unusable key material immediately, so the
+    // first SSM call surfaced when binance reference is configured
+    // is `/bolt/binance/api-secret`.
     assert!(
         stderr.contains("/bolt/binance/api-secret"),
         "expected failing Binance SSM path in stderr, got: {stderr}"
     );
     assert!(
-        stderr.contains("simulated binance ssm failure"),
-        "expected underlying fake aws failure in stderr, got: {stderr}"
+        stderr.contains("AWS SSM GetParameter failed"),
+        "expected production SSM SDK error context in stderr, got: {stderr}"
     );
 }
 

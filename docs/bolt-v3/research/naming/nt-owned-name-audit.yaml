@@ -70,8 +70,12 @@ path_scoped_forbidden:
   - from: venue_name
     to: venue_kind
     include_globs:
-      - docs/bolt-v3/2026-04-25-bolt-v3-*.md
+      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
       - docs/bolt-v3/research/runtime-capture/*.yaml
+      - config/**/*.toml
+      - contracts/**/*.toml
+      - tests/**/*.toml
+      - tests/fixtures/**/*.toml
     reason: "Bolt-v3 uses venue_kind for the TOML adapter family; venue_name remains valid in older non-v3 source surfaces"
 
 accepted_non_nt_names:

@@ -1,6 +1,5 @@
 # NautilusTrader runtime message-bus pub/sub surface inventory
-# Pinned NT source: ~/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/48d1c12
-# Pinned rev:       48d1c126335b82812ba691c5661aeb2e912cde24
+# Pinned NT source/rev are verified from Cargo.toml by scripts/verify_runtime_capture_yaml.py.
 # Bolt comparator:  src/nt_runtime_capture.rs (this branch)
 # Scope:            runtime live capture only -- backtest, Python, tests, mocks, internal helpers excluded.
 # Classification legend:
@@ -264,7 +263,7 @@ surfaces:
 
   - nt_api: 'subscribe_any("events.risk")'
     nt_path: crates/common/src/msgbus/api.rs:223
-    message_type: TradingStateChanged
+    message_type: dyn Any
     topic_pattern: "events.risk"
     api_kind: passive_pubsub
     bolt_status: captured_now
@@ -272,6 +271,7 @@ surfaces:
     bolt_pattern_helper: trading_state_changed_events_pattern
     capture_stream: trading_state_changed
     storage_format: JSONL
+    storage_message_type: TradingStateChanged
     publisher_evidence: "crates/risk/src/engine/mod.rs:379 -> msgbus::publish_any(\"events.risk\".into(), &event) where event: TradingStateChanged constructed at lines 376-377"
     subscriber_evidence: "Bolt subscribes via MStr::pattern(\"events.risk\") in trading_state_changed_events_pattern(), with the Any handler downcasting to TradingStateChanged and forwarding CaptureMessage::TradingStateChanged(Box<TradingStateChanged>)."
     reason: "Bolt now captures this stream. There is no typed subscribe_trading_state helper in NT -- consumers must use subscribe_any with the literal \"events.risk\" topic and downcast in the Any handler. TradingStateChanged is defined at crates/common/src/messages/system/trading.rs:34 with #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)] (line 28) and #[serde(tag = \"type\")] (line 29)."

@@ -1252,24 +1252,30 @@ async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
 
-                let bid = BookOrder::new(
-                    OrderSide::Buy,
-                    Price::from("0.49"),
-                    Quantity::from("100"),
-                    1,
-                );
-                let ask = BookOrder::new(
-                    OrderSide::Sell,
-                    Price::from("0.51"),
-                    Quantity::from("100"),
-                    2,
-                );
+                let bids = std::array::from_fn(|level| {
+                    BookOrder::new(
+                        OrderSide::Buy,
+                        Price::from(format!("0.4{level}").as_str()),
+                        Quantity::from((100 + level).to_string().as_str()),
+                        level as u64 + 1,
+                    )
+                });
+                let asks = std::array::from_fn(|level| {
+                    BookOrder::new(
+                        OrderSide::Sell,
+                        Price::from(format!("0.5{level}").as_str()),
+                        Quantity::from((200 + level).to_string().as_str()),
+                        level as u64 + 11,
+                    )
+                });
+                let bid_counts = std::array::from_fn(|level| level as u32 + 1);
+                let ask_counts = std::array::from_fn(|level| level as u32 + 11);
                 let depth = OrderBookDepth10::new(
                     instrument_id,
-                    [bid; 10],
-                    [ask; 10],
-                    [1u32; 10],
-                    [1u32; 10],
+                    bids,
+                    asks,
+                    bid_counts,
+                    ask_counts,
                     0,
                     1,
                     1.into(),
@@ -1302,24 +1308,52 @@ async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
             assert!(column_names.contains(&"bid_price_9"));
             assert!(column_names.contains(&"ask_size_0"));
             assert!(column_names.contains(&"ask_count_9"));
-            assert_eq!(
-                fixed_binary_col(batch, "bid_price_0"),
-                vec![Price::from("0.49").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "bid_size_0"),
-                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "ask_price_0"),
-                vec![Price::from("0.51").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "ask_size_0"),
-                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(u32_col(batch, "bid_count_0"), vec![1u32]);
-            assert_eq!(u32_col(batch, "ask_count_0"), vec![1u32]);
+            for level in 0..10 {
+                assert_eq!(
+                    fixed_binary_col(batch, &format!("bid_price_{level}")),
+                    vec![
+                        Price::from(format!("0.4{level}").as_str())
+                            .raw
+                            .to_le_bytes()
+                            .to_vec()
+                    ],
+                );
+                assert_eq!(
+                    fixed_binary_col(batch, &format!("bid_size_{level}")),
+                    vec![
+                        Quantity::from((100 + level).to_string().as_str())
+                            .raw
+                            .to_le_bytes()
+                            .to_vec()
+                    ],
+                );
+                assert_eq!(
+                    fixed_binary_col(batch, &format!("ask_price_{level}")),
+                    vec![
+                        Price::from(format!("0.5{level}").as_str())
+                            .raw
+                            .to_le_bytes()
+                            .to_vec()
+                    ],
+                );
+                assert_eq!(
+                    fixed_binary_col(batch, &format!("ask_size_{level}")),
+                    vec![
+                        Quantity::from((200 + level).to_string().as_str())
+                            .raw
+                            .to_le_bytes()
+                            .to_vec()
+                    ],
+                );
+                assert_eq!(
+                    u32_col(batch, &format!("bid_count_{level}")),
+                    vec![level as u32 + 1],
+                );
+                assert_eq!(
+                    u32_col(batch, &format!("ask_count_{level}")),
+                    vec![level as u32 + 11],
+                );
+            }
             assert_eq!(u8_col(batch, "flags"), vec![0u8]);
             assert_eq!(u64_col(batch, "sequence"), vec![1u64]);
             assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);

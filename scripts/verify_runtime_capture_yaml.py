@@ -37,6 +37,8 @@ Checks:
      bolt-current-capture.yaml.
  13. Cargo.toml, the naming audit, the runtime contract, and the pinned NT
      checkout path agree on the NautilusTrader revision.
+ 14. Every captured_now stream in bolt-current-capture.yaml is represented
+     by nt-msgbus-surfaces.yaml and its listed tests exist.
 
 Run:
   python3 scripts/verify_runtime_capture_yaml.py
@@ -147,6 +149,7 @@ LINE_REF_RE = re.compile(r":\d+(?:-\d+)?\b")
 PATTERN_HELPER_RE = re.compile(r"\b([a-z][a-z0-9_]*_pattern)\(\)")
 SUBSCRIBE_CALL_RE = re.compile(r"\b(subscribe_[a-z0-9_]+)\s*\(", re.MULTILINE)
 SUBSCRIBE_FN_RE = re.compile(r"^pub fn (subscribe_[a-z0-9_]+)\b", re.MULTILINE)
+TEST_FN_RE_TEMPLATE = r"\b(?:async\s+)?fn\s+{}\s*\("
 RISK_JSONL_PATH_FRAGMENT = 'join("risk")'
 RISK_JSONL_FILENAME = "trading_state_changed.jsonl"
 
@@ -161,13 +164,40 @@ def load_yaml(path: Path):
 
 def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
     cargo_text = read(REPO_ROOT / "Cargo.toml")
-    revs = set(
-        re.findall(
-            r'^\s*nautilus-[\w-]+\s*=\s*\{[^\n]*\brev\s*=\s*"([0-9a-f]{40})"',
-            cargo_text,
-            re.MULTILINE,
-        )
+    dependency_rows = re.findall(
+        r'^\s*(nautilus-[\w-]+)\s*=\s*\{([^\n]*)\}',
+        cargo_text,
+        re.MULTILINE,
     )
+    if not dependency_rows:
+        findings.append(
+            (
+                "13.pin_revision_missing",
+                "Cargo.toml has no nautilus-* git dependencies to verify",
+            )
+        )
+        return None
+
+    revs: set[str] = set()
+    for crate, body in dependency_rows:
+        if "nautechsystems/nautilus_trader.git" not in body:
+            findings.append(
+                (
+                    "13.pin_revision_mismatch",
+                    f"Cargo.toml dependency {crate} is not sourced from NautilusTrader git",
+                )
+            )
+            continue
+        match = re.search(r'\brev\s*=\s*"([0-9a-f]{40})"', body)
+        if not match:
+            findings.append(
+                (
+                    "13.pin_revision_missing",
+                    f"Cargo.toml dependency {crate} lacks a 40-character rev pin",
+                )
+            )
+            continue
+        revs.add(match.group(1))
     if len(revs) != 1:
         findings.append(
             (
@@ -177,6 +207,66 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
         )
         return None
     return next(iter(revs))
+
+
+def strip_rust_comments_and_strings(text: str) -> str:
+    result: list[str] = []
+    i = 0
+    while i < len(text):
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            if end == -1:
+                break
+            result.append("\n")
+            i = end + 1
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end == -1:
+                break
+            result.append("\n" * text[i : end + 2].count("\n"))
+            i = end + 2
+            continue
+        char = text[i]
+        if char == '"':
+            result.append('""')
+            i += 1
+            while i < len(text):
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if char == "'":
+            result.append("''")
+            i += 1
+            while i < len(text):
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        result.append(char)
+        i += 1
+    return "".join(result)
+
+
+def first_top_level_arg(call_body: str) -> str:
+    depth = 0
+    for idx, char in enumerate(call_body):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            return call_body[:idx]
+    return call_body
 
 
 def find_pinned_nt_api_path(
@@ -205,6 +295,7 @@ def find_pinned_nt_api_path(
 def source_subscribe_calls(
     src_text: str, findings: list[tuple[str, str]]
 ) -> set[tuple[str, str]]:
+    src_text = strip_rust_comments_and_strings(src_text)
     calls: set[tuple[str, str]] = set()
     for match in SUBSCRIBE_CALL_RE.finditer(src_text):
         fn_name = match.group(1)
@@ -231,7 +322,8 @@ def source_subscribe_calls(
             )
             continue
         body = src_text[open_idx + 1 : close_idx]
-        if "MStr::pattern" in body:
+        pattern_arg = first_top_level_arg(body)
+        if "MStr::pattern" in pattern_arg:
             findings.append(
                 (
                     "11.source_subscribe_literal_pattern",
@@ -239,17 +331,20 @@ def source_subscribe_calls(
                     f"use a named *_pattern() helper and declare it in YAML",
                 )
             )
-        helpers = [helper.removesuffix("()") for helper in PATTERN_HELPER_RE.findall(body)]
-        if not helpers:
+        helpers = [
+            helper.removesuffix("()")
+            for helper in PATTERN_HELPER_RE.findall(pattern_arg)
+        ]
+        if len(helpers) != 1:
             findings.append(
                 (
                     "11.source_subscribe_no_pattern_helper",
-                    f"src/nt_runtime_capture.rs calls {fn_name} without a *_pattern() helper",
+                    f"src/nt_runtime_capture.rs calls {fn_name} with "
+                    f"{len(helpers)} *_pattern() helpers in the first argument; expected exactly one",
                 )
             )
             continue
-        for helper in helpers:
-            calls.add((fn_name, helper))
+        calls.add((fn_name, helpers[0]))
     return calls
 
 
@@ -313,6 +408,7 @@ def collect_failures() -> list[tuple[str, str]]:
     captured_rows = [r for r in surfaces if r.get("bolt_status") == "captured_now"]
     for row in captured_rows:
         source_subscribe_fn = row.get("source_subscribe_fn")
+        nt_api_base = str(row.get("nt_api", "")).split("(")[0]
         helper = row.get("bolt_pattern_helper")
         capture_stream = row.get("capture_stream")
         storage_format = row.get("storage_format")
@@ -322,6 +418,14 @@ def collect_failures() -> list[tuple[str, str]]:
                     "3.captured_now_missing_source_subscribe_fn",
                     f"surfaces row nt_api={row.get('nt_api')!r} "
                     f"(captured_now) lacks source_subscribe_fn",
+                )
+            )
+        elif nt_api_base != source_subscribe_fn:
+            findings.append(
+                (
+                    "3.captured_now_nt_api_mismatch",
+                    f"surfaces row nt_api={row.get('nt_api')!r} has "
+                    f"source_subscribe_fn={source_subscribe_fn!r}; expected {nt_api_base!r}",
                 )
             )
         if not helper:
@@ -399,7 +503,8 @@ def collect_failures() -> list[tuple[str, str]]:
     risk_rows = [
         r
         for r in surfaces
-        if r.get("message_type") == "TradingStateChanged"
+        if r.get("storage_message_type") == "TradingStateChanged"
+        or r.get("message_type") == "TradingStateChanged"
         or r.get("topic_pattern") == "events.risk"
     ]
     if not risk_rows:
@@ -626,8 +731,9 @@ def collect_failures() -> list[tuple[str, str]]:
         "feather": "Feather",
         "jsonl": "JSONL",
         "unwrap_to_orderbookdelta": "Feather",
-        "boundary_wrapper": None,
+        "boundary_wrapper": "JSONL",
     }
+    surface_streams = {str(row.get("capture_stream")) for row in captured_rows}
     for row in captured_rows:
         stream = row.get("capture_stream")
         storage_format = row.get("storage_format")
@@ -675,24 +781,56 @@ def collect_failures() -> list[tuple[str, str]]:
                     f"but Cargo.toml pins {nautilus_revision!r}",
                 )
             )
-        runtime_revision_match = re.search(
+        runtime_revisions = re.findall(
             r"current value:\s*`([0-9a-f]{40})`", runtime_contracts_text
         )
-        if not runtime_revision_match:
+        if not runtime_revisions:
             findings.append(
                 (
                     "13.runtime_contract_pin_missing",
                     "runtime contracts doc does not expose a `current value: <40-char rev>` pin",
                 )
             )
-        elif runtime_revision_match.group(1) != nautilus_revision:
+        elif set(runtime_revisions) != {nautilus_revision}:
             findings.append(
                 (
                     "13.pin_revision_mismatch",
-                    f"runtime contracts current value={runtime_revision_match.group(1)!r}, "
+                    f"runtime contracts current values={sorted(set(runtime_revisions))!r}, "
                     f"but Cargo.toml pins {nautilus_revision!r}",
                 )
             )
+        if nautilus_revision in surfaces_text or nautilus_revision[:7] in surfaces_text:
+            findings.append(
+                (
+                    "13.surfaces_yaml_pin_literal",
+                    "nt-msgbus-surfaces.yaml must not hardcode the NautilusTrader pin; "
+                    "the verifier derives it from Cargo.toml",
+                )
+            )
+
+    # Check 14: bolt-current-capture.yaml must not retain stale streams, and
+    # its listed tests must exist.
+    stale_current_streams = sorted(set(current_by_stream) - surface_streams)
+    for stream in stale_current_streams:
+        findings.append(
+            (
+                "14.current_capture_stale_stream",
+                f"bolt-current-capture.yaml declares stream={stream!r}, "
+                "but no captured_now surface declares that capture_stream",
+            )
+        )
+    for stream, row in current_by_stream.items():
+        for test_name in row.get("test_coverage") or []:
+            if not re.search(
+                TEST_FN_RE_TEMPLATE.format(re.escape(str(test_name))), test_text
+            ):
+                findings.append(
+                    (
+                        "14.current_capture_missing_test",
+                        f"bolt-current-capture.yaml stream={stream!r} lists "
+                        f"test {test_name!r}, but tests/nt_runtime_capture.rs has no such test fn",
+                    )
+                )
 
     return findings
 
@@ -700,7 +838,7 @@ def collect_failures() -> list[tuple[str, str]]:
 def main() -> int:
     findings = collect_failures()
     if not findings:
-        print("OK: all 13 runtime-capture YAML checks passed.")
+        print("OK: all 14 runtime-capture YAML checks passed.")
         return 0
 
     by_check: dict[str, list[str]] = {}

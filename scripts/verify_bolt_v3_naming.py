@@ -32,9 +32,9 @@ SCAN_GLOBS = [
     "scripts/*.py",
     "*.toml",
     "config/**/*.toml",
-    "configs/**/*.toml",
     "contracts/**/*.toml",
     "tests/**/*.toml",
+    "tests/fixtures/**/*.toml",
 ]
 EXCLUDED_RELATIVE_PATHS = {
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",

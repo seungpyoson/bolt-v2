@@ -21,6 +21,10 @@ surfaces:
     topic_pattern: "data.quotes.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_quotes
+    bolt_pattern_helper: quotes_pattern
+    capture_stream: quotes
+    storage_format: Feather
     reason: "Subscribed in wire_nt_runtime_capture via quotes_pattern() -> data.quotes.*.*"
     suggested_capture_storage: feather
 
@@ -30,6 +34,10 @@ surfaces:
     topic_pattern: "data.trades.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_trades
+    bolt_pattern_helper: trades_pattern
+    capture_stream: trades
+    storage_format: Feather
     reason: "Subscribed via trades_pattern() -> data.trades.*.*"
     suggested_capture_storage: feather
 
@@ -39,6 +47,10 @@ surfaces:
     topic_pattern: "data.bars.{bar_type}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_bars
+    bolt_pattern_helper: bars_pattern
+    capture_stream: bars
+    storage_format: Feather
     reason: "Subscribed via bars_pattern() -> data.bars.*; bars excluded from per-instrument FeatherWriter grouping by per_instrument_stream_types()"
     suggested_capture_storage: feather
 
@@ -48,6 +60,10 @@ surfaces:
     topic_pattern: "data.book.deltas.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_book_deltas
+    bolt_pattern_helper: book_deltas_pattern
+    capture_stream: order_book_deltas
+    storage_format: Feather
     reason: "Subscribed via book_deltas_pattern() -> data.book.deltas.*.*"
     suggested_capture_storage: unwrap_to_orderbookdelta
 
@@ -57,6 +73,10 @@ surfaces:
     topic_pattern: "data.book.depth10.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_book_depth10
+    bolt_pattern_helper: book_depth10_pattern
+    capture_stream: order_book_depth10
+    storage_format: Feather
     reason: "Subscribed via book_depth10_pattern() -> data.book.depth10.*.*"
     suggested_capture_storage: feather
 
@@ -79,6 +99,10 @@ surfaces:
     topic_pattern: "data.mark_prices.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_mark_prices
+    bolt_pattern_helper: mark_prices_pattern
+    capture_stream: mark_prices
+    storage_format: Feather
     reason: "Subscribed via mark_prices_pattern() -> data.mark_prices.*.*"
     suggested_capture_storage: feather
 
@@ -88,6 +112,10 @@ surfaces:
     topic_pattern: "data.index_prices.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_index_prices
+    bolt_pattern_helper: index_prices_pattern
+    capture_stream: index_prices
+    storage_format: Feather
     reason: "Subscribed via index_prices_pattern() -> data.index_prices.*.*"
     suggested_capture_storage: feather
 
@@ -97,6 +125,10 @@ surfaces:
     topic_pattern: "data.funding_rates.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_funding_rates
+    bolt_pattern_helper: funding_rates_pattern
+    capture_stream: funding_rates
+    storage_format: JSONL
     reason: "Subscribed via funding_rates_pattern() -> data.funding_rates.*.*; JSONL capture because no Feather schema in NT for this type yet."
     suggested_capture_storage: jsonl
 
@@ -145,6 +177,10 @@ surfaces:
     topic_pattern: "events.order.{strategy_id}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_order_events
+    bolt_pattern_helper: order_events_pattern
+    capture_stream: order_events
+    storage_format: JSONL
     reason: "Subscribed via order_events_pattern() -> events.order.*; JSONL capture via execution_state::order_event_row"
     suggested_capture_storage: boundary_wrapper
 
@@ -154,6 +190,10 @@ surfaces:
     topic_pattern: "events.position.{strategy_id}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_position_events
+    bolt_pattern_helper: position_events_pattern
+    capture_stream: position_events
+    storage_format: JSONL
     reason: "Subscribed via position_events_pattern() -> events.position.*; JSONL capture via execution_state::position_event_row"
     suggested_capture_storage: boundary_wrapper
 
@@ -163,6 +203,10 @@ surfaces:
     topic_pattern: "events.account.*"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_account_state
+    bolt_pattern_helper: account_states_pattern
+    capture_stream: account_states
+    storage_format: JSONL
     reason: "Subscribed via account_states_pattern() -> events.account.*; JSONL capture"
     suggested_capture_storage: jsonl
 
@@ -184,6 +228,10 @@ surfaces:
     topic_pattern: "data.instrument.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_instruments
+    bolt_pattern_helper: instruments_pattern
+    capture_stream: instruments
+    storage_format: Feather
     reason: "Subscribed via instruments_pattern() -> data.instrument.*.* using ShareableMessageHandler::from_any (boxed Any -> InstrumentAny downcast)"
     suggested_capture_storage: feather
 
@@ -193,6 +241,10 @@ surfaces:
     topic_pattern: "data.close.{venue}.{symbol}"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_instrument_close
+    bolt_pattern_helper: instrument_closes_pattern
+    capture_stream: instrument_closes
+    storage_format: Feather
     reason: "Subscribed via instrument_closes_pattern() -> data.close.*.* using ShareableMessageHandler::from_any"
     suggested_capture_storage: feather
 
@@ -202,6 +254,11 @@ surfaces:
     topic_pattern: "<caller-supplied>"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_any
+    bolt_pattern_helper: instrument_statuses_pattern
+    capture_stream: instrument_statuses
+    storage_format: JSONL
+    storage_message_type: InstrumentStatus
     reason: "Used by Bolt with instrument_statuses_pattern() -> data.status.*.* to receive InstrumentStatus (no typed subscribe_instrument_status helper exists in NT)."
     suggested_capture_storage: jsonl
 
@@ -211,6 +268,10 @@ surfaces:
     topic_pattern: "events.risk"
     api_kind: passive_pubsub
     bolt_status: captured_now
+    source_subscribe_fn: subscribe_any
+    bolt_pattern_helper: trading_state_changed_events_pattern
+    capture_stream: trading_state_changed
+    storage_format: JSONL
     publisher_evidence: "crates/risk/src/engine/mod.rs:379 -> msgbus::publish_any(\"events.risk\".into(), &event) where event: TradingStateChanged constructed at lines 376-377"
     subscriber_evidence: "Bolt subscribes via MStr::pattern(\"events.risk\") in trading_state_changed_events_pattern(), with the Any handler downcasting to TradingStateChanged and forwarding CaptureMessage::TradingStateChanged(Box<TradingStateChanged>)."
     reason: "Bolt now captures this stream. There is no typed subscribe_trading_state helper in NT -- consumers must use subscribe_any with the literal \"events.risk\" topic and downcast in the Any handler. TradingStateChanged is defined at crates/common/src/messages/system/trading.rs:34 with #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)] (line 28) and #[serde(tag = \"type\")] (line 29)."

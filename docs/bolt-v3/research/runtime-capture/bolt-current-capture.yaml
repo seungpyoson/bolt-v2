@@ -147,3 +147,12 @@ captured_streams:
       - captures_broad_nt_runtime_jsonl_records_outside_hot_path
     missing_assertions:
       - No coverage for AccountState with non-empty balances/margins vectors
+
+  - stream: trading_state_changed
+    nt_message_type: nautilus_common::messages::system::TradingStateChanged
+    subscription_or_topic: subscribe_any("events.risk")
+    storage_path: live/<instance_id>/risk/trading_state_changed.jsonl
+    storage_format: JSONL
+    test_coverage:
+      - captures_trading_state_changed_to_risk_jsonl_record
+    missing_assertions: []

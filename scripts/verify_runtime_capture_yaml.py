@@ -10,9 +10,9 @@ Inputs:
 Checks:
   1. No stale pre-rename runtime capture references in any input.
   2. Every nt_path in storage-feasibility.yaml has a `:N` or `:M-N` line ref.
-  3. Every captured_now row in nt-msgbus-surfaces.yaml has a reason/evidence
-     string mentioning a Bolt capture function/pattern, and that referenced
-     pattern helper appears in src/nt_runtime_capture.rs.
+  3. Every captured_now row in nt-msgbus-surfaces.yaml has explicit
+     source_subscribe_fn / bolt_pattern_helper fields, and that helper appears
+     in src/nt_runtime_capture.rs.
   4. Every safe_missing_passive_stream row contains both publisher and
      subscriber evidence in its reason / storage_evidence / topic_evidence /
      nt_path text.
@@ -31,7 +31,12 @@ Checks:
  10. Runtime-capture surface storage recommendations match
      storage-feasibility.yaml for the same message_type.
  11. Every subscribe_* call in src/nt_runtime_capture.rs is represented by a
-     captured_now YAML row referencing the same pattern helper.
+     captured_now YAML row with the same source_subscribe_fn and
+     bolt_pattern_helper.
+ 12. Every captured_now row's capture_stream / storage_format matches
+     bolt-current-capture.yaml.
+ 13. Cargo.toml, the naming audit, the runtime contract, and the pinned NT
+     checkout path agree on the NautilusTrader revision.
 
 Run:
   python3 scripts/verify_runtime_capture_yaml.py
@@ -72,10 +77,29 @@ FEAS_PATH = (
     / "runtime-capture"
     / "storage-feasibility.yaml"
 )
+CURRENT_CAPTURE_PATH = (
+    REPO_ROOT
+    / "docs"
+    / "bolt-v3"
+    / "research"
+    / "runtime-capture"
+    / "bolt-current-capture.yaml"
+)
+NAMING_AUDIT_PATH = (
+    REPO_ROOT
+    / "docs"
+    / "bolt-v3"
+    / "research"
+    / "naming"
+    / "nt-owned-name-audit.yaml"
+)
+RUNTIME_CONTRACTS_PATH = (
+    REPO_ROOT / "docs" / "bolt-v3" / "2026-04-25-bolt-v3-runtime-contracts.md"
+)
 SRC_PATH = REPO_ROOT / "src" / "nt_runtime_capture.rs"
 TEST_PATH = REPO_ROOT / "tests" / "nt_runtime_capture.rs"
-NT_API_PATH_PATTERN = (
-    ".cargo/git/checkouts/nautilus_trader-*/48d1c12/"
+NT_API_PATH_TEMPLATE = (
+    ".cargo/git/checkouts/nautilus_trader-*/*/"
     "crates/common/src/msgbus/api.rs"
 )
 
@@ -121,10 +145,7 @@ SUB_EVIDENCE_KEYWORDS = (
 )
 LINE_REF_RE = re.compile(r":\d+(?:-\d+)?\b")
 PATTERN_HELPER_RE = re.compile(r"\b([a-z][a-z0-9_]*_pattern)\(\)")
-SUBSCRIBE_CALL_HELPER_RE = re.compile(
-    r"\bsubscribe_[a-z0-9_]+\(\s*([a-z][a-z0-9_]*_pattern)\(\)",
-    re.MULTILINE,
-)
+SUBSCRIBE_CALL_RE = re.compile(r"\b(subscribe_[a-z0-9_]+)\s*\(", re.MULTILINE)
 SUBSCRIBE_FN_RE = re.compile(r"^pub fn (subscribe_[a-z0-9_]+)\b", re.MULTILINE)
 RISK_JSONL_PATH_FRAGMENT = 'join("risk")'
 RISK_JSONL_FILENAME = "trading_state_changed.jsonl"
@@ -138,18 +159,98 @@ def load_yaml(path: Path):
     return yaml.safe_load(read(path))
 
 
-def find_pinned_nt_api_path(findings: list[tuple[str, str]]) -> Path | None:
-    matches = sorted(Path.home().glob(NT_API_PATH_PATTERN))
+def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
+    cargo_text = read(REPO_ROOT / "Cargo.toml")
+    revs = set(
+        re.findall(
+            r'^\s*nautilus-[\w-]+\s*=\s*\{[^\n]*\brev\s*=\s*"([0-9a-f]{40})"',
+            cargo_text,
+            re.MULTILINE,
+        )
+    )
+    if len(revs) != 1:
+        findings.append(
+            (
+                "13.pin_revision_mismatch",
+                f"expected exactly one NautilusTrader rev in Cargo.toml, found {sorted(revs)}",
+            )
+        )
+        return None
+    return next(iter(revs))
+
+
+def find_pinned_nt_api_path(
+    findings: list[tuple[str, str]], nautilus_revision: str | None
+) -> Path | None:
+    if not nautilus_revision:
+        return None
+    short_rev = nautilus_revision[:7]
+    matches = sorted(
+        path
+        for path in Path.home().glob(NT_API_PATH_TEMPLATE)
+        if path.parents[4].name == short_rev
+    )
     if len(matches) != 1:
         findings.append(
             (
                 "9.pinned_nt_api_missing",
                 f"expected exactly one pinned NT msgbus api.rs at "
-                f"~/{NT_API_PATH_PATTERN}, found {len(matches)}",
+                f"~/{NT_API_PATH_TEMPLATE} with short rev {short_rev}, found {len(matches)}",
             )
         )
         return None
     return matches[0]
+
+
+def source_subscribe_calls(
+    src_text: str, findings: list[tuple[str, str]]
+) -> set[tuple[str, str]]:
+    calls: set[tuple[str, str]] = set()
+    for match in SUBSCRIBE_CALL_RE.finditer(src_text):
+        fn_name = match.group(1)
+        open_idx = src_text.find("(", match.start())
+        if open_idx == -1:
+            continue
+        depth = 0
+        close_idx = None
+        for idx in range(open_idx, len(src_text)):
+            char = src_text[idx]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    close_idx = idx
+                    break
+        if close_idx is None:
+            findings.append(
+                (
+                    "11.source_subscribe_parse_failed",
+                    f"could not find closing parenthesis for {fn_name} call near byte {match.start()}",
+                )
+            )
+            continue
+        body = src_text[open_idx + 1 : close_idx]
+        if "MStr::pattern" in body:
+            findings.append(
+                (
+                    "11.source_subscribe_literal_pattern",
+                    f"src/nt_runtime_capture.rs calls {fn_name} with inline MStr::pattern; "
+                    f"use a named *_pattern() helper and declare it in YAML",
+                )
+            )
+        helpers = [helper.removesuffix("()") for helper in PATTERN_HELPER_RE.findall(body)]
+        if not helpers:
+            findings.append(
+                (
+                    "11.source_subscribe_no_pattern_helper",
+                    f"src/nt_runtime_capture.rs calls {fn_name} without a *_pattern() helper",
+                )
+            )
+            continue
+        for helper in helpers:
+            calls.add((fn_name, helper))
+    return calls
 
 
 def collect_failures() -> list[tuple[str, str]]:
@@ -158,15 +259,24 @@ def collect_failures() -> list[tuple[str, str]]:
 
     surfaces_doc = load_yaml(SURFACES_PATH) or {}
     feas_doc = load_yaml(FEAS_PATH) or {}
+    current_capture_doc = load_yaml(CURRENT_CAPTURE_PATH) or {}
+    naming_audit_doc = load_yaml(NAMING_AUDIT_PATH) or {}
     src_text = read(SRC_PATH)
     test_text = read(TEST_PATH)
     surfaces_text = read(SURFACES_PATH)
     feas_text = read(FEAS_PATH)
+    runtime_contracts_text = read(RUNTIME_CONTRACTS_PATH)
 
     surfaces = (
         surfaces_doc.get("surfaces", []) if isinstance(surfaces_doc, dict) else []
     )
     feas_types = feas_doc.get("types", []) if isinstance(feas_doc, dict) else []
+    current_streams = (
+        current_capture_doc.get("captured_streams", [])
+        if isinstance(current_capture_doc, dict)
+        else []
+    )
+    nautilus_revision = cargo_nautilus_revision(findings)
 
     # Check 1: No stale pre-rename runtime capture references.
     for label, content in (
@@ -197,41 +307,56 @@ def collect_failures() -> list[tuple[str, str]]:
                 )
             )
 
-    # Check 3: every captured_now surfaces row mentions a *_pattern() helper
-    # (or wire_nt_runtime_capture) that is defined in src/nt_runtime_capture.rs.
+    # Check 3: every captured_now surfaces row explicitly names its source
+    # subscribe function and pattern helper, and that helper is defined in
+    # src/nt_runtime_capture.rs.
     captured_rows = [r for r in surfaces if r.get("bolt_status") == "captured_now"]
     for row in captured_rows:
-        text = " ".join(
-            str(row.get(k, ""))
-            for k in (
-                "reason",
-                "topic_evidence",
-                "storage_evidence",
-                "publisher_evidence",
-                "subscriber_evidence",
-            )
-        )
-        helpers = PATTERN_HELPER_RE.findall(text)
-        if not helpers and "wire_nt_runtime_capture" not in text:
+        source_subscribe_fn = row.get("source_subscribe_fn")
+        helper = row.get("bolt_pattern_helper")
+        capture_stream = row.get("capture_stream")
+        storage_format = row.get("storage_format")
+        if not source_subscribe_fn:
             findings.append(
                 (
-                    "3.captured_now_no_bolt_ref",
+                    "3.captured_now_missing_source_subscribe_fn",
                     f"surfaces row nt_api={row.get('nt_api')!r} "
-                    f"(captured_now) reason/evidence does not name any "
-                    f"*_pattern() helper or wire_nt_runtime_capture",
+                    f"(captured_now) lacks source_subscribe_fn",
                 )
             )
-            continue
-        for helper in helpers:
-            if f"fn {helper}()" not in src_text:
-                findings.append(
-                    (
-                        "3.captured_now_pattern_missing_in_src",
-                        f"surfaces row nt_api={row.get('nt_api')!r} "
-                        f"references {helper}() but no `fn {helper}()` "
-                        f"is defined in src/nt_runtime_capture.rs",
-                    )
+        if not helper:
+            findings.append(
+                (
+                    "3.captured_now_missing_pattern_helper",
+                    f"surfaces row nt_api={row.get('nt_api')!r} "
+                    f"(captured_now) lacks bolt_pattern_helper",
                 )
+            )
+        if not capture_stream:
+            findings.append(
+                (
+                    "3.captured_now_missing_capture_stream",
+                    f"surfaces row nt_api={row.get('nt_api')!r} "
+                    f"(captured_now) lacks capture_stream",
+                )
+            )
+        if not storage_format:
+            findings.append(
+                (
+                    "3.captured_now_missing_storage_format",
+                    f"surfaces row nt_api={row.get('nt_api')!r} "
+                    f"(captured_now) lacks storage_format",
+                )
+            )
+        if helper and f"fn {helper}()" not in src_text:
+            findings.append(
+                (
+                    "3.captured_now_pattern_missing_in_src",
+                    f"surfaces row nt_api={row.get('nt_api')!r} "
+                    f"references {helper}() but no `fn {helper}()` "
+                    f"is defined in src/nt_runtime_capture.rs",
+                )
+            )
 
     # Check 4: safe_missing_passive_stream rows must carry publisher AND
     # subscriber evidence somewhere in their text fields.
@@ -382,7 +507,7 @@ def collect_failures() -> list[tuple[str, str]]:
             )
 
     # Check 9: every pinned NT subscribe_* API appears in the surfaces YAML.
-    nt_api_path = find_pinned_nt_api_path(findings)
+    nt_api_path = find_pinned_nt_api_path(findings, nautilus_revision)
     if nt_api_path is not None:
         pinned_subscribe_apis = set(SUBSCRIBE_FN_RE.findall(read(nt_api_path)))
         yaml_nt_apis = {str(row.get("nt_api", "")).split("(")[0] for row in surfaces}
@@ -421,13 +546,32 @@ def collect_failures() -> list[tuple[str, str]]:
         ("skip", "none"),
     }
     for row in surfaces:
-        message_type = str(row.get("message_type", ""))
+        message_type = str(row.get("storage_message_type") or row.get("message_type", ""))
         suggested = row.get("suggested_capture_storage")
-        if (
-            suggested is None
-            or suggested == "none"
-            or message_type not in feasibility_by_type
+        if row.get("bolt_status") == "captured_now" and (
+            suggested is None or suggested == "none"
         ):
+            findings.append(
+                (
+                    "10.captured_now_storage_missing",
+                    f"captured_now surfaces row nt_api={row.get('nt_api')!r} "
+                    f"must have an explicit non-none suggested_capture_storage",
+                )
+            )
+            continue
+        if suggested is None or suggested == "none":
+            continue
+        if message_type not in feasibility_by_type:
+            if row.get("bolt_status") != "captured_now":
+                continue
+            findings.append(
+                (
+                    "10.surface_storage_missing_feasibility",
+                    f"surfaces row nt_api={row.get('nt_api')!r} "
+                    f"message_type={message_type!r} has suggested_capture_storage="
+                    f"{suggested!r}, but storage-feasibility has no row for this message_type",
+                )
+            )
             continue
         expected = feasibility_by_type[message_type]
         if suggested != expected and (str(suggested), expected) not in storage_equivalents:
@@ -441,31 +585,114 @@ def collect_failures() -> list[tuple[str, str]]:
                 )
             )
 
-    # Check 11: every source subscribe_* call's pattern helper has a matching
-    # captured_now row. This closes the source -> YAML direction.
-    source_subscribe_helpers = set(SUBSCRIBE_CALL_HELPER_RE.findall(src_text))
-    captured_helper_refs: set[str] = set()
+    # Check 11: every source subscribe_* call's function/helper pair has a
+    # matching captured_now row. This closes the source -> YAML direction
+    # without relying on prose evidence strings.
+    source_subscribe_pairs = source_subscribe_calls(src_text, findings)
+    captured_pairs: set[tuple[str, str]] = set()
     for row in captured_rows:
-        text = " ".join(
-            str(row.get(k, ""))
-            for k in (
-                "reason",
-                "topic_evidence",
-                "storage_evidence",
-                "publisher_evidence",
-                "subscriber_evidence",
-            )
-        )
-        captured_helper_refs.update(PATTERN_HELPER_RE.findall(text))
-    missing_captured_rows = sorted(source_subscribe_helpers - captured_helper_refs)
-    for helper in missing_captured_rows:
+        source_subscribe_fn = row.get("source_subscribe_fn")
+        helper = row.get("bolt_pattern_helper")
+        if source_subscribe_fn and helper:
+            captured_pairs.add((str(source_subscribe_fn), str(helper)))
+    missing_captured_rows = sorted(source_subscribe_pairs - captured_pairs)
+    stale_captured_rows = sorted(captured_pairs - source_subscribe_pairs)
+    for fn_name, helper in missing_captured_rows:
         findings.append(
             (
                 "11.source_subscribe_not_captured_now",
-                f"src/nt_runtime_capture.rs calls subscribe_* with {helper}(), "
-                f"but no captured_now surfaces row references that helper",
+                f"src/nt_runtime_capture.rs calls {fn_name} with {helper}(), "
+                f"but no captured_now surfaces row declares that function/helper pair",
             )
         )
+    for fn_name, helper in stale_captured_rows:
+        findings.append(
+            (
+                "11.captured_now_not_in_source",
+                f"nt-msgbus-surfaces.yaml declares captured_now "
+                f"source_subscribe_fn={fn_name!r} bolt_pattern_helper={helper!r}, "
+                f"but src/nt_runtime_capture.rs has no matching subscribe call",
+            )
+        )
+
+    # Check 12: every captured_now row's stream and storage format agree with
+    # bolt-current-capture.yaml.
+    current_by_stream = {
+        str(row.get("stream")): row
+        for row in current_streams
+        if isinstance(row, dict) and row.get("stream")
+    }
+    expected_format_by_storage = {
+        "feather": "Feather",
+        "jsonl": "JSONL",
+        "unwrap_to_orderbookdelta": "Feather",
+        "boundary_wrapper": None,
+    }
+    for row in captured_rows:
+        stream = row.get("capture_stream")
+        storage_format = row.get("storage_format")
+        suggested = row.get("suggested_capture_storage")
+        if not stream:
+            continue
+        current = current_by_stream.get(str(stream))
+        if current is None:
+            findings.append(
+                (
+                    "12.current_capture_stream_missing",
+                    f"captured_now surfaces row nt_api={row.get('nt_api')!r} "
+                    f"declares capture_stream={stream!r}, but bolt-current-capture.yaml "
+                    f"has no matching stream",
+                )
+            )
+            continue
+        current_storage_format = current.get("storage_format")
+        if storage_format != current_storage_format:
+            findings.append(
+                (
+                    "12.current_capture_storage_mismatch",
+                    f"capture_stream={stream!r} storage_format={storage_format!r}, "
+                    f"but bolt-current-capture.yaml says {current_storage_format!r}",
+                )
+            )
+        expected_format = expected_format_by_storage.get(str(suggested))
+        if expected_format is not None and storage_format != expected_format:
+            findings.append(
+                (
+                    "12.suggested_storage_format_mismatch",
+                    f"capture_stream={stream!r} suggested_capture_storage={suggested!r} "
+                    f"requires storage_format={expected_format!r}, got {storage_format!r}",
+                )
+            )
+
+    # Check 13: all documented NT pins agree with Cargo.toml.
+    if nautilus_revision:
+        audit_revision = naming_audit_doc.get("nautilus_trader_revision")
+        if audit_revision != nautilus_revision:
+            findings.append(
+                (
+                    "13.pin_revision_mismatch",
+                    f"nt-owned-name-audit.yaml nautilus_trader_revision={audit_revision!r}, "
+                    f"but Cargo.toml pins {nautilus_revision!r}",
+                )
+            )
+        runtime_revision_match = re.search(
+            r"current value:\s*`([0-9a-f]{40})`", runtime_contracts_text
+        )
+        if not runtime_revision_match:
+            findings.append(
+                (
+                    "13.runtime_contract_pin_missing",
+                    "runtime contracts doc does not expose a `current value: <40-char rev>` pin",
+                )
+            )
+        elif runtime_revision_match.group(1) != nautilus_revision:
+            findings.append(
+                (
+                    "13.pin_revision_mismatch",
+                    f"runtime contracts current value={runtime_revision_match.group(1)!r}, "
+                    f"but Cargo.toml pins {nautilus_revision!r}",
+                )
+            )
 
     return findings
 
@@ -473,7 +700,7 @@ def collect_failures() -> list[tuple[str, str]]:
 def main() -> int:
     findings = collect_failures()
     if not findings:
-        print("OK: all 11 runtime-capture YAML checks passed.")
+        print("OK: all 13 runtime-capture YAML checks passed.")
         return 0
 
     by_check: dict[str, list[str]] = {}

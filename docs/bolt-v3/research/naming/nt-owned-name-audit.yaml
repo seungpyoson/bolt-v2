@@ -66,9 +66,18 @@ defensive_forbidden:
     to: venue_order_id
     reason: "Common stale alias for nautilus_model::identifiers::VenueOrderId"
 
+path_scoped_forbidden:
+  - from: venue_name
+    to: venue_kind
+    include_globs:
+      - docs/bolt-v3/2026-04-25-bolt-v3-*.md
+      - docs/bolt-v3/research/runtime-capture/*.yaml
+    reason: "Bolt-v3 uses venue_kind for the TOML adapter family; venue_name remains valid in older non-v3 source surfaces"
+
 accepted_non_nt_names:
   - name: venue_kind
     owner: bolt_derived
+    nt_evidence: "nautilus_model::identifiers::Venue is the NT venue identity; Bolt `venue_kind` is the TOML adapter-family key and is intentionally not named like NT Venue"
     reason: "Configured venue adapter family from TOML kind, not NT Venue identity"
   - name: decision_trace_id
     owner: bolt_derived

@@ -31,7 +31,10 @@ SCAN_GLOBS = [
     "tests/**/*.rs",
     "scripts/*.py",
     "*.toml",
+    "config/**/*.toml",
     "configs/**/*.toml",
+    "contracts/**/*.toml",
+    "tests/**/*.toml",
 ]
 EXCLUDED_RELATIVE_PATHS = {
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
@@ -62,10 +65,16 @@ def scan_paths() -> list[Path]:
     )
 
 
+def matches_any(path: Path, patterns: list[str]) -> bool:
+    rel = str(path.relative_to(REPO_ROOT))
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+
+
 def main() -> int:
     audit = load_audit()
     rename_rows = audit.get("renamed_in_current_audit", [])
     defensive_rows = audit.get("defensive_forbidden", [])
+    scoped_rows = audit.get("path_scoped_forbidden", [])
     forbidden = {
         row["from"]: f"use {row['to']}"
         for row in [*rename_rows, *defensive_rows]
@@ -81,6 +90,17 @@ def main() -> int:
                 findings.append(
                     f"{path.relative_to(REPO_ROOT)}: forbidden {forbidden_name!r}; "
                     f"{replacement}"
+                )
+        for row in scoped_rows:
+            include = row.get("include_globs") or []
+            if not include or not matches_any(path, include):
+                continue
+            forbidden_name = row.get("from")
+            replacement = row.get("to")
+            if forbidden_name and replacement and word_re(forbidden_name).search(text):
+                findings.append(
+                    f"{path.relative_to(REPO_ROOT)}: forbidden {forbidden_name!r}; "
+                    f"use {replacement} ({row.get('reason', 'path-scoped rule')})"
                 )
 
     combined_canonical = "\n".join(path.read_text(encoding="utf-8") for path in CANONICAL_DOCS)

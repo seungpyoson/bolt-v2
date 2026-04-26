@@ -836,20 +836,13 @@ delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
 [risk]
-bypass = false
-max_order_submit_count = 20
-max_order_submit_interval_seconds = 1
-max_order_modify_count = 20
-max_order_modify_interval_seconds = 1
 default_max_notional_per_order = "10.00"
 
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
-log_directory = "/var/log/bolt"
 
 [persistence]
-state_directory = "/var/lib/bolt/state"
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
@@ -913,20 +906,13 @@ delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
 [risk]
-bypass = false
-max_order_submit_count = 20
-max_order_submit_interval_seconds = 1
-max_order_modify_count = 20
-max_order_modify_interval_seconds = 1
 default_max_notional_per_order = "10.00"
 
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
-log_directory = "/var/log/bolt"
 
 [persistence]
-state_directory = "/var/lib/bolt/state"
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
@@ -944,6 +930,8 @@ kind = "binance"
 [venues.binance_reference.data]
 product_types = ["spot"]
 environment = "mainnet"
+base_url_http = "https://binance.test.invalid/http"
+base_url_ws = "wss://binance.test.invalid/ws"
 instrument_status_poll_seconds = 3600
 "#;
 
@@ -982,20 +970,13 @@ delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
 [risk]
-bypass = false
-max_order_submit_count = 20
-max_order_submit_interval_seconds = 1
-max_order_modify_count = 20
-max_order_modify_interval_seconds = 1
 default_max_notional_per_order = "10.00"
 
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
-log_directory = "/var/log/bolt"
 
 [persistence]
-state_directory = "/var/lib/bolt/state"
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
@@ -1108,5 +1089,150 @@ fn rejects_unsupported_root_and_strategy_schema_versions() {
             .iter()
             .any(|m| m.contains("schema_version=7 is unsupported")),
         "expected unsupported strategy schema version, got: {strategy_messages:#?}"
+    );
+}
+
+fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    assert!(
+        fixture.contains(needle),
+        "fixture must contain `{needle}` for this validation test to mutate"
+    );
+    fixture.replace(needle, replacement)
+}
+
+#[test]
+fn rejects_orphan_secrets_block_without_data_or_execution() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "[venues.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
+        "",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("orphan-secrets fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("[secrets]")
+            && m.contains("neither [data] nor [execution] is configured")),
+        "expected orphan-secrets validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_ssm_paths_missing_leading_slash() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "api_key_ssm_path = \"/bolt/binance_reference/api_key\"",
+        "api_key_ssm_path = \"bolt/binance_reference/api_key\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&mutated).expect("ssm-path mutation should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("api_key_ssm_path")
+            && m.contains("absolute-style SSM parameter path starting with `/`")),
+        "expected SSM-path leading-slash validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_funder_address_with_invalid_evm_syntax() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"",
+        "funder_address = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder_address")
+            && m.contains("not a valid EVM public address")),
+        "expected EVM-syntax validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_missing_funder_address_for_poly_proxy_signature_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"\n",
+        "",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder_address")
+            && m.contains("required when signature_type is `poly_proxy` or `poly_gnosis_safe`")),
+        "expected required-funder validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn allows_missing_funder_address_for_eoa_signature_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let without_funder = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"\n",
+        "",
+    );
+    let with_eoa = without_funder.replace(
+        "signature_type = \"poly_proxy\"",
+        "signature_type = \"eoa\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&with_eoa).expect("eoa-without-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        !messages.iter().any(|m| m.contains("funder_address")),
+        "EOA signature must allow absent funder_address, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_data_zero_instrument_status_poll_seconds() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
+        "instrument_status_poll_seconds = 0 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero-poll-interval fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("instrument_status_poll_seconds")
+            && m.contains("must be a positive integer")),
+        "expected positive-integer poll-interval validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_more_than_one_polymarket_venue_in_current_slice() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let extra_venue = "\n\n[venues.polymarket_secondary]\nkind = \"polymarket\"\n\n[venues.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[venues.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mutated = format!("{fixture}{extra_venue}");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("two-polymarket-venues fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("at most one [venues.<id>] block per kind")
+                && m.contains("polymarket")),
+        "expected one-venue-per-kind validation error, got: {messages:#?}"
     );
 }

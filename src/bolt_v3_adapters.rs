@@ -280,7 +280,7 @@ fn map_polymarket_execution(
         api_key: Some(secrets.api_key.clone()),
         api_secret: Some(secrets.api_secret.clone()),
         passphrase: Some(secrets.passphrase.clone()),
-        funder: Some(cfg.funder_address),
+        funder: cfg.funder_address,
         signature_type: nt_polymarket_signature_type(cfg.signature_type),
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
@@ -313,8 +313,8 @@ fn map_binance_data(
     Ok(BinanceDataClientConfig {
         product_types,
         environment: nt_binance_environment(cfg.environment),
-        base_url_http: None,
-        base_url_ws: None,
+        base_url_http: Some(cfg.base_url_http),
+        base_url_ws: Some(cfg.base_url_ws),
         api_key: Some(secrets.api_key.clone()),
         api_secret: Some(secrets.api_secret.clone()),
         instrument_status_poll_secs: cfg.instrument_status_poll_seconds,
@@ -591,8 +591,18 @@ mod tests {
 
         assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
         assert_eq!(data.environment, NtBinanceEnvironment::Mainnet);
-        assert!(data.base_url_http.is_none());
-        assert!(data.base_url_ws.is_none());
+        // base_url_http and base_url_ws are now required bolt-v3
+        // fields; the mapper must pass the configured values through to
+        // NT as `Some(...)` rather than letting NT fall back to its
+        // compiled-in defaults.
+        assert_eq!(
+            data.base_url_http.as_deref(),
+            Some("https://api.binance.com")
+        );
+        assert_eq!(
+            data.base_url_ws.as_deref(),
+            Some("wss://stream.binance.com:9443/ws")
+        );
         assert_eq!(data.api_key.as_deref(), Some("fixture-binance-api-key"));
         assert_eq!(
             data.api_secret.as_deref(),

@@ -55,7 +55,7 @@ It validates:
 - keyed venue config can be converted into NautilusTrader client config
 - required reference-data venues and instruments are resolvable
 - current market-selection machinery can load NautilusTrader venue/instrument state and attempt selection through that state only
-- root risk config can be synchronized to the current instrument set loaded for keyed execution venues
+- root risk config is enforced for Bolt-owned strategy sizing fields, and no unsupported NautilusTrader risk-engine knob is accepted as a no-op
 - current `updown` market-identity readiness gates for each configured `updown` target
 - local catalog evidence can round-trip a registered fixed decision-event type
 - release identity manifest exists and matches the selected artifact set
@@ -138,14 +138,14 @@ Root risk settings are entity-wide safety settings.
 Rules:
 
 - strategy-local notional limits are not sufficient by themselves
-- root-level risk settings must be explicit in TOML
-- NautilusTrader defaults must not silently determine live capital risk
+- current root-level risk settings must be explicit in TOML
+- unsupported NautilusTrader risk-engine knobs must not appear in TOML, because the pinned `LiveRiskEngineConfig` path discards them before building the runtime `RiskEngineConfig`
+- NautilusTrader defaults must not be represented as if they are Bolt-v3-owned live capital controls
 
 Current contract:
 
-- `bypass` is explicit
-- submit and modify throttles are explicit
 - `default_max_notional_per_order` is explicit
+- `bypass`, submit throttles, and modify throttles are not accepted in the current schema because they would silently no-op through the pinned NT live API
 
 Authority rule:
 
@@ -153,7 +153,13 @@ Authority rule:
 - strategy-local `order_notional_target` is the desired archetype sizing target
 - validation requires `order_notional_target <= default_max_notional_per_order`
 
-Synchronization behavior:
+Current implementation behavior:
+
+- `default_max_notional_per_order` is enforced by Bolt-v3 config validation against each strategy's `parameters.order_notional_target`
+- Bolt-v3 does not currently synchronize this cap into NautilusTrader `RiskEngineConfig.max_notional_per_order`
+- any future NT risk-engine wiring must be implemented through a real supported path and covered by tests before the TOML schema accepts those fields
+
+Future synchronization behavior:
 
 - keyed execution venues own instrument loading and instrument refresh
 - whenever a keyed execution venue loads or refreshes instruments, bolt synchronizes `default_max_notional_per_order` onto the currently loaded instrument set for that venue

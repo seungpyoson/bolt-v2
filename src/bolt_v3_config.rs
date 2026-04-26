@@ -31,6 +31,21 @@ pub struct BoltV3RootConfig {
     pub venues: BTreeMap<String, VenueBlock>,
 }
 
+// `[risk]` is intentionally narrow in the current bolt-v3 scope.
+//
+// The pinned NautilusTrader live-node API discards every
+// `LiveRiskEngineConfig` field except `qsize` when constructing the
+// runtime `RiskEngineConfig` (see `From<LiveRiskEngineConfig> for
+// RiskEngineConfig` in the pinned `nautilus_live` crate). Carrying NT
+// risk-engine knobs (rate limits, `bypass`) in the bolt-v3 schema while
+// the build path drops them is a silent footgun: operators would see
+// the keys validated and then have no effect on capital risk. So the
+// only field this bolt-v3 slice owns under `[risk]` is the
+// `default_max_notional_per_order` cap that bolt-v3 itself enforces in
+// strategy validation. NautilusTrader-wired risk-engine knobs are
+// re-introduced only when a future slice plumbs them through a real
+// supported path.
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeBlock {
@@ -60,11 +75,6 @@ pub struct NautilusBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
-    pub bypass: bool,
-    pub max_order_submit_count: u64,
-    pub max_order_submit_interval_seconds: u64,
-    pub max_order_modify_count: u64,
-    pub max_order_modify_interval_seconds: u64,
     pub default_max_notional_per_order: String,
 }
 
@@ -73,7 +83,6 @@ pub struct RiskBlock {
 pub struct LoggingBlock {
     pub standard_output_level: LogLevel,
     pub file_level: LogLevel,
-    pub log_directory: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -103,7 +112,6 @@ impl LogLevel {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PersistenceBlock {
-    pub state_directory: String,
     pub catalog_directory: String,
     pub streaming: StreamingBlock,
 }
@@ -182,7 +190,13 @@ pub struct PolymarketDataConfig {
 pub struct PolymarketExecutionConfig {
     pub account_id: String,
     pub signature_type: PolymarketSignatureType,
-    pub funder_address: String,
+    /// Public funder address. Required when `signature_type` is
+    /// `poly_proxy` or `poly_gnosis_safe` (the proxy/safe routes the
+    /// underlying funder wallet); permitted to be absent for `eoa`,
+    /// where the EOA is itself the funder. Validation enforces this
+    /// per-signature-type requirement and the EVM address syntax.
+    #[serde(default)]
+    pub funder_address: Option<String>,
     pub base_url_http: String,
     pub base_url_ws: String,
     pub base_url_data_api: String,
@@ -215,6 +229,16 @@ pub struct PolymarketSecretsConfig {
 pub struct BinanceDataConfig {
     pub product_types: Vec<BinanceProductType>,
     pub environment: BinanceEnvironment,
+    /// Required HTTP base URL passed through to
+    /// `nautilus_binance::config::BinanceDataClientConfig.base_url_http`
+    /// as `Some(...)` so NT does not silently fall back to the
+    /// compiled-in default endpoint.
+    pub base_url_http: String,
+    /// Required WebSocket base URL passed through to
+    /// `nautilus_binance::config::BinanceDataClientConfig.base_url_ws`
+    /// as `Some(...)` so NT does not silently fall back to the
+    /// compiled-in default endpoint.
+    pub base_url_ws: String,
     pub instrument_status_poll_seconds: u64,
 }
 

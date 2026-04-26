@@ -159,11 +159,18 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 
     assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
     assert_eq!(data.environment, NtBinanceEnvironment::Mainnet);
-    // The bolt-v3 binance data schema does not currently expose
-    // base_url overrides, so the NT-native fields stay None and there
-    // is no mapper default leaking in.
-    assert!(data.base_url_http.is_none());
-    assert!(data.base_url_ws.is_none());
+    // The bolt-v3 binance data schema now requires explicit
+    // base_url_http and base_url_ws so NT cannot silently fall back to
+    // its compiled-in default Binance endpoints. Both must arrive at
+    // NT as `Some(...)` carrying the configured fixture value.
+    assert_eq!(
+        data.base_url_http.as_deref(),
+        Some("https://api.binance.com")
+    );
+    assert_eq!(
+        data.base_url_ws.as_deref(),
+        Some("wss://stream.binance.com:9443/ws")
+    );
     assert_eq!(
         data.api_key.as_deref(),
         Some(fixture_binance_secrets().api_key.as_str())
@@ -202,20 +209,13 @@ delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
 [risk]
-bypass = false
-max_order_submit_count = 20
-max_order_submit_interval_seconds = 1
-max_order_modify_count = 20
-max_order_modify_interval_seconds = 1
 default_max_notional_per_order = "10.00"
 
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
-log_directory = "/var/log/bolt"
 
 [persistence]
-state_directory = "/var/lib/bolt/state"
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]

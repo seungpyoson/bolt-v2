@@ -101,20 +101,13 @@ delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
 [risk]
-bypass = false
-max_order_submit_count = 20
-max_order_submit_interval_seconds = 1
-max_order_modify_count = 20
-max_order_modify_interval_seconds = 1
 default_max_notional_per_order = "10.00"
 
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
-log_directory = "/var/log/bolt"
 
 [persistence]
-state_directory = "/var/lib/bolt/state"
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
@@ -130,28 +123,28 @@ region = "eu-west-1"
 kind = "polymarket"
 
 [venues.polymarket_main.data]
-base_url_http = "https://clob.polymarket.com"
-base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-base_url_gamma = "https://gamma-api.polymarket.com"
-base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
-ws_timeout_seconds = 30
-subscribe_new_markets = false
-update_instruments_interval_minutes = 60
-websocket_max_subscriptions_per_connection = 200
+base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
+base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
+base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
+http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
+ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
+subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets
+update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
+websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
 [venues.polymarket_main.execution]
-account_id = "POLYMARKET-001"
-signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
-base_url_http = "https://clob.polymarket.com"
-base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
-base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
-max_retries = 3
-retry_delay_initial_milliseconds = 250
-retry_delay_max_milliseconds = 2000
-ack_timeout_seconds = 5
+account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
+signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
+funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
+base_url_http = "https://clob.polymarket.com" # NT: PolymarketExecClientConfig.base_url_http
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user" # NT: PolymarketExecClientConfig.base_url_ws
+base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketExecClientConfig.base_url_data_api
+http_timeout_seconds = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
+max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
+retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
+retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
+ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 
 [venues.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -163,9 +156,11 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 kind = "binance"
 
 [venues.binance_reference.data]
-product_types = ["spot"]
-environment = "mainnet"
-instrument_status_poll_seconds = 3600
+product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
+environment = "mainnet" # NT: BinanceDataClientConfig.environment
+base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
+base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
+instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
 [venues.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
@@ -274,46 +269,15 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ### `[risk]`
 
-This section exists because strategy-local limits are not enough by themselves.
-
-#### `bypass`
-
-- type: boolean
-- required: yes
-- must be explicit
-- current expectation:
-  - `false`
-
-#### `max_order_submit_count`
-
-- type: positive integer
-- required: yes
-- pairs with `max_order_submit_interval_seconds` to build Nautilus `RiskEngineConfig.max_order_submit = RateLimit(count, interval)`
-
-#### `max_order_submit_interval_seconds`
-
-- type: positive integer
-- required: yes
-- pairs with `max_order_submit_count` to build Nautilus `RiskEngineConfig.max_order_submit = RateLimit(count, interval)`
-
-#### `max_order_modify_count`
-
-- type: positive integer
-- required: yes
-- pairs with `max_order_modify_interval_seconds` to build Nautilus `RiskEngineConfig.max_order_modify = RateLimit(count, interval)`
-
-#### `max_order_modify_interval_seconds`
-
-- type: positive integer
-- required: yes
-- pairs with `max_order_modify_count` to build Nautilus `RiskEngineConfig.max_order_modify = RateLimit(count, interval)`
+This section is intentionally narrow in the current bolt-v3 scope. NT's pinned `LiveRiskEngineConfig` discards every field except `qsize` when its `From` impl builds the runtime `RiskEngineConfig`, so carrying NT-side risk-engine knobs (`bypass`, submit/modify rate limits) here would silently no-op against capital risk. Only the bolt-v3-owned per-order notional cap is exposed; runtime-wired NT risk-engine knobs are reintroduced only when a future slice plumbs them through a real supported path.
 
 #### `default_max_notional_per_order`
 
 - type: decimal string
 - required: yes
 - root-level entity per-order notional cap
-- runtime synchronization to NautilusTrader per-instrument `max_notional_per_order` maps is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 4
+- enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
+- not currently passed to NautilusTrader; runtime synchronization to NautilusTrader per-instrument `max_notional_per_order` maps remains a future-slice concern (the relevant integration contract is `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 4)
 
 ### `[logging]`
 
@@ -341,17 +305,11 @@ This section exists because strategy-local limits are not enough by themselves.
   - `ERROR`
   - `OFF`
 
-#### `log_directory`
+Bolt-v3 also installs unconditional module-level filters that suppress NT's credential info logs from `nautilus_polymarket::common::credential` and `nautilus_binance::common::credential` to `WARN`, regardless of `standard_output_level` and `file_level`. These two NT modules log credential-derived material at info-level (Polymarket address/funder/api-key prefixes; Binance auto-detected key type), so bolt-v3 forces them lower than the root level rather than letting an `INFO` root level surface those prefixes in stdout or the file writer.
 
-- type: absolute path string
-- required: yes
+There is no separate `log_directory` knob in the current bolt-v3 scope. NT's pinned `LiveNodeBuilder::with_logging` accepts a `LoggerConfig` only; the file-writer directory is owned by NT's `init_logging` path which bolt-v3 does not yet wire. A future slice may add a real wiring; until then a TOML field would be a no-op and the schema deliberately omits it.
 
 ### `[persistence]`
-
-#### `state_directory`
-
-- type: absolute path string
-- required: yes
 
 #### `catalog_directory`
 
@@ -359,6 +317,8 @@ This section exists because strategy-local limits are not enough by themselves.
 - required: yes
 - local Nautilus catalog root for structured decision events and raw NautilusTrader capture
 - persistence behavior and local-evidence requirements are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
+
+There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNodeBuilder` does not expose a state-directory wiring (load/save state are booleans only), so a TOML key would not flow to NT. A future slice may reintroduce this once a supported path exists.
 
 ### `[persistence.streaming]`
 
@@ -592,10 +552,10 @@ For current Binance reference-data use:
 
 ##### `instrument_status_poll_seconds`
 
-- type: non-negative integer
+- type: positive integer
 - required: yes
 - maps to Nautilus `BinanceDataClientConfig.instrument_status_poll_secs`
-- `0` means disabled
+- bolt-v3 rejects `0` rather than treating it as "polling disabled" so that the cadence stays explicit and NT cannot silently fall back to its own default poll interval
 
 ## 6. Strategy File: Candidate Schema
 
@@ -969,20 +929,13 @@ delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
 [risk]
-bypass = false
-max_order_submit_count = 20
-max_order_submit_interval_seconds = 1
-max_order_modify_count = 20
-max_order_modify_interval_seconds = 1
 default_max_notional_per_order = "10.00"
 
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
-log_directory = "/var/log/bolt"
 
 [persistence]
-state_directory = "/var/lib/bolt/state"
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
@@ -998,28 +951,28 @@ region = "eu-west-1"
 kind = "polymarket"
 
 [venues.polymarket_main.data]
-base_url_http = "https://clob.polymarket.com"
-base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-base_url_gamma = "https://gamma-api.polymarket.com"
-base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
-ws_timeout_seconds = 30
-subscribe_new_markets = false
-update_instruments_interval_minutes = 60
-websocket_max_subscriptions_per_connection = 200
+base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
+base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
+base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
+http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
+ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
+subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets
+update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
+websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
 [venues.polymarket_main.execution]
-account_id = "POLYMARKET-001"
-signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
-base_url_http = "https://clob.polymarket.com"
-base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
-base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
-max_retries = 3
-retry_delay_initial_milliseconds = 250
-retry_delay_max_milliseconds = 2000
-ack_timeout_seconds = 5
+account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
+signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
+funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
+base_url_http = "https://clob.polymarket.com" # NT: PolymarketExecClientConfig.base_url_http
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user" # NT: PolymarketExecClientConfig.base_url_ws
+base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketExecClientConfig.base_url_data_api
+http_timeout_seconds = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
+max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
+retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
+retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
+ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 
 [venues.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -1031,9 +984,11 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 kind = "binance"
 
 [venues.binance_reference.data]
-product_types = ["spot"]
-environment = "mainnet"
-instrument_status_poll_seconds = 3600
+product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
+environment = "mainnet" # NT: BinanceDataClientConfig.environment
+base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
+base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
+instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
 [venues.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"

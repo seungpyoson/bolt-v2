@@ -37,7 +37,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 ## 3. Root risk authority
 
 - invariant:
-  - root risk authority and synchronization to NautilusTrader per-instrument caps
+  - root risk authority for Bolt-owned strategy sizing is live now; synchronization to NautilusTrader per-instrument caps is a future integration gate and must not be represented by no-op TOML fields
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 4
 - dependent references:

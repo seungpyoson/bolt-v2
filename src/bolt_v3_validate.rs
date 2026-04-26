@@ -9,9 +9,9 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     ArchetypeOrderType, ArchetypeTimeInForce, AwsBlock, BinanceDataConfig, BinanceSecretsConfig,
-    BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, LoggingBlock, NautilusBlock,
-    OrderParams, PersistenceBlock, PolymarketDataConfig, PolymarketExecutionConfig,
-    PolymarketSecretsConfig, RiskBlock, StrategyArchetype, TargetBlock, VenueBlock, VenueKind,
+    BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock, OrderParams,
+    PersistenceBlock, PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSecretsConfig,
+    PolymarketSignatureType, RiskBlock, StrategyArchetype, TargetBlock, VenueBlock, VenueKind,
 };
 
 #[derive(Debug)]
@@ -87,7 +87,6 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     }
     errors.extend(validate_nautilus_block(&root.nautilus));
     errors.extend(validate_risk_block(&root.risk));
-    errors.extend(validate_logging_block(&root.logging));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_venues_block(&root.venues));
@@ -129,23 +128,6 @@ fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
 
 fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    let positive_fields: &[(&str, u64)] = &[
-        ("risk.max_order_submit_count", block.max_order_submit_count),
-        (
-            "risk.max_order_submit_interval_seconds",
-            block.max_order_submit_interval_seconds,
-        ),
-        ("risk.max_order_modify_count", block.max_order_modify_count),
-        (
-            "risk.max_order_modify_interval_seconds",
-            block.max_order_modify_interval_seconds,
-        ),
-    ];
-    for (label, value) in positive_fields {
-        if *value == 0 {
-            errors.push(format!("{label} must be a positive integer"));
-        }
-    }
     if let Err(reason) = parse_decimal_string(&block.default_max_notional_per_order) {
         errors.push(format!(
             "risk.default_max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
@@ -155,25 +137,8 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     errors
 }
 
-fn validate_logging_block(block: &LoggingBlock) -> Vec<String> {
-    let mut errors = Vec::new();
-    if !Path::new(&block.log_directory).is_absolute() {
-        errors.push(format!(
-            "logging.log_directory must be an absolute path: `{}`",
-            block.log_directory
-        ));
-    }
-    errors
-}
-
 fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    if !Path::new(&block.state_directory).is_absolute() {
-        errors.push(format!(
-            "persistence.state_directory must be an absolute path: `{}`",
-            block.state_directory
-        ));
-    }
     if !Path::new(&block.catalog_directory).is_absolute() {
         errors.push(format!(
             "persistence.catalog_directory must be an absolute path: `{}`",
@@ -203,6 +168,29 @@ fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
         errors.push("venues must define at least one venue block".to_string());
         return errors;
     }
+    // The current bolt-v3 scope is one venue per kind. Multi-venue
+    // routing (multiple keyed Polymarket or Binance venues) is not yet
+    // covered by the NT venue-routing path or by bolt-v3 strategy
+    // validation, so we fail closed rather than silently let two
+    // venues of the same kind compete for the same NT registration
+    // namespace.
+    let mut kind_counts: BTreeMap<&'static str, Vec<&str>> = BTreeMap::new();
+    for (key, venue) in venues {
+        kind_counts
+            .entry(venue.kind.as_str())
+            .or_default()
+            .push(key.as_str());
+    }
+    for (kind, keys) in &kind_counts {
+        if keys.len() > 1 {
+            errors.push(format!(
+                "venues: at most one [venues.<id>] block per kind is supported in this slice; \
+                 kind `{kind}` is declared by {} venues: {}",
+                keys.len(),
+                keys.join(", ")
+            ));
+        }
+    }
     for (key, venue) in venues {
         match venue.kind {
             VenueKind::Polymarket => errors.extend(validate_polymarket_venue(key, venue)),
@@ -228,11 +216,7 @@ fn validate_polymarket_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
                         "venues.{key}.execution.account_id must be a non-empty string"
                     ));
                 }
-                if parsed.funder_address.trim().is_empty() {
-                    errors.push(format!(
-                        "venues.{key}.execution.funder_address must be a non-empty public address"
-                    ));
-                }
+                errors.extend(validate_polymarket_funder_address(key, &parsed));
                 errors.extend(validate_polymarket_execution_bounds(key, &parsed));
             }
             Err(message) => {
@@ -253,6 +237,19 @@ fn validate_polymarket_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
         }
     }
     if let Some(secrets) = &venue.secrets {
+        // An orphan `[secrets]` block (no `[data]` and no `[execution]`)
+        // has no consumer in the current bolt-v3 scope. The secret-block
+        // requirement exists to gate the env-var blocklist for the
+        // matching adapter; carrying secrets without an adapter means
+        // either the operator forgot to declare the adapter or copied
+        // a stale block. Either way it is a misconfiguration, not a
+        // silent no-op.
+        if venue.data.is_none() && venue.execution.is_none() {
+            errors.push(format!(
+                "venues.{key} (kind=polymarket) declares [secrets] but neither [data] nor [execution] is configured; \
+                 a [secrets] block is only allowed alongside an adapter that consumes it"
+            ));
+        }
         match secrets.clone().try_into::<PolymarketSecretsConfig>() {
             Ok(parsed) => errors.extend(validate_polymarket_secret_paths(key, &parsed)),
             Err(message) => errors.push(format!("venues.{key}.secrets: {message}")),
@@ -269,8 +266,9 @@ fn validate_binance_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
         ));
     }
     if let Some(data) = &venue.data {
-        if let Err(message) = data.clone().try_into::<BinanceDataConfig>() {
-            errors.push(format!("venues.{key}.data: {message}"));
+        match data.clone().try_into::<BinanceDataConfig>() {
+            Ok(parsed) => errors.extend(validate_binance_data_bounds(key, &parsed)),
+            Err(message) => errors.push(format!("venues.{key}.data: {message}")),
         }
         // Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3
         // and docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 5, every
@@ -285,12 +283,59 @@ fn validate_binance_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
         }
     }
     if let Some(secrets) = &venue.secrets {
+        if venue.data.is_none() && venue.execution.is_none() {
+            errors.push(format!(
+                "venues.{key} (kind=binance) declares [secrets] but neither [data] nor [execution] is configured; \
+                 a [secrets] block is only allowed alongside an adapter that consumes it"
+            ));
+        }
         match secrets.clone().try_into::<BinanceSecretsConfig>() {
             Ok(parsed) => errors.extend(validate_binance_secret_paths(key, &parsed)),
             Err(message) => errors.push(format!("venues.{key}.secrets: {message}")),
         }
     }
     errors
+}
+
+fn validate_polymarket_funder_address(
+    key: &str,
+    execution: &PolymarketExecutionConfig,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let funder = execution
+        .funder_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let requires_funder = matches!(
+        execution.signature_type,
+        PolymarketSignatureType::PolyProxy | PolymarketSignatureType::PolyGnosisSafe
+    );
+    match (requires_funder, funder) {
+        (true, None) => errors.push(format!(
+            "venues.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
+        )),
+        (_, Some(value)) => {
+            if let Err(message) = check_evm_address_syntax(value) {
+                errors.push(format!(
+                    "venues.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
+                ));
+            }
+        }
+        (false, None) => {}
+    }
+    errors
+}
+
+fn check_evm_address_syntax(value: &str) -> Result<(), &'static str> {
+    let rest = value.strip_prefix("0x").ok_or("missing `0x` prefix")?;
+    if rest.len() != 40 {
+        return Err("must be 40 hex characters after `0x`");
+    }
+    if !rest.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("must contain only hex characters after `0x`");
+    }
+    Ok(())
 }
 
 fn validate_polymarket_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
@@ -360,11 +405,7 @@ fn validate_polymarket_secret_paths(key: &str, secrets: &PolymarketSecretsConfig
         ("passphrase_ssm_path", &secrets.passphrase_ssm_path),
     ];
     for (field, value) in path_fields {
-        if value.trim().is_empty() {
-            errors.push(format!(
-                "venues.{key}.secrets.{field} must be a non-empty SSM path"
-            ));
-        }
+        errors.extend(validate_ssm_parameter_path(key, field, value));
     }
     errors
 }
@@ -376,11 +417,51 @@ fn validate_binance_secret_paths(key: &str, secrets: &BinanceSecretsConfig) -> V
         ("api_secret_ssm_path", &secrets.api_secret_ssm_path),
     ];
     for (field, value) in path_fields {
+        errors.extend(validate_ssm_parameter_path(key, field, value));
+    }
+    errors
+}
+
+fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        errors.push(format!(
+            "venues.{key}.secrets.{field} must be a non-empty SSM path"
+        ));
+    } else if !trimmed.starts_with('/') {
+        // The Rust AWS SDK accepts both `name`-style and `/name`-style
+        // parameter references, but bolt-v3 standardizes on
+        // absolute-style hierarchical paths so an SSM resource layout
+        // like `/bolt/<venue>/<field>` is the only supported shape and
+        // typos that drop the leading slash fail closed at startup.
+        errors.push(format!(
+            "venues.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
+        ));
+    }
+    errors
+}
+
+fn validate_binance_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let url_fields: &[(&str, &str)] = &[
+        ("base_url_http", data.base_url_http.as_str()),
+        ("base_url_ws", data.base_url_ws.as_str()),
+    ];
+    for (field, value) in url_fields {
         if value.trim().is_empty() {
-            errors.push(format!(
-                "venues.{key}.secrets.{field} must be a non-empty SSM path"
-            ));
+            errors.push(format!("venues.{key}.data.{field} must be a non-empty URL"));
         }
+    }
+    // The bolt-v3 schema deliberately rejects `0` rather than treating
+    // it as "polling disabled": NT's `BinanceDataClientConfig` consumes
+    // this as a poll interval and a missing/zero value would leave NT
+    // free to fall back to its own default cadence. Failing closed
+    // here keeps the bolt-v3 instrument-status-poll cadence explicit.
+    if data.instrument_status_poll_seconds == 0 {
+        errors.push(format!(
+            "venues.{key}.data.instrument_status_poll_seconds must be a positive integer"
+        ));
     }
     errors
 }

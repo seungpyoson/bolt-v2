@@ -1,27 +1,42 @@
 //! Bolt-v3 NautilusTrader LiveNode assembly without strategy registration,
 //! market selection, order construction, or submit paths.
 //!
-//! This module is a no-trade boundary. It only:
+//! Slice 7.5 boundary. This module:
+//!
 //! - validates the forbidden credential env-var blocklist before
 //!   constructing any NautilusTrader client
 //! - resolves SSM secrets via the bolt-v3 secret resolver
 //! - maps the validated bolt-v3 venue blocks into NT-native adapter
-//!   configs
+//!   configs (`PolymarketDataClientConfig`, `PolymarketExecClientConfig`,
+//!   `BinanceDataClientConfig`)
 //! - registers the per-venue NT data and execution client factories on a
 //!   `nautilus_live::builder::LiveNodeBuilder` via the
 //!   [`crate::bolt_v3_client_registration`] boundary
-//! - finalizes the builder into a `nautilus_live::node::LiveNode`
+//! - calls `LiveNodeBuilder::build`, which is **not** purely passive:
+//!   it constructs the NT client objects, parses the Polymarket private
+//!   key into an NT secp256k1 signer (deriving the EVM address), and
+//!   performs internal NT engine/message-bus subscriptions for venue
+//!   instrument topics. None of these steps open a network connection
+//!   or run the event loop.
+//! - returns the resulting `nautilus_live::node::LiveNode` to the caller
 //!   without calling `node.run()`
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
+//! - installs module-level logger filters that suppress NT credential
+//!   info logs from `nautilus_polymarket::common::credential` and
+//!   `nautilus_binance::common::credential` even when the root TOML log
+//!   level is `INFO`
 //!
 //! The caller owns the `LiveNode`; this module never starts the event
-//! loop, opens a network connection, subscribes to market data,
-//! constructs orders, or enables any submit path.
+//! loop, opens an external network connection, subscribes to market
+//! data through any user-level `subscribe_*` API, registers a strategy
+//! actor, constructs an order, or enables any submit path.
 
 use std::time::Duration;
 
+use ahash::AHashMap;
 use anyhow::Result;
+use log::LevelFilter;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::{
     builder::LiveNodeBuilder,
@@ -29,6 +44,20 @@ use nautilus_live::{
     node::{LiveNode, LiveNodeHandle},
 };
 use nautilus_model::identifiers::TraderId;
+use ustr::Ustr;
+
+/// NT adapter modules whose `log::info!` calls embed credential
+/// material (Polymarket address/funder/api-key prefixes; Binance
+/// auto-detected key type). Bolt-v3 forces these targets to `WARN` even
+/// when the root TOML log level is `INFO`, so credential prefixes never
+/// land in stdout or the file writer. NT's logger does prefix matching
+/// on the `component` field, which defaults to the source module path
+/// when no `component=` key-value pair is supplied — the credential log
+/// sites use the bare `log::info!` macro, so the module path applies.
+pub const NT_CREDENTIAL_LOG_MODULES: &[&str] = &[
+    "nautilus_polymarket::common::credential",
+    "nautilus_binance::common::credential",
+];
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
@@ -179,9 +208,14 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
     let environment = match loaded.root.runtime.mode {
         RuntimeMode::Live => Environment::Live,
     };
+    let mut module_level: AHashMap<Ustr, LevelFilter> = AHashMap::new();
+    for module_path in NT_CREDENTIAL_LOG_MODULES {
+        module_level.insert(Ustr::from(module_path), LevelFilter::Warn);
+    }
     let logging = LoggerConfig {
         stdout_level: loaded.root.logging.standard_output_level.to_level_filter(),
         fileout_level: loaded.root.logging.file_level.to_level_filter(),
+        module_level,
         ..Default::default()
     };
     let nautilus = &loaded.root.nautilus;
@@ -273,5 +307,32 @@ mod tests {
         let cfg = make_live_node_config(&loaded);
         assert_eq!(cfg.logging.stdout_level, log::LevelFilter::Info);
         assert_eq!(cfg.logging.fileout_level, log::LevelFilter::Info);
+    }
+
+    #[test]
+    fn live_node_config_suppresses_nt_credential_module_logs_to_warn() {
+        // Regression for the slice-7 review finding: NT's
+        // `nautilus_polymarket::common::credential` and
+        // `nautilus_binance::common::credential` modules log credential
+        // material at info-level. Bolt-v3 forces those targets to
+        // `Warn` even when the root TOML log level is `Info`, so the
+        // logger filter must contain both module paths with at most
+        // `Warn` regardless of the configured root level.
+        let loaded = fixture_loaded_config();
+        let cfg = make_live_node_config(&loaded);
+
+        for module_path in NT_CREDENTIAL_LOG_MODULES {
+            let key = Ustr::from(module_path);
+            let level = cfg
+                .logging
+                .module_level
+                .get(&key)
+                .copied()
+                .unwrap_or_else(|| panic!("logger module_level missing `{module_path}`"));
+            assert!(
+                level <= log::LevelFilter::Warn,
+                "credential module `{module_path}` filter must be Warn or stricter, got {level:?}"
+            );
+        }
     }
 }

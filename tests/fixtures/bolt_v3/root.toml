@@ -20,20 +20,13 @@ delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
 [risk]
-bypass = false
-max_order_submit_count = 20
-max_order_submit_interval_seconds = 1
-max_order_modify_count = 20
-max_order_modify_interval_seconds = 1
 default_max_notional_per_order = "10.00"
 
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
-log_directory = "/var/log/bolt"
 
 [persistence]
-state_directory = "/var/lib/bolt/state"
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
@@ -84,7 +77,9 @@ kind = "binance"
 [venues.binance_reference.data]
 product_types = ["spot"]
 environment = "mainnet"
-instrument_status_poll_seconds = 3600
+base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
+base_url_ws = "wss://stream.binance.com:9443/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
+instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
 [venues.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"

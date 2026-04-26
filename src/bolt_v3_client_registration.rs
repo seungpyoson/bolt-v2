@@ -6,13 +6,22 @@
 //! `[venues.<id>]` block. The bolt-v3 venue identifier is reused as the
 //! NT registration name so per-venue routing stays addressable.
 //!
-//! This module is a no-trade boundary. It only accumulates registration
-//! intent on the builder; it never opens a network connection, runs the
-//! event loop, subscribes to market data, selects a market, constructs
-//! an order, or submits an order. The actual `factory.create` call that
-//! constructs the NT client and registers it with NT's data/exec
-//! engines runs inside `LiveNodeBuilder::build`, owned by NT, not by
-//! this module.
+//! This module accumulates registration intent on the builder. Bolt-v3
+//! itself never opens a network connection, never runs the event loop,
+//! never calls a user-level `subscribe_*` API, never selects a market,
+//! never constructs an order, and never submits an order from this
+//! boundary or its callers in the slice-7 path.
+//!
+//! The actual NT-side build behaviour lives inside
+//! `LiveNodeBuilder::build` and is **not** purely passive: NT
+//! constructs the client objects (Polymarket data, Polymarket
+//! execution, Binance data) from the bolt-v3-supplied configs, parses
+//! the Polymarket private key into an NT secp256k1 signer (deriving
+//! the EVM address), and performs internal NT engine/message-bus
+//! subscriptions for venue instrument topics. None of that opens an
+//! external network connection or starts the live event loop, but it
+//! is more than no-op factory storage and the boundary documentation
+//! must reflect that.
 
 use std::collections::BTreeMap;
 

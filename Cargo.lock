@@ -1754,6 +1754,7 @@ dependencies = [
 name = "bolt-v2"
 version = "0.1.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "arc-swap",
  "arrow",
@@ -1767,6 +1768,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac 0.12.1",
+ "libc",
  "log",
  "nautilus-binance",
  "nautilus-bybit",
@@ -1799,6 +1801,7 @@ dependencies = [
  "tokio-util",
  "toml 1.1.2+spec-1.1.0",
  "url",
+ "ustr",
 ]
 
 [[package]]

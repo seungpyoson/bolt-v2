@@ -18,7 +18,7 @@ changed_paths = [
   "crates/model/src/events/mod.rs",
 ]
 expected_seams = [
-  "normalized_sink_persistence_lake",
+  "nt_runtime_capture_persistence_lake",
   "shared_type_contract",
 ]
 expected_result = "ambiguous"

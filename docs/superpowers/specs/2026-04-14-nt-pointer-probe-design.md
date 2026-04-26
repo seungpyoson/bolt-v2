@@ -451,9 +451,9 @@ The initial conservative seam set should include at least:
    - Risk: Chainlink/custom-data routing, venue subscription behavior, fused-price assumptions
    - Likely evidence: reference actor and pipeline tests
 
-5. **Normalized sink, persistence, and lake contract**
+5. **NT runtime capture, persistence, and lake contract**
    - Risk: event shape drift, message semantics, persistence contract drift, lake conversion assumptions
-   - Likely evidence: normalized sink tests, lake batch tests, persistence smoke checks
+   - Likely evidence: NT runtime capture tests, lake batch tests, persistence smoke checks
 
 6. **Network / TLS / reconnect transport**
    - Risk: TLS, websocket, retry, reconnect, DNS, and transport-semantic drift in live network paths

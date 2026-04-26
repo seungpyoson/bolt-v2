@@ -123,10 +123,10 @@ coverage = "timing-ordering"
 assertion = "Reference actor timers and ordering semantics remain stable."
 
 [[seams]]
-name = "normalized_sink_persistence_lake"
-risk = "Event shape or persistence drift can break normalized sink output and lake conversion contracts."
+name = "nt_runtime_capture_persistence_lake"
+risk = "Event shape or persistence drift can break NT runtime capture output and lake conversion contracts."
 bolt_usage = [
-  "src/normalized_sink.rs",
+  "src/nt_runtime_capture.rs",
   "src/lake_batch.rs",
   "src/venue_contract.rs",
 ]
@@ -139,10 +139,10 @@ required_coverage = ["serialization-contract", "integration-behavior"]
 escalation = "fail"
 
 [[seams.canaries]]
-id = "tests/normalized_sink.rs::writes_quote_spool_with_per_instrument_layout_and_metadata"
-path = "tests/normalized_sink.rs"
+id = "tests/nt_runtime_capture.rs::writes_quote_spool_with_per_instrument_layout_and_metadata"
+path = "tests/nt_runtime_capture.rs"
 coverage = "serialization-contract"
-assertion = "Normalized sink output remains compatible with Bolt storage expectations."
+assertion = "NT runtime capture output remains compatible with Bolt storage expectations."
 
 [[seams.canaries]]
 id = "tests/lake_batch.rs::converts_live_spool_into_queryable_parquet_under_separate_output_root"
@@ -205,7 +205,7 @@ name = "shared_type_contract"
 risk = "Shared type and schema drift in NT common crates can break multiple Bolt seams at once."
 bolt_usage = [
   "src/config.rs",
-  "src/normalized_sink.rs",
+  "src/nt_runtime_capture.rs",
   "src/platform/reference_actor.rs",
   "tests/reference_pipeline.rs",
 ]
@@ -224,8 +224,8 @@ coverage = "compile-time-api"
 assertion = "Runtime TOML remains parseable against the shared NT type contract."
 
 [[seams.canaries]]
-id = "tests/normalized_sink.rs::captures_execution_state_sidecars_for_order_and_position_events"
-path = "tests/normalized_sink.rs"
+id = "tests/nt_runtime_capture.rs::captures_execution_state_sidecars_for_order_and_position_events"
+path = "tests/nt_runtime_capture.rs"
 coverage = "serialization-contract"
 assertion = "Shared order and position event payloads remain serializable for Bolt sinks."
 

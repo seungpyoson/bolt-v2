@@ -3,7 +3,7 @@ use std::io::Cursor;
 use arrow::ipc::reader::StreamReader;
 use bolt_v2::{
     execution_state::{OrderEventRow, PositionEventRow},
-    normalized_sink::spool_root_for_instance,
+    nt_runtime_capture::spool_root_for_instance,
 };
 mod support;
 use nautilus_common::{
@@ -70,7 +70,7 @@ async fn rejects_non_local_catalog_paths() {
                 .build()
                 .unwrap();
 
-            let result = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let result = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 node.handle(),
                 "s3://bucket/catalog",
@@ -96,7 +96,7 @@ async fn accepts_valid_contract_path_on_sink_startup() {
                 .build()
                 .unwrap();
 
-            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 node.handle(),
                 catalog_root.to_str().unwrap(),
@@ -124,7 +124,7 @@ async fn rejects_missing_contract_path_on_sink_startup() {
                 .unwrap();
             let missing = dir.path().join("missing-contract.toml");
 
-            let err = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let err = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 node.handle(),
                 catalog_root.to_str().unwrap(),
@@ -154,7 +154,7 @@ async fn rejects_invalid_contract_path_on_sink_startup() {
             let invalid = dir.path().join("invalid-contract.toml");
             std::fs::write(&invalid, "not [valid toml").unwrap();
 
-            let err = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let err = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 node.handle(),
                 catalog_root.to_str().unwrap(),
@@ -187,7 +187,7 @@ async fn captures_broad_nt_runtime_sidecars_outside_hot_path() {
                 .unwrap();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
-            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
@@ -282,7 +282,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
                 .unwrap();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
-            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
@@ -369,7 +369,7 @@ async fn captures_execution_state_sidecars_for_order_and_position_events() {
                 .unwrap();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
-            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
@@ -528,7 +528,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
                 .unwrap();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
-            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
@@ -611,7 +611,7 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
                 .unwrap();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
-            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
@@ -696,7 +696,7 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
                 .build()
                 .unwrap();
             let instance_id = node.instance_id().to_string();
-            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+            let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
                 node.handle(),
                 catalog_root.to_str().unwrap(),

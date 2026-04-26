@@ -9,7 +9,7 @@ use arrow::{
 };
 use bolt_v2::{
     lake_batch::convert_live_spool_to_parquet,
-    normalized_sink,
+    nt_runtime_capture,
     venue_contract::{
         Capability, CompletenessReport, Policy, Provenance, StreamContract, VenueContract,
     },
@@ -261,7 +261,7 @@ fn contract_happy_path_polymarket() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -371,7 +371,7 @@ fn contract_fails_when_required_class_absent() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -470,7 +470,7 @@ fn contract_failure_uses_preexisting_empty_output_root() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -550,7 +550,7 @@ fn contract_fails_when_disabled_supported_stream_has_data() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -629,7 +629,7 @@ fn contract_fails_when_disabled_conditional_stream_has_data() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -739,7 +739,7 @@ fn contract_fails_when_unsupported_class_has_data() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -847,7 +847,7 @@ fn contract_fails_when_unknown_class_has_data() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -958,7 +958,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -1071,7 +1071,7 @@ fn assert_contract_ignores_legacy_flat_instruments_file(file_name: &str) {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -1193,7 +1193,7 @@ fn contract_ignores_status_directory_infrastructure() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -1324,7 +1324,7 @@ fn contract_fails_when_legacy_flat_status_file_is_present() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -1437,7 +1437,7 @@ fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -1536,7 +1536,7 @@ fn no_contract_mode_behaves_as_before() {
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),

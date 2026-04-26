@@ -41,7 +41,7 @@ Explicitly ruled out for this branch, even though they are inventoried below:
 
 - Current main only wires the market-data sink and market-data batch conversion:
   - `src/main.rs`
-  - `src/normalized_sink.rs`
+  - `src/nt_runtime_capture.rs`
   - `src/lake_batch.rs`
 - Pinned NT exposes the missing execution-state surfaces:
   - `~/.cargo/git/checkouts/nautilus_trader-*/48d1c126/crates/trading/src/strategy/mod.rs`

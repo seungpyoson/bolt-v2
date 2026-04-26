@@ -121,7 +121,7 @@ These are explicitly out of scope for first live trade.
 - bolt-owned order schema
 - bolt-owned intent-to-order translation layer
 - reference-price actor or reference-runtime framework
-- normalized sink or custom data plane
+- NT runtime capture or custom data plane
 - bolt-owned execution state tracker
 - custom backtest engine
 - custom paper-trading runtime
@@ -498,7 +498,7 @@ The following classes of behavior are explicitly deleted or forbidden unless re-
 - collision-detection merge engine
 - ruleset engine
 - platform runtime
-- normalized sink
+- NT runtime capture
 - bolt-owned executable-order schema
 - bolt-owned intent translation layer
 - reference actor / reference publisher

@@ -9,20 +9,21 @@ mod support;
 use nautilus_common::{
     enums::Environment,
     msgbus::{
-        publish_any, publish_bar, publish_order_event, publish_position_event, publish_quote,
-        switchboard,
+        publish_account_state, publish_any, publish_bar, publish_funding_rate, publish_order_event,
+        publish_position_event, publish_quote, switchboard,
     },
 };
 use nautilus_core::UUID4;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    data::{Bar, InstrumentStatus, QuoteTick, bar::BarType},
+    data::{Bar, FundingRateUpdate, InstrumentStatus, QuoteTick, bar::BarType},
     enums::{
-        BarAggregation, LiquiditySide, MarketStatusAction, OrderSide, OrderType,
+        AccountType, BarAggregation, LiquiditySide, MarketStatusAction, OrderSide, OrderType,
         PositionAdjustmentType, PriceType,
     },
     events::{
-        OrderEventAny, OrderFilled, OrderSubmitted, PositionAdjusted, PositionEvent, PositionOpened,
+        AccountState, OrderEventAny, OrderFilled, OrderSubmitted, PositionAdjusted, PositionEvent,
+        PositionOpened,
     },
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
@@ -167,6 +168,101 @@ async fn rejects_invalid_contract_path_on_sink_startup() {
                 err.to_string().contains("failed to parse contract"),
                 "{err}"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captures_broad_nt_runtime_sidecars_outside_hot_path() {
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let dir = tempdir().unwrap();
+            let catalog_root = dir.path().join("catalog");
+
+            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .unwrap()
+                .build()
+                .unwrap();
+            let handle = node.handle();
+            let instance_id = node.instance_id().to_string();
+            let guards = bolt_v2::normalized_sink::wire_normalized_sinks(
+                &node,
+                handle.clone(),
+                catalog_root.to_str().unwrap(),
+                60_000,
+                None,
+            )
+            .unwrap();
+
+            let instrument_id = InstrumentId::from("0xbroad-123456789.POLYMARKET");
+            let publisher_handle = handle.clone();
+            tokio::task::spawn_local(async move {
+                while !publisher_handle.is_running() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+
+                let status = InstrumentStatus::new(
+                    instrument_id,
+                    MarketStatusAction::Pause,
+                    2.into(),
+                    2.into(),
+                    Some("halted by venue".into()),
+                    None,
+                    Some(false),
+                    None,
+                    None,
+                );
+                publish_any(
+                    switchboard::get_instrument_status_topic(instrument_id),
+                    &status,
+                );
+
+                let account_state = AccountState::new(
+                    AccountId::from("POLYMARKET-001"),
+                    AccountType::Betting,
+                    vec![],
+                    vec![],
+                    true,
+                    UUID4::default(),
+                    3.into(),
+                    3.into(),
+                    Some(Currency::USD()),
+                );
+                publish_account_state("events.account.POLYMARKET-001".into(), &account_state);
+
+                let funding = FundingRateUpdate::new(
+                    instrument_id,
+                    "0.0001".parse().unwrap(),
+                    Some(60),
+                    Some(4.into()),
+                    4.into(),
+                    4.into(),
+                );
+                publish_funding_rate(switchboard::get_funding_rate_topic(instrument_id), &funding);
+
+                publisher_handle.stop();
+            });
+
+            node.run().await.unwrap();
+            guards.shutdown().await.unwrap();
+
+            let spool_root = catalog_root.join("live").join(instance_id);
+            let status_text =
+                std::fs::read_to_string(spool_root.join("status").join("instrument_status.jsonl"))
+                    .unwrap();
+            assert!(status_text.contains("halted by venue"));
+
+            let account_text =
+                std::fs::read_to_string(spool_root.join("accounts").join("account_state.jsonl"))
+                    .unwrap();
+            assert!(account_text.contains("POLYMARKET-001"));
+
+            let funding_text =
+                std::fs::read_to_string(spool_root.join("funding_rates").join("updates.jsonl"))
+                    .unwrap();
+            assert!(funding_text.contains("0xbroad-123456789.POLYMARKET"));
         })
         .await;
 }

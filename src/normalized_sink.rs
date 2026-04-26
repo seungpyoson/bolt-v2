@@ -10,11 +10,12 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use nautilus_common::msgbus::{
-    MStr, ShareableMessageHandler, TypedHandler, subscribe_any, subscribe_bars,
-    subscribe_book_deltas, subscribe_book_depth10, subscribe_index_prices,
-    subscribe_instrument_close, subscribe_instruments, subscribe_mark_prices,
-    subscribe_order_events, subscribe_position_events, subscribe_quotes, subscribe_trades,
-    unsubscribe_any, unsubscribe_bars, unsubscribe_book_deltas, unsubscribe_book_depth10,
+    MStr, ShareableMessageHandler, TypedHandler, subscribe_account_state, subscribe_any,
+    subscribe_bars, subscribe_book_deltas, subscribe_book_depth10, subscribe_funding_rates,
+    subscribe_index_prices, subscribe_instrument_close, subscribe_instruments,
+    subscribe_mark_prices, subscribe_order_events, subscribe_position_events, subscribe_quotes,
+    subscribe_trades, unsubscribe_account_state, unsubscribe_any, unsubscribe_bars,
+    unsubscribe_book_deltas, unsubscribe_book_depth10, unsubscribe_funding_rates,
     unsubscribe_index_prices, unsubscribe_instrument_close, unsubscribe_instruments,
     unsubscribe_mark_prices, unsubscribe_order_events, unsubscribe_position_events,
     unsubscribe_quotes, unsubscribe_trades,
@@ -22,11 +23,10 @@ use nautilus_common::msgbus::{
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{
-        Bar, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate, OrderBookDeltas,
-        OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
+        Bar, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
+        OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
     },
-    enums::MarketStatusAction,
-    events::{OrderEventAny, PositionEvent},
+    events::{AccountState, OrderEventAny, PositionEvent},
     instruments::InstrumentAny,
 };
 use nautilus_persistence::{
@@ -49,8 +49,10 @@ struct TypedHandlers {
     book_depth10: TypedHandler<OrderBookDepth10>,
     mark_prices: TypedHandler<MarkPriceUpdate>,
     index_prices: TypedHandler<IndexPriceUpdate>,
+    funding_rates: TypedHandler<FundingRateUpdate>,
     order_events: TypedHandler<OrderEventAny>,
     position_events: TypedHandler<PositionEvent>,
+    account_states: TypedHandler<AccountState>,
 }
 
 struct AnyHandlers {
@@ -61,12 +63,16 @@ struct AnyHandlers {
 
 struct SidecarPaths {
     status: PathBuf,
+    account_states: PathBuf,
+    funding_rates: PathBuf,
     order_events: PathBuf,
     position_events: PathBuf,
 }
 
 struct SidecarWriters {
     status: JsonlAppender,
+    account_states: JsonlAppender,
+    funding_rates: JsonlAppender,
     order_events: JsonlAppender,
     position_events: JsonlAppender,
 }
@@ -141,11 +147,13 @@ enum SinkMessage {
     Depth10(Box<OrderBookDepth10>),
     MarkPrice(MarkPriceUpdate),
     IndexPrice(IndexPriceUpdate),
+    FundingRate(FundingRateUpdate),
     Instrument(Box<InstrumentAny>),
     InstrumentClose(InstrumentClose),
     InstrumentStatus(InstrumentStatus),
     OrderEvent(Box<OrderEventAny>),
     PositionEvent(Box<PositionEvent>),
+    AccountState(Box<AccountState>),
 }
 
 pub struct NormalizedSinkGuards {
@@ -205,8 +213,10 @@ impl NormalizedSinkGuards {
             unsubscribe_book_depth10(book_depth10_pattern(), &typed.book_depth10);
             unsubscribe_mark_prices(mark_prices_pattern(), &typed.mark_prices);
             unsubscribe_index_prices(index_prices_pattern(), &typed.index_prices);
+            unsubscribe_funding_rates(funding_rates_pattern(), &typed.funding_rates);
             unsubscribe_order_events(order_events_pattern(), &typed.order_events);
             unsubscribe_position_events(position_events_pattern(), &typed.position_events);
+            unsubscribe_account_state(account_states_pattern(), &typed.account_states);
         }
 
         if let Some(any) = self.any_handlers.take() {
@@ -249,6 +259,10 @@ fn index_prices_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("data.index_prices.*.*")
 }
 
+fn funding_rates_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    MStr::pattern("data.funding_rates.*.*")
+}
+
 fn instruments_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("data.instrument.*.*")
 }
@@ -267,6 +281,10 @@ fn order_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
 
 fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("events.position.*")
+}
+
+fn account_states_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    MStr::pattern("events.account.*")
 }
 
 fn per_instrument_stream_types() -> HashSet<String> {
@@ -448,6 +466,26 @@ async fn run_sink_worker(
         }
     }
 
+    if let Err(error) = sidecar_writers.account_states.close() {
+        let close_error = anyhow!("Failed to close account state JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = sidecar_writers.funding_rates.close() {
+        let close_error = anyhow!("Failed to close funding rates JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
     if let Err(error) = sidecar_writers.order_events.close() {
         let close_error = anyhow!("Failed to close order event JSONL writer: {error}");
         if primary_error.is_none() {
@@ -515,6 +553,10 @@ async fn write_sink_message(
             .write(price)
             .await
             .map_err(|e| anyhow!("IndexPriceUpdate write failed: {e}")),
+        SinkMessage::FundingRate(funding_rate) => sidecar_writers
+            .funding_rates
+            .append(&sidecar_paths.funding_rates, &funding_rate)
+            .map_err(|e| anyhow!("FundingRateUpdate JSONL write failed: {e}")),
         SinkMessage::Instrument(instrument) => writer
             .write_instrument(*instrument)
             .await
@@ -543,6 +585,10 @@ async fn write_sink_message(
                 .append(&sidecar_paths.position_events, &row)
                 .map_err(|e| anyhow!("PositionEvent JSONL write failed: {e}"))
         }
+        SinkMessage::AccountState(state) => sidecar_writers
+            .account_states
+            .append(&sidecar_paths.account_states, &state)
+            .map_err(|e| anyhow!("AccountState JSONL write failed: {e}")),
     }
 }
 
@@ -572,6 +618,8 @@ pub fn wire_normalized_sinks(
         status: spool_root_path
             .join("status")
             .join("instrument_status.jsonl"),
+        account_states: spool_root_path.join("accounts").join("account_state.jsonl"),
+        funding_rates: spool_root_path.join("funding_rates").join("updates.jsonl"),
         order_events: execution_state::order_events_path(&spool_root_path),
         position_events: execution_state::position_events_path(&spool_root_path),
     };
@@ -596,6 +644,8 @@ pub fn wire_normalized_sinks(
         writer,
         SidecarWriters {
             status: JsonlAppender::new(),
+            account_states: JsonlAppender::new(),
+            funding_rates: JsonlAppender::new(),
             order_events: JsonlAppender::new(),
             position_events: JsonlAppender::new(),
         },
@@ -702,6 +752,18 @@ pub fn wire_normalized_sinks(
     });
     subscribe_index_prices(index_prices_pattern(), index_prices.clone(), None);
 
+    let funding_sender = sender.clone();
+    let funding_failure_state = failure_state.clone();
+    let funding_rates = TypedHandler::from(move |funding_rate: &FundingRateUpdate| {
+        send_sink_message(
+            &funding_sender,
+            SinkMessage::FundingRate(*funding_rate),
+            "FundingRateUpdate",
+            &funding_failure_state,
+        );
+    });
+    subscribe_funding_rates(funding_rates_pattern(), funding_rates.clone(), None);
+
     let order_events_sender = sender.clone();
     let order_events_failure_state = failure_state.clone();
     let order_events = TypedHandler::from(move |event: &OrderEventAny| {
@@ -725,6 +787,18 @@ pub fn wire_normalized_sinks(
         );
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
+
+    let account_sender = sender.clone();
+    let account_failure_state = failure_state.clone();
+    let account_states = TypedHandler::from(move |state: &AccountState| {
+        send_sink_message(
+            &account_sender,
+            SinkMessage::AccountState(Box::new(state.clone())),
+            "AccountState",
+            &account_failure_state,
+        );
+    });
+    subscribe_account_state(account_states_pattern(), account_states.clone(), None);
 
     let instrument_sender = sender.clone();
     let instrument_failure_state = failure_state.clone();
@@ -760,10 +834,6 @@ pub fn wire_normalized_sinks(
     let instrument_statuses =
         ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
             if let Some(status) = message.downcast_ref::<InstrumentStatus>() {
-                if status.action != MarketStatusAction::Close {
-                    return;
-                }
-
                 send_sink_message(
                     &status_sender,
                     SinkMessage::InstrumentStatus(*status),
@@ -789,8 +859,10 @@ pub fn wire_normalized_sinks(
             book_depth10,
             mark_prices,
             index_prices,
+            funding_rates,
             order_events,
             position_events,
+            account_states,
         }),
         any_handlers: Some(AnyHandlers {
             instruments,

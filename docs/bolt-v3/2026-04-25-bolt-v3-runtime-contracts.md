@@ -196,7 +196,7 @@ The current Phase 1 contract has exactly one implicit execution leg.
 For the implicit Phase 1 leg:
 
 - `venue_config_key` identifies the configured venue instance from TOML
-- `venue_name` identifies the venue family for that configured instance
+- `venue_kind` identifies the venue family for that configured instance
 - selected-market, mechanical, entry, pre-submit, and order-submission fields describe that same implicit leg
 
 This is the `leg_count = 1` case of the execution-leg model, not a Bolt-wide single-venue architecture limit.
@@ -334,7 +334,7 @@ Exact fields:
 - `configured_target_id`
 - `target_kind`
 - `venue_config_key`
-- `venue_name`
+- `venue_kind`
 - `rotating_market_family`
 - `underlying_asset`
 - `cadence_seconds`
@@ -346,7 +346,7 @@ Field constraints:
 
 - `target_kind = "rotating_market"`
 - `venue_config_key` is the exact strategy-file `venue` reference
-- `venue_name = "polymarket"` for the current `updown` scope
+- `venue_kind = "polymarket"` for the current `updown` scope
 - `rotating_market_family = "updown"`
 - `market_selection_rule = "active_or_next"`
 
@@ -371,7 +371,7 @@ Every selected market must contain:
 
 - `target_kind`
 - `venue_config_key`
-- `venue_name`
+- `venue_kind`
 
 #### Current updown rotating-market fields
 
@@ -749,7 +749,7 @@ These fields are required on every structured decision event:
 - `strategy_archetype`
 - `trader_id`
 - `venue_config_key`
-- `venue_name`
+- `venue_kind`
 - `runtime_mode`
 - `release_id`
 - `config_hash`
@@ -778,7 +778,7 @@ Definitions:
 - `venue_config_key`
   - the keyed trading venue reference from the strategy file
   - not a reference-data venue key
-- `venue_name`
+- `venue_kind`
   - the exact `kind` value from the configured venue block referenced by `venue_config_key`
   - for the current `updown` scope, `polymarket`
   - describes the implicit execution leg in the Phase 1 execution-leg model

@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use arrow::array::{
-    Array, FixedSizeBinaryArray, RecordBatch, StringArray, UInt8Array, UInt64Array,
+    Array, FixedSizeBinaryArray, RecordBatch, StringArray, UInt8Array, UInt32Array, UInt64Array,
 };
 use arrow::ipc::reader::StreamReader;
 use bolt_v2::{
@@ -149,6 +149,16 @@ fn u8_col(batch: &RecordBatch, name: &str) -> Vec<u8> {
         .as_any()
         .downcast_ref::<UInt8Array>()
         .unwrap_or_else(|| panic!("column {name} is not UInt8Array"));
+    (0..array.len()).map(|i| array.value(i)).collect()
+}
+
+fn u32_col(batch: &RecordBatch, name: &str) -> Vec<u32> {
+    let array = batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing UInt32 column {name}"))
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .unwrap_or_else(|| panic!("column {name} is not UInt32Array"));
     (0..array.len()).map(|i| array.value(i)).collect()
 }
 
@@ -740,6 +750,22 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
                     "ts_init"
                 ],
             );
+            assert_eq!(
+                fixed_binary_col(batch, "bid_price"),
+                vec![Price::from("0.45").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "ask_price"),
+                vec![Price::from("0.55").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "bid_size"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "ask_size"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
             assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
             assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
         })
@@ -1055,6 +1081,14 @@ async fn captures_trade_tick_to_per_instrument_feather_spool() {
             let batches = read_record_batches(&trade_file);
             assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
             let batch = &batches[0];
+            assert_eq!(
+                fixed_binary_col(batch, "price"),
+                vec![Price::from("0.50").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "size"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
             assert_eq!(str_col(batch, "trade_id"), vec!["T-T01".to_string()]);
             // AggressorSide::Buyer = 1
             assert_eq!(u8_col(batch, "aggressor_side"), vec![1u8]);
@@ -1153,6 +1187,14 @@ async fn captures_order_book_deltas_to_per_instrument_feather_spool() {
             // BookAction::Add = 1, OrderSide::Buy = 1
             assert_eq!(u8_col(bid_batch, "action"), vec![1u8]);
             assert_eq!(u8_col(bid_batch, "side"), vec![1u8]);
+            assert_eq!(
+                fixed_binary_col(bid_batch, "price"),
+                vec![Price::from("0.49").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(bid_batch, "size"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
             assert_eq!(u64_col(bid_batch, "order_id"), vec![1u64]);
             assert_eq!(u64_col(bid_batch, "sequence"), vec![1u64]);
             assert_eq!(u64_col(bid_batch, "ts_event"), vec![1u64]);
@@ -1163,6 +1205,14 @@ async fn captures_order_book_deltas_to_per_instrument_feather_spool() {
             // OrderSide::Sell = 2
             assert_eq!(u8_col(ask_batch, "action"), vec![1u8]);
             assert_eq!(u8_col(ask_batch, "side"), vec![2u8]);
+            assert_eq!(
+                fixed_binary_col(ask_batch, "price"),
+                vec![Price::from("0.51").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(ask_batch, "size"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
             assert_eq!(u64_col(ask_batch, "order_id"), vec![2u64]);
             assert_eq!(u64_col(ask_batch, "sequence"), vec![2u64]);
             assert_eq!(u64_col(ask_batch, "ts_event"), vec![2u64]);
@@ -1252,6 +1302,24 @@ async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
             assert!(column_names.contains(&"bid_price_9"));
             assert!(column_names.contains(&"ask_size_0"));
             assert!(column_names.contains(&"ask_count_9"));
+            assert_eq!(
+                fixed_binary_col(batch, "bid_price_0"),
+                vec![Price::from("0.49").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "bid_size_0"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "ask_price_0"),
+                vec![Price::from("0.51").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "ask_size_0"),
+                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
+            );
+            assert_eq!(u32_col(batch, "bid_count_0"), vec![1u32]);
+            assert_eq!(u32_col(batch, "ask_count_0"), vec![1u32]);
             assert_eq!(u8_col(batch, "flags"), vec![0u8]);
             assert_eq!(u64_col(batch, "sequence"), vec![1u64]);
             assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
@@ -1316,6 +1384,10 @@ async fn captures_mark_price_update_to_per_instrument_feather_spool() {
             let column_names: Vec<&str> =
                 schema.fields().iter().map(|f| f.name().as_str()).collect();
             assert_eq!(column_names, vec!["value", "ts_event", "ts_init"]);
+            assert_eq!(
+                fixed_binary_col(batch, "value"),
+                vec![Price::from("0.50").raw.to_le_bytes().to_vec()],
+            );
             assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
             assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
         })
@@ -1378,6 +1450,10 @@ async fn captures_index_price_update_to_per_instrument_feather_spool() {
             let column_names: Vec<&str> =
                 schema.fields().iter().map(|f| f.name().as_str()).collect();
             assert_eq!(column_names, vec!["value", "ts_event", "ts_init"]);
+            assert_eq!(
+                fixed_binary_col(batch, "value"),
+                vec![Price::from("0.50").raw.to_le_bytes().to_vec()],
+            );
             assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
             assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
         })
@@ -1550,6 +1626,10 @@ async fn captures_instrument_close_to_per_instrument_feather_spool() {
             assert_eq!(
                 column_names,
                 vec!["close_price", "close_type", "ts_event", "ts_init"],
+            );
+            assert_eq!(
+                fixed_binary_col(batch, "close_price"),
+                vec![Price::from("0.50").raw.to_le_bytes().to_vec()],
             );
             // InstrumentCloseType::EndOfSession = 1
             assert_eq!(u8_col(batch, "close_type"), vec![1u8]);

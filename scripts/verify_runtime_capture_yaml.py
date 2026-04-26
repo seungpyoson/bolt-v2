@@ -21,12 +21,17 @@ Checks:
   6. OrderBookDeltas recommended_storage in storage-feasibility.yaml is NOT
      feather (the container has no Arrow impl; bolt unwraps per-delta).
   7. recommended_storage values are only:
-        feather, jsonl, boundary_wrapper, wrapper_required, skip, none.
+        boundary_wrapper, feather, jsonl, none, skip, unwrap_to_orderbookdelta,
+        wrapper_required.
   8. api_kind values are only:
-        passive_pubsub, publish_helper, endpoint_or_command,
-        cleanup_helper, topic_builder.
+        cleanup_helper, command_endpoint, endpoint_or_command, passive_pubsub,
+        publish_helper, request_response, topic_builder.
   9. Every pinned NT `pub fn subscribe_*` msgbus API appears in
      nt-msgbus-surfaces.yaml.
+ 10. Runtime-capture surface storage recommendations match
+     storage-feasibility.yaml for the same message_type.
+ 11. Every subscribe_* call in src/nt_runtime_capture.rs is represented by a
+     captured_now YAML row referencing the same pattern helper.
 
 Run:
   python3 scripts/verify_runtime_capture_yaml.py
@@ -116,6 +121,10 @@ SUB_EVIDENCE_KEYWORDS = (
 )
 LINE_REF_RE = re.compile(r":\d+(?:-\d+)?\b")
 PATTERN_HELPER_RE = re.compile(r"\b([a-z][a-z0-9_]*_pattern)\(\)")
+SUBSCRIBE_CALL_HELPER_RE = re.compile(
+    r"\bsubscribe_[a-z0-9_]+\(\s*([a-z][a-z0-9_]*_pattern)\(\)",
+    re.MULTILINE,
+)
 SUBSCRIBE_FN_RE = re.compile(r"^pub fn (subscribe_[a-z0-9_]+)\b", re.MULTILINE)
 RISK_JSONL_PATH_FRAGMENT = 'join("risk")'
 RISK_JSONL_FILENAME = "trading_state_changed.jsonl"
@@ -401,13 +410,70 @@ def collect_failures() -> list[tuple[str, str]]:
                 )
             )
 
+    # Check 10: surface storage recommendations match the feasibility table.
+    feasibility_by_type = {
+        str(row.get("message_type")): str(row.get("recommended_storage"))
+        for row in feas_types
+        if row.get("message_type") and row.get("recommended_storage")
+    }
+    storage_equivalents = {
+        ("none", "skip"),
+        ("skip", "none"),
+    }
+    for row in surfaces:
+        message_type = str(row.get("message_type", ""))
+        suggested = row.get("suggested_capture_storage")
+        if (
+            suggested is None
+            or suggested == "none"
+            or message_type not in feasibility_by_type
+        ):
+            continue
+        expected = feasibility_by_type[message_type]
+        if suggested != expected and (str(suggested), expected) not in storage_equivalents:
+            findings.append(
+                (
+                    "10.surface_storage_mismatch",
+                    f"surfaces row nt_api={row.get('nt_api')!r} "
+                    f"message_type={message_type!r} suggested_capture_storage="
+                    f"{suggested!r}, but storage-feasibility recommends "
+                    f"{expected!r}",
+                )
+            )
+
+    # Check 11: every source subscribe_* call's pattern helper has a matching
+    # captured_now row. This closes the source -> YAML direction.
+    source_subscribe_helpers = set(SUBSCRIBE_CALL_HELPER_RE.findall(src_text))
+    captured_helper_refs: set[str] = set()
+    for row in captured_rows:
+        text = " ".join(
+            str(row.get(k, ""))
+            for k in (
+                "reason",
+                "topic_evidence",
+                "storage_evidence",
+                "publisher_evidence",
+                "subscriber_evidence",
+            )
+        )
+        captured_helper_refs.update(PATTERN_HELPER_RE.findall(text))
+    missing_captured_rows = sorted(source_subscribe_helpers - captured_helper_refs)
+    for helper in missing_captured_rows:
+        findings.append(
+            (
+                "11.source_subscribe_not_captured_now",
+                f"src/nt_runtime_capture.rs calls subscribe_* with {helper}(), "
+                f"but no captured_now surfaces row references that helper",
+            )
+        )
+
     return findings
 
 
 def main() -> int:
     findings = collect_failures()
     if not findings:
-        print("OK: all 9 runtime-capture YAML checks passed.")
+        print("OK: all 11 runtime-capture YAML checks passed.")
         return 0
 
     by_check: dict[str, list[str]] = {}

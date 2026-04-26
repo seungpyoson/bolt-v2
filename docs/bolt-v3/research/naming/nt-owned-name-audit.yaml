@@ -6,7 +6,8 @@
 #   Bolt/venue/product names.
 #
 # Scope:
-#   Canonical docs under docs/bolt-v3/2026-04-25-bolt-v3-*.md.
+#   Canonical docs under docs/bolt-v3/2026-04-25-bolt-v3-*.md plus
+#   implementation files scanned by scripts/verify_bolt_v3_naming.py.
 
 schema_version: 1
 nautilus_trader_revision: "48d1c126335b82812ba691c5661aeb2e912cde24"
@@ -57,7 +58,18 @@ renamed_in_current_audit:
     owner: bolt_derived
     nt_evidence: "Not an NT field; Bolt release-manifest identity"
 
+defensive_forbidden:
+  - from: instrument_identifier
+    to: instrument_id
+    reason: "Common stale alias for nautilus_model::identifiers::InstrumentId"
+  - from: venue_order_identifier
+    to: venue_order_id
+    reason: "Common stale alias for nautilus_model::identifiers::VenueOrderId"
+
 accepted_non_nt_names:
+  - name: venue_kind
+    owner: bolt_derived
+    reason: "Configured venue adapter family from TOML kind, not NT Venue identity"
   - name: decision_trace_id
     owner: bolt_derived
     reason: "Bolt lifecycle correlation key, not an NT UUID field"
@@ -73,6 +85,14 @@ accepted_non_nt_names:
   - name: price_to_beat_observed_timestamp
     owner: venue_product_owned
     reason: "Timestamp for the Polymarket Gamma supplement, not an NT ts_event"
+  - name: polymarket_market_start_timestamp_milliseconds
+    owner: bolt_derived_from_nt_instrument
+    nt_evidence: "Sourced from NT BinaryOption.activation_ns; converted to Unix milliseconds for the market-selection contract"
+    reason: "Polymarket lifecycle field keeps the venue/product prefix because the emitted value is a unit-converted contract timestamp, not raw NT activation_ns"
+  - name: polymarket_market_end_timestamp_milliseconds
+    owner: bolt_derived_from_nt_instrument
+    nt_evidence: "Sourced from NT BinaryOption.expiration_ns; converted to Unix milliseconds for the market-selection contract"
+    reason: "Polymarket lifecycle field keeps the venue/product prefix because the emitted value is a unit-converted contract timestamp, not raw NT expiration_ns"
   - name: polymarket_condition_id
     owner: venue_product_owned
     reason: "Polymarket market identity"

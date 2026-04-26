@@ -49,7 +49,7 @@ surfaces:
     api_kind: passive_pubsub
     bolt_status: captured_now
     reason: "Subscribed via book_deltas_pattern() -> data.book.deltas.*.*"
-    suggested_capture_storage: feather
+    suggested_capture_storage: unwrap_to_orderbookdelta
 
   - nt_api: subscribe_book_depth10
     nt_path: crates/common/src/msgbus/api.rs:285
@@ -110,7 +110,7 @@ surfaces:
     publisher_evidence: "crates/common/src/greeks.rs:634 -> msgbus::publish_greeks(topic, &greeks_data)"
     subscriber_evidence: "crates/common/src/msgbus/api.rs:379 -> pub fn subscribe_greeks(pattern: MStr<Pattern>, handler: TypedHandler<GreeksData>, priority: Option<u8>); Bolt does not subscribe."
     reason: "Polymarket binary outcomes have no greeks today; only relevant if NT-derived synthetic greeks (currently produced by crates/common/src/greeks.rs) are routed for Polymarket instruments. The publisher is the BlackScholes/greeks helper, not a venue adapter, so this is a derivation surface, not a venue feed."
-    suggested_capture_storage: boundary_wrapper
+    suggested_capture_storage: wrapper_required
     storage_evidence: "GreeksData (crates/model/src/data/greeks.rs:300-321) does NOT derive serde::Serialize/Deserialize and has no Arrow trait. Direct JSONL/Feather write impossible; requires Bolt wrapper."
 
   - nt_api: subscribe_option_greeks
@@ -123,7 +123,7 @@ surfaces:
     publisher_evidence: "crates/data/src/engine/mod.rs:891 -> msgbus::publish_option_greeks(topic, option_greeks)"
     subscriber_evidence: "crates/common/src/msgbus/api.rs:391 -> pub fn subscribe_option_greeks(pattern: MStr<Pattern>, handler: TypedHandler<OptionGreeks>, priority: Option<u8>); Bolt does not subscribe."
     reason: "Not produced by Polymarket adapter."
-    suggested_capture_storage: boundary_wrapper
+    suggested_capture_storage: wrapper_required
     storage_evidence: "OptionGreeks (crates/model/src/data/option_chain.rs:142-161) does NOT derive serde::Serialize/Deserialize and has no Arrow trait. Requires Bolt wrapper."
 
   - nt_api: subscribe_option_chain
@@ -136,7 +136,7 @@ surfaces:
     publisher_evidence: "crates/data/src/option_chains/manager.rs:736 -> msgbus::publish_option_chain(self.topic, &slice)"
     subscriber_evidence: "crates/common/src/msgbus/api.rs:403 -> pub fn subscribe_option_chain(pattern: MStr<Pattern>, handler: TypedHandler<OptionChainSlice>, priority: Option<u8>); Bolt does not subscribe."
     reason: "Option chain snapshot stream. Not produced by Polymarket adapter."
-    suggested_capture_storage: boundary_wrapper
+    suggested_capture_storage: wrapper_required
     storage_evidence: "OptionChainSlice (crates/model/src/data/option_chain.rs:235-248) does NOT derive serde::Serialize/Deserialize and has no Arrow trait. Requires Bolt wrapper."
 
   - nt_api: subscribe_order_events
@@ -146,7 +146,7 @@ surfaces:
     api_kind: passive_pubsub
     bolt_status: captured_now
     reason: "Subscribed via order_events_pattern() -> events.order.*; JSONL capture via execution_state::order_event_row"
-    suggested_capture_storage: jsonl
+    suggested_capture_storage: boundary_wrapper
 
   - nt_api: subscribe_position_events
     nt_path: crates/common/src/msgbus/api.rs:427
@@ -155,7 +155,7 @@ surfaces:
     api_kind: passive_pubsub
     bolt_status: captured_now
     reason: "Subscribed via position_events_pattern() -> events.position.*; JSONL capture via execution_state::position_event_row"
-    suggested_capture_storage: jsonl
+    suggested_capture_storage: boundary_wrapper
 
   - nt_api: subscribe_account_state
     nt_path: crates/common/src/msgbus/api.rs:439

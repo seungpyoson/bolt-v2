@@ -175,9 +175,11 @@ fn plan_market_identity_rejects_unsupported_cadence_seconds_after_mutation() {
     match plan_market_identity(&loaded) {
         Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
             strategy_instance_id,
+            configured_target_id,
             cadence_seconds,
         }) => {
             assert_eq!(strategy_instance_id.as_deref(), Some("bitcoin_updown_main"));
+            assert_eq!(configured_target_id.as_deref(), Some("btc_updown_5m"));
             assert_eq!(cadence_seconds, 120);
         }
         other => panic!("expected UnsupportedCadenceSeconds; got {other:?}"),
@@ -194,9 +196,11 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
     match plan_market_identity(&loaded) {
         Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id,
+            configured_target_id,
             cadence_seconds,
         }) => {
             assert_eq!(strategy_instance_id.as_deref(), Some("bitcoin_updown_main"));
+            assert_eq!(configured_target_id.as_deref(), Some("btc_updown_5m"));
             assert_eq!(cadence_seconds, 0);
         }
         other => panic!("expected NonPositiveCadenceSeconds; got {other:?}"),
@@ -207,13 +211,93 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
     match plan_market_identity(&loaded_neg) {
         Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id,
+            configured_target_id,
             cadence_seconds,
         }) => {
             assert_eq!(strategy_instance_id.as_deref(), Some("bitcoin_updown_main"));
+            assert_eq!(configured_target_id.as_deref(), Some("btc_updown_5m"));
             assert_eq!(cadence_seconds, -300);
         }
         other => panic!("expected NonPositiveCadenceSeconds; got {other:?}"),
     }
+}
+
+#[test]
+fn plan_market_identity_projects_strategies_in_declaration_order() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    let mut second = loaded.strategies[0].clone();
+    second.config.strategy_instance_id = "ethereum_updown_main".to_string();
+    second.config.target.configured_target_id = "eth_updown_15m".to_string();
+    second.config.target.underlying_asset = "ETH".to_string();
+    second.config.target.cadence_seconds = 900;
+
+    let mut third = loaded.strategies[0].clone();
+    third.config.strategy_instance_id = "xrp_updown_main".to_string();
+    third.config.target.configured_target_id = "xrp_updown_1h".to_string();
+    third.config.target.underlying_asset = "XRP".to_string();
+    third.config.target.cadence_seconds = 3600;
+
+    loaded.strategies.push(second);
+    loaded.strategies.push(third);
+
+    let plan = plan_market_identity(&loaded).expect("planner should succeed for valid strategies");
+    assert_eq!(plan.updown_targets.len(), 3);
+
+    assert_eq!(
+        plan.updown_targets[0].strategy_instance_id,
+        "bitcoin_updown_main"
+    );
+    assert_eq!(plan.updown_targets[0].configured_target_id, "btc_updown_5m");
+    assert_eq!(plan.updown_targets[0].cadence_slug_token, "5m");
+
+    assert_eq!(
+        plan.updown_targets[1].strategy_instance_id,
+        "ethereum_updown_main"
+    );
+    assert_eq!(
+        plan.updown_targets[1].configured_target_id,
+        "eth_updown_15m"
+    );
+    assert_eq!(plan.updown_targets[1].cadence_slug_token, "15m");
+
+    assert_eq!(
+        plan.updown_targets[2].strategy_instance_id,
+        "xrp_updown_main"
+    );
+    assert_eq!(plan.updown_targets[2].configured_target_id, "xrp_updown_1h");
+    assert_eq!(plan.updown_targets[2].cadence_slug_token, "1h");
+}
+
+#[test]
+fn updown_period_pair_rejects_overflow_at_i64_max_with_supported_cadence() {
+    match updown_period_pair(300, i64::MAX) {
+        Err(BoltV3MarketIdentityError::PeriodPairOverflow {
+            now_unix_seconds,
+            cadence_seconds,
+        }) => {
+            assert_eq!(now_unix_seconds, i64::MAX);
+            assert_eq!(cadence_seconds, 300);
+        }
+        other => panic!("expected PeriodPairOverflow; got {other:?}"),
+    }
+}
+
+#[test]
+fn candidates_for_target_propagates_period_pair_overflow() {
+    let target = UpdownTargetPlan {
+        strategy_instance_id: "bitcoin_updown_main".to_string(),
+        configured_target_id: "btc_updown_5m".to_string(),
+        venue_config_key: "polymarket_main".to_string(),
+        underlying_asset: "BTC".to_string(),
+        cadence_seconds: 300,
+        cadence_slug_token: "5m".to_string(),
+    };
+    assert!(matches!(
+        candidates_for_target(&target, i64::MAX),
+        Err(BoltV3MarketIdentityError::PeriodPairOverflow { .. })
+    ));
 }
 
 #[test]

@@ -67,14 +67,20 @@ pub struct UpdownSlugCandidates {
 pub enum BoltV3MarketIdentityError {
     NonPositiveCadenceSeconds {
         strategy_instance_id: Option<String>,
+        configured_target_id: Option<String>,
         cadence_seconds: i64,
     },
     UnsupportedCadenceSeconds {
         strategy_instance_id: Option<String>,
+        configured_target_id: Option<String>,
         cadence_seconds: i64,
     },
     NegativeNowUnixSeconds {
         now_unix_seconds: i64,
+    },
+    PeriodPairOverflow {
+        now_unix_seconds: i64,
+        cadence_seconds: i64,
     },
 }
 
@@ -83,37 +89,48 @@ impl std::fmt::Display for BoltV3MarketIdentityError {
         match self {
             BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
                 strategy_instance_id,
+                configured_target_id,
                 cadence_seconds,
-            } => match strategy_instance_id {
-                Some(id) => write!(
-                    f,
-                    "strategy `{id}`: target.cadence_seconds must be a positive integer (got {cadence_seconds})"
-                ),
-                None => write!(
-                    f,
-                    "cadence_seconds must be a positive integer (got {cadence_seconds})"
-                ),
-            },
+            } => write!(
+                f,
+                "{prefix}target.cadence_seconds must be a positive integer (got {cadence_seconds})",
+                prefix = format_target_prefix(strategy_instance_id, configured_target_id),
+            ),
             BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
                 strategy_instance_id,
+                configured_target_id,
                 cadence_seconds,
-            } => match strategy_instance_id {
-                Some(id) => write!(
-                    f,
-                    "strategy `{id}`: target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping"
-                ),
-                None => write!(
-                    f,
-                    "cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping"
-                ),
-            },
+            } => write!(
+                f,
+                "{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping",
+                prefix = format_target_prefix(strategy_instance_id, configured_target_id),
+            ),
             BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_seconds } => {
                 write!(
                     f,
                     "now_unix_seconds must be non-negative (got {now_unix_seconds})"
                 )
             }
+            BoltV3MarketIdentityError::PeriodPairOverflow {
+                now_unix_seconds,
+                cadence_seconds,
+            } => write!(
+                f,
+                "updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})"
+            ),
         }
+    }
+}
+
+fn format_target_prefix(
+    strategy_instance_id: &Option<String>,
+    configured_target_id: &Option<String>,
+) -> String {
+    match (strategy_instance_id, configured_target_id) {
+        (Some(strategy), Some(target)) => format!("strategy `{strategy}` target `{target}`: "),
+        (Some(strategy), None) => format!("strategy `{strategy}`: "),
+        (None, Some(target)) => format!("target `{target}`: "),
+        (None, None) => String::new(),
     }
 }
 
@@ -149,9 +166,11 @@ fn plan_strategy_updown_target(
     let TargetKind::RotatingMarket = target.kind;
     let RotatingMarketFamily::Updown = target.rotating_market_family;
 
+    let configured_target_id = target.configured_target_id.clone();
     if target.cadence_seconds <= 0 {
         return Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id: Some(strategy_instance_id),
+            configured_target_id: Some(configured_target_id),
             cadence_seconds: target.cadence_seconds,
         });
     }
@@ -160,6 +179,7 @@ fn plan_strategy_updown_target(
         None => {
             return Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
                 strategy_instance_id: Some(strategy_instance_id),
+                configured_target_id: Some(configured_target_id),
                 cadence_seconds: target.cadence_seconds,
             });
         }
@@ -167,7 +187,7 @@ fn plan_strategy_updown_target(
 
     Ok(Some(UpdownTargetPlan {
         strategy_instance_id,
-        configured_target_id: target.configured_target_id.clone(),
+        configured_target_id,
         venue_config_key,
         underlying_asset: target.underlying_asset.clone(),
         cadence_seconds: target.cadence_seconds,
@@ -187,6 +207,7 @@ pub fn updown_period_pair(
     if cadence_seconds <= 0 {
         return Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id: None,
+            configured_target_id: None,
             cadence_seconds,
         });
     }
@@ -194,7 +215,12 @@ pub fn updown_period_pair(
         return Err(BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_seconds });
     }
     let current = (now_unix_seconds / cadence_seconds) * cadence_seconds;
-    let next = current + cadence_seconds;
+    let next = current.checked_add(cadence_seconds).ok_or(
+        BoltV3MarketIdentityError::PeriodPairOverflow {
+            now_unix_seconds,
+            cadence_seconds,
+        },
+    )?;
     Ok((current, next))
 }
 
@@ -268,6 +294,7 @@ mod tests {
             updown_period_pair(0, 600),
             Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
                 strategy_instance_id: None,
+                configured_target_id: None,
                 cadence_seconds: 0,
             })
         ));

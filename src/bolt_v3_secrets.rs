@@ -22,7 +22,7 @@ use crate::{
         BinanceSecretsConfig, BoltV3RootConfig, LoadedBoltV3Config, PolymarketSecretsConfig,
         VenueKind,
     },
-    secrets::{pad_base64, resolve_secret, validate_binance_api_secret_shape},
+    secrets::{SsmResolverSession, pad_base64, validate_binance_api_secret_shape},
 };
 
 pub fn polymarket_forbidden_env_vars() -> &'static [&'static str] {
@@ -242,10 +242,21 @@ impl std::error::Error for BoltV3SecretError {}
 /// SSM paths in the parsed root config. Production startup must use this
 /// function; tests should call [`resolve_bolt_v3_secrets_with`] with an
 /// injected resolver instead.
+///
+/// Builds one [`SsmResolverSession`] internally so a single AWS SDK config
+/// and `SsmClient` are shared across every secret resolution in the
+/// configuration; the closure passed to [`resolve_bolt_v3_secrets_with`]
+/// captures `&session.resolve` for that purpose.
 pub fn resolve_bolt_v3_secrets(
     loaded: &LoadedBoltV3Config,
 ) -> Result<ResolvedBoltV3Secrets, BoltV3SecretError> {
-    resolve_bolt_v3_secrets_with(loaded, resolve_secret)
+    let session = SsmResolverSession::new().map_err(|error| BoltV3SecretError {
+        venue_key: String::new(),
+        field: "ssm_resolver_session".to_string(),
+        ssm_path: String::new(),
+        source: error.to_string(),
+    })?;
+    resolve_bolt_v3_secrets_with(loaded, |region, path| session.resolve(region, path))
 }
 
 /// Test-friendly variant of [`resolve_bolt_v3_secrets`] which lets the caller

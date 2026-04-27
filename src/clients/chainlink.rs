@@ -44,7 +44,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     clients::ReferenceDataClientParts,
     config::{ReferenceConfig, ReferenceVenueKind},
-    secrets::{ResolvedChainlinkSecrets, resolve_chainlink},
+    secrets::{ResolvedChainlinkSecrets, SsmResolverSession, resolve_chainlink},
 };
 
 const CHAINLINK_CLIENT_NAME: &str = "CHAINLINK";
@@ -191,12 +191,13 @@ impl DataClientFactory for ChainlinkReferenceDataClientFactory {
 }
 
 pub fn build_chainlink_reference_data_client(
+    session: &SsmResolverSession,
     reference: &ReferenceConfig,
 ) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
     let shared = reference.chainlink.as_ref().ok_or_else(|| {
         anyhow!("missing shared chainlink config for configured chainlink reference venues")
     })?;
-    let secrets = resolve_chainlink(&shared.region, &shared.api_key, &shared.api_secret)?;
+    let secrets = resolve_chainlink(session, &shared.region, &shared.api_key, &shared.api_secret)?;
     build_chainlink_reference_data_client_with_secrets(reference, secrets)
 }
 
@@ -1067,9 +1068,15 @@ mod tests {
             .chainlink
             .as_ref()
             .expect("runtime config should include reference.chainlink");
-        let resolved =
-            crate::secrets::resolve_chainlink(&shared.region, &shared.api_key, &shared.api_secret)
-                .expect("chainlink secrets should resolve");
+        let session = crate::secrets::SsmResolverSession::new()
+            .expect("SsmResolverSession should build for chainlink integration smoke");
+        let resolved = crate::secrets::resolve_chainlink(
+            &session,
+            &shared.region,
+            &shared.api_key,
+            &shared.api_secret,
+        )
+        .expect("chainlink secrets should resolve");
         let (_, client_config_any) =
             build_chainlink_reference_data_client_with_secrets(&config.reference, resolved)
                 .expect("chainlink client config should build");

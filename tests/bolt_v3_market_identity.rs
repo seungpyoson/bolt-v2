@@ -489,3 +489,355 @@ fn core_market_identity_module_remains_provider_neutral_and_runtime_free() {
         );
     }
 }
+
+#[test]
+fn core_market_identity_module_must_be_provider_neutral() {
+    // Dedicated provider-axis guard. The core module is the product
+    // boundary that provider bindings translate into provider-shaped
+    // adapter values, so no specific data/venue provider name (in any
+    // identifier or docstring casing) may appear in core source.
+    // Provider-shaped translation belongs in `bolt_v3_adapters.rs` or
+    // a future per-provider binding module, not in core.
+    let src = include_str!("../src/bolt_v3_market_identity.rs");
+    let forbidden = [
+        "Polymarket",
+        "polymarket",
+        "Binance",
+        "binance",
+        "Gamma",
+        "gamma",
+        "Chainlink",
+        "chainlink",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_market_identity.rs must be provider-neutral; \
+             source unexpectedly references `{symbol}`. \
+             Provider-specific translation belongs in the adapter / \
+             provider-binding layer, not in core market identity."
+        );
+    }
+}
+
+#[test]
+fn core_market_identity_module_must_be_market_family_neutral() {
+    // Dedicated market-family-axis guard. A provider-neutral core
+    // must also be neutral about which *kind* of market it identifies.
+    // Updown rotating-cadence semantics, slug formatting, the cadence
+    // -> slug-token mapping, and provider-specific filter surfaces are
+    // all market-family choices. They belong in a market-family
+    // binding module (one per family) so a future binary / scalar /
+    // event family can plug in without editing core. Today the core
+    // module still encodes the updown family directly, so this guard
+    // fails on purpose to force that move.
+    let src = include_str!("../src/bolt_v3_market_identity.rs");
+    let forbidden = [
+        // Updown family identifier and prose forms.
+        "updown",
+        "Updown",
+        // Slug as a market-family concept (formatting, candidates,
+        // cadence -> token mapping). Substring match intentionally
+        // catches `cadence_slug_token`, `updown_market_slug`,
+        // `UpdownSlugCandidates`, `MarketSlugFilter`, etc.
+        "slug",
+        "Slug",
+        "cadence_slug_token",
+        "MarketSlugFilter",
+        // Rotating-market family kind, in identifier and TOML/prose
+        // casings.
+        "RotatingMarket",
+        "RotatingMarketFamily",
+        "rotating_market_family",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_market_identity.rs must be market-family-neutral; \
+             source unexpectedly references `{symbol}`. \
+             Updown / slug / cadence-token / rotating-market concepts \
+             belong in a per-family binding module, not in the \
+             provider-neutral core."
+        );
+    }
+}
+
+#[test]
+fn core_market_identity_module_must_be_strategy_policy_neutral() {
+    // Dedicated strategy-policy-axis guard. A provider-neutral,
+    // market-family-neutral core must also stay free of strategy
+    // policy: which candidate to take (current vs next), which side
+    // of the book to lean against (edge-taker / maker), or which
+    // resolution-shape to favour (binary oracle, scalar, etc.).
+    // Those are strategy-policy concerns and live in a strategy-
+    // policy module, not in core market identity. Today the core
+    // module encodes a current/next selection directly via field
+    // names like `current_market_slug` / `next_market_slug` and
+    // `current_period_start_unix_seconds` /
+    // `next_period_start_unix_seconds`, so this guard fails on
+    // purpose to force that move.
+    let src = include_str!("../src/bolt_v3_market_identity.rs");
+    let forbidden = [
+        // Current-or-next candidate selection: identifier forms used
+        // by today's `UpdownSlugCandidates`, plus the future
+        // strategy-policy names this slice is paving the way for.
+        "current_market_slug",
+        "next_market_slug",
+        "current_period_start_unix_seconds",
+        "next_period_start_unix_seconds",
+        "active_or_next",
+        "ActiveOrNext",
+        // Strategy archetypes (binary oracle edge-taker and similar).
+        "binary_oracle_edge_taker",
+        "BinaryOracleEdgeTaker",
+        "edge_taker",
+        "EdgeTaker",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_market_identity.rs must be strategy-policy-neutral; \
+             source unexpectedly references `{symbol}`. \
+             Current/next candidate selection and strategy archetypes \
+             (edge-taker, binary-oracle-edge-taker, ...) belong in a \
+             strategy-policy module, not in the provider-neutral core."
+        );
+    }
+}
+
+#[test]
+fn validate_module_must_not_own_updown_slug_token_policy() {
+    // Bolt-v3 startup validation must stay structural and dispatch
+    // family-specific policy out to the per-family binding module.
+    // The updown cadence slug-token table, its lookup helpers, and
+    // its error-message policy belong to the updown family binding,
+    // not to core validation. Validate.rs may still call into the
+    // updown family validator (`bolt_v3_market_families::updown::*`)
+    // to check family-shaped target fields; the substrings forbidden
+    // below pin policy *ownership*, not the dispatch call itself.
+    let src = include_str!("../src/bolt_v3_validate.rs");
+    let forbidden = [
+        // Owned table identifier and helper symbol names.
+        "UPDOWN_CADENCE_SLUG_TOKEN_TABLE",
+        "updown_cadence_slug_token",
+        "supported_updown_cadence_seconds",
+        // Updown slug-token error/message policy phrase, in both the
+        // hyphenated prose form used in error messages and the
+        // snake_case identifier form.
+        "slug-token",
+        "slug_token",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_validate.rs must not own updown slug-token policy; \
+             source unexpectedly references `{symbol}`. \
+             Move the updown slug-token table, its helpers, and its error \
+             messaging to src/bolt_v3_market_families/updown.rs; have \
+             validate.rs dispatch into the updown family validator instead."
+        );
+    }
+}
+
+#[test]
+fn config_module_must_not_hard_type_parameters_field_to_one_archetype() {
+    // Bolt-v3 root/strategy config envelope must stay archetype-neutral
+    // even at the field-type level. The strategy envelope keeps the
+    // TOML field name `parameters` (lowercase, allowed below) but its
+    // Rust type must be a generic raw-TOML container — the concrete
+    // archetype-shaped `ParametersBlock` must not appear in
+    // `src/bolt_v3_config.rs`, and the envelope must not import or
+    // path-reference the per-archetype binding module
+    // (`binary_oracle_edge_taker`). The substrings forbidden below pin
+    // that neutrality: a `pub parameters: ParametersBlock`-style
+    // declaration or a `crate::bolt_v3_archetypes::binary_oracle_edge_taker::*`
+    // path in core config is a regression. Note: the field name
+    // `parameters` itself is lowercase and not on this list, and the
+    // archetype dispatch identifier `StrategyArchetype::BinaryOracleEdgeTaker`
+    // (PascalCase, not snake_case) is also intentionally not listed.
+    let src = include_str!("../src/bolt_v3_config.rs");
+    let forbidden = ["ParametersBlock", "binary_oracle_edge_taker"];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_config.rs must not hard-type `parameters` to one archetype's parameter row \
+             or path-reference the per-archetype binding module; \
+             source unexpectedly references `{symbol}`. \
+             Type the strategy envelope's `parameters` field as a generic raw-TOML \
+             container (`toml::Value`) and have \
+             `crate::bolt_v3_archetypes::binary_oracle_edge_taker` deserialize it \
+             into its local ParametersBlock during validation, dispatched via \
+             `StrategyArchetype`."
+        );
+    }
+}
+
+#[test]
+fn config_module_must_not_own_archetype_parameter_or_order_types() {
+    // Bolt-v3 root/strategy config envelope must stay archetype-neutral
+    // and dispatch archetype-shaped `[parameters]` / `[parameters.*]`
+    // block types out to the per-archetype binding module. The config
+    // module owns the strategy envelope (including the field name
+    // `parameters` and the dispatch identifier
+    // `StrategyArchetype::BinaryOracleEdgeTaker`); the concrete shape
+    // of the `[parameters]` block, the `[parameters.entry_order]` /
+    // `[parameters.exit_order]` rows, and the order-type / time-in-
+    // force enums all belong to the archetype binding
+    // (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`). The
+    // forbidden substrings below pin policy *ownership*: a `pub struct`
+    // or `pub enum` definition for any of these names in
+    // `src/bolt_v3_config.rs` is a regression. The strategy envelope
+    // may still *reference* the archetype-owned `ParametersBlock` by
+    // path or via a `use` statement so the existing TOML schema keeps
+    // working — only the local definition is forbidden.
+    let src = include_str!("../src/bolt_v3_config.rs");
+    let forbidden = [
+        "pub struct ParametersBlock",
+        "pub struct OrderParams",
+        "pub enum ArchetypeOrderType",
+        "pub enum ArchetypeTimeInForce",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_config.rs must not own archetype parameter or order types; \
+             source unexpectedly defines `{symbol}`. \
+             Move ParametersBlock, OrderParams, ArchetypeOrderType, and \
+             ArchetypeTimeInForce to \
+             src/bolt_v3_archetypes/binary_oracle_edge_taker.rs; reference \
+             the archetype-owned ParametersBlock from the strategy \
+             envelope instead of redefining it in core config."
+        );
+    }
+}
+
+#[test]
+fn config_module_must_not_own_provider_specific_config_block_types() {
+    // Bolt-v3 root/strategy config envelope must stay provider-neutral
+    // and dispatch provider-specific block shapes out to the per-
+    // provider binding modules. The config module owns the root and
+    // strategy envelope plus minimal dispatch identifiers like
+    // `VenueKind::Polymarket` / `VenueKind::Binance`; concrete
+    // `[venues.<name>.{data,execution,secrets}]` block shapes belong to
+    // a per-provider binding (`crate::bolt_v3_providers::polymarket` or
+    // `crate::bolt_v3_providers::binance`), not to core config. The
+    // type names forbidden below pin policy *ownership* — none of these
+    // provider config block types may be defined or otherwise named in
+    // `src/bolt_v3_config.rs`. Note: this guard is deliberately scoped
+    // to provider config block *types* only; minimal dispatch
+    // identifiers like `VenueKind::Polymarket` / `VenueKind::Binance`
+    // remain in core config and are not forbidden here.
+    let src = include_str!("../src/bolt_v3_config.rs");
+    let forbidden = [
+        // Polymarket per-block config types.
+        "PolymarketDataConfig",
+        "PolymarketExecutionConfig",
+        "PolymarketSignatureType",
+        "PolymarketSecretsConfig",
+        // Binance per-block config types.
+        "BinanceDataConfig",
+        "BinanceProductType",
+        "BinanceEnvironment",
+        "BinanceSecretsConfig",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_config.rs must not own provider-specific config block types; \
+             source unexpectedly references `{symbol}`. \
+             Move Polymarket data/execution/secrets/signature types to \
+             src/bolt_v3_providers/polymarket.rs and Binance \
+             data/secrets/product/environment types to \
+             src/bolt_v3_providers/binance.rs; have validate, secrets, \
+             and adapters import the moved types from the \
+             `bolt_v3_providers` namespace instead."
+        );
+    }
+}
+
+#[test]
+fn config_module_must_not_own_market_family_target_types() {
+    // Bolt-v3 root/strategy config envelope must stay market-family-
+    // neutral and dispatch market-family-shaped target block types out
+    // to the per-family binding modules. The config module owns the
+    // strategy envelope (including the field name `target` and minimal
+    // dispatch identifiers if still needed during this slice); the
+    // concrete target-shape types — rotating-market `TargetBlock`, the
+    // `RotatingMarketFamily` enum, and the `MarketSelectionRule` enum —
+    // belong to a market-family binding (`crate::bolt_v3_market_families::updown`),
+    // not to core config. The substrings forbidden below pin policy
+    // *ownership*: a `pub struct` or `pub enum` definition for any of
+    // these names in `src/bolt_v3_config.rs` is a regression. The TOML
+    // field name `target` itself is lowercase and not on this list, and
+    // any minimal dispatch identifier needed during this slice is
+    // intentionally not forbidden either.
+    let src = include_str!("../src/bolt_v3_config.rs");
+    let forbidden = [
+        "pub struct TargetBlock",
+        "pub enum RotatingMarketFamily",
+        "pub enum MarketSelectionRule",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_config.rs must not own market-family target-shape types; \
+             source unexpectedly defines `{symbol}`. \
+             Move TargetBlock, RotatingMarketFamily, and MarketSelectionRule \
+             to src/bolt_v3_market_families/updown.rs; type the strategy \
+             envelope's `target` field as a generic raw-TOML container \
+             (`toml::Value`) and have the updown family binding deserialize \
+             it into its local TargetBlock during validation and planning."
+        );
+    }
+}
+
+#[test]
+fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
+    // Bolt-v3 startup validation must stay structural and dispatch
+    // strategy-archetype policy out to a dedicated archetype module.
+    // The `binary_oracle_edge_taker` archetype's required reference-data
+    // role, its allowed entry/exit order-combination rules, and the
+    // error-message policy that names those rules belong to the
+    // archetype binding (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`),
+    // not to core validation. Validate.rs may still dispatch into the
+    // archetype validator through the `bolt_v3_archetypes` namespace;
+    // the substrings forbidden below pin policy *ownership*, not the
+    // dispatch call itself.
+    let src = include_str!("../src/bolt_v3_validate.rs");
+    let forbidden = [
+        // Archetype identifier in snake_case (error messages, helper
+        // names, module-leaf paths) and PascalCase (enum variant). The
+        // dispatcher in `bolt_v3_archetypes::mod` owns the match on
+        // `StrategyArchetype::BinaryOracleEdgeTaker`, so neither casing
+        // needs to appear in core validation.
+        "binary_oracle_edge_taker",
+        "BinaryOracleEdgeTaker",
+        // Migrated helper symbol names.
+        "check_binary_oracle_entry_order_combination",
+        "check_binary_oracle_exit_order_combination",
+        // Concrete entry/exit order-combination error-message phrases
+        // (both the "is not allowed" headline and the per-field rule
+        // listings that name `order_type=limit/market` and
+        // `time_in_force=fok/ioc`).
+        "entry_order combination",
+        "exit_order combination",
+        "order_type=limit",
+        "order_type=market",
+        "time_in_force=fok",
+        "time_in_force=ioc",
+        // Concrete archetype-required reference-data error-message phrase.
+        "[reference_data.primary]",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_validate.rs must not own binary_oracle_edge_taker policy; \
+             source unexpectedly references `{symbol}`. \
+             Move the archetype's required reference-data role, its \
+             entry/exit order-combination rules, and the matching error \
+             messages to src/bolt_v3_archetypes/binary_oracle_edge_taker.rs; \
+             have validate.rs dispatch into the archetype validator via \
+             the `bolt_v3_archetypes` namespace instead."
+        );
+    }
+}

@@ -2,6 +2,7 @@ pub mod bolt_v3_adapters;
 pub mod bolt_v3_client_registration;
 pub mod bolt_v3_config;
 pub mod bolt_v3_live_node;
+pub mod bolt_v3_market_identity;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_validate;
 pub mod clients;

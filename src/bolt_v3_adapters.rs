@@ -108,6 +108,15 @@ pub enum BoltV3AdapterMappingError {
         field: &'static str,
         message: String,
     },
+    /// The caller passed a config value that validated bolt-v3 startup
+    /// must reject before mapping to NT. Keeping this guard at the
+    /// mapper boundary prevents programmatic callers from bypassing
+    /// root validation and reaching a hidden NT runtime behavior.
+    ValidationInvariant {
+        venue_key: String,
+        field: &'static str,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for BoltV3AdapterMappingError {
@@ -146,6 +155,14 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
             } => write!(
                 f,
                 "venues.{venue_key}.{field}: bolt-v3 value does not fit the NT-native field type: {message}",
+            ),
+            BoltV3AdapterMappingError::ValidationInvariant {
+                venue_key,
+                field,
+                message,
+            } => write!(
+                f,
+                "venues.{venue_key}.{field}: bolt-v3 validation invariant failed at adapter mapping: {message}",
             ),
         }
     }
@@ -226,6 +243,13 @@ fn map_polymarket_data(
                 message: error.to_string(),
             }
         })?;
+    if cfg.subscribe_new_markets {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key: venue_key.to_string(),
+            field: "data.subscribe_new_markets",
+            message: "must be false before mapping to NT because pinned NT subscribes to all Polymarket markets when this flag is true".to_string(),
+        });
+    }
     let ws_max_subscriptions = usize::try_from(cfg.websocket_max_subscriptions_per_connection)
         .map_err(|_| BoltV3AdapterMappingError::NumericRange {
             venue_key: venue_key.to_string(),

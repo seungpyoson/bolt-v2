@@ -135,6 +135,39 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 }
 
 #[test]
+fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed() {
+    // Root validation rejects this value. This test mutates an already
+    // loaded config to ensure the adapter mapper also fails closed if a
+    // programmatic caller bypasses the canonical validation path.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let polymarket_data = loaded
+        .root
+        .venues
+        .get_mut("polymarket_main")
+        .and_then(|venue| venue.data.as_mut())
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture polymarket data table should exist");
+    polymarket_data.insert(
+        "subscribe_new_markets".to_string(),
+        toml::Value::Boolean(true),
+    );
+
+    let resolved = fixture_resolved_secrets();
+    let error = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect_err("mapper must not forward subscribe_new_markets=true to NT");
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key, field, ..
+        } => {
+            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(field, "data.subscribe_new_markets");
+        }
+        other => panic!("expected ValidationInvariant, got {other}"),
+    }
+}
+
+#[test]
 fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

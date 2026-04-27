@@ -229,6 +229,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 - type: positive integer
 - required: yes
+- bounds the explicit bolt-v3 controlled-connect boundary
 
 #### `timeout_reconciliation_seconds`
 
@@ -251,6 +252,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 - type: positive integer
 - required: yes
+- bounds the explicit bolt-v3 controlled-disconnect boundary
 
 #### `delay_post_stop_seconds`
 

@@ -258,6 +258,7 @@ pub struct MockDataClientConfig {
     connect_delay: Duration,
     connect_failure: Option<String>,
     disconnect_delay: Duration,
+    disconnect_failure: Option<String>,
 }
 
 impl MockDataClientConfig {
@@ -268,6 +269,7 @@ impl MockDataClientConfig {
             connect_delay: Duration::ZERO,
             connect_failure: None,
             disconnect_delay: Duration::ZERO,
+            disconnect_failure: None,
         }
     }
 
@@ -293,6 +295,15 @@ impl MockDataClientConfig {
     /// controlled-disconnect timeout path without touching real I/O.
     pub fn with_disconnect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
         self.disconnect_delay = Duration::from_millis(milliseconds);
+        self
+    }
+
+    /// Configures the mock to surface an `Err(...)` from its
+    /// `DataClient::disconnect` implementation. The bolt-v3
+    /// controlled-disconnect boundary must propagate this as
+    /// `DisconnectFailed` rather than silently swallowing it.
+    pub fn with_disconnect_failure(mut self, message: &str) -> Self {
+        self.disconnect_failure = Some(message.to_string());
         self
     }
 }
@@ -348,6 +359,7 @@ impl DataClientFactory for MockDataClientFactory {
             cfg.connect_delay,
             cfg.connect_failure.clone(),
             cfg.disconnect_delay,
+            cfg.disconnect_failure.clone(),
         )))
     }
 
@@ -402,6 +414,7 @@ struct MockDataClient {
     connect_delay: Duration,
     connect_failure: Option<String>,
     disconnect_delay: Duration,
+    disconnect_failure: Option<String>,
 }
 
 impl MockDataClient {
@@ -411,6 +424,7 @@ impl MockDataClient {
         connect_delay: Duration,
         connect_failure: Option<String>,
         disconnect_delay: Duration,
+        disconnect_failure: Option<String>,
     ) -> Self {
         Self {
             client_id,
@@ -419,6 +433,7 @@ impl MockDataClient {
             connect_delay,
             connect_failure,
             disconnect_delay,
+            disconnect_failure,
         }
     }
 }
@@ -496,6 +511,9 @@ impl DataClient for MockDataClient {
     async fn disconnect(&mut self) -> anyhow::Result<()> {
         if !self.disconnect_delay.is_zero() {
             tokio::time::sleep(self.disconnect_delay).await;
+        }
+        if let Some(message) = &self.disconnect_failure {
+            return Err(anyhow::anyhow!(message.clone()));
         }
         self.connected = false;
         Ok(())

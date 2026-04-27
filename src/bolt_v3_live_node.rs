@@ -28,10 +28,12 @@
 //!   `nautilus_binance::common::credential` even when the root TOML log
 //!   level is `INFO`
 //!
-//! The caller owns the `LiveNode`; this module never starts the event
-//! loop, opens an external network connection, subscribes to market
-//! data through any user-level `subscribe_*` API, registers a strategy
-//! actor, constructs an order, or enables any submit path.
+//! The caller owns the `LiveNode`; the build path never opens an
+//! external network connection. The opt-in controlled-connect boundary
+//! may open adapter sockets, but this module never starts the event
+//! loop, subscribes to market data through any user-level `subscribe_*`
+//! API, registers a strategy actor, constructs an order, or enables
+//! any submit path.
 
 use std::time::Duration;
 
@@ -104,10 +106,9 @@ pub enum BoltV3LiveNodeError {
     /// dispatchers swallow individual client `connect()` errors and
     /// only log them, so bolt-v3 consults
     /// `NautilusKernel::check_engines_connected()` after dispatch
-    /// returns to keep this failure mode honest. This variant has no
-    /// per-client identifier list because the pinned NT engine API
-    /// does not expose one cleanly, and bolt-v3 does not synthesize
-    /// an unreliable list. Callers should follow this with a
+    /// returns to keep this failure mode honest. This slice keeps the
+    /// variant generic rather than synthesizing a per-client failure
+    /// list. Callers should follow this with a
     /// [`disconnect_bolt_v3_clients`] call to drain any partially
     /// connected clients under the bounded controlled-disconnect
     /// boundary.
@@ -115,7 +116,7 @@ pub enum BoltV3LiveNodeError {
     /// The bolt-v3 controlled-disconnect boundary
     /// ([`disconnect_bolt_v3_clients`]) bounds the
     /// `NautilusKernel::disconnect_clients` future by the
-    /// `nautilus.timeout_connection_seconds` value from the loaded
+    /// `nautilus.timeout_disconnection_seconds` value from the loaded
     /// bolt-v3 config. A `DisconnectTimeout` is surfaced when that
     /// bound elapses before NT finishes disconnecting all data and
     /// execution clients, instead of the controlled-disconnect call
@@ -161,7 +162,7 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds } => write!(
                 f,
                 "bolt-v3 controlled-disconnect exceeded the configured \
-                 nautilus.timeout_connection_seconds bound ({timeout_seconds}s)"
+                 nautilus.timeout_disconnection_seconds bound ({timeout_seconds}s)"
             ),
             BoltV3LiveNodeError::DisconnectFailed(error) => write!(
                 f,
@@ -422,7 +423,7 @@ pub async fn connect_bolt_v3_clients(
 /// (`NautilusKernel::disconnect_clients`) on every NT data and
 /// execution client previously added through the bolt-v3
 /// client-registration boundary, bounded by the bolt-v3
-/// `nautilus.timeout_connection_seconds` value from `loaded`.
+/// `nautilus.timeout_disconnection_seconds` value from `loaded`.
 ///
 /// Recovery counterpart to [`connect_bolt_v3_clients`]: after a
 /// `ConnectTimeout` or `ConnectIncomplete` the caller is expected to
@@ -436,7 +437,10 @@ pub async fn connect_bolt_v3_clients(
 /// configured bound. On NT's engine-level disconnect aggregator
 /// surfacing an `Err(..)`, the function returns
 /// [`BoltV3LiveNodeError::DisconnectFailed`] wrapping the NT
-/// `anyhow::Error`.
+/// `anyhow::Error`. Pinned NT disconnects data clients before
+/// execution clients and can short-circuit on a data-client error; a
+/// `DisconnectFailed` therefore leaves cleanup state indeterminate and
+/// production recovery should rebuild a fresh `LiveNode`.
 ///
 /// This boundary is **no-trade**: it never enters NT's runner loop,
 /// never invokes NT's trader entrypoint, never registers strategies,
@@ -449,7 +453,7 @@ pub async fn disconnect_bolt_v3_clients(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = loaded.root.nautilus.timeout_connection_seconds;
+    let timeout_seconds = loaded.root.nautilus.timeout_disconnection_seconds;
     let bound = Duration::from_secs(timeout_seconds);
     let disconnect = async { node.kernel_mut().disconnect_clients().await };
     match tokio::time::timeout(bound, disconnect).await {

@@ -43,14 +43,18 @@ use support::{
     recorded_mock_exec_submissions, repo_path,
 };
 
-fn fixture_loaded_with_connection_timeout(timeout_secs: u64) -> LoadedBoltV3Config {
-    // Load the production fixture, then rewrite only
-    // `nautilus.timeout_connection_seconds` so the controlled-connect
-    // boundary has an explicit per-test bound. Every other field stays
-    // exactly as production reads it from disk.
+fn fixture_loaded_with_timeouts(
+    connection_timeout_secs: u64,
+    disconnection_timeout_secs: u64,
+) -> LoadedBoltV3Config {
+    // Load the production fixture, then rewrite only the Nautilus
+    // timeout fields this boundary owns so each test has explicit
+    // bounds. Every other field stays exactly as production reads it
+    // from disk.
     let root_path = repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.nautilus.timeout_connection_seconds = timeout_secs;
+    loaded.root.nautilus.timeout_connection_seconds = connection_timeout_secs;
+    loaded.root.nautilus.timeout_disconnection_seconds = disconnection_timeout_secs;
     loaded
 }
 
@@ -59,7 +63,7 @@ fn controlled_connect_dispatches_engine_connect_on_mock_clients_without_starting
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
-    let loaded = fixture_loaded_with_connection_timeout(30);
+    let loaded = fixture_loaded_with_timeouts(30, 10);
 
     let builder =
         make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
@@ -153,7 +157,7 @@ fn controlled_connect_returns_timeout_when_engine_connect_exceeds_configured_bou
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
-    let loaded = fixture_loaded_with_connection_timeout(1);
+    let loaded = fixture_loaded_with_timeouts(1, 10);
     let builder =
         make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
     let builder = builder
@@ -208,7 +212,7 @@ fn controlled_connect_returns_incomplete_when_engine_swallows_client_connect_fai
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
-    let loaded = fixture_loaded_with_connection_timeout(30);
+    let loaded = fixture_loaded_with_timeouts(30, 10);
 
     let builder =
         make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
@@ -256,7 +260,7 @@ fn controlled_disconnect_after_successful_connect_returns_ok_and_disconnects_eng
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
-    let loaded = fixture_loaded_with_connection_timeout(30);
+    let loaded = fixture_loaded_with_timeouts(30, 10);
     let builder =
         make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
     let builder = builder
@@ -296,12 +300,8 @@ fn controlled_disconnect_after_successful_connect_returns_ok_and_disconnects_eng
         .expect("controlled-disconnect must succeed against mock clients");
 
     assert!(
-        node.kernel().data_engine.borrow().check_disconnected(),
-        "data engine must report all clients disconnected after controlled-disconnect"
-    );
-    assert!(
-        node.kernel().exec_engine.borrow().check_disconnected(),
-        "exec engine must report all clients disconnected after controlled-disconnect"
+        node.kernel().check_engines_disconnected(),
+        "kernel must report all engine clients disconnected after controlled-disconnect"
     );
     assert_eq!(
         node.state(),
@@ -317,7 +317,10 @@ fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configur
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
-    let loaded = fixture_loaded_with_connection_timeout(1);
+    // Keep the connect bound generous and the disconnect bound short
+    // so this test proves controlled-disconnect uses
+    // `timeout_disconnection_seconds`, not the connection timeout.
+    let loaded = fixture_loaded_with_timeouts(30, 1);
     let builder =
         make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
     let builder = builder
@@ -362,6 +365,60 @@ fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configur
 }
 
 #[test]
+fn controlled_disconnect_propagates_engine_disconnect_failure() {
+    clear_mock_data_subscriptions();
+    clear_mock_exec_submissions();
+
+    let loaded = fixture_loaded_with_timeouts(30, 10);
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
+    let builder = builder
+        .add_data_client(
+            Some("FAILING_DISCONNECT_MOCK_DATA".to_string()),
+            Box::new(MockDataClientFactory),
+            Box::new(
+                MockDataClientConfig::new("FAILING_DISCONNECT_MOCK_DATA", "MOCKVENUE")
+                    .with_disconnect_failure("simulated bolt-v3 mock disconnect failure"),
+            ),
+        )
+        .expect("failing-disconnect mock data client should register on bolt-v3 builder");
+    let mut node = builder
+        .build()
+        .expect("LiveNode should build with failing-disconnect mock data client");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build for controlled-disconnect failure test");
+    runtime
+        .block_on(connect_bolt_v3_clients(&mut node, &loaded))
+        .expect("controlled-connect must succeed before disconnect-failure test");
+
+    let error = runtime
+        .block_on(disconnect_bolt_v3_clients(&mut node, &loaded))
+        .expect_err("controlled-disconnect must propagate NT disconnect errors");
+
+    match error {
+        BoltV3LiveNodeError::DisconnectFailed(error) => {
+            assert!(
+                error
+                    .to_string()
+                    .contains("simulated bolt-v3 mock disconnect failure"),
+                "DisconnectFailed must preserve the NT disconnect error, got: {error}"
+            );
+        }
+        other => panic!("expected DisconnectFailed, got {other}"),
+    }
+    assert_eq!(
+        node.state(),
+        NodeState::Idle,
+        "disconnect-failure path must not transition NodeState"
+    );
+    assert!(recorded_mock_exec_submissions().is_empty());
+    assert!(recorded_mock_data_subscriptions().is_empty());
+}
+
+#[test]
 fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
     // After `connect_bolt_v3_clients` returns a `ConnectTimeout`, the
     // bolt-v3 LiveNode is left in a partially-connected state owned by
@@ -373,7 +430,7 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
-    let loaded = fixture_loaded_with_connection_timeout(1);
+    let loaded = fixture_loaded_with_timeouts(1, 30);
     let builder =
         make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
     let builder = builder

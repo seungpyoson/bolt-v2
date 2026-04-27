@@ -25,12 +25,27 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config,
-    bolt_v3_market_identity::{
+    bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
+    bolt_v3_market_families::updown::{
         BoltV3MarketIdentityError, UpdownSlugCandidates, UpdownTargetPlan, candidates_for_target,
         plan_market_identity, updown_market_slug, updown_period_pair,
     },
 };
+
+/// Mutate a single field in the strategy's raw `[target]` TOML
+/// envelope. The strategy envelope keeps `target` as a generic raw-
+/// TOML container so market-family-shaped fields live in the per-
+/// family binding module; tests that previously assigned to a typed
+/// `TargetBlock` field reach the same effect by inserting on the
+/// table.
+fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value) {
+    strategy
+        .config
+        .target
+        .as_table_mut()
+        .expect("strategy [target] should be a TOML table")
+        .insert(key.to_string(), value);
+}
 
 #[test]
 fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
@@ -170,7 +185,11 @@ fn plan_market_identity_rejects_unsupported_cadence_seconds_after_mutation() {
 
     // Direct struct mutation: cadence=120 has no slug-token mapping in
     // the runtime-contract table.
-    loaded.strategies[0].config.target.cadence_seconds = 120;
+    set_target_field(
+        &mut loaded.strategies[0],
+        "cadence_seconds",
+        toml::Value::Integer(120),
+    );
 
     match plan_market_identity(&loaded) {
         Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
@@ -191,7 +210,11 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    loaded.strategies[0].config.target.cadence_seconds = 0;
+    set_target_field(
+        &mut loaded.strategies[0],
+        "cadence_seconds",
+        toml::Value::Integer(0),
+    );
 
     match plan_market_identity(&loaded) {
         Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
@@ -207,7 +230,11 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
     }
 
     let mut loaded_neg = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded_neg.strategies[0].config.target.cadence_seconds = -300;
+    set_target_field(
+        &mut loaded_neg.strategies[0],
+        "cadence_seconds",
+        toml::Value::Integer(-300),
+    );
     match plan_market_identity(&loaded_neg) {
         Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id,
@@ -253,20 +280,44 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     {
         let first = &mut loaded.strategies[0];
         first.config.strategy_instance_id = "zeta_strategy_main".to_string();
-        first.config.target.configured_target_id = "ltc_updown_15m".to_string();
-        first.config.target.underlying_asset = "LTC".to_string();
-        first.config.target.cadence_seconds = 900;
+        set_target_field(
+            first,
+            "configured_target_id",
+            toml::Value::String("ltc_updown_15m".to_string()),
+        );
+        set_target_field(
+            first,
+            "underlying_asset",
+            toml::Value::String("LTC".to_string()),
+        );
+        set_target_field(first, "cadence_seconds", toml::Value::Integer(900));
     }
 
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
-    second.config.target.configured_target_id = "xrp_updown_5m".to_string();
-    second.config.target.underlying_asset = "XRP".to_string();
-    second.config.target.cadence_seconds = 300;
+    set_target_field(
+        &mut second,
+        "configured_target_id",
+        toml::Value::String("xrp_updown_5m".to_string()),
+    );
+    set_target_field(
+        &mut second,
+        "underlying_asset",
+        toml::Value::String("XRP".to_string()),
+    );
+    set_target_field(&mut second, "cadence_seconds", toml::Value::Integer(300));
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
-    third.config.target.configured_target_id = "btc_updown_1h".to_string();
-    third.config.target.underlying_asset = "BTC".to_string();
-    third.config.target.cadence_seconds = 3600;
+    set_target_field(
+        &mut third,
+        "configured_target_id",
+        toml::Value::String("btc_updown_1h".to_string()),
+    );
+    set_target_field(
+        &mut third,
+        "underlying_asset",
+        toml::Value::String("BTC".to_string()),
+    );
+    set_target_field(&mut third, "cadence_seconds", toml::Value::Integer(3600));
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);

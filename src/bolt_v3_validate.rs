@@ -1,17 +1,39 @@
 //! Startup-shaping validation for bolt-v3 root and strategy configs.
 //!
 //! Schema rules: docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 8.
-//! Cadence slug-token table: docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 5.3.
+//!
+//! This module owns common strategy-envelope validation (schema
+//! version, uniqueness of instance / order-id-tag, venue / execution
+//! lookup, per-role reference-data structural validation), root-block
+//! validation, and root risk decimal syntax only. Market-family-shaped
+//! target rules
+//! (rotating-market kind, family discriminator, cadence policy,
+//! underlying-asset shape, retry / blocked timers, market-selection
+//! rule) are owned by the per-family binding modules under
+//! `crate::bolt_v3_market_families`; `validate_strategies` dispatches
+//! the strategy envelope's raw `[target]` value through
+//! `crate::bolt_v3_market_families::validate_strategy_target`. Strategy-
+//! archetype-specific rules (required reference-data roles, allowed
+//! `[parameters.entry_order]` / `[parameters.exit_order]` combinations,
+//! archetype-specific error wording) are owned by the per-archetype
+//! binding modules under `crate::bolt_v3_archetypes`; those modules also
+//! own archetype parameter bounds such as parameter decimal syntax and
+//! root-cap comparison. `validate_strategies` dispatches into the
+//! matching archetype validator via
+//! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
 
 use std::{collections::BTreeMap, collections::HashSet, path::Path};
 
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    ArchetypeOrderType, ArchetypeTimeInForce, AwsBlock, BinanceDataConfig, BinanceSecretsConfig,
-    BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock, OrderParams,
-    PersistenceBlock, PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSecretsConfig,
-    PolymarketSignatureType, RiskBlock, StrategyArchetype, TargetBlock, VenueBlock, VenueKind,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock,
+    PersistenceBlock, RiskBlock, VenueBlock, VenueKind,
+};
+use crate::bolt_v3_providers::binance::{BinanceDataConfig, BinanceSecretsConfig};
+use crate::bolt_v3_providers::polymarket::{
+    PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSecretsConfig,
+    PolymarketSignatureType,
 };
 
 #[derive(Debug)]
@@ -45,27 +67,6 @@ impl std::fmt::Display for BoltV3ValidationError {
 }
 
 impl std::error::Error for BoltV3ValidationError {}
-
-const UPDOWN_CADENCE_SLUG_TOKEN_TABLE: &[(i64, &str)] = &[
-    (60, "1m"),
-    (300, "5m"),
-    (900, "15m"),
-    (3600, "1h"),
-    (14400, "4h"),
-];
-
-pub fn updown_cadence_slug_token(cadence_seconds: i64) -> Option<&'static str> {
-    UPDOWN_CADENCE_SLUG_TOKEN_TABLE
-        .iter()
-        .find_map(|(seconds, token)| (*seconds == cadence_seconds).then_some(*token))
-}
-
-pub fn supported_updown_cadence_seconds() -> Vec<i64> {
-    UPDOWN_CADENCE_SLUG_TOKEN_TABLE
-        .iter()
-        .map(|(seconds, _)| *seconds)
-        .collect()
-}
 
 pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 1;
@@ -488,7 +489,7 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
 
     let mut seen_instance_ids: HashSet<&str> = HashSet::new();
     let mut seen_order_id_tags: HashSet<&str> = HashSet::new();
-    let mut seen_target_ids: HashSet<&str> = HashSet::new();
+    let mut seen_target_ids: HashSet<String> = HashSet::new();
 
     let default_max_notional_decimal =
         parse_decimal_string(&root.risk.default_max_notional_per_order).ok();
@@ -516,12 +517,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 strategy.order_id_tag
             ));
         }
-        if !seen_target_ids.insert(strategy.target.configured_target_id.as_str()) {
-            errors.push(format!(
-                "{context}: configured_target_id `{}` is already used by another configured target",
-                strategy.target.configured_target_id
-            ));
-        }
 
         match root.venues.get(&strategy.venue) {
             None => errors.push(format!(
@@ -539,66 +534,23 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             }
         }
 
-        errors.extend(validate_target(&context, &strategy.target));
+        let (target_metadata, target_errors) =
+            crate::bolt_v3_market_families::validate_strategy_target(&context, &strategy.target);
+        if let Some(metadata) = target_metadata {
+            let configured_target_id = metadata.configured_target_id;
+            if !seen_target_ids.insert(configured_target_id.clone()) {
+                errors.push(format!(
+                    "{context}: configured_target_id `{configured_target_id}` is already used by another configured target"
+                ));
+            }
+        }
+        errors.extend(target_errors);
+
         errors.extend(validate_reference_data(&context, root, strategy));
-        errors.extend(validate_archetype_parameters(
+        errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
             &context,
             strategy,
             default_max_notional_decimal.as_ref(),
-        ));
-    }
-
-    errors
-}
-
-fn validate_target(context: &str, target: &TargetBlock) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    let underlying = target.underlying_asset.as_str();
-    if underlying.is_empty() {
-        errors.push(format!(
-            "{context}: target.underlying_asset must not be empty"
-        ));
-    } else if underlying.chars().count() > 32 {
-        errors.push(format!(
-            "{context}: target.underlying_asset must be 1-32 characters (got {})",
-            underlying.chars().count()
-        ));
-    } else if !underlying
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-    {
-        errors.push(format!(
-            "{context}: target.underlying_asset must use only uppercase ASCII letters, digits, and underscores (got `{underlying}`)"
-        ));
-    }
-
-    if target.cadence_seconds <= 0 {
-        errors.push(format!(
-            "{context}: target.cadence_seconds must be a positive integer (got {})",
-            target.cadence_seconds
-        ));
-    } else if target.cadence_seconds % 60 != 0 {
-        errors.push(format!(
-            "{context}: target.cadence_seconds must be divisible by 60 (got {})",
-            target.cadence_seconds
-        ));
-    } else if updown_cadence_slug_token(target.cadence_seconds).is_none() {
-        let supported = supported_updown_cadence_seconds();
-        errors.push(format!(
-            "{context}: target.cadence_seconds={} has no runtime-contract-defined updown slug-token mapping; supported values are {:?}",
-            target.cadence_seconds, supported
-        ));
-    }
-
-    if target.retry_interval_seconds == 0 {
-        errors.push(format!(
-            "{context}: target.retry_interval_seconds must be a positive integer"
-        ));
-    }
-    if target.blocked_after_seconds == 0 {
-        errors.push(format!(
-            "{context}: target.blocked_after_seconds must be a positive integer"
         ));
     }
 
@@ -611,16 +563,6 @@ fn validate_reference_data(
     strategy: &BoltV3StrategyConfig,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-
-    if matches!(
-        strategy.strategy_archetype,
-        StrategyArchetype::BinaryOracleEdgeTaker
-    ) && !strategy.reference_data.contains_key("primary")
-    {
-        errors.push(format!(
-            "{context}: strategy_archetype `binary_oracle_edge_taker` requires [reference_data.primary]"
-        ));
-    }
 
     for (role, block) in &strategy.reference_data {
         match root.venues.get(&block.venue) {
@@ -648,122 +590,7 @@ fn validate_reference_data(
     errors
 }
 
-fn validate_archetype_parameters(
-    context: &str,
-    strategy: &BoltV3StrategyConfig,
-    default_max_notional: Option<&Decimal>,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    match strategy.strategy_archetype {
-        StrategyArchetype::BinaryOracleEdgeTaker => {
-            errors.extend(check_binary_oracle_entry_order_combination(
-                context,
-                &strategy.parameters.entry_order,
-            ));
-            errors.extend(check_binary_oracle_exit_order_combination(
-                context,
-                &strategy.parameters.exit_order,
-            ));
-        }
-    }
-
-    let order_target_decimal = match parse_decimal_string(
-        &strategy.parameters.order_notional_target,
-    ) {
-        Ok(value) => Some(value),
-        Err(reason) => {
-            errors.push(format!(
-                    "{context}: parameters.order_notional_target is not a valid decimal string ({reason}): `{}`",
-                    strategy.parameters.order_notional_target
-                ));
-            None
-        }
-    };
-    if let Err(reason) = parse_decimal_string(&strategy.parameters.maximum_position_notional) {
-        errors.push(format!(
-            "{context}: parameters.maximum_position_notional is not a valid decimal string ({reason}): `{}`",
-            strategy.parameters.maximum_position_notional
-        ));
-    }
-    if let (Some(order_target), Some(default_max)) =
-        (order_target_decimal.as_ref(), default_max_notional)
-        && order_target > default_max
-    {
-        errors.push(format!(
-            "{context}: parameters.order_notional_target ({order_target}) must be <= root risk.default_max_notional_per_order ({default_max})"
-        ));
-    }
-
-    errors
-}
-
-fn check_binary_oracle_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    let expected = (
-        ArchetypeOrderType::Limit,
-        ArchetypeTimeInForce::Fok,
-        false,
-        false,
-        false,
-    );
-    let actual = (
-        entry.order_type,
-        entry.time_in_force,
-        entry.is_post_only,
-        entry.is_reduce_only,
-        entry.is_quote_quantity,
-    );
-    if actual != expected {
-        vec![format!(
-            "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=limit, time_in_force=fok, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
-        )]
-    } else {
-        Vec::new()
-    }
-}
-
-fn check_binary_oracle_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    let expected = (
-        ArchetypeOrderType::Market,
-        ArchetypeTimeInForce::Ioc,
-        false,
-        false,
-        false,
-    );
-    let actual = (
-        exit.order_type,
-        exit.time_in_force,
-        exit.is_post_only,
-        exit.is_reduce_only,
-        exit.is_quote_quantity,
-    );
-    if actual != expected {
-        vec![format!(
-            "{context}: parameters.exit_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=market, time_in_force=ioc, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
-        )]
-    } else {
-        Vec::new()
-    }
-}
-
-fn parse_decimal_string(value: &str) -> Result<Decimal, String> {
+pub(crate) fn parse_decimal_string(value: &str) -> Result<Decimal, String> {
     use std::str::FromStr;
     Decimal::from_str(value).map_err(|error| error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn updown_cadence_token_table_matches_runtime_contract() {
-        assert_eq!(updown_cadence_slug_token(60), Some("1m"));
-        assert_eq!(updown_cadence_slug_token(300), Some("5m"));
-        assert_eq!(updown_cadence_slug_token(900), Some("15m"));
-        assert_eq!(updown_cadence_slug_token(3600), Some("1h"));
-        assert_eq!(updown_cadence_slug_token(14400), Some("4h"));
-        assert_eq!(updown_cadence_slug_token(120), None);
-    }
 }

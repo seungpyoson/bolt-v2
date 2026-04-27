@@ -28,13 +28,13 @@ use nautilus_polymarket::{
 };
 
 use crate::{
-    bolt_v3_config::{
-        BinanceDataConfig, BinanceEnvironment, BinanceProductType, BoltV3RootConfig,
-        LoadedBoltV3Config, PolymarketDataConfig, PolymarketExecutionConfig,
-        PolymarketSignatureType, VenueBlock, VenueKind,
-    },
-    bolt_v3_market_identity::{
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, VenueBlock, VenueKind},
+    bolt_v3_market_families::updown::{
         MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
+    },
+    bolt_v3_providers::{
+        binance::{BinanceDataConfig, BinanceEnvironment, BinanceProductType},
+        polymarket::{PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSignatureType},
     },
     bolt_v3_secrets::{
         ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,

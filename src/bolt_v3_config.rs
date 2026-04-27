@@ -171,97 +171,7 @@ impl VenueKind {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PolymarketDataConfig {
-    pub base_url_http: String,
-    pub base_url_ws: String,
-    pub base_url_gamma: String,
-    pub base_url_data_api: String,
-    pub http_timeout_seconds: u64,
-    pub ws_timeout_seconds: u64,
-    pub subscribe_new_markets: bool,
-    pub update_instruments_interval_minutes: u64,
-    pub websocket_max_subscriptions_per_connection: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PolymarketExecutionConfig {
-    pub account_id: String,
-    pub signature_type: PolymarketSignatureType,
-    /// Public funder address. Required when `signature_type` is
-    /// `poly_proxy` or `poly_gnosis_safe` (the proxy/safe routes the
-    /// underlying funder wallet); permitted to be absent for `eoa`,
-    /// where the EOA is itself the funder. Validation enforces this
-    /// per-signature-type requirement and the EVM address syntax.
-    #[serde(default)]
-    pub funder_address: Option<String>,
-    pub base_url_http: String,
-    pub base_url_ws: String,
-    pub base_url_data_api: String,
-    pub http_timeout_seconds: u64,
-    pub max_retries: u64,
-    pub retry_delay_initial_milliseconds: u64,
-    pub retry_delay_max_milliseconds: u64,
-    pub ack_timeout_seconds: u64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PolymarketSignatureType {
-    Eoa,
-    PolyProxy,
-    PolyGnosisSafe,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PolymarketSecretsConfig {
-    pub private_key_ssm_path: String,
-    pub api_key_ssm_path: String,
-    pub api_secret_ssm_path: String,
-    pub passphrase_ssm_path: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct BinanceDataConfig {
-    pub product_types: Vec<BinanceProductType>,
-    pub environment: BinanceEnvironment,
-    /// Required HTTP base URL passed through to
-    /// `nautilus_binance::config::BinanceDataClientConfig.base_url_http`
-    /// as `Some(...)` so NT does not silently fall back to the
-    /// compiled-in default endpoint.
-    pub base_url_http: String,
-    /// Required WebSocket base URL passed through to
-    /// `nautilus_binance::config::BinanceDataClientConfig.base_url_ws`
-    /// as `Some(...)` so NT does not silently fall back to the
-    /// compiled-in default endpoint.
-    pub base_url_ws: String,
-    pub instrument_status_poll_seconds: u64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum BinanceProductType {
-    Spot,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum BinanceEnvironment {
-    Mainnet,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct BinanceSecretsConfig {
-    pub api_key_ssm_path: String,
-    pub api_secret_ssm_path: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BoltV3StrategyConfig {
     pub schema_version: u32,
@@ -270,10 +180,17 @@ pub struct BoltV3StrategyConfig {
     pub order_id_tag: String,
     pub oms_type: OmsType,
     pub venue: String,
-    pub target: TargetBlock,
+    /// Raw `[target]` envelope. The strategy envelope keeps the TOML
+    /// field name `target` but its Rust type is a generic raw-TOML
+    /// container so target-shape fields live in the per-family binding
+    /// modules under `crate::bolt_v3_market_families`. Typed
+    /// deserialization with `deny_unknown_fields` happens inside the
+    /// matching family validator and inside the family planner; the
+    /// strategy envelope itself is target-shape-neutral.
+    pub target: toml::Value,
     #[serde(default)]
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
-    pub parameters: ParametersBlock,
+    pub parameters: toml::Value,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -290,75 +207,9 @@ pub enum OmsType {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct TargetBlock {
-    pub configured_target_id: String,
-    pub kind: TargetKind,
-    pub rotating_market_family: RotatingMarketFamily,
-    pub underlying_asset: String,
-    pub cadence_seconds: i64,
-    pub market_selection_rule: MarketSelectionRule,
-    pub retry_interval_seconds: u64,
-    pub blocked_after_seconds: u64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TargetKind {
-    RotatingMarket,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RotatingMarketFamily {
-    Updown,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MarketSelectionRule {
-    ActiveOrNext,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
     pub venue: String,
     pub instrument_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ParametersBlock {
-    pub edge_threshold_basis_points: i64,
-    pub order_notional_target: String,
-    pub maximum_position_notional: String,
-    pub entry_order: OrderParams,
-    pub exit_order: OrderParams,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct OrderParams {
-    pub order_type: ArchetypeOrderType,
-    pub time_in_force: ArchetypeTimeInForce,
-    pub is_post_only: bool,
-    pub is_reduce_only: bool,
-    pub is_quote_quantity: bool,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ArchetypeOrderType {
-    Limit,
-    Market,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ArchetypeTimeInForce {
-    Gtc,
-    Fok,
-    Ioc,
 }
 
 #[derive(Debug, Clone)]
@@ -517,8 +368,13 @@ mod tests {
             strategy.strategy_archetype,
             StrategyArchetype::BinaryOracleEdgeTaker
         );
-        assert_eq!(strategy.target.kind, TargetKind::RotatingMarket);
-        assert_eq!(strategy.target.cadence_seconds, 300);
+        // The strategy envelope keeps `target` as raw TOML. Verify the
+        // raw envelope here only at the structural level.
+        let target_table = strategy
+            .target
+            .as_table()
+            .expect("[target] should parse into a table");
+        assert!(!target_table.is_empty());
         assert!(strategy.reference_data.contains_key("primary"));
     }
 }

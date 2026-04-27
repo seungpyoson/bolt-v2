@@ -227,16 +227,45 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    let mut second = loaded.strategies[0].clone();
-    second.config.strategy_instance_id = "ethereum_updown_main".to_string();
-    second.config.target.configured_target_id = "eth_updown_15m".to_string();
-    second.config.target.underlying_asset = "ETH".to_string();
-    second.config.target.cadence_seconds = 900;
+    // Construct three strategies whose declaration order is
+    // deliberately NON-MONOTONIC across every likely accidental sort
+    // key: strategy_instance_id, configured_target_id,
+    // underlying_asset, cadence_seconds, and cadence_slug_token. Each
+    // natural ordering produces a different permutation than the
+    // declaration order [zeta, alpha, mike], so an accidental
+    // `sort_by` on any of these keys would re-order at least one
+    // index and fail the per-index assertions below.
+    //
+    //   declared order : [0]=zeta_strategy_main / ltc_updown_15m / LTC / 900  / 15m
+    //                    [1]=alpha_strategy_main / xrp_updown_5m / XRP / 300  / 5m
+    //                    [2]=mike_strategy_main / btc_updown_1h / BTC / 3600 / 1h
+    //
+    //   sort by strategy_instance_id ascending  -> [1, 2, 0]
+    //   sort by configured_target_id ascending  -> [2, 0, 1]
+    //   sort by underlying_asset ascending      -> [2, 0, 1]
+    //   sort by cadence_seconds ascending       -> [1, 0, 2]
+    //   sort by cadence_seconds descending      -> [2, 0, 1]
+    //   sort by cadence_slug_token ascending    -> [0, 2, 1]
 
+    let mut second = loaded.strategies[0].clone();
     let mut third = loaded.strategies[0].clone();
-    third.config.strategy_instance_id = "xrp_updown_main".to_string();
-    third.config.target.configured_target_id = "xrp_updown_1h".to_string();
-    third.config.target.underlying_asset = "XRP".to_string();
+
+    {
+        let first = &mut loaded.strategies[0];
+        first.config.strategy_instance_id = "zeta_strategy_main".to_string();
+        first.config.target.configured_target_id = "ltc_updown_15m".to_string();
+        first.config.target.underlying_asset = "LTC".to_string();
+        first.config.target.cadence_seconds = 900;
+    }
+
+    second.config.strategy_instance_id = "alpha_strategy_main".to_string();
+    second.config.target.configured_target_id = "xrp_updown_5m".to_string();
+    second.config.target.underlying_asset = "XRP".to_string();
+    second.config.target.cadence_seconds = 300;
+
+    third.config.strategy_instance_id = "mike_strategy_main".to_string();
+    third.config.target.configured_target_id = "btc_updown_1h".to_string();
+    third.config.target.underlying_asset = "BTC".to_string();
     third.config.target.cadence_seconds = 3600;
 
     loaded.strategies.push(second);
@@ -245,29 +274,87 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let plan = plan_market_identity(&loaded).expect("planner should succeed for valid strategies");
     assert_eq!(plan.updown_targets.len(), 3);
 
-    assert_eq!(
-        plan.updown_targets[0].strategy_instance_id,
-        "bitcoin_updown_main"
-    );
-    assert_eq!(plan.updown_targets[0].configured_target_id, "btc_updown_5m");
-    assert_eq!(plan.updown_targets[0].cadence_slug_token, "5m");
+    let zero = &plan.updown_targets[0];
+    assert_eq!(zero.strategy_instance_id, "zeta_strategy_main");
+    assert_eq!(zero.configured_target_id, "ltc_updown_15m");
+    assert_eq!(zero.venue_config_key, "polymarket_main");
+    assert_eq!(zero.underlying_asset, "LTC");
+    assert_eq!(zero.cadence_seconds, 900);
+    assert_eq!(zero.cadence_slug_token, "15m");
 
-    assert_eq!(
-        plan.updown_targets[1].strategy_instance_id,
-        "ethereum_updown_main"
-    );
-    assert_eq!(
-        plan.updown_targets[1].configured_target_id,
-        "eth_updown_15m"
-    );
-    assert_eq!(plan.updown_targets[1].cadence_slug_token, "15m");
+    let one = &plan.updown_targets[1];
+    assert_eq!(one.strategy_instance_id, "alpha_strategy_main");
+    assert_eq!(one.configured_target_id, "xrp_updown_5m");
+    assert_eq!(one.venue_config_key, "polymarket_main");
+    assert_eq!(one.underlying_asset, "XRP");
+    assert_eq!(one.cadence_seconds, 300);
+    assert_eq!(one.cadence_slug_token, "5m");
 
-    assert_eq!(
-        plan.updown_targets[2].strategy_instance_id,
-        "xrp_updown_main"
+    let two = &plan.updown_targets[2];
+    assert_eq!(two.strategy_instance_id, "mike_strategy_main");
+    assert_eq!(two.configured_target_id, "btc_updown_1h");
+    assert_eq!(two.venue_config_key, "polymarket_main");
+    assert_eq!(two.underlying_asset, "BTC");
+    assert_eq!(two.cadence_seconds, 3600);
+    assert_eq!(two.cadence_slug_token, "1h");
+}
+
+#[test]
+fn period_pair_overflow_display_includes_now_and_cadence_context() {
+    let err = BoltV3MarketIdentityError::PeriodPairOverflow {
+        now_unix_seconds: i64::MAX,
+        cadence_seconds: 300,
+    };
+    let display = err.to_string();
+    assert!(
+        display.contains(&i64::MAX.to_string()),
+        "Display should include now_unix_seconds value: {display}"
     );
-    assert_eq!(plan.updown_targets[2].configured_target_id, "xrp_updown_1h");
-    assert_eq!(plan.updown_targets[2].cadence_slug_token, "1h");
+    assert!(
+        display.contains("300"),
+        "Display should include cadence_seconds value: {display}"
+    );
+    assert!(
+        display.contains("overflow"),
+        "Display should describe the overflow condition: {display}"
+    );
+}
+
+#[test]
+fn cadence_error_display_includes_strategy_and_target_context() {
+    let unsupported = BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+        strategy_instance_id: Some("bitcoin_updown_main".to_string()),
+        configured_target_id: Some("btc_updown_5m".to_string()),
+        cadence_seconds: 120,
+    };
+    let display = unsupported.to_string();
+    assert!(
+        display.contains("bitcoin_updown_main"),
+        "Display should include strategy_instance_id: {display}"
+    );
+    assert!(
+        display.contains("btc_updown_5m"),
+        "Display should include configured_target_id: {display}"
+    );
+    assert!(
+        display.contains("120"),
+        "Display should include cadence_seconds value: {display}"
+    );
+
+    let non_positive = BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
+        strategy_instance_id: Some("bitcoin_updown_main".to_string()),
+        configured_target_id: Some("btc_updown_5m".to_string()),
+        cadence_seconds: 0,
+    };
+    let np_display = non_positive.to_string();
+    assert!(
+        np_display.contains("bitcoin_updown_main"),
+        "Display should include strategy_instance_id: {np_display}"
+    );
+    assert!(
+        np_display.contains("btc_updown_5m"),
+        "Display should include configured_target_id: {np_display}"
+    );
 }
 
 #[test]

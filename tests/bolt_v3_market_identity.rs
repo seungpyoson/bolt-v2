@@ -841,3 +841,61 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
         );
     }
 }
+
+#[test]
+fn validate_module_must_not_own_provider_venue_validation() {
+    // Bolt-v3 startup validation must stay provider-neutral and
+    // dispatch provider-specific venue-block validation out to the
+    // per-provider binding modules. The validation policy for
+    // Polymarket and Binance venue blocks (data/execution/secrets
+    // shape rules, EVM funder-address syntax, retry-bounds ordering,
+    // controlled-connect invariant for `subscribe_new_markets`,
+    // per-provider secret-path ownership, base-URL emptiness,
+    // instrument-status-poll positivity) belongs to the per-provider
+    // binding modules under `crate::bolt_v3_providers`, not to core
+    // validation. Validate.rs may still hand the venue block to a
+    // family-agnostic provider dispatcher
+    // (`bolt_v3_providers::validate_venue_block`) for routing; the
+    // substrings forbidden below pin policy *ownership* (function
+    // definitions and provider-shaped block types referenced by
+    // those validators), not the dispatch call itself.
+    let src = include_str!("../src/bolt_v3_validate.rs");
+    let forbidden = [
+        // Per-provider venue-block validators that owned the policy
+        // before this slice.
+        "validate_polymarket_venue",
+        "validate_binance_venue",
+        // Polymarket execution-shape policy.
+        "validate_polymarket_funder_address",
+        "check_evm_address_syntax",
+        // Provider data/execution bounds policy.
+        "validate_polymarket_data_bounds",
+        "validate_polymarket_execution_bounds",
+        "validate_binance_data_bounds",
+        // Provider secret-path policy.
+        "validate_polymarket_secret_paths",
+        "validate_binance_secret_paths",
+        // Provider-shaped config block types consumed only by the
+        // per-provider validators. After the move core validation
+        // does not need these in scope.
+        "PolymarketDataConfig",
+        "PolymarketExecutionConfig",
+        "PolymarketSecretsConfig",
+        "PolymarketSignatureType",
+        "BinanceDataConfig",
+        "BinanceSecretsConfig",
+    ];
+    for symbol in forbidden {
+        assert!(
+            !src.contains(symbol),
+            "src/bolt_v3_validate.rs must not own provider-specific venue validation; \
+             source unexpectedly references `{symbol}`. \
+             Move Polymarket / Binance venue, data, execution, funder-address, \
+             retry-bounds, secret-path, and EVM-syntax validators (and the \
+             provider-shaped block types they consume) into \
+             src/bolt_v3_providers/polymarket.rs and src/bolt_v3_providers/binance.rs; \
+             have validate.rs dispatch into the provider validator via \
+             `bolt_v3_providers::validate_venue_block` instead."
+        );
+    }
+}

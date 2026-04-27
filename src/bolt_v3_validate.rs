@@ -21,6 +21,17 @@
 //! root-cap comparison. `validate_strategies` dispatches into the
 //! matching archetype validator via
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
+//! Per-provider venue-block validation (provider-shaped
+//! `[venues.<id>.{data,execution,secrets}]` rules: typed
+//! deserialization, cross-block presence rules, provider data /
+//! execution bounds, EVM funder-address syntax, provider secret-path
+//! ownership) is owned by the per-provider binding modules under
+//! `crate::bolt_v3_providers`; `validate_venues_block` dispatches each
+//! venue block through `crate::bolt_v3_providers::validate_venue_block`.
+//! Only the genuinely provider-neutral SSM parameter-path utility
+//! (`validate_ssm_parameter_path`) stays in this module and is exposed
+//! `pub(crate)` so the per-provider secret validators can call it the
+//! same way the archetype binding calls `parse_decimal_string`.
 
 use std::{collections::BTreeMap, collections::HashSet, path::Path};
 
@@ -28,12 +39,7 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, RiskBlock, VenueBlock, VenueKind,
-};
-use crate::bolt_v3_providers::binance::{BinanceDataConfig, BinanceSecretsConfig};
-use crate::bolt_v3_providers::polymarket::{
-    PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSecretsConfig,
-    PolymarketSignatureType,
+    PersistenceBlock, RiskBlock, VenueBlock,
 };
 
 #[derive(Debug)]
@@ -194,253 +200,18 @@ fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
         }
     }
     for (key, venue) in venues {
-        match venue.kind {
-            VenueKind::Polymarket => errors.extend(validate_polymarket_venue(key, venue)),
-            VenueKind::Binance => errors.extend(validate_binance_venue(key, venue)),
-        }
+        errors.extend(crate::bolt_v3_providers::validate_venue_block(key, venue));
     }
     errors
 }
 
-fn validate_polymarket_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
-    let mut errors = Vec::new();
-    if let Some(data) = &venue.data {
-        match data.clone().try_into::<PolymarketDataConfig>() {
-            Ok(parsed) => errors.extend(validate_polymarket_data_bounds(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.data: {message}")),
-        }
-    }
-    if let Some(execution) = &venue.execution {
-        match execution.clone().try_into::<PolymarketExecutionConfig>() {
-            Ok(parsed) => {
-                if parsed.account_id.trim().is_empty() {
-                    errors.push(format!(
-                        "venues.{key}.execution.account_id must be a non-empty string"
-                    ));
-                }
-                errors.extend(validate_polymarket_funder_address(key, &parsed));
-                errors.extend(validate_polymarket_execution_bounds(key, &parsed));
-            }
-            Err(message) => {
-                errors.push(format!("venues.{key}.execution: {message}"));
-            }
-        }
-        // Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3,
-        // every Polymarket execution venue must resolve credentials through
-        // SSM. The secret-block requirement is what guarantees the env-var
-        // blocklist actually fires for that venue at startup; without it an
-        // operator could declare [execution] alone and silently bypass the
-        // SSM-only invariant by reading the legacy POLYMARKET_* env vars.
-        if venue.secrets.is_none() {
-            errors.push(format!(
-                "venues.{key} (kind=polymarket) declares [execution] but is missing the required [secrets] block; \
-                 the bolt-v3 secret contract requires SSM credential resolution for every Polymarket execution venue"
-            ));
-        }
-    }
-    if let Some(secrets) = &venue.secrets {
-        // Only Polymarket execution consumes Polymarket credentials in
-        // this slice. A data-only Polymarket venue with `[secrets]`
-        // would carry credential paths that no adapter uses, which is a
-        // misconfiguration rather than a silent no-op.
-        if venue.execution.is_none() {
-            errors.push(format!(
-                "venues.{key} (kind=polymarket) declares [secrets] but no [execution] block is configured; \
-                 Polymarket [secrets] are only allowed alongside the execution adapter that consumes them"
-            ));
-        }
-        match secrets.clone().try_into::<PolymarketSecretsConfig>() {
-            Ok(parsed) => errors.extend(validate_polymarket_secret_paths(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.secrets: {message}")),
-        }
-    }
-    errors
-}
-
-fn validate_binance_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
-    let mut errors = Vec::new();
-    if venue.execution.is_some() {
-        errors.push(format!(
-            "venues.{key} (kind=binance) is not allowed to declare an [execution] block in the current bolt-v3 scope"
-        ));
-    }
-    if let Some(data) = &venue.data {
-        match data.clone().try_into::<BinanceDataConfig>() {
-            Ok(parsed) => errors.extend(validate_binance_data_bounds(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.data: {message}")),
-        }
-        // Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3
-        // and docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 5, every
-        // Binance reference-data venue must resolve credentials through SSM.
-        // Mirror the Polymarket-execution rule above: the secret-block
-        // requirement is the gate that makes the env-var blocklist effective.
-        if venue.secrets.is_none() {
-            errors.push(format!(
-                "venues.{key} (kind=binance) declares [data] but is missing the required [secrets] block; \
-                 the bolt-v3 secret contract requires SSM credential resolution for every Binance reference-data venue"
-            ));
-        }
-    }
-    if let Some(secrets) = &venue.secrets {
-        if venue.data.is_none() {
-            errors.push(format!(
-                "venues.{key} (kind=binance) declares [secrets] but no [data] block is configured; \
-                 Binance [secrets] are only allowed alongside the data adapter that consumes them"
-            ));
-        }
-        match secrets.clone().try_into::<BinanceSecretsConfig>() {
-            Ok(parsed) => errors.extend(validate_binance_secret_paths(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.secrets: {message}")),
-        }
-    }
-    errors
-}
-
-fn validate_polymarket_funder_address(
-    key: &str,
-    execution: &PolymarketExecutionConfig,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-    let funder = execution
-        .funder_address
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let requires_funder = matches!(
-        execution.signature_type,
-        PolymarketSignatureType::PolyProxy | PolymarketSignatureType::PolyGnosisSafe
-    );
-    match (requires_funder, funder) {
-        (true, None) => errors.push(format!(
-            "venues.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
-        )),
-        (_, Some(value)) => {
-            if let Err(message) = check_evm_address_syntax(value) {
-                errors.push(format!(
-                    "venues.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
-                ));
-            }
-        }
-        (false, None) => {}
-    }
-    errors
-}
-
-fn check_evm_address_syntax(value: &str) -> Result<(), &'static str> {
-    let rest = value.strip_prefix("0x").ok_or("missing `0x` prefix")?;
-    if rest.len() != 40 {
-        return Err("must be 40 hex characters after `0x`");
-    }
-    if !rest.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("must contain only hex characters after `0x`");
-    }
-    if rest.chars().all(|c| c == '0') {
-        return Err("zero address is not allowed");
-    }
-    Ok(())
-}
-
-fn validate_polymarket_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    let positive_fields: &[(&str, u64)] = &[
-        ("http_timeout_seconds", data.http_timeout_seconds),
-        ("ws_timeout_seconds", data.ws_timeout_seconds),
-        (
-            "update_instruments_interval_minutes",
-            data.update_instruments_interval_minutes,
-        ),
-        (
-            "websocket_max_subscriptions_per_connection",
-            data.websocket_max_subscriptions_per_connection,
-        ),
-    ];
-    for (field, value) in positive_fields {
-        if *value == 0 {
-            errors.push(format!(
-                "venues.{key}.data.{field} must be a positive integer"
-            ));
-        }
-    }
-    // The pinned NautilusTrader Polymarket data client (`nautilus_polymarket::data`)
-    // calls `ws_client.subscribe_market(vec![])` from inside its `connect()`
-    // implementation when `subscribe_new_markets = true`, which is effectively
-    // an all-markets subscription and violates the bolt-v3 controlled-connect
-    // boundary. The flag is forced false in the current bolt-v3 scope until
-    // the market-subscription slice owns the controlled-subscribe path; failing
-    // closed here keeps that invariant honest.
-    if data.subscribe_new_markets {
-        errors.push(format!(
-            "venues.{key}.data.subscribe_new_markets must be false in the current bolt-v3 scope; \
-             the pinned NT Polymarket data client subscribes to all markets via \
-             `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
-             which violates the bolt-v3 controlled-connect boundary until the \
-             market-subscription slice owns it"
-        ));
-    }
-    errors
-}
-
-fn validate_polymarket_execution_bounds(
-    key: &str,
-    execution: &PolymarketExecutionConfig,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-    let positive_fields: &[(&str, u64)] = &[
-        ("http_timeout_seconds", execution.http_timeout_seconds),
-        ("max_retries", execution.max_retries),
-        (
-            "retry_delay_initial_milliseconds",
-            execution.retry_delay_initial_milliseconds,
-        ),
-        (
-            "retry_delay_max_milliseconds",
-            execution.retry_delay_max_milliseconds,
-        ),
-        ("ack_timeout_seconds", execution.ack_timeout_seconds),
-    ];
-    for (field, value) in positive_fields {
-        if *value == 0 {
-            errors.push(format!(
-                "venues.{key}.execution.{field} must be a positive integer"
-            ));
-        }
-    }
-    if execution.retry_delay_initial_milliseconds > execution.retry_delay_max_milliseconds {
-        errors.push(format!(
-            "venues.{key}.execution.retry_delay_initial_milliseconds ({}) must be <= retry_delay_max_milliseconds ({})",
-            execution.retry_delay_initial_milliseconds, execution.retry_delay_max_milliseconds
-        ));
-    }
-    errors
-}
-
-fn validate_polymarket_secret_paths(key: &str, secrets: &PolymarketSecretsConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    let path_fields: &[(&str, &str)] = &[
-        ("private_key_ssm_path", &secrets.private_key_ssm_path),
-        ("api_key_ssm_path", &secrets.api_key_ssm_path),
-        ("api_secret_ssm_path", &secrets.api_secret_ssm_path),
-        ("passphrase_ssm_path", &secrets.passphrase_ssm_path),
-    ];
-    for (field, value) in path_fields {
-        errors.extend(validate_ssm_parameter_path(key, field, value));
-    }
-    errors
-}
-
-fn validate_binance_secret_paths(key: &str, secrets: &BinanceSecretsConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    let path_fields: &[(&str, &str)] = &[
-        ("api_key_ssm_path", &secrets.api_key_ssm_path),
-        ("api_secret_ssm_path", &secrets.api_secret_ssm_path),
-    ];
-    for (field, value) in path_fields {
-        errors.extend(validate_ssm_parameter_path(key, field, value));
-    }
-    errors
-}
-
-fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -> Vec<String> {
+/// Provider-neutral SSM parameter-path utility shared by the per-
+/// provider secret validators in `crate::bolt_v3_providers`. Stays in
+/// core because the path-shape rule itself is provider-neutral and is
+/// also the gate behind the SSM-only invariant; mirrors the cross-
+/// layer call that the archetype binding makes into
+/// `parse_decimal_string`.
+pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -> Vec<String> {
     let mut errors = Vec::new();
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -455,30 +226,6 @@ fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -> Vec<Strin
         // typos that drop the leading slash fail closed at startup.
         errors.push(format!(
             "venues.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
-        ));
-    }
-    errors
-}
-
-fn validate_binance_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    let url_fields: &[(&str, &str)] = &[
-        ("base_url_http", data.base_url_http.as_str()),
-        ("base_url_ws", data.base_url_ws.as_str()),
-    ];
-    for (field, value) in url_fields {
-        if value.trim().is_empty() {
-            errors.push(format!("venues.{key}.data.{field} must be a non-empty URL"));
-        }
-    }
-    // The bolt-v3 schema deliberately rejects `0` rather than treating
-    // it as "polling disabled": NT's `BinanceDataClientConfig` consumes
-    // this as a poll interval and a missing/zero value would leave NT
-    // free to fall back to its own default cadence. Failing closed
-    // here keeps the bolt-v3 instrument-status-poll cadence explicit.
-    if data.instrument_status_poll_seconds == 0 {
-        errors.push(format!(
-            "venues.{key}.data.instrument_status_poll_seconds must be a positive integer"
         ));
     }
     errors

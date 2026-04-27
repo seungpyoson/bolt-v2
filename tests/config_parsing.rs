@@ -1254,6 +1254,25 @@ fn rejects_polymarket_data_only_venue_with_secrets_block() {
 }
 
 #[test]
+fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "subscribe_new_markets = false",
+        "subscribe_new_markets = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("subscribe_new_markets=true fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("subscribe_new_markets")
+            && m.contains("must be false")),
+        "expected subscribe_new_markets=true validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_more_than_one_polymarket_venue_in_current_slice() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

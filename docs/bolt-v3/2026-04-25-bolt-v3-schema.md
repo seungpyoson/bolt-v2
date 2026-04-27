@@ -129,7 +129,7 @@ base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientCo
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
 http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
-subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets
+subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
@@ -428,6 +428,9 @@ Presence of `[data]` means a data client is configured.
 
 - type: boolean
 - required: yes
+- must be `false` in the current bolt-v3 scope: validation fails closed if set to `true`
+- the pinned NautilusTrader Polymarket data client calls `ws_client.subscribe_market(vec![])` from inside its `connect()` when this flag is `true`, which is effectively an all-markets subscription and violates the bolt-v3 controlled-connect boundary
+- this flag is forced `false` until the dedicated market-subscription slice owns the controlled-subscribe path
 
 ##### `update_instruments_interval_minutes`
 
@@ -981,7 +984,7 @@ base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientCo
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
 http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
-subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets
+subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 

@@ -256,6 +256,8 @@ pub struct MockDataClientConfig {
     client_id: String,
     venue: String,
     connect_delay: Duration,
+    connect_failure: Option<String>,
+    disconnect_delay: Duration,
 }
 
 impl MockDataClientConfig {
@@ -264,11 +266,33 @@ impl MockDataClientConfig {
             client_id: client_id.to_string(),
             venue: venue.to_string(),
             connect_delay: Duration::ZERO,
+            connect_failure: None,
+            disconnect_delay: Duration::ZERO,
         }
     }
 
     pub fn with_connect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
         self.connect_delay = Duration::from_millis(milliseconds);
+        self
+    }
+
+    /// Configures the mock to surface an `Err(...)` from its
+    /// `DataClient::connect` implementation. The pinned NT
+    /// `DataEngine::connect` swallows the error and logs it, so the
+    /// client's `is_connected()` flag stays false; controlled-connect
+    /// callers see this through `kernel.check_engines_connected()`
+    /// returning false after dispatch returns.
+    pub fn with_connect_failure(mut self, message: &str) -> Self {
+        self.connect_failure = Some(message.to_string());
+        self
+    }
+
+    /// Configures the mock to sleep for the given number of
+    /// milliseconds inside `DataClient::disconnect` before flipping
+    /// its `connected` flag. Used to drive the bolt-v3
+    /// controlled-disconnect timeout path without touching real I/O.
+    pub fn with_disconnect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+        self.disconnect_delay = Duration::from_millis(milliseconds);
         self
     }
 }
@@ -322,6 +346,8 @@ impl DataClientFactory for MockDataClientFactory {
             ClientId::from(cfg.client_id.as_str()),
             Venue::from(cfg.venue.as_str()),
             cfg.connect_delay,
+            cfg.connect_failure.clone(),
+            cfg.disconnect_delay,
         )))
     }
 
@@ -374,15 +400,25 @@ struct MockDataClient {
     venue: Venue,
     connected: bool,
     connect_delay: Duration,
+    connect_failure: Option<String>,
+    disconnect_delay: Duration,
 }
 
 impl MockDataClient {
-    fn new(client_id: ClientId, venue: Venue, connect_delay: Duration) -> Self {
+    fn new(
+        client_id: ClientId,
+        venue: Venue,
+        connect_delay: Duration,
+        connect_failure: Option<String>,
+        disconnect_delay: Duration,
+    ) -> Self {
         Self {
             client_id,
             venue,
             connected: false,
             connect_delay,
+            connect_failure,
+            disconnect_delay,
         }
     }
 }
@@ -450,11 +486,17 @@ impl DataClient for MockDataClient {
         if !self.connect_delay.is_zero() {
             tokio::time::sleep(self.connect_delay).await;
         }
+        if let Some(message) = &self.connect_failure {
+            return Err(anyhow::anyhow!(message.clone()));
+        }
         self.connected = true;
         Ok(())
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
+        if !self.disconnect_delay.is_zero() {
+            tokio::time::sleep(self.disconnect_delay).await;
+        }
         self.connected = false;
         Ok(())
     }

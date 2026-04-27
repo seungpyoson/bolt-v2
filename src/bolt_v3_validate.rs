@@ -360,6 +360,22 @@ fn validate_polymarket_data_bounds(key: &str, data: &PolymarketDataConfig) -> Ve
             ));
         }
     }
+    // The pinned NautilusTrader Polymarket data client (`nautilus_polymarket::data`)
+    // calls `ws_client.subscribe_market(vec![])` from inside its `connect()`
+    // implementation when `subscribe_new_markets = true`, which is effectively
+    // an all-markets subscription and violates the bolt-v3 controlled-connect
+    // boundary. The flag is forced false in the current bolt-v3 scope until
+    // the market-subscription slice owns the controlled-subscribe path; failing
+    // closed here keeps that invariant honest.
+    if data.subscribe_new_markets {
+        errors.push(format!(
+            "venues.{key}.data.subscribe_new_markets must be false in the current bolt-v3 scope; \
+             the pinned NT Polymarket data client subscribes to all markets via \
+             `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
+             which violates the bolt-v3 controlled-connect boundary until the \
+             market-subscription slice owns it"
+        ));
+    }
     errors
 }
 

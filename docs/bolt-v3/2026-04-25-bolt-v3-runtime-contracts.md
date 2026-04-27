@@ -1355,21 +1355,33 @@ Governance rules:
 - `just check` Phase 1 must fail if the recorded Section 9.3 revision disagrees with the Cargo dependency revision
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
-### 11.6 Controlled-connect boundary
+### 11.6 Controlled-connect and controlled-disconnect boundary
 
-The bolt-v3 build path returns a `LiveNode` in `Idle` state with NT data and execution clients registered but not connected. NT's connect dispatchers (`NautilusKernel::connect_data_clients` and `NautilusKernel::connect_exec_clients`) are reachable from bolt-v3 only through the explicit `connect_bolt_v3_clients` boundary defined in `src/bolt_v3_live_node.rs`.
+The bolt-v3 build path returns a `LiveNode` in `Idle` state with NT data and execution clients registered but not connected. NT's connect dispatchers (`NautilusKernel::connect_data_clients` and `NautilusKernel::connect_exec_clients`) and NT's disconnect dispatcher (`NautilusKernel::disconnect_clients`) are reachable from bolt-v3 only through the explicit `connect_bolt_v3_clients` and `disconnect_bolt_v3_clients` boundaries defined in `src/bolt_v3_live_node.rs`.
 
-Boundary contract:
+Controlled-connect boundary contract:
 
 - opt-in: `build_bolt_v3_live_node` and its `_with` / `_with_summary` siblings do not invoke this boundary; a caller must call it explicitly on a node previously returned by one of those builders
-- bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_seconds`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }` and the caller owns subsequent disconnect/teardown
-- pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().connect_data_clients` and `LiveNode::kernel_mut().connect_exec_clients` (the pinned NT controlled-connect API surface)
-- no-trade: the boundary never enters NT's runner loop, never starts NT's trader, never registers strategies, never selects markets, never constructs orders, and never submits orders; `NodeState` therefore remains in whatever state the node was in before the call (typically `Idle`)
+- bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_seconds`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }` and the caller owns subsequent disconnect/teardown via `disconnect_bolt_v3_clients`
+- dispatch + connected check: the pinned NT `DataEngine::connect` and `ExecutionEngine::connect` dispatchers swallow individual client `connect()` errors and only log them, so after the dispatch returns the boundary consults `NautilusKernel::check_engines_connected()` and returns `BoltV3LiveNodeError::ConnectIncomplete` if any registered client did not transition to `is_connected`; the variant carries no per-client identifier list because the pinned NT engine API does not expose one cleanly and bolt-v3 does not synthesize an unreliable list
+- not NT cache or instrument readiness: the boundary does not gate on NT cache contents, instrument-availability checks, or any readiness predicate beyond `kernel.check_engines_connected()`; cache/instrument readiness is owned by a future slice
+- no copying NT private drain logic: the boundary does not copy or reimplement NT's private `flush_pending_data`, `drive_with_event_buffering`, or runner/channel internals; it strictly composes the public `kernel.connect_*` and `kernel.check_engines_connected` API surface
+- pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().connect_data_clients`, `LiveNode::kernel_mut().connect_exec_clients`, and `LiveNode::kernel().check_engines_connected` (the pinned NT controlled-connect API surface)
+- no-trade: the boundary never enters NT's runner loop, never invokes NT's trader entrypoint, never registers strategies, never selects markets, never constructs orders, never submits orders, and never invokes any user-level subscription API; `NodeState` therefore remains in whatever state the node was in before the call (typically `Idle`)
 - credential-log filter preserved: in a bolt-v3-only process, NT's first-wins logger has already been initialized by the bolt-v3 `LoggerConfig` passed through `LiveNodeBuilder::build`, so the `NT_CREDENTIAL_LOG_MODULES` filter remains active during the connect dispatch; the future production v3 entrypoint must preserve this first-initializer ordering
 
-Errors from individual NT client `connect()` calls are surfaced via NT's logger; NT's engine-level dispatchers in `nautilus_data::engine::DataEngine::connect` and `nautilus_execution::engine::ExecutionEngine::connect` log individual `Err` values rather than propagating them, so the bolt-v3 boundary returns `Ok(())` once both dispatchers have returned and the timeout bound has not fired.
+Errors from individual NT client `connect()` calls are surfaced via NT's logger; NT's engine-level dispatchers in `nautilus_data::engine::DataEngine::connect` and `nautilus_execution::engine::ExecutionEngine::connect` log individual `Err` values rather than propagating them. The bolt-v3 boundary returns `Ok(())` only when both dispatchers have returned within the configured bound **and** `kernel.check_engines_connected()` returns true. Otherwise it returns `ConnectTimeout` or `ConnectIncomplete` and the caller is expected to drive `disconnect_bolt_v3_clients` to drain any partially-connected NT clients.
 
-The controlled-connect boundary alone does not enable live trading: order submission, strategy actors, reconciliation, and the runner loop remain blocked behind the still-absent supervised live-trading transition.
+Controlled-disconnect boundary contract:
+
+- recovery counterpart to controlled-connect: callers should invoke `disconnect_bolt_v3_clients` after a `ConnectTimeout` or `ConnectIncomplete` to drain any partially-connected NT clients under a bounded timeout
+- bounded: the `kernel.disconnect_clients` future is wrapped in `tokio::time::timeout` driven by the same `nautilus.timeout_connection_seconds` bound; on timeout the boundary returns `BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds }`
+- error-propagating: NT's engine-level disconnect aggregator returns `anyhow::Result<()>`, and the boundary surfaces any `Err(..)` as `BoltV3LiveNodeError::DisconnectFailed(error)` rather than silently swallowing it
+- pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().disconnect_clients` (the pinned NT controlled-disconnect API surface); it does not call `LiveNode::stop` and never enters NT's runner-driven lifecycle
+- no-trade: same constraints as the controlled-connect boundary; the boundary does not register strategies, select markets, construct orders, submit orders, or invoke any user-level subscription API
+- no copying NT private drain logic: the boundary does not copy or reimplement NT's private drain or flush internals
+
+The controlled-connect and controlled-disconnect boundaries alone do not enable live trading: order submission, strategy actors, reconciliation, and the runner loop remain blocked behind the still-absent supervised live-trading transition.
 
 ## 12. Panic Gate: Issue `#239`
 

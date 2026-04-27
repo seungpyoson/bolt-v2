@@ -31,7 +31,8 @@ mod support;
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{
-        BoltV3LiveNodeError, connect_bolt_v3_clients, make_bolt_v3_live_node_builder,
+        BoltV3LiveNodeError, connect_bolt_v3_clients, disconnect_bolt_v3_clients,
+        make_bolt_v3_live_node_builder,
     },
 };
 use nautilus_live::node::NodeState;
@@ -193,17 +194,242 @@ fn controlled_connect_returns_timeout_when_engine_connect_exceeds_configured_bou
 }
 
 #[test]
+fn controlled_connect_returns_incomplete_when_engine_swallows_client_connect_failure() {
+    // Pinned NT engine-level connect dispatchers
+    // (`DataEngine::connect`, `ExecutionEngine::connect`) swallow
+    // individual client `connect()` errors and only log them (see
+    // `nautilus_data::engine::DataEngine::connect` and
+    // `nautilus_execution::engine::ExecutionEngine::connect`). The
+    // bolt-v3 controlled-connect boundary must therefore consult NT's
+    // `kernel.check_engines_connected()` after the dispatch returns:
+    // if any registered NT client did not transition to `is_connected`
+    // because its `connect()` returned `Err(...)`, the boundary must
+    // surface a `ConnectIncomplete` error rather than `Ok(())`.
+    clear_mock_data_subscriptions();
+    clear_mock_exec_submissions();
+
+    let loaded = fixture_loaded_with_connection_timeout(30);
+
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
+    let builder = builder
+        .add_data_client(
+            Some("FAILING_MOCK_DATA".to_string()),
+            Box::new(MockDataClientFactory),
+            Box::new(
+                MockDataClientConfig::new("FAILING_MOCK_DATA", "MOCKVENUE")
+                    .with_connect_failure("simulated bolt-v3 mock connect failure"),
+            ),
+        )
+        .expect("failing mock data client should register on bolt-v3 builder");
+    let mut node = builder
+        .build()
+        .expect("LiveNode should build with failing mock data client");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build for controlled-connect failure test");
+    let error = runtime
+        .block_on(connect_bolt_v3_clients(&mut node, &loaded))
+        .expect_err("controlled-connect must surface incomplete-connect when a registered client fails connect");
+
+    match error {
+        BoltV3LiveNodeError::ConnectIncomplete => {}
+        other => panic!("expected ConnectIncomplete, got {other}"),
+    }
+    assert!(
+        !node.kernel().check_engines_connected(),
+        "kernel.check_engines_connected() must remain false after a swallowed client connect failure"
+    );
+    assert_eq!(
+        node.state(),
+        NodeState::Idle,
+        "incomplete-connect path must not start trader or runner loop"
+    );
+    assert!(recorded_mock_exec_submissions().is_empty());
+    assert!(recorded_mock_data_subscriptions().is_empty());
+}
+
+#[test]
+fn controlled_disconnect_after_successful_connect_returns_ok_and_disconnects_engine_clients() {
+    clear_mock_data_subscriptions();
+    clear_mock_exec_submissions();
+
+    let loaded = fixture_loaded_with_connection_timeout(30);
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
+    let builder = builder
+        .add_data_client(
+            Some("MOCK_DATA".to_string()),
+            Box::new(MockDataClientFactory),
+            Box::new(MockDataClientConfig::new("MOCK_DATA", "MOCKVENUE")),
+        )
+        .expect("mock data client should register on bolt-v3 builder");
+    let builder = builder
+        .add_exec_client(
+            Some("MOCK_EXEC".to_string()),
+            Box::new(MockExecutionClientFactory),
+            Box::new(MockExecClientConfig::new(
+                "MOCK_EXEC",
+                "MOCK-ACCOUNT",
+                "MOCKVENUE",
+            )),
+        )
+        .expect("mock exec client should register on bolt-v3 builder");
+    let mut node = builder.build().expect("LiveNode should build with mocks");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build for controlled-disconnect test");
+    runtime
+        .block_on(connect_bolt_v3_clients(&mut node, &loaded))
+        .expect("controlled-connect must succeed against mock clients");
+    assert!(
+        node.kernel().check_engines_connected(),
+        "engines must report connected after controlled-connect"
+    );
+
+    runtime
+        .block_on(disconnect_bolt_v3_clients(&mut node, &loaded))
+        .expect("controlled-disconnect must succeed against mock clients");
+
+    assert!(
+        node.kernel().data_engine.borrow().check_disconnected(),
+        "data engine must report all clients disconnected after controlled-disconnect"
+    );
+    assert!(
+        node.kernel().exec_engine.borrow().check_disconnected(),
+        "exec engine must report all clients disconnected after controlled-disconnect"
+    );
+    assert_eq!(
+        node.state(),
+        NodeState::Idle,
+        "controlled-disconnect must not transition NodeState (no LiveNode::stop, no runner loop)"
+    );
+    assert!(recorded_mock_exec_submissions().is_empty());
+    assert!(recorded_mock_data_subscriptions().is_empty());
+}
+
+#[test]
+fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configured_bound() {
+    clear_mock_data_subscriptions();
+    clear_mock_exec_submissions();
+
+    let loaded = fixture_loaded_with_connection_timeout(1);
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
+    let builder = builder
+        .add_data_client(
+            Some("SLOW_DISCONNECT_MOCK_DATA".to_string()),
+            Box::new(MockDataClientFactory),
+            Box::new(
+                MockDataClientConfig::new("SLOW_DISCONNECT_MOCK_DATA", "MOCKVENUE")
+                    .with_disconnect_delay_milliseconds(2_000),
+            ),
+        )
+        .expect("slow-disconnect mock data client should register on bolt-v3 builder");
+    let mut node = builder
+        .build()
+        .expect("LiveNode should build with slow-disconnect mock data client");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build for controlled-disconnect timeout test");
+    runtime
+        .block_on(connect_bolt_v3_clients(&mut node, &loaded))
+        .expect("controlled-connect must succeed before timeout-disconnect test");
+
+    let error = runtime
+        .block_on(disconnect_bolt_v3_clients(&mut node, &loaded))
+        .expect_err("controlled-disconnect must surface the configured timeout");
+
+    match error {
+        BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds } => {
+            assert_eq!(timeout_seconds, 1);
+        }
+        other => panic!("expected DisconnectTimeout, got {other}"),
+    }
+    assert_eq!(
+        node.state(),
+        NodeState::Idle,
+        "disconnect-timeout path must not transition NodeState"
+    );
+    assert!(recorded_mock_exec_submissions().is_empty());
+    assert!(recorded_mock_data_subscriptions().is_empty());
+}
+
+#[test]
+fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
+    // After `connect_bolt_v3_clients` returns a `ConnectTimeout`, the
+    // bolt-v3 LiveNode is left in a partially-connected state owned by
+    // NT (the tokio::time::timeout dropped the awaiting future, but
+    // any client whose `connect()` already finished still has its
+    // `connected` flag set). The controlled-disconnect boundary must
+    // remain callable in that state and clean up the surviving
+    // connections under its own bound.
+    clear_mock_data_subscriptions();
+    clear_mock_exec_submissions();
+
+    let loaded = fixture_loaded_with_connection_timeout(1);
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
+    let builder = builder
+        .add_data_client(
+            Some("SLOW_CONNECT_MOCK_DATA".to_string()),
+            Box::new(MockDataClientFactory),
+            Box::new(
+                MockDataClientConfig::new("SLOW_CONNECT_MOCK_DATA", "MOCKVENUE")
+                    .with_connect_delay_milliseconds(2_000),
+            ),
+        )
+        .expect("slow-connect mock data client should register on bolt-v3 builder");
+    let mut node = builder
+        .build()
+        .expect("LiveNode should build with slow-connect mock data client");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build for connect-timeout-then-disconnect test");
+    let error = runtime
+        .block_on(connect_bolt_v3_clients(&mut node, &loaded))
+        .expect_err("controlled-connect must surface the configured timeout");
+    match error {
+        BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => {
+            assert_eq!(timeout_seconds, 1);
+        }
+        other => panic!("expected ConnectTimeout, got {other}"),
+    }
+
+    // Disconnect must still be callable after a timeout-truncated
+    // connect; with the mock's disconnect_delay at zero this completes
+    // well within the bound.
+    runtime
+        .block_on(disconnect_bolt_v3_clients(&mut node, &loaded))
+        .expect("controlled-disconnect must remain callable after a connect-timeout");
+}
+
+#[test]
 fn live_node_module_remains_no_trade_boundary_after_controlled_connect_addition() {
     // Source-level inspection of `src/bolt_v3_live_node.rs`. The module
-    // is allowed to reference NT's `connect_data_clients` and
-    // `connect_exec_clients` (the pinned controlled-connect API), but it
-    // must never call `node.run`, `kernel.start_trader`, register a
-    // strategy actor, select a market, construct an order, or submit
-    // one. The forbidden token list lives in this integration test (not
-    // in the module's own source) so the assertion does not self-trip.
+    // is allowed to reference NT's `connect_data_clients`,
+    // `connect_exec_clients`, and `disconnect_clients` (the pinned
+    // controlled-connect / controlled-disconnect API), but it must
+    // never enter NT's runner loop, register a strategy actor, select
+    // a market, construct an order, submit one, or call any user-level
+    // market-data subscription API. The forbidden token list lives in
+    // this integration test (not in the module's own source) so the
+    // assertion does not self-trip; production comments in
+    // `bolt_v3_live_node.rs` must avoid these substrings on purpose.
     let source = include_str!("../src/bolt_v3_live_node.rs");
     for forbidden in [
         ".run(",
+        ".start(",
+        "start_async",
+        "kernel.start",
         "start_trader",
         "register_strategy",
         "register_actor",
@@ -220,6 +446,8 @@ fn live_node_module_remains_no_trade_boundary_after_controlled_connect_addition(
         "subscribe_order_book_deltas",
         "subscribe_order_book_snapshots",
         "subscribe_instruments",
+        "subscribe_market",
+        "ws_client.subscribe",
     ] {
         assert!(
             !source.contains(forbidden),

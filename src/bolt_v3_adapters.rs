@@ -733,7 +733,7 @@ mod tests {
         ] {
             assert!(
                 !debug.contains(raw_secret),
-                "binance adapter Debug must not leak resolved secret `{raw_secret}`: {debug}"
+                "binance adapter Debug must not leak resolved secret values"
             );
         }
     }
@@ -753,7 +753,7 @@ mod tests {
         ] {
             assert!(
                 !debug.contains(raw_secret),
-                "polymarket adapter Debug must not leak resolved secret `{raw_secret}`: {debug}"
+                "polymarket adapter Debug must not leak resolved secret values"
             );
         }
     }

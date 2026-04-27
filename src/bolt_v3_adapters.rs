@@ -12,7 +12,7 @@
 //! struct passed in by the caller; AWS Systems Manager is never touched
 //! here.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use nautilus_binance::{
     common::enums::{
@@ -24,6 +24,7 @@ use nautilus_model::identifiers::{AccountId, TraderId};
 use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
+    filters::{InstrumentFilter, MarketSlugFilter},
 };
 
 use crate::{
@@ -32,11 +33,22 @@ use crate::{
         LoadedBoltV3Config, PolymarketDataConfig, PolymarketExecutionConfig,
         PolymarketSignatureType, VenueBlock, VenueKind,
     },
+    bolt_v3_market_identity::{
+        MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
+    },
     bolt_v3_secrets::{
         ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,
         ResolvedBoltV3VenueSecrets,
     },
 };
+
+/// Boxed closure used by the provider-binding layer to obtain the
+/// current unix-seconds value at the moment a provider filter wants
+/// fresh slugs. The closure is invoked from inside the provider's
+/// `load_all` cycle on every refresh, so it must be `Send + Sync` and
+/// own all state it captures. Tests inject a fixed-time closure;
+/// future live wiring will inject one backed by an NT runtime clock.
+pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// Mapped NT-native adapter configs for one configured Bolt-v3 venue.
 /// Sub-configs are present iff the corresponding `[venues.<id>.<block>]`
@@ -175,16 +187,62 @@ impl std::error::Error for BoltV3AdapterMappingError {}
 /// never re-resolves SSM and never registers clients; callers receive
 /// owned config structs and may pass them to NT factories at a later
 /// stage.
+///
+/// This entry point intentionally installs no provider filter and
+/// passes an empty plan into the with-identity variant. Callers that
+/// need the rotating-market filter surface MUST use
+/// [`map_bolt_v3_adapters_with_market_identity`] directly with a
+/// derived [`MarketIdentityPlan`] and a real clock — copying the
+/// `Arc::new(|| 0_i64)` sentinel below into a non-empty-plan call site
+/// would produce slugs anchored to unix-second 0 every cycle.
 pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
+    let empty_plan = MarketIdentityPlan {
+        updown_targets: Vec::new(),
+    };
+    // The clock here is never invoked: with no updown targets, no
+    // provider filter closure is built, so the closure body is never
+    // entered. We wire in a deterministic constant so callers cannot
+    // observe any wall-clock dependency on the no-identity entry point.
+    // Treat this constant as a sentinel for the no-filter path; do not
+    // reuse it from any call site that supplies a non-empty plan.
+    let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);
+    map_bolt_v3_adapters_with_market_identity(loaded, resolved, &empty_plan, zero_clock)
+}
+
+/// Map a validated [`LoadedBoltV3Config`] plus resolved SSM secrets into
+/// NT-native adapter config values, and additionally install the
+/// provider-specific filter surface that corresponds to the supplied
+/// provider-neutral [`MarketIdentityPlan`].
+///
+/// Today this means: every Polymarket venue receives one
+/// `MarketSlugFilter` per configured updown target whose
+/// `venue_config_key` matches that venue, in the same sequence as the
+/// underlying strategies. Each filter's slug closure re-evaluates the
+/// injected `clock` on every NT `load_all` cycle so the rotating-market
+/// slug pair rolls forward with cadence. The provider-specific filter
+/// type is referenced only inside this module: the core
+/// market-identity module remains provider-neutral.
+pub fn map_bolt_v3_adapters_with_market_identity(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    plan: &MarketIdentityPlan,
+    clock: BoltV3UpdownNowFn,
+) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
+    validate_updown_target_venue_bindings(&loaded.root.venues, plan)?;
     let mut venues = BTreeMap::new();
     for (venue_key, venue) in &loaded.root.venues {
         let mapped = match venue.kind {
-            VenueKind::Polymarket => {
-                map_polymarket_venue(&loaded.root, venue_key, venue, resolved)?
-            }
+            VenueKind::Polymarket => map_polymarket_venue(
+                &loaded.root,
+                venue_key,
+                venue,
+                resolved,
+                plan,
+                clock.clone(),
+            )?,
             VenueKind::Binance => map_binance_venue(venue_key, venue, resolved)?,
         };
         venues.insert(venue_key.clone(), mapped);
@@ -192,14 +250,57 @@ pub fn map_bolt_v3_adapters(
     Ok(BoltV3AdapterConfigs { venues })
 }
 
+/// Reject the mapping if any configured updown target binds to a
+/// venue that is missing from `[venues]` or is not a Polymarket venue.
+/// Without this guard the binding layer silently drops the target,
+/// because filter installation only runs on the Polymarket branch of
+/// `map_bolt_v3_adapters_with_market_identity`. This is the first
+/// line of defence; a future schema validator should also reject the
+/// same misconfiguration at config-load time.
+fn validate_updown_target_venue_bindings(
+    venues: &BTreeMap<String, VenueBlock>,
+    plan: &MarketIdentityPlan,
+) -> Result<(), BoltV3AdapterMappingError> {
+    for target in &plan.updown_targets {
+        match venues.get(&target.venue_config_key) {
+            None => {
+                return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                    venue_key: target.venue_config_key.clone(),
+                    field: "strategy.target.venue_config_key",
+                    message: format!(
+                        "configured target `{}` references unknown venue `{}`",
+                        target.configured_target_id, target.venue_config_key,
+                    ),
+                });
+            }
+            Some(venue) if !matches!(venue.kind, VenueKind::Polymarket) => {
+                return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                    venue_key: target.venue_config_key.clone(),
+                    field: "strategy.target.venue_config_key",
+                    message: format!(
+                        "configured target `{}` is bound to venue `{}` of kind `{}`, but rotating-market filter installation requires a venue of kind `polymarket`",
+                        target.configured_target_id,
+                        target.venue_config_key,
+                        venue.kind.as_str(),
+                    ),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn map_polymarket_venue(
     root: &BoltV3RootConfig,
     venue_key: &str,
     venue: &VenueBlock,
     resolved: &ResolvedBoltV3Secrets,
+    plan: &MarketIdentityPlan,
+    clock: BoltV3UpdownNowFn,
 ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
     let data = match &venue.data {
-        Some(value) => Some(map_polymarket_data(venue_key, value)?),
+        Some(value) => Some(map_polymarket_data(venue_key, value, plan, clock)?),
         None => None,
     };
     let execution = match &venue.execution {
@@ -234,6 +335,8 @@ fn map_binance_venue(
 fn map_polymarket_data(
     venue_key: &str,
     value: &toml::Value,
+    plan: &MarketIdentityPlan,
+    clock: BoltV3UpdownNowFn,
 ) -> Result<PolymarketDataClientConfig, BoltV3AdapterMappingError> {
     let cfg: PolymarketDataConfig =
         value.clone().try_into().map_err(|error: toml::de::Error| {
@@ -259,6 +362,10 @@ fn map_polymarket_data(
                 cfg.websocket_max_subscriptions_per_connection
             ),
         })?;
+    // Build filters AFTER the `subscribe_new_markets` invariant fires
+    // above. Reordering would let a misconfigured caller observe a
+    // built filter for a config the mapper is required to reject.
+    let filters = build_polymarket_market_slug_filters_for_venue(plan, venue_key, clock);
     Ok(PolymarketDataClientConfig {
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
@@ -269,9 +376,57 @@ fn map_polymarket_data(
         ws_max_subscriptions,
         update_instruments_interval_mins: cfg.update_instruments_interval_minutes,
         subscribe_new_markets: cfg.subscribe_new_markets,
-        filters: Vec::new(),
+        filters,
         new_market_filter: None,
     })
+}
+
+/// Provider-binding helper: emit one provider filter per configured
+/// updown target whose `venue_config_key` matches `venue_key`, in the
+/// same sequence as the underlying strategies. The provider-specific
+/// filter type (`MarketSlugFilter`) is built only here; the core
+/// market-identity module never references it.
+fn build_polymarket_market_slug_filters_for_venue(
+    plan: &MarketIdentityPlan,
+    venue_key: &str,
+    clock: BoltV3UpdownNowFn,
+) -> Vec<Arc<dyn InstrumentFilter>> {
+    plan.updown_targets
+        .iter()
+        .filter(|target| target.venue_config_key == venue_key)
+        .map(|target| build_polymarket_market_slug_filter(target, clock.clone()))
+        .collect()
+}
+
+/// Build one `MarketSlugFilter` whose closure recomputes the
+/// `[current, next]` slug pair from the injected clock on every
+/// invocation, using the provider-neutral cadence and asset already
+/// captured in the [`UpdownTargetPlan`]. Cadence is positive (validated
+/// by the planner), so the only `Err` paths reachable inside the
+/// closure are extreme clock values; those surface as an empty slug
+/// list so the provider's `load_all` loop continues without panicking.
+fn build_polymarket_market_slug_filter(
+    target: &UpdownTargetPlan,
+    clock: BoltV3UpdownNowFn,
+) -> Arc<dyn InstrumentFilter> {
+    let asset = target.underlying_asset.clone();
+    let token = target.cadence_slug_token.clone();
+    let cadence = target.cadence_seconds;
+    Arc::new(MarketSlugFilter::new(move || {
+        let now = (clock)();
+        match updown_period_pair(cadence, now) {
+            Ok((current, next)) => vec![
+                updown_market_slug(&asset, &token, current),
+                updown_market_slug(&asset, &token, next),
+            ],
+            Err(error) => {
+                log::warn!(
+                    "bolt-v3 provider binding: skipping updown filter cycle (cadence={cadence}, now_unix_seconds={now}): {error}"
+                );
+                Vec::new()
+            }
+        }
+    }))
 }
 
 fn map_polymarket_execution(

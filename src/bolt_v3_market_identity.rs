@@ -7,20 +7,26 @@
 //! This module is intentionally a pure data boundary. It projects a
 //! validated bolt-v3 configuration plus an injected `now_unix_seconds`
 //! value into a `MarketIdentityPlan` plus current/next updown market
-//! slug candidates. It does not register strategies, build venue
-//! adapters, perform live market selection, look up instruments,
-//! mutate the NautilusTrader instrument index, or construct orders.
+//! slug candidates. It registers nothing, opens no client, mutates no
+//! shared instrument index, depends on no live wall-clock source, and
+//! describes no provider-specific discovery mechanism.
 //!
 //! The runtime-contract slug-token table is sourced from
 //! `crate::bolt_v3_validate::updown_cadence_slug_token` so that the
 //! schema validator and the market-identity planner share one source
 //! of truth for supported `cadence_seconds` values.
 //!
-//! Out of scope for the slice introducing this module: live runtime
-//! execution, the NT instrument index, dynamic instrument filtering,
-//! Polymarket Gamma price-to-beat extraction, Chainlink and fused
-//! reference price derivation, and any strategy or order construction.
-//! Those boundaries belong to later slices.
+//! This module is deliberately provider-neutral: no specific data or
+//! venue provider name appears in its source. Translation of the
+//! neutral identity plan into provider-shaped adapter values lives in
+//! the adapter / provider-binding layer (see `bolt_v3_adapters`), and
+//! its companion source-guard test enforces that no provider name and
+//! no live-runtime / trading concept leaks back into this module.
+//!
+//! Out of scope for this module: live runtime workflows, dynamic
+//! instrument discovery, provider price extraction, fused reference
+//! price derivation, and trade-action construction. Those boundaries
+//! belong to later slices.
 
 use crate::{
     bolt_v3_config::{
@@ -137,10 +143,10 @@ fn format_target_prefix(
 impl std::error::Error for BoltV3MarketIdentityError {}
 
 /// Project every configured strategy in `loaded` into an
-/// `UpdownTargetPlan`. Returns the full `MarketIdentityPlan` in
-/// strategy declaration order. Fails loud if a strategy's target has
-/// been mutated to bypass schema validation (non-positive or
-/// unsupported `cadence_seconds`).
+/// `UpdownTargetPlan`. Returns the full `MarketIdentityPlan` in the
+/// same sequence as the configured strategies. Fails loud if a
+/// strategy's target has been mutated to bypass schema validation
+/// (non-positive or unsupported `cadence_seconds`).
 pub fn plan_market_identity(
     loaded: &LoadedBoltV3Config,
 ) -> Result<MarketIdentityPlan, BoltV3MarketIdentityError> {

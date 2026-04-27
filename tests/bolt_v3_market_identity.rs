@@ -388,13 +388,53 @@ fn candidates_for_target_propagates_period_pair_overflow() {
 }
 
 #[test]
-fn module_source_does_not_reference_forbidden_runtime_symbols() {
+fn core_market_identity_module_remains_provider_neutral_and_runtime_free() {
+    // The core market-identity module is the product boundary that
+    // future provider bindings translate into provider-shaped adapter
+    // values. It must therefore stay free of every provider name and
+    // every live-runtime / trading concept. Adding any of the strings
+    // below to `src/bolt_v3_market_identity.rs` is a product-boundary
+    // regression: provider-specific translation belongs in the adapter
+    // / provider-binding layer, not in core market identity.
     let src = include_str!("../src/bolt_v3_market_identity.rs");
-    let forbidden = ["LiveNode", "request_instruments", "connect", "Cache"];
+    let forbidden = [
+        // Live-runtime / NT-runtime types
+        "LiveNode",
+        "Cache",
+        "request_instruments",
+        "connect",
+        // Provider names: capitalized identifier prefix variants
+        "Polymarket",
+        "Binance",
+        "Chainlink",
+        "Gamma",
+        // Provider names: lowercase identifier / docstring variants so
+        // a regression like "configured polymarket venue" or a
+        // `polymarket_*` snake_case identifier in core source still
+        // trips the guard.
+        "polymarket",
+        "binance",
+        "chainlink",
+        "gamma",
+        // Provider-specific filter type
+        "MarketSlugFilter",
+        // Order / execution / risk / sizing concerns: forbid both
+        // snake_case (e.g. `submit_order`, `risk_engine`) and
+        // CamelCase (e.g. `OrderBook`, `ExecutionEngine`) variants.
+        "order",
+        "Order",
+        "execution",
+        "Execution",
+        "risk",
+        "Risk",
+        "sizing",
+        "Sizing",
+    ];
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "module source must not reference `{symbol}` (slice 9 is pure/control-plane only)"
+            "src/bolt_v3_market_identity.rs must remain provider-neutral and live-runtime-free; \
+             source unexpectedly references `{symbol}`"
         );
     }
 }

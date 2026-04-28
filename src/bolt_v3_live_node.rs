@@ -80,6 +80,14 @@ use crate::{
 #[derive(Debug)]
 pub enum BoltV3LiveNodeError {
     ForbiddenEnv(ForbiddenEnvVarError),
+    /// `SsmResolverSession::new()` failed before any venue secret was
+    /// read. The wrapped `SecretError` is the upstream Tokio /
+    /// AWS-SDK-config setup failure. Distinct from
+    /// [`SecretResolution`] (which carries a per-venue `BoltV3SecretError`
+    /// with venue key, secret-config field name, and SSM path) because
+    /// session setup happens before any venue path is consulted, so an
+    /// operator message that names a venue or SSM path would be wrong.
+    SecretResolverSetup(crate::secrets::SecretError),
     SecretResolution(BoltV3SecretError),
     AdapterMapping(BoltV3AdapterMappingError),
     ClientRegistration(BoltV3ClientRegistrationError),
@@ -138,6 +146,11 @@ impl std::fmt::Display for BoltV3LiveNodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BoltV3LiveNodeError::ForbiddenEnv(error) => write!(f, "{error}"),
+            BoltV3LiveNodeError::SecretResolverSetup(error) => write!(
+                f,
+                "bolt-v3 SSM resolver session setup failed before any venue \
+                 secret could be read: {error}"
+            ),
             BoltV3LiveNodeError::SecretResolution(error) => {
                 write!(f, "bolt-v3 secret resolution failed: {error}")
             }
@@ -178,6 +191,7 @@ impl std::error::Error for BoltV3LiveNodeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             BoltV3LiveNodeError::ForbiddenEnv(error) => Some(error),
+            BoltV3LiveNodeError::SecretResolverSetup(error) => Some(error),
             BoltV3LiveNodeError::SecretResolution(error) => Some(error),
             BoltV3LiveNodeError::AdapterMapping(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
@@ -198,15 +212,11 @@ pub fn build_bolt_v3_live_node(
     // Per #252 design review: own the resolver session at the bolt-v3
     // startup boundary so a single AWS SDK config + SsmClient cache covers
     // every secret resolution in this build, and so the session lifetime is
-    // visible to the caller of `resolve_bolt_v3_secrets`.
-    let session = SsmResolverSession::new().map_err(|error| {
-        BoltV3LiveNodeError::SecretResolution(BoltV3SecretError {
-            venue_key: String::new(),
-            field: "ssm_resolver_session".to_string(),
-            ssm_path: String::new(),
-            source: error.to_string(),
-        })
-    })?;
+    // visible to the caller of `resolve_bolt_v3_secrets`. Session-setup
+    // failure surfaces as the dedicated `SecretResolverSetup` variant
+    // (#255-2) so operator-facing messages don't pretend a venue or SSM
+    // path is involved before any path has been read.
+    let session = SsmResolverSession::new().map_err(BoltV3LiveNodeError::SecretResolverSetup)?;
     let resolved =
         resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
@@ -546,5 +556,44 @@ mod tests {
                 "credential module `{module_path}` filter must be Warn or stricter, got {level:?}"
             );
         }
+    }
+
+    #[test]
+    fn secret_resolver_setup_variant_renders_clean_message_without_empty_venue_path() {
+        // Per #255-2: before this fix, session-construction failure was
+        // mapped into `BoltV3SecretError` with empty `venue_key` and
+        // `ssm_path`, rendering as a confusing
+        // `venues..secrets.ssm_resolver_session ...`. The dedicated
+        // `BoltV3LiveNodeError::SecretResolverSetup(SecretError)` variant
+        // gives operators a clean, accurate message that does not
+        // pretend a venue or SSM path is involved (none is — the
+        // failure happens before any path is read).
+        let inner = crate::secrets::SecretError::for_test(
+            "failed to build Tokio runtime for SSM resolver session: simulated".to_string(),
+        );
+        let err = BoltV3LiveNodeError::SecretResolverSetup(inner);
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("venues."),
+            "SecretResolverSetup must not render through the venue/SSM-path template"
+        );
+        assert!(
+            !rendered.contains("ssm_path"),
+            "SecretResolverSetup must not include an empty ssm_path field"
+        );
+        assert!(
+            rendered.contains("SSM resolver session"),
+            "SecretResolverSetup message must name the resolver-session setup boundary"
+        );
+        assert!(
+            rendered.contains("simulated"),
+            "SecretResolverSetup must surface the wrapped SecretError"
+        );
+        let source = std::error::Error::source(&err);
+        assert!(
+            source.is_some(),
+            "SecretResolverSetup must report its wrapped SecretError via \
+             std::error::Error::source"
+        );
     }
 }

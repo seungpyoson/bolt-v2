@@ -687,10 +687,11 @@ disable_after_ms = 5000"#,
 
 #[test]
 fn parses_minimal_bolt_v3_root_and_strategy_config() {
-    use bolt_v2::bolt_v3_config::{
-        ArchetypeOrderType, ArchetypeTimeInForce, RuntimeMode, StrategyArchetype, TargetKind,
-        VenueKind, load_bolt_v3_config,
+    use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
+        ArchetypeOrderType, ArchetypeTimeInForce, ParametersBlock,
     };
+    use bolt_v2::bolt_v3_config::{RuntimeMode, StrategyArchetype, VenueKind, load_bolt_v3_config};
+    use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
@@ -715,22 +716,26 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         strategy.strategy_archetype,
         StrategyArchetype::BinaryOracleEdgeTaker
     );
-    assert_eq!(strategy.target.kind, TargetKind::RotatingMarket);
-    assert_eq!(strategy.target.cadence_seconds, 300);
+    let target: TargetBlock = strategy
+        .target
+        .clone()
+        .try_into()
+        .expect("fixture target block should deserialize as updown TargetBlock");
+    assert_eq!(target.kind, TargetKind::RotatingMarket);
+    assert_eq!(target.cadence_seconds, 300);
+    let parameters: ParametersBlock = strategy
+        .parameters
+        .clone()
+        .try_into()
+        .expect("fixture parameters block should deserialize as binary_oracle_edge_taker");
+    assert_eq!(parameters.entry_order.order_type, ArchetypeOrderType::Limit);
     assert_eq!(
-        strategy.parameters.entry_order.order_type,
-        ArchetypeOrderType::Limit
-    );
-    assert_eq!(
-        strategy.parameters.entry_order.time_in_force,
+        parameters.entry_order.time_in_force,
         ArchetypeTimeInForce::Fok
     );
+    assert_eq!(parameters.exit_order.order_type, ArchetypeOrderType::Market);
     assert_eq!(
-        strategy.parameters.exit_order.order_type,
-        ArchetypeOrderType::Market
-    );
-    assert_eq!(
-        strategy.parameters.exit_order.time_in_force,
+        parameters.exit_order.time_in_force,
         ArchetypeTimeInForce::Ioc
     );
     assert!(strategy.reference_data.contains_key("primary"));
@@ -768,13 +773,24 @@ fn rejects_unknown_bolt_v3_config_fields() {
         "[parameters]\nedge_threshold_basis_points = 100\nbogus_parameter = 7",
     );
 
-    let strategy_error =
-        toml::from_str::<bolt_v2::bolt_v3_config::BoltV3StrategyConfig>(&mutated_strategy)
-            .expect_err("unknown strategy field should fail to parse")
-            .to_string();
+    // The strategy envelope's `parameters` field is now archetype-
+    // neutral raw TOML (`toml::Value`); unknown-field rejection inside
+    // `[parameters]` moves from envelope-parse time to archetype typed
+    // deserialization time. The first parse therefore succeeds, but
+    // `try_into::<ParametersBlock>` (the per-archetype deserializer)
+    // still rejects the unknown field by name.
+    let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
+        .expect(
+            "strategy envelope parse should succeed when parameters is archetype-neutral raw TOML",
+        );
+    let parameters_error = strategy
+        .parameters
+        .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>()
+        .expect_err("unknown field inside [parameters] should fail archetype typed deserialization")
+        .to_string();
     assert!(
-        strategy_error.contains("bogus_parameter"),
-        "error should name the unknown strategy field, got: {strategy_error}"
+        parameters_error.contains("bogus_parameter"),
+        "archetype deserialization error should name the unknown strategy field, got: {parameters_error}"
     );
 }
 

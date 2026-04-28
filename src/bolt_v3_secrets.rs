@@ -18,10 +18,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    bolt_v3_config::{
-        BinanceSecretsConfig, BoltV3RootConfig, LoadedBoltV3Config, PolymarketSecretsConfig,
-        VenueKind,
-    },
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, VenueKind},
+    bolt_v3_providers::{binance::BinanceSecretsConfig, polymarket::PolymarketSecretsConfig},
     secrets::{SsmResolverSession, pad_base64, validate_binance_api_secret_shape},
 };
 

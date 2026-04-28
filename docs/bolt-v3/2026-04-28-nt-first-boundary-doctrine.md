@@ -3,7 +3,7 @@
 Status: approved doctrine
 
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
-Last audited NautilusTrader rev: `48d1c126335b82812ba691c5661aeb2e912cde24`
+Last audited NautilusTrader rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last audited date: 2026-04-28
 Owner: Bolt-v3 maintainers
 
@@ -93,7 +93,11 @@ Decision to repo-rule mapping:
 
 The following source anchors were verified before writing this doctrine:
 
-- `Cargo.toml` pins NT to `48d1c126335b82812ba691c5661aeb2e912cde24`.
+- `Cargo.toml` pins NT to `56a438216442f079edf322a39cdc0d9e655ba6d8`.
+- The NT pin-change audit and compatibility probe are recorded under
+  `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
+  remains open until live signing, order, fill, collateral, and fee behavior are
+  verified.
 - NT Rust factories require typed `ClientConfig` structs and downcast them.
   They do not accept raw TOML or `serde::Value`.
 - `src/bolt_v3_config.rs` defines closed `VenueKind` and

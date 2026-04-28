@@ -128,7 +128,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 ## 9a. Current sizing and exit mechanics
 
 - invariant:
-  - current sizing and exit mechanics: gross USDC notional terms, NautilusTrader-derived exposure, and the mechanical/strategy split
+  - current sizing and exit mechanics: gross collateral notional terms, NautilusTrader-derived exposure, and the mechanical/strategy split
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 7.3, 7.4, and 8.4
 - dependent references:
@@ -173,7 +173,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 12
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 13
 - implementation status:
-  - contract accepted; re-verification required for future pin changes
+  - current branch contains a dedicated NT pin-bump compatibility slice for `56a438216442f079edf322a39cdc0d9e655ba6d8`; future pin changes still require re-verification
 
 ## 13. Panic and service policy
 
@@ -191,7 +191,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 13
 - implementation status:
-  - blocker; verification evidence required
+  - partial evidence: upstream NT CLOB V2 support is now pinned and focused compile/tests pass; live signing, order, fill, collateral, and fee verification still block live capital
 
 ## 15. Bolt-v3 NT-first boundary doctrine
 

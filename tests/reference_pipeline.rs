@@ -10,11 +10,11 @@ use bolt_v2::{
     secrets::{ResolvedChainlinkSecrets, SsmResolverSession},
 };
 use nautilus_bybit::config::BybitDataClientConfig;
+use nautilus_common::factories::ClientConfig;
 use nautilus_deribit::config::DeribitDataClientConfig;
 use nautilus_hyperliquid::config::HyperliquidDataClientConfig;
 use nautilus_kraken::config::KrakenDataClientConfig;
 use nautilus_okx::config::OKXDataClientConfig;
-use nautilus_system::factories::ClientConfig;
 use serde::Deserialize;
 
 #[derive(Deserialize)]

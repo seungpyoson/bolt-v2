@@ -386,16 +386,23 @@ where
 }
 
 pub fn build_reference_data_client(
+    session: &crate::secrets::SsmResolverSession,
     reference: &ReferenceConfig,
     venue: &ReferenceVenueEntry,
 ) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
-    build_reference_data_client_with_resolver(reference, venue, &|shared| {
-        crate::secrets::resolve_binance(&shared.region, &shared.api_key, &shared.api_secret)
-            .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
+    build_reference_data_client_with_resolver(session, reference, venue, &|session, shared| {
+        crate::secrets::resolve_binance(
+            session,
+            &shared.region,
+            &shared.api_key,
+            &shared.api_secret,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
     })
 }
 
 fn build_reference_data_client_with_resolver<BinanceResolver>(
+    session: &crate::secrets::SsmResolverSession,
     reference: &ReferenceConfig,
     venue: &ReferenceVenueEntry,
     resolve_binance: &BinanceResolver,
@@ -403,6 +410,7 @@ fn build_reference_data_client_with_resolver<BinanceResolver>(
 where
     BinanceResolver:
         Fn(
+            &crate::secrets::SsmResolverSession,
             &crate::config::BinanceSharedConfig,
         ) -> Result<crate::secrets::ResolvedBinanceSecrets, Box<dyn std::error::Error>>,
 {
@@ -415,12 +423,12 @@ where
                     "missing shared binance config for configured binance reference venues",
                 )
             })?;
-            let secrets = resolve_binance(shared)?;
+            let secrets = resolve_binance(session, shared)?;
             Ok(clients::binance::build_reference_data_client_with_secrets(
                 shared, secrets,
             ))
         },
-        clients::chainlink::build_chainlink_reference_data_client,
+        |reference| clients::chainlink::build_chainlink_reference_data_client(session, reference),
     )
 }
 
@@ -1355,13 +1363,16 @@ mod tests {
             Some("wss://stream.binance.com/ws"),
         );
         let secret = synthetic_ed25519_seed_base64();
+        let session = crate::secrets::SsmResolverSession::new()
+            .expect("SsmResolverSession should build for reference-builder test");
         let (factory, config) = build_reference_data_client_with_resolver(
+            &session,
             &reference,
             reference
                 .venues
                 .first()
                 .expect("binance venue should exist"),
-            &|_shared| {
+            &|_session, _shared| {
                 Ok::<ResolvedBinanceSecrets, Box<dyn std::error::Error>>(resolved_binance_secrets(
                     &secret,
                 ))
@@ -1394,13 +1405,16 @@ mod tests {
             Some("wss://stream.binance.com/ws"),
         );
         let secret = synthetic_ed25519_seed_base64();
+        let session = crate::secrets::SsmResolverSession::new()
+            .expect("SsmResolverSession should build for reference-builder test");
         let (factory, config) = build_reference_data_client_with_resolver(
+            &session,
             &reference,
             reference
                 .venues
                 .first()
                 .expect("binance venue should exist"),
-            &|_shared| {
+            &|_session, _shared| {
                 Ok::<ResolvedBinanceSecrets, Box<dyn std::error::Error>>(resolved_binance_secrets(
                     &secret,
                 ))

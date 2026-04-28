@@ -1,3 +1,8 @@
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::marker::PhantomData;
+use std::rc::Rc;
+
 use aws_config::BehaviorVersion;
 use aws_sdk_ssm::{Client as SsmClient, config::Region};
 use nautilus_binance::common::credential::Ed25519Credential;
@@ -106,49 +111,104 @@ pub(crate) fn binance_secret_config_contract(
     }
 }
 
-pub(crate) fn resolve_secret(region: &str, ssm_path: &str) -> Result<String, SecretError> {
-    let region_owned = region.to_string();
-    let ssm_path_owned = ssm_path.to_string();
-    // Production startup is synchronous (see `fn main` in src/main.rs and
-    // `bolt_v3_live_node::build_bolt_v3_live_node`), so the AWS SDK's async
-    // GetParameter call is bridged through a contained current-thread Tokio
-    // runtime here rather than propagating async-ness through every caller.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            SecretError(format!(
-                "failed to build Tokio runtime for SSM resolution at {ssm_path_owned}: {error}"
-            ))
-        })?;
-    runtime.block_on(async move {
-        let aws_config = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(region_owned))
-            .load()
-            .await;
-        let client = SsmClient::new(&aws_config);
-        let response = client
-            .get_parameter()
-            .name(&ssm_path_owned)
-            .with_decryption(true)
-            .send()
-            .await
+/// Reusable AWS Systems Manager resolver shared across all bolt secret
+/// resolutions during one startup. Owns one `current_thread` Tokio runtime
+/// (so the AWS SDK's async API can be bridged from the synchronous startup
+/// boundary) and a per-region `SsmClient` cache (so AWS credential discovery
+/// and HTTP-client construction happen at most once per region per process).
+///
+/// Construct one instance at the production entry points (`fn main` Run /
+/// Resolve subcommands, `resolve_bolt_v3_secrets`) and pass `&self` through
+/// every `resolve_*` call so client construction is amortized across the
+/// startup credential footprint.
+///
+/// `SsmResolverSession` is intentionally `!Send + !Sync` because it is only
+/// ever used from the synchronous startup thread, before any multi-threaded
+/// NT runtime is built. Sharing it across threads or calling `resolve` from
+/// inside another runtime would re-introduce the per-call `block_on` panic
+/// risk that motivated this type. `RefCell` carries `!Sync` structurally;
+/// the `_not_send_sync: PhantomData<Rc<()>>` marker carries `!Send` (and
+/// `!Sync` redundantly) so a future contributor cannot accidentally move
+/// the session into `tokio::spawn` or share it across threads. Compile-time
+/// regression guards live in
+/// `tests::ssm_resolver_session_is_not_send` and
+/// `tests::ssm_resolver_session_is_not_sync`.
+pub struct SsmResolverSession {
+    runtime: tokio::runtime::Runtime,
+    clients: RefCell<BTreeMap<String, SsmClient>>,
+    _not_send_sync: PhantomData<Rc<()>>,
+}
+
+impl SsmResolverSession {
+    pub fn new() -> Result<Self, SecretError> {
+        // Production startup is synchronous (see `fn main` in src/main.rs and
+        // `bolt_v3_live_node::build_bolt_v3_live_node`), so the AWS SDK's
+        // async GetParameter calls are bridged through a single contained
+        // current-thread Tokio runtime owned by the session, rather than
+        // building a fresh runtime per resolution.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .map_err(|error| {
                 SecretError(format!(
-                    "AWS SSM GetParameter failed for {ssm_path_owned}: {}",
-                    aws_sdk_ssm::error::DisplayErrorContext(&error),
+                    "failed to build Tokio runtime for SSM resolver session: {error}"
                 ))
             })?;
-        response
-            .parameter()
-            .and_then(|parameter| parameter.value())
-            .map(|raw| raw.trim().to_string())
-            .ok_or_else(|| {
-                SecretError(format!(
-                    "AWS SSM GetParameter returned no value for {ssm_path_owned}"
-                ))
-            })
-    })
+        Ok(Self {
+            runtime,
+            clients: RefCell::new(BTreeMap::new()),
+            _not_send_sync: PhantomData,
+        })
+    }
+
+    pub fn resolve(&self, region: &str, ssm_path: &str) -> Result<String, SecretError> {
+        let client = self.client_for(region);
+        let ssm_path_owned = ssm_path.to_string();
+        self.runtime.block_on(async move {
+            let response = client
+                .get_parameter()
+                .name(&ssm_path_owned)
+                .with_decryption(true)
+                .send()
+                .await
+                .map_err(|error| {
+                    SecretError(format!(
+                        "AWS SSM GetParameter failed for {ssm_path_owned}: {}",
+                        aws_sdk_ssm::error::DisplayErrorContext(&error),
+                    ))
+                })?;
+            response
+                .parameter()
+                .and_then(|parameter| parameter.value())
+                .map(|raw| raw.trim().to_string())
+                .ok_or_else(|| {
+                    SecretError(format!(
+                        "AWS SSM GetParameter returned no value for {ssm_path_owned}"
+                    ))
+                })
+        })
+    }
+
+    pub fn cached_region_count(&self) -> usize {
+        self.clients.borrow().len()
+    }
+
+    fn client_for(&self, region: &str) -> SsmClient {
+        if let Some(client) = self.clients.borrow().get(region) {
+            return client.clone();
+        }
+        let region_owned = region.to_string();
+        let aws_config = self.runtime.block_on(
+            aws_config::defaults(BehaviorVersion::latest())
+                .region(Region::new(region_owned))
+                .load(),
+        );
+        let client = SsmClient::new(&aws_config);
+        self.clients
+            .borrow_mut()
+            .insert(region.to_string(), client.clone());
+        client
+    }
 }
 
 pub(crate) fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), SecretError> {
@@ -238,6 +298,7 @@ pub fn check_binance_secret_config(shared: &BinanceSharedConfig) -> SecretConfig
 }
 
 pub fn resolve_polymarket(
+    session: &SsmResolverSession,
     secrets: &ExecClientSecrets,
 ) -> Result<ResolvedPolymarketSecrets, SecretError> {
     let check = check_polymarket_secret_config(secrets);
@@ -268,40 +329,44 @@ pub fn resolve_polymarket(
         .expect("passphrase must exist after config check");
 
     Ok(ResolvedPolymarketSecrets {
-        private_key: resolve_secret(region, private_key_path)?,
-        api_key: resolve_secret(region, api_key_path)?,
-        api_secret: pad_base64(resolve_secret(region, api_secret_path)?),
-        passphrase: resolve_secret(region, passphrase_path)?,
+        private_key: session.resolve(region, private_key_path)?,
+        api_key: session.resolve(region, api_key_path)?,
+        api_secret: pad_base64(session.resolve(region, api_secret_path)?),
+        passphrase: session.resolve(region, passphrase_path)?,
     })
 }
 
 pub fn resolve_chainlink(
+    session: &SsmResolverSession,
     region: &str,
     api_key_path: &str,
     api_secret_path: &str,
 ) -> Result<ResolvedChainlinkSecrets, SecretError> {
     Ok(ResolvedChainlinkSecrets {
-        api_key: resolve_secret(region, api_key_path)?,
-        api_secret: resolve_secret(region, api_secret_path)?,
+        api_key: session.resolve(region, api_key_path)?,
+        api_secret: session.resolve(region, api_secret_path)?,
     })
 }
 
 pub fn resolve_binance(
+    session: &SsmResolverSession,
     region: &str,
     api_key_path: &str,
     api_secret_path: &str,
 ) -> Result<ResolvedBinanceSecrets, SecretError> {
-    resolve_binance_with(region, api_key_path, api_secret_path, resolve_secret)
+    resolve_binance_with(region, api_key_path, api_secret_path, |r, p| {
+        session.resolve(r, p)
+    })
 }
 
 pub(crate) fn resolve_binance_with<F>(
     region: &str,
     api_key_path: &str,
     api_secret_path: &str,
-    resolve_secret_fn: F,
+    mut resolve_secret_fn: F,
 ) -> Result<ResolvedBinanceSecrets, SecretError>
 where
-    F: Fn(&str, &str) -> Result<String, SecretError>,
+    F: FnMut(&str, &str) -> Result<String, SecretError>,
 {
     // Validate the secret before resolving the companion API key so failures
     // localize to unusable key material immediately.
@@ -482,6 +547,129 @@ mod tests {
         assert!(
             source.contains("aws_sdk_ssm::"),
             "bolt-v3 contract: production resolver must use the aws-sdk-ssm crate"
+        );
+    }
+
+    #[test]
+    fn ssm_resolver_session_constructs_without_aws_calls_and_starts_empty() {
+        // Per #252: the session must own one Tokio runtime + per-region
+        // SsmClient cache. Construction itself does not hit AWS — the cache
+        // populates lazily on the first resolve() per region.
+        let session = super::SsmResolverSession::new()
+            .expect("SsmResolverSession::new must succeed without AWS network calls");
+        assert_eq!(
+            session.cached_region_count(),
+            0,
+            "fresh session must have no cached SsmClient instances"
+        );
+    }
+
+    #[test]
+    fn ssm_resolver_session_resolve_takes_region_and_path() {
+        // Per #252: the production resolver entry point is
+        // `SsmResolverSession::resolve(&self, region, path)`, taking
+        // `&SsmResolverSession` so a single AWS SDK config + SsmClient is
+        // reused across every secret resolution at startup. A bare
+        // `fn(&str, &str) -> ...` shape — the pre-fix signature Gemini
+        // flagged on PR #251 — would force per-call construction of both;
+        // this guard pins the new shape.
+        fn _assert_signature<F>(_f: F)
+        where
+            F: Fn(&super::SsmResolverSession, &str, &str) -> Result<String, super::SecretError>,
+        {
+        }
+        _assert_signature(super::SsmResolverSession::resolve);
+    }
+
+    #[test]
+    fn ssm_resolver_session_is_not_send() {
+        // Per #252 design review: the docstring on `SsmResolverSession`
+        // claims `!Send + !Sync`, but Rust's auto-derive only carried
+        // `!Sync` (from `RefCell`); the type was actually `Send`. A future
+        // contributor moving the session into `tokio::spawn` would
+        // re-introduce the per-call `block_on` panic geometry that
+        // motivated the type — `block_on` panics inside an active
+        // multi-thread runtime. This guard pins `!Send` so that footgun
+        // is rejected at compile time. Implementation: a
+        // `PhantomData<Rc<()>>` marker on the struct.
+        //
+        // Compile-time `!Send` assertion (see `static_assertions`'s
+        // `assert_not_impl_any!`): two impls of an auxiliary trait pick
+        // different `A` parameters, and the call site lets the compiler
+        // infer `_`. If `SsmResolverSession: Send`, both impls apply,
+        // inference is ambiguous, and the test fails to compile.
+        trait AmbiguousIfSend<A> {
+            fn _check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Send> AmbiguousIfSend<Invalid> for T {}
+        let _ = <super::SsmResolverSession as AmbiguousIfSend<_>>::_check;
+    }
+
+    #[test]
+    fn ssm_resolver_session_is_not_sync() {
+        // Per #252 design review: `!Sync` is structurally enforced by
+        // `RefCell`, but pinning it here rejects regressions that swap
+        // `RefCell` for an interior-mutability primitive that is `Sync`
+        // (e.g., `Mutex`) without re-evaluating cross-thread sharing of
+        // the contained Tokio runtime + AWS clients.
+        trait AmbiguousIfSync<A> {
+            fn _check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Sync> AmbiguousIfSync<Invalid> for T {}
+        let _ = <super::SsmResolverSession as AmbiguousIfSync<_>>::_check;
+    }
+
+    #[test]
+    fn ssm_resolver_session_owns_runtime_and_aws_config_construction() {
+        // Per #252: tokio::runtime::Builder, aws_config::defaults, and
+        // SsmClient::new must each appear inside the SsmResolverSession impl
+        // block — and never anywhere else in this module's production code.
+        // This guard catches a regression that would reintroduce per-call
+        // construction. The `#[cfg(test)] mod tests` block is excluded from
+        // the search because the structural assertions below reference these
+        // literals as identifiers in their own source.
+        let source = include_str!("secrets.rs");
+        let production_source = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .map(|(prod, _)| prod)
+            .expect("secrets.rs must contain a #[cfg(test)] mod tests block");
+        let (before_session, session_and_after) = production_source
+            .split_once("impl SsmResolverSession {")
+            .expect("SsmResolverSession impl block must exist");
+        let (session_impl, after_session) = session_and_after
+            .split_once("\n}\n")
+            .expect("SsmResolverSession impl block must terminate");
+        assert!(
+            session_impl.contains("tokio::runtime::Builder::new_current_thread"),
+            "SsmResolverSession impl must own the Tokio runtime construction"
+        );
+        assert!(
+            session_impl.contains("aws_config::defaults"),
+            "SsmResolverSession impl must own AWS SDK config construction"
+        );
+        assert!(
+            session_impl.contains("SsmClient::new"),
+            "SsmResolverSession impl must own SsmClient construction"
+        );
+        let outside_session = format!("{before_session}{after_session}");
+        assert!(
+            !outside_session.contains("tokio::runtime::Builder"),
+            "Tokio runtime construction must be centralized in SsmResolverSession; \
+             found a Builder call outside the impl block"
+        );
+        assert!(
+            !outside_session.contains("aws_config::defaults"),
+            "aws_config::defaults must be centralized in SsmResolverSession; \
+             found another call site outside the impl block"
+        );
+        assert!(
+            !outside_session.contains("SsmClient::new"),
+            "SsmClient::new must be centralized in SsmResolverSession; \
+             found another call site outside the impl block"
         );
     }
 }

@@ -60,6 +60,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 3
 - dependent references:
   - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section 5 `[venues.<identifier>.secrets]`
+  - `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md` D1, D5, R17, R18
 - implementation status:
   - contract accepted; env-blocking tests required
 
@@ -191,3 +192,17 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 13
 - implementation status:
   - blocker; verification evidence required
+
+## 15. Bolt-v3 NT-first boundary doctrine
+
+- invariant:
+  - Bolt-v3 NT-first boundary doctrine over NautilusTrader's Rust factory path,
+    including approved decisions, open decisions, named residuals, verifier
+    coverage, and future slice gates
+- canonical owner:
+  - `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
+- dependent references:
+  - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 1, 3, and 11.5
+  - `docs/bolt-v3/2026-04-25-bolt-v3-contract-ledger.md` Entries 1, 5, and 12
+- implementation status:
+  - approved doctrine; verifier locations are not yet selected

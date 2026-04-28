@@ -1,5 +1,25 @@
 # Bolt-v3 Core Boundary Checkpoint
 
+> **Archived 2026-04-28.** Status: superseded.
+>
+> This file recorded the intended core/provider/family/archetype ownership split immediately after the corrective boundary slices landed and one day before the NT-first boundary doctrine was approved. It is retained for forensics. Do not cite the body as current authority.
+>
+> Active replacement: [`docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`](../2026-04-28-nt-first-boundary-doctrine.md). The doctrine subsumes:
+>
+> - "Product Boundary", "Core", "Provider Bindings", "Market Families", "Archetypes" → doctrine D1 (NT-First Boundary), D2 (Provider Validation Dispatch Direction), D4 (Polymarket-Updown Glue), Verified Evidence anchors, and residuals R1–R12, R20.
+> - "Preserved Behavior" → every load-bearing item is already enforced by [`2026-04-25-bolt-v3-schema.md`](../2026-04-25-bolt-v3-schema.md) Section 8 (structural validation) or [`2026-04-25-bolt-v3-runtime-contracts.md`](../2026-04-25-bolt-v3-runtime-contracts.md) Sections 3, 5.3, 8, and 9.
+>
+> "Deferred Risks" disposition:
+>
+> 1. `live_node_run` retry-pass flake → test/operational concern, not a doctrine residual. Track as a GitHub issue if it recurs.
+> 2. `binary_oracle_edge_taker` calls `bolt_v3_validate::parse_decimal_string` → migrated to doctrine residual **R29**.
+> 3. `BoltV3MarketIdentityError::TargetParseFailed` defensive diagnostic → low-value tactical concern, dropped from active tracking. Enrich the variant if a family planner ever needs better bypass-detection diagnostics.
+> 4. Target/archetype dispatch harmonization → already covered by doctrine **O2** + **R11** + **R12**.
+>
+> The body's framing that "Polymarket-specific `MarketSlugFilter` construction remains in `src/bolt_v3_adapters.rs`, not in core market identity" is superseded by doctrine **D4** + **R6**, which approve provider-owned conversion glue as the destination and treat the current adapter location as a tracked residual.
+>
+> The "Review Gate" section is review-process metadata; it is not retained in the canonical contract set.
+
 Status: review-readiness checkpoint after the corrective boundary slices.
 
 This document records the intended ownership split after the provider,

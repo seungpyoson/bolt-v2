@@ -74,6 +74,7 @@ use crate::{
         resolve_bolt_v3_secrets_with,
     },
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
+    secrets::SsmResolverSession,
 };
 
 #[derive(Debug)]
@@ -194,8 +195,20 @@ pub fn build_bolt_v3_live_node(
 ) -> Result<LiveNode, BoltV3LiveNodeError> {
     check_no_forbidden_credential_env_vars(&loaded.root)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    // Per #252 design review: own the resolver session at the bolt-v3
+    // startup boundary so a single AWS SDK config + SsmClient cache covers
+    // every secret resolution in this build, and so the session lifetime is
+    // visible to the caller of `resolve_bolt_v3_secrets`.
+    let session = SsmResolverSession::new().map_err(|error| {
+        BoltV3LiveNodeError::SecretResolution(BoltV3SecretError {
+            venue_key: String::new(),
+            field: "ssm_resolver_session".to_string(),
+            ssm_path: String::new(),
+            source: error.to_string(),
+        })
+    })?;
     let resolved =
-        resolve_bolt_v3_secrets(loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
+        resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let (node, _summary) = build_live_node_with_clients(loaded, &adapters)?;

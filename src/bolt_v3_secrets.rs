@@ -243,19 +243,15 @@ impl std::error::Error for BoltV3SecretError {}
 /// function; tests should call [`resolve_bolt_v3_secrets_with`] with an
 /// injected resolver instead.
 ///
-/// Builds one [`SsmResolverSession`] internally so a single AWS SDK config
-/// and `SsmClient` are shared across every secret resolution in the
-/// configuration; the closure passed to [`resolve_bolt_v3_secrets_with`]
-/// captures `&session.resolve` for that purpose.
+/// The caller owns the [`SsmResolverSession`] and passes `&session` so a
+/// single AWS SDK config and `SsmClient` cache live for the entire bolt-v3
+/// startup boundary, not just the bolt-v3 secret-resolution step. The
+/// closure passed to [`resolve_bolt_v3_secrets_with`] captures
+/// `session.resolve` for that purpose.
 pub fn resolve_bolt_v3_secrets(
+    session: &SsmResolverSession,
     loaded: &LoadedBoltV3Config,
 ) -> Result<ResolvedBoltV3Secrets, BoltV3SecretError> {
-    let session = SsmResolverSession::new().map_err(|error| BoltV3SecretError {
-        venue_key: String::new(),
-        field: "ssm_resolver_session".to_string(),
-        ssm_path: String::new(),
-        source: error.to_string(),
-    })?;
     resolve_bolt_v3_secrets_with(loaded, |region, path| session.resolve(region, path))
 }
 
@@ -601,5 +597,32 @@ mod tests {
             message.contains("simulated ssm failure"),
             "expected resolver error in message: {message}"
         );
+    }
+
+    #[test]
+    fn resolve_bolt_v3_secrets_takes_session_and_loaded_config() {
+        // Per #252 design review: production startup owns the
+        // `SsmResolverSession` at the `build_bolt_v3_live_node` boundary
+        // and threads it down explicitly, so every top-level `resolve_*`
+        // helper has the same shape: caller-owned session passed by
+        // reference. Letting `resolve_bolt_v3_secrets` build its own
+        // session internally (the prior shape) created an asymmetry —
+        // sister resolvers (`resolve_polymarket`, `resolve_chainlink`,
+        // `resolve_binance`) take `&SsmResolverSession`, while the
+        // bolt-v3 entry point silently constructed and dropped its own,
+        // hiding the session lifetime from the caller and preventing
+        // future code from sharing one session across both bolt-v3
+        // secrets and other startup-side resolution. This guard pins the
+        // lifted shape; the test seam remains
+        // [`resolve_bolt_v3_secrets_with`].
+        fn _assert_signature<F>(_f: F)
+        where
+            F: Fn(
+                &super::SsmResolverSession,
+                &LoadedBoltV3Config,
+            ) -> Result<super::ResolvedBoltV3Secrets, super::BoltV3SecretError>,
+        {
+        }
+        _assert_signature(super::resolve_bolt_v3_secrets);
     }
 }

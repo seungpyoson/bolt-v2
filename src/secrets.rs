@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
+use std::rc::Rc;
 
 use aws_config::BehaviorVersion;
 use aws_sdk_ssm::{Client as SsmClient, config::Region};
@@ -120,15 +122,21 @@ pub(crate) fn binance_secret_config_contract(
 /// every `resolve_*` call so client construction is amortized across the
 /// startup credential footprint.
 ///
-/// `SsmResolverSession` is intentionally `!Send + !Sync` (the inner
-/// `RefCell` and `tokio::runtime::Runtime` carry that bound) because it is
-/// only ever used from the synchronous startup thread, before any
-/// multi-threaded NT runtime is built. Sharing it across threads or calling
-/// `resolve` from inside another runtime would re-introduce the per-call
-/// `block_on` panic risk that motivated this type.
+/// `SsmResolverSession` is intentionally `!Send + !Sync` because it is only
+/// ever used from the synchronous startup thread, before any multi-threaded
+/// NT runtime is built. Sharing it across threads or calling `resolve` from
+/// inside another runtime would re-introduce the per-call `block_on` panic
+/// risk that motivated this type. `RefCell` carries `!Sync` structurally;
+/// the `_not_send_sync: PhantomData<Rc<()>>` marker carries `!Send` (and
+/// `!Sync` redundantly) so a future contributor cannot accidentally move
+/// the session into `tokio::spawn` or share it across threads. Compile-time
+/// regression guards live in
+/// `tests::ssm_resolver_session_is_not_send` and
+/// `tests::ssm_resolver_session_is_not_sync`.
 pub struct SsmResolverSession {
     runtime: tokio::runtime::Runtime,
     clients: RefCell<BTreeMap<String, SsmClient>>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl SsmResolverSession {
@@ -149,6 +157,7 @@ impl SsmResolverSession {
         Ok(Self {
             runtime,
             clients: RefCell::new(BTreeMap::new()),
+            _not_send_sync: PhantomData,
         })
     }
 
@@ -570,6 +579,48 @@ mod tests {
         {
         }
         _assert_signature(super::SsmResolverSession::resolve);
+    }
+
+    #[test]
+    fn ssm_resolver_session_is_not_send() {
+        // Per #252 design review: the docstring on `SsmResolverSession`
+        // claims `!Send + !Sync`, but Rust's auto-derive only carried
+        // `!Sync` (from `RefCell`); the type was actually `Send`. A future
+        // contributor moving the session into `tokio::spawn` would
+        // re-introduce the per-call `block_on` panic geometry that
+        // motivated the type — `block_on` panics inside an active
+        // multi-thread runtime. This guard pins `!Send` so that footgun
+        // is rejected at compile time. Implementation: a
+        // `PhantomData<Rc<()>>` marker on the struct.
+        //
+        // Compile-time `!Send` assertion (see `static_assertions`'s
+        // `assert_not_impl_any!`): two impls of an auxiliary trait pick
+        // different `A` parameters, and the call site lets the compiler
+        // infer `_`. If `SsmResolverSession: Send`, both impls apply,
+        // inference is ambiguous, and the test fails to compile.
+        trait AmbiguousIfSend<A> {
+            fn _check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Send> AmbiguousIfSend<Invalid> for T {}
+        let _ = <super::SsmResolverSession as AmbiguousIfSend<_>>::_check;
+    }
+
+    #[test]
+    fn ssm_resolver_session_is_not_sync() {
+        // Per #252 design review: `!Sync` is structurally enforced by
+        // `RefCell`, but pinning it here rejects regressions that swap
+        // `RefCell` for an interior-mutability primitive that is `Sync`
+        // (e.g., `Mutex`) without re-evaluating cross-thread sharing of
+        // the contained Tokio runtime + AWS clients.
+        trait AmbiguousIfSync<A> {
+            fn _check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+        struct Invalid;
+        impl<T: ?Sized + Sync> AmbiguousIfSync<Invalid> for T {}
+        let _ = <super::SsmResolverSession as AmbiguousIfSync<_>>::_check;
     }
 
     #[test]

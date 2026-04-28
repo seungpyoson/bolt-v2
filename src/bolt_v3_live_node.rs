@@ -568,7 +568,7 @@ mod tests {
         // gives operators a clean, accurate message that does not
         // pretend a venue or SSM path is involved (none is — the
         // failure happens before any path is read).
-        let inner = crate::secrets::SecretError::__test_new(
+        let inner = crate::secrets::SecretError::for_test(
             "failed to build Tokio runtime for SSM resolver session: simulated".to_string(),
         );
         let err = BoltV3LiveNodeError::SecretResolverSetup(inner);

@@ -20,6 +20,17 @@ impl std::fmt::Display for SecretError {
 
 impl std::error::Error for SecretError {}
 
+#[cfg(test)]
+impl SecretError {
+    /// Test-only constructor used by other modules to build a `SecretError`
+    /// without going through a real failure path. Hidden behind `cfg(test)`
+    /// so the production tuple-field stays private and no out-of-module
+    /// caller can fabricate a `SecretError` at runtime.
+    pub(crate) fn __test_new(message: String) -> Self {
+        Self(message)
+    }
+}
+
 struct RedactedDebug;
 
 impl std::fmt::Debug for RedactedDebug {
@@ -111,28 +122,46 @@ pub(crate) fn binance_secret_config_contract(
     }
 }
 
-/// Reusable AWS Systems Manager resolver shared across all bolt secret
-/// resolutions during one startup. Owns one `current_thread` Tokio runtime
-/// (so the AWS SDK's async API can be bridged from the synchronous startup
-/// boundary) and a per-region `SsmClient` cache (so AWS credential discovery
-/// and HTTP-client construction happen at most once per region per process).
+/// Provider-neutral AWS Systems Manager resolver for synchronous Bolt
+/// startup. Owns one `current_thread` Tokio runtime (so the AWS SDK's
+/// async API can be bridged from the synchronous startup boundary) and a
+/// per-region `SsmClient` cache (so AWS credential discovery and
+/// HTTP-client construction happen at most once per region per process).
+/// The session itself is keyed only by AWS region and SSM parameter path;
+/// it has no provider-specific knowledge.
 ///
-/// Construct one instance at the production entry points (`fn main` Run /
-/// Resolve subcommands, `resolve_bolt_v3_secrets`) and pass `&self` through
-/// every `resolve_*` call so client construction is amortized across the
-/// startup credential footprint.
+/// Each Bolt binary invocation runs through exactly one of three
+/// independent sync startup boundaries, and each boundary owns its own
+/// session. The boundaries do not nest or share state:
 ///
-/// `SsmResolverSession` is intentionally `!Send + !Sync` because it is only
-/// ever used from the synchronous startup thread, before any multi-threaded
-/// NT runtime is built. Sharing it across threads or calling `resolve` from
-/// inside another runtime would re-introduce the per-call `block_on` panic
-/// risk that motivated this type. `RefCell` carries `!Sync` structurally;
-/// the `_not_send_sync: PhantomData<Rc<()>>` marker carries `!Send` (and
-/// `!Sync` redundantly) so a future contributor cannot accidentally move
-/// the session into `tokio::spawn` or share it across threads. Compile-time
-/// regression guards live in
+/// 1. `fn main` Run subcommand (`src/main.rs`) — legacy reference-data
+///    pipeline + Polymarket V1 secret resolution.
+/// 2. `fn main` Secrets Resolve subcommand (`src/main.rs`) — operator
+///    smoke-test path that resolves and validates configured venues.
+/// 3. `build_bolt_v3_live_node` (`src/bolt_v3_live_node.rs`) — bolt-v3
+///    LiveNode assembly entry point invoked by external callers; this
+///    binary's `Run` subcommand does not call it.
+///
+/// Current callers within those boundaries include Binance, Chainlink,
+/// Polymarket, and bolt-v3 venue secret resolution; new providers plug
+/// in by passing `&session` into a new `resolve_*` helper rather than
+/// constructing their own session.
+///
+/// `SsmResolverSession` is intentionally `!Send + !Sync` because it is
+/// only ever used from the synchronous startup thread, before any
+/// multi-threaded NT runtime is built. Sharing it across threads or
+/// calling `resolve` from inside another runtime would re-introduce the
+/// per-call `block_on` panic that motivated this type. `RefCell` carries
+/// `!Sync` structurally; the `_not_send_sync: PhantomData<Rc<()>>` marker
+/// carries `!Send` (and `!Sync` redundantly) so a future contributor
+/// cannot accidentally move the session into `tokio::spawn` or share it
+/// across threads. The `Handle::try_current()` guard in `resolve` (#255-3)
+/// converts a same-thread misuse — calling `resolve` from inside an
+/// active runtime context — into a structured `SecretError` instead of a
+/// runtime panic. Compile-time regression guards live in
 /// `tests::ssm_resolver_session_is_not_send` and
-/// `tests::ssm_resolver_session_is_not_sync`.
+/// `tests::ssm_resolver_session_is_not_sync`; runtime guards live in
+/// `tests::ssm_resolver_session_resolve_inside_active_tokio_runtime_returns_secret_error`.
 pub struct SsmResolverSession {
     runtime: tokio::runtime::Runtime,
     clients: RefCell<BTreeMap<String, SsmClient>>,
@@ -162,6 +191,26 @@ impl SsmResolverSession {
     }
 
     pub fn resolve(&self, region: &str, ssm_path: &str) -> Result<String, SecretError> {
+        // Per #255-3: `Runtime::block_on` panics when called inside an
+        // active Tokio runtime context (the same panic geometry the
+        // session was created to prevent). The `PhantomData<Rc<()>>`
+        // marker rejects the threaded-spawn footgun at compile time, but
+        // a same-thread caller could still call `resolve` from inside
+        // another runtime's `block_on` body or an async fn driven by an
+        // active runtime. Convert that misuse into a structured
+        // `SecretError` so the failure surfaces through the normal error
+        // path instead of unwinding the runtime. Production paths
+        // (`fn main` Run, `fn main` Secrets Resolve, `build_bolt_v3_live_node`)
+        // run synchronously before any NT runtime is built, so this
+        // guard is invariant under current production behavior.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(SecretError(
+                "SsmResolverSession::resolve called from inside an active \
+                 Tokio runtime; SSM resolution must run on the synchronous \
+                 startup boundary, before any NT runtime is built"
+                    .to_string(),
+            ));
+        }
         let client = self.client_for(region);
         let ssm_path_owned = ssm_path.to_string();
         self.runtime.block_on(async move {
@@ -363,10 +412,10 @@ pub(crate) fn resolve_binance_with<F>(
     region: &str,
     api_key_path: &str,
     api_secret_path: &str,
-    mut resolve_secret_fn: F,
+    resolve_secret_fn: F,
 ) -> Result<ResolvedBinanceSecrets, SecretError>
 where
-    F: FnMut(&str, &str) -> Result<String, SecretError>,
+    F: Fn(&str, &str) -> Result<String, SecretError>,
 {
     // Validate the secret before resolving the companion API key so failures
     // localize to unusable key material immediately.
@@ -624,25 +673,142 @@ mod tests {
     }
 
     #[test]
+    fn ssm_resolver_session_caches_clients_per_region() {
+        // Per #255-6: the per-region SsmClient cache is the load-bearing
+        // mechanism that makes AWS-config + SsmClient construction
+        // amortize across all secret resolutions on one startup
+        // boundary. The structural source guard
+        // (`ssm_resolver_session_owns_runtime_and_aws_config_construction`)
+        // pins *where* construction may happen; this test pins that the
+        // cache actually re-uses entries on a hit (same region) and adds
+        // entries on a miss (different region). It exercises the
+        // private `client_for` path directly — accessible because
+        // `mod tests` is the same module that owns the type — to
+        // observe `cached_region_count` transitions deterministically
+        // without a factory seam.
+        //
+        // No network round-trip: `aws_config::defaults(...).load()`
+        // builds the config struct synchronously (profile-file reads,
+        // optional `~/.aws/config` parse). Credential resolution is
+        // lazy in the AWS SDK and only happens on the first AWS API
+        // call — which this test never makes. `SsmClient::new` is also
+        // offline. The session's contained current-thread runtime
+        // drives `load()` to completion on the test thread.
+        let session = super::SsmResolverSession::new()
+            .expect("SsmResolverSession::new must succeed without AWS network calls");
+        assert_eq!(session.cached_region_count(), 0);
+
+        let _a = session.client_for("us-east-1");
+        assert_eq!(
+            session.cached_region_count(),
+            1,
+            "first call for a region must populate the cache"
+        );
+
+        let _b = session.client_for("us-east-1");
+        assert_eq!(
+            session.cached_region_count(),
+            1,
+            "same-region calls must hit the cache, not allocate a new entry"
+        );
+
+        let _c = session.client_for("eu-west-1");
+        assert_eq!(
+            session.cached_region_count(),
+            2,
+            "different-region calls must allocate a new cache entry"
+        );
+
+        let _d = session.client_for("us-east-1");
+        assert_eq!(
+            session.cached_region_count(),
+            2,
+            "returning to a previously-cached region must still hit the cache"
+        );
+    }
+
+    #[test]
+    fn ssm_resolver_session_resolve_inside_active_tokio_runtime_returns_secret_error() {
+        // Per #255-3: SsmResolverSession::resolve uses Runtime::block_on
+        // internally. Tokio panics if `block_on` runs inside another
+        // runtime's task. The PhantomData<Rc<()>> marker added in #253
+        // prevents the session from crossing threads via `tokio::spawn`,
+        // but a future caller could still call `resolve` from inside the
+        // current thread's existing runtime (e.g., `outer.block_on(async {
+        // session.resolve(...) })` or from an async fn invoked synchronously
+        // inside `block_on`). Without a guard, that panics. The guard
+        // converts the runtime context into a structured `SecretError` so
+        // the call site can surface the misuse through the normal error
+        // path instead of unwinding the runtime.
+        // The inner session is constructed *before* the outer runtime so
+        // its contained current-thread runtime is dropped on the test
+        // thread after `outer.block_on` returns — Tokio panics if a
+        // runtime is dropped from inside an async context.
+        let session = super::SsmResolverSession::new()
+            .expect("inner SsmResolverSession::new must succeed before outer runtime");
+        let outer = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("outer current-thread runtime must build for this test");
+        let result = outer.block_on(async { session.resolve("us-east-1", "/bolt/test/dummy") });
+        let err = result.expect_err(
+            "resolve must return Err instead of panicking when called from \
+             inside an active Tokio runtime",
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("active Tokio runtime"),
+            "guard error must name the nested-runtime cause; got: {message}"
+        );
+    }
+
+    #[test]
     fn ssm_resolver_session_owns_runtime_and_aws_config_construction() {
-        // Per #252: tokio::runtime::Builder, aws_config::defaults, and
-        // SsmClient::new must each appear inside the SsmResolverSession impl
-        // block — and never anywhere else in this module's production code.
-        // This guard catches a regression that would reintroduce per-call
-        // construction. The `#[cfg(test)] mod tests` block is excluded from
-        // the search because the structural assertions below reference these
-        // literals as identifiers in their own source.
+        // Per #252 / #255-5: the SsmResolverSession impl block is the only
+        // place in this module's production code that may construct a
+        // Tokio runtime, an AWS SDK config, or an SsmClient — and the
+        // only place that may consult an existing Tokio runtime handle.
+        // This guard catches regressions that would reintroduce per-call
+        // construction or alternate runtime-context paths. The
+        // `#[cfg(test)] mod tests` block is excluded from the scan
+        // because the assertions below reference these literals as
+        // identifiers in their own source.
+        //
+        // #255-5 hardening: the impl block boundaries are located via a
+        // column-anchored line scan rather than `split_once("\n}\n")` so
+        // a brace-pair coincidentally matching that substring inside the
+        // impl body cannot mis-bound the search. In Rust formatting, an
+        // `impl` block's closing brace appears on a line that is
+        // exactly `}` (no leading whitespace).
         let source = include_str!("secrets.rs");
         let production_source = source
             .split_once("#[cfg(test)]\nmod tests")
             .map(|(prod, _)| prod)
             .expect("secrets.rs must contain a #[cfg(test)] mod tests block");
-        let (before_session, session_and_after) = production_source
-            .split_once("impl SsmResolverSession {")
-            .expect("SsmResolverSession impl block must exist");
-        let (session_impl, after_session) = session_and_after
-            .split_once("\n}\n")
-            .expect("SsmResolverSession impl block must terminate");
+
+        let lines: Vec<&str> = production_source.lines().collect();
+        let impl_open_idx = lines
+            .iter()
+            .position(|line| line.trim_end() == "impl SsmResolverSession {")
+            .expect("SsmResolverSession impl block must open on its own line");
+        let impl_close_offset = lines[impl_open_idx + 1..]
+            .iter()
+            .position(|line| *line == "}")
+            .expect(
+                "SsmResolverSession impl block must close on a line that is exactly \
+                 `}` with no leading whitespace",
+            );
+        let impl_close_idx = impl_open_idx + 1 + impl_close_offset;
+        let session_impl: String = lines[impl_open_idx + 1..impl_close_idx].join("\n");
+        let outside_session: String = lines[..impl_open_idx]
+            .iter()
+            .chain(lines[impl_close_idx + 1..].iter())
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Required-inside-impl: every runtime/AWS-config/SsmClient
+        // construction site for this module's production code.
         assert!(
             session_impl.contains("tokio::runtime::Builder::new_current_thread"),
             "SsmResolverSession impl must own the Tokio runtime construction"
@@ -655,21 +821,25 @@ mod tests {
             session_impl.contains("SsmClient::new"),
             "SsmResolverSession impl must own SsmClient construction"
         );
-        let outside_session = format!("{before_session}{after_session}");
-        assert!(
-            !outside_session.contains("tokio::runtime::Builder"),
-            "Tokio runtime construction must be centralized in SsmResolverSession; \
-             found a Builder call outside the impl block"
-        );
-        assert!(
-            !outside_session.contains("aws_config::defaults"),
-            "aws_config::defaults must be centralized in SsmResolverSession; \
-             found another call site outside the impl block"
-        );
-        assert!(
-            !outside_session.contains("SsmClient::new"),
-            "SsmClient::new must be centralized in SsmResolverSession; \
-             found another call site outside the impl block"
-        );
+
+        // Forbidden-outside-impl: alternate construction or
+        // runtime-context paths that would re-introduce the per-call
+        // panic geometry the session was created to prevent. Each
+        // pattern is anchored precisely enough that it does not collide
+        // with a sibling identifier (e.g., `Handle::current(` does not
+        // appear as a substring of `Handle::try_current(`).
+        for forbidden in [
+            "tokio::runtime::Builder",
+            "tokio::runtime::Runtime::new",
+            "aws_config::defaults",
+            "SsmClient::new",
+            "Handle::current(",
+        ] {
+            assert!(
+                !outside_session.contains(forbidden),
+                "`{forbidden}` must be centralized inside the SsmResolverSession \
+                 impl block; found another call site outside it"
+            );
+        }
     }
 }

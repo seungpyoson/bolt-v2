@@ -389,6 +389,9 @@ fn map_polymarket_data(
         ws_max_subscriptions,
         update_instruments_interval_mins: cfg.update_instruments_interval_minutes,
         subscribe_new_markets: cfg.subscribe_new_markets,
+        auto_load_missing_instruments: false,
+        auto_load_debounce_ms: 100,
+        transport_backend: Default::default(),
         filters,
         new_market_filter: None,
     })
@@ -499,6 +502,7 @@ fn map_polymarket_execution(
         retry_delay_initial_ms: cfg.retry_delay_initial_milliseconds,
         retry_delay_max_ms: cfg.retry_delay_max_milliseconds,
         ack_timeout_secs: cfg.ack_timeout_seconds,
+        transport_backend: Default::default(),
     })
 }
 
@@ -527,6 +531,7 @@ fn map_binance_data(
         api_key: Some(secrets.api_key.clone()),
         api_secret: Some(secrets.api_secret.clone()),
         instrument_status_poll_secs: cfg.instrument_status_poll_seconds,
+        transport_backend: Default::default(),
     })
 }
 

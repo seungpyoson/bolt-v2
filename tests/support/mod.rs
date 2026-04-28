@@ -16,6 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
     cache::Cache,
     clients::{DataClient, ExecutionClient},
@@ -29,7 +30,6 @@ use nautilus_model::{
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
     types::{AccountBalance, MarginBalance},
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -519,7 +519,7 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn subscribe_instrument(&mut self, cmd: &SubscribeInstrument) -> anyhow::Result<()> {
+    fn subscribe_instrument(&mut self, cmd: SubscribeInstrument) -> anyhow::Result<()> {
         mock_data_subscriptions()
             .lock()
             .unwrap()
@@ -527,7 +527,7 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn subscribe_quotes(&mut self, cmd: &SubscribeQuotes) -> anyhow::Result<()> {
+    fn subscribe_quotes(&mut self, cmd: SubscribeQuotes) -> anyhow::Result<()> {
         mock_data_subscriptions()
             .lock()
             .unwrap()
@@ -535,7 +535,7 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn subscribe_trades(&mut self, cmd: &SubscribeTrades) -> anyhow::Result<()> {
+    fn subscribe_trades(&mut self, cmd: SubscribeTrades) -> anyhow::Result<()> {
         mock_data_subscriptions()
             .lock()
             .unwrap()
@@ -600,7 +600,7 @@ impl ExecutionClient for MockExecutionClient {
         Ok(())
     }
 
-    fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
+    fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
         mock_exec_submissions()
             .lock()
             .unwrap()

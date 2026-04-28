@@ -1,4 +1,4 @@
-use nautilus_system::factories::{ClientConfig, DataClientFactory};
+use nautilus_common::factories::{ClientConfig, DataClientFactory};
 
 pub type ReferenceDataClientParts = (Box<dyn DataClientFactory>, Box<dyn ClientConfig>);
 

@@ -2178,6 +2178,7 @@ mod tests {
             neg_risk: None,
             neg_risk_market_id: None,
             featured: None,
+            game_id: None,
         };
 
         assert!(
@@ -2211,6 +2212,7 @@ mod tests {
             neg_risk: None,
             neg_risk_market_id: None,
             featured: None,
+            game_id: None,
         };
 
         assert!(

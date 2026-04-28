@@ -18,6 +18,7 @@ pub fn build_reference_data_client_with_secrets(
             api_key: Some(secrets.api_key),
             api_secret: Some(secrets.api_secret),
             instrument_status_poll_secs: shared.instrument_status_poll_secs,
+            transport_backend: Default::default(),
         }),
     )
 }

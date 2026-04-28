@@ -621,15 +621,15 @@ The current entry evaluation is:
    - `Up`: current best ask on `up_instrument_id`
    - `Down`: current best ask on `down_instrument_id`
 5. compute edge:
-   - fee rate for the selected token must be available from the pinned Polymarket fee-rate path before entry may proceed
-   - `expected_edge_basis_points` must account for the applicable Polymarket fee rate
+   - under the current NT CLOB V2 candidate pin, Polymarket fees are not proven by a pre-entry Bolt fee-rate path; live entry remains blocked until the runtime contract defines how match-time fees are represented in readiness and evidence
+   - `expected_edge_basis_points` must account for the applicable Polymarket fee behavior before live entry is allowed
    - current rule: `worst_case_edge_basis_points = expected_edge_basis_points`
 6. side selection:
    - choose the single side with the higher `worst_case_edge_basis_points`
    - if neither side is strictly greater than `parameters.edge_threshold_basis_points`, skip
    - if both sides are equal, skip
 7. sizing:
-   - notional fields are gross USDC entry-cost terms before fees
+   - notional fields are gross collateral entry-cost terms before fees; under the current NT CLOB V2 candidate pin, Polymarket instruments use `pUSD` collateral semantics, not the old adapter's `USDC` assumption
    - `entry_filled_notional` is summed across both Up and Down NautilusTrader instruments of the selected market from confirmed position state: `position.quantity * position.avg_px_open`
    - `open_entry_notional` is summed across both Up and Down NautilusTrader instruments of the selected market from open/inflight buy-order state: `order.leaves_qty * order.price`
    - remaining capacity = `parameters.maximum_position_notional - entry_filled_notional - open_entry_notional`
@@ -831,7 +831,7 @@ Definitions:
   - file paths are not included
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `48d1c126335b82812ba691c5661aeb2e912cde24`
+  - current value: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -931,7 +931,7 @@ Required additional fields:
 If `entry_no_action_reason = "updown_market_mechanical_rejection"`, `updown_market_mechanical_outcome` must be `rejected` and `updown_market_mechanical_rejection_reason` must be non-null.
 If `entry_no_action_reason` is `missing_reference_quote`, `stale_reference_quote`, `fee_rate_unavailable`, `fair_probability_unavailable`, `insufficient_edge`, or `position_limit_reached`, `updown_market_mechanical_outcome` must be `accepted` and `updown_market_mechanical_rejection_reason` must be null.
 If `entry_no_action_reason = "position_limit_reached"`, `strategy_remaining_entry_capacity <= 0`.
-`entry_filled_notional`, `open_entry_notional`, and `strategy_remaining_entry_capacity` are gross USDC entry-cost terms before fees.
+`entry_filled_notional`, `open_entry_notional`, and `strategy_remaining_entry_capacity` are gross collateral entry-cost terms before fees. The current CLOB V2 pin-change slice has not yet renamed the external schema fields from their historical USDC wording to pUSD collateral wording.
 `entry_filled_notional` and `open_entry_notional` are summed across both Up and Down NautilusTrader instruments of the selected market.
 
 Allowed `entry_decision` values:
@@ -1431,10 +1431,17 @@ Unknown panic behavior is not acceptable.
 
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
+Current status: this branch pins NautilusTrader to audited candidate
+`56a438216442f079edf322a39cdc0d9e655ba6d8`, which contains upstream Polymarket
+CLOB V2 adapter support. The compatibility probe proves focused Bolt-v3 compile
+and test compatibility only. It does not prove live order signing, submission,
+fill parsing, collateral accounting, or fee behavior.
+
 Live trading is allowed only if:
 
 - the pinned NautilusTrader Polymarket adapter is verified against the currently required Polymarket CLOB signing version
 - the verification records the order signing version, contract/domain requirements, collateral assumptions, and fee behavior checked
+- Bolt's runtime collateral and fee contracts are updated from the old `USDC` and pre-entry fee-rate assumptions to the verified CLOB V2 behavior
 - `just check` Phase 2 reports the gate result
 - the release manifest records the verified CLOB signing version
 

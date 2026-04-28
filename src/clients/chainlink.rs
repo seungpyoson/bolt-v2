@@ -15,6 +15,7 @@ use chainlink_data_streams_report::{
 };
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
+use nautilus_common::factories::{ClientConfig, DataClientFactory};
 use nautilus_common::{
     cache::Cache,
     clients::DataClient,
@@ -26,7 +27,6 @@ use nautilus_model::{
     data::{CustomData, CustomDataTrait, DataType, HasTsInit, ensure_custom_data_json_registered},
     identifiers::ClientId,
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -425,7 +425,7 @@ impl DataClient for ChainlinkReferenceDataClient {
 
     fn subscribe(
         &mut self,
-        cmd: &nautilus_common::messages::data::SubscribeCustomData,
+        cmd: nautilus_common::messages::data::SubscribeCustomData,
     ) -> anyhow::Result<()> {
         let topic = cmd.data_type.topic().to_string();
         self.subscriptions.insert(topic, cmd.data_type.clone());

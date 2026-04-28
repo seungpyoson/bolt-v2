@@ -1135,13 +1135,13 @@ mod tests {
     use crate::secrets::ResolvedBinanceSecrets;
     use nautilus_binance::common::enums::{BinanceEnvironment, BinanceProductType};
     use nautilus_binance::config::BinanceDataClientConfig;
+    use nautilus_common::factories::DataClientFactory;
     use nautilus_common::{
         cache::Cache, clients::DataClient, clock::Clock, enums::Environment,
         logging::logger::LoggerConfig,
     };
     use nautilus_live::node::LiveNode;
     use nautilus_model::identifiers::{ClientId, TraderId};
-    use nautilus_system::factories::DataClientFactory;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -1223,7 +1223,7 @@ mod tests {
         fn create(
             &self,
             name: &str,
-            config: &dyn nautilus_system::factories::ClientConfig,
+            config: &dyn nautilus_common::factories::ClientConfig,
             cache: Rc<RefCell<Cache>>,
             clock: Rc<RefCell<dyn Clock>>,
         ) -> anyhow::Result<Box<dyn DataClient>> {

@@ -129,7 +129,7 @@ pub(crate) fn binance_secret_config_contract(
 /// runtime (so the AWS SDK's async API can be bridged from the
 /// synchronous startup boundary) and a per-region `SsmClient` cache (so
 /// AWS credential discovery and HTTP-client construction happen at most
-/// once per region per process).
+/// once per region per session).
 ///
 /// Each session-owning entry point is one of three independent sync
 /// startup boundaries. The boundaries do not nest or share state:
@@ -782,6 +782,11 @@ mod tests {
             err.to_string().contains("active Tokio runtime"),
             "guard error must name the nested-runtime cause; got: {err}"
         );
+        assert_eq!(
+            session.cached_region_count(),
+            0,
+            "client_for nested-runtime guard must fail before mutating the region cache"
+        );
     }
 
     #[test]
@@ -835,8 +840,7 @@ mod tests {
         // column-anchored line scan rather than `split_once("\n}\n")` so
         // a brace-pair coincidentally matching that substring inside the
         // impl body cannot mis-bound the search. In Rust formatting, an
-        // `impl` block's closing brace appears on a line that is
-        // exactly `}` (no leading whitespace).
+        // `impl` block's closing brace appears at column 0.
         let source = include_str!("secrets.rs");
         let production_source = source
             .split_once("#[cfg(test)]\nmod tests")
@@ -857,8 +861,8 @@ mod tests {
             .iter()
             .position(|line| line.trim_end() == "}")
             .expect(
-                "SsmResolverSession impl block must close on a line that is exactly \
-                 `}` with no leading whitespace",
+                "SsmResolverSession impl block must close on a column-0 `}` line; \
+                 trailing whitespace is tolerated",
             );
         let impl_close_idx = impl_open_idx + 1 + impl_close_offset;
         let session_impl: String = lines[impl_open_idx + 1..impl_close_idx].join("\n");

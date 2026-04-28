@@ -12,7 +12,7 @@ arc-swap = "1"
 arrow = "58.1.0"
 async-trait = "0.1"
 aws-config = "1.8.15"
-aws-sdk-ssm = "1.108.0"
+aws-sdk-ssm = { version = "1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }

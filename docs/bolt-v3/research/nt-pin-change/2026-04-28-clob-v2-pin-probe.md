@@ -30,6 +30,10 @@ listed below.
   reported 114 locked package changes, including NT crates moving to `0.56.0`.
 - `rust-version`: raised from `1.94.1` to `1.95.0`.
 - `rust-toolchain.toml`: channel raised from `1.94.1` to `1.95.0`.
+- `aws-sdk-ssm`: narrowed to `default-features = false` with
+  `default-https-client` and `rt-tokio` enabled. This removes the legacy
+  AWS Hyper 0.14 / rustls 0.21 TLS path while preserving the SSM client path
+  Bolt uses for secrets.
 
 ## Actual Compile Fallout
 
@@ -132,7 +136,8 @@ Before any real pin-bump PR, run broader verification and dependency review:
 
 - `/Users/spson/.cargo/bin/cargo test --workspace --all-targets`
 - `/Users/spson/.cargo/bin/cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo audit` or `cargo deny check`, if available
+- `/Users/spson/.cargo/bin/cargo deny check`
+- `cargo audit`, if available
 - `cargo tree -d`
 - A source-grounded decision on whether the legacy/shared Polymarket path remains
   callable
@@ -158,12 +163,26 @@ Additional dependency checks run after the initial probe:
 - `/Users/spson/.cargo/bin/cargo update -p rustls-webpki@0.101.7` and a
   targeted AWS SDK stack update did not move the vulnerable transitive version
   within the existing constraints.
+- The dependency-security gate was then fixed by disabling default features on
+  the direct `aws-sdk-ssm` dependency and enabling only `default-https-client`
+  and `rt-tokio`. Cargo removed `hyper 0.14.32`, `hyper-rustls 0.24.2`,
+  `rustls 0.21.12`, `rustls-webpki 0.101.7`, `tokio-rustls 0.24.1`, and
+  related legacy TLS crates from `Cargo.lock`.
+- `/Users/spson/.cargo/bin/cargo tree -i rustls-webpki@0.101.7`: no matching
+  package remains in the resolved graph.
+- `/Users/spson/.cargo/bin/cargo tree -i rustls@0.21.12`: no matching package
+  remains in the resolved graph.
+- `/Users/spson/.cargo/bin/cargo tree -d --depth 0`: completed after the fix
+  without the old `rustls` `0.21.12`, `rustls-webpki` `0.101.7`, or
+  `hyper-rustls` `0.24.2` duplicate families.
+- `/Users/spson/.cargo/bin/cargo deny check`: passed after the AWS SSM feature
+  narrowing (`advisories ok, bans ok, licenses ok, sources ok`).
 - `/Users/spson/.cargo/bin/cargo audit`: unavailable in this environment
   (`cargo` reports no `audit` subcommand).
 
-This means PR #260 remains valid as compatibility evidence, but should remain
-draft until the dependency-security gate is resolved or explicitly waived for a
-non-production branch.
+This means PR #260 has dependency-security evidence for the previously failing
+`cargo deny check`. It remains a compatibility probe, not a CLOB V2 live-readiness
+claim.
 
 ## Explicit Non-Goals
 

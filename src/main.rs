@@ -76,6 +76,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &cfg,
                 polymarket_ruleset_setup.resolved_prefix_event_slugs(),
             )?;
+            // One SSM resolver session amortizes AWS SDK config + SsmClient
+            // construction across every secret resolution in this Run boundary.
+            let ssm_resolver_session = secrets::SsmResolverSession::new()?;
             let mut polymarket_selector_refresh_raw = None;
             let mut builder = LiveNode::builder(trader_id, environment)?
                 .with_name(cfg.node.name.clone())
@@ -112,8 +115,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match venue.kind {
                         ReferenceVenueKind::Polymarket => {}
                         _ => {
-                            let (factory, config) =
-                                build_reference_data_client(&cfg.reference, venue)?;
+                            let (factory, config) = build_reference_data_client(
+                                &ssm_resolver_session,
+                                &cfg.reference,
+                                venue,
+                            )?;
                             builder = builder.add_data_client(
                                 Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
                                 factory,
@@ -128,7 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        let resolved = secrets::resolve_polymarket(&client.secrets)?;
+                        let resolved =
+                            secrets::resolve_polymarket(&ssm_resolver_session, &client.secrets)?;
                         if strategy_build_context.is_none() {
                             strategy_build_context = Some(StrategyBuildContext {
                                 fee_provider: polymarket::build_fee_provider(
@@ -378,13 +385,24 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             let cfg = Config::load(&config)?;
             ensure_runtime_has_active_path(&cfg)?;
 
+            // One SSM resolver session amortizes AWS SDK config + SsmClient
+            // construction across every secret resolution in this Resolve
+            // subcommand boundary.
+            let ssm_resolver_session = secrets::SsmResolverSession::new()?;
+
             if let Some(binance) = cfg.reference.binance.as_ref() {
-                secrets::resolve_binance(&binance.region, &binance.api_key, &binance.api_secret)?;
+                secrets::resolve_binance(
+                    &ssm_resolver_session,
+                    &binance.region,
+                    &binance.api_key,
+                    &binance.api_secret,
+                )?;
                 println!("reference.binance: secrets resolved successfully");
             }
 
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
                 secrets::resolve_chainlink(
+                    &ssm_resolver_session,
                     &chainlink.region,
                     &chainlink.api_key,
                     &chainlink.api_secret,
@@ -395,7 +413,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        secrets::resolve_polymarket(&client.secrets)?;
+                        secrets::resolve_polymarket(&ssm_resolver_session, &client.secrets)?;
                         println!("{}: secrets resolved successfully", client.name);
                     }
                     other => return Err(format!("Unsupported exec client type: {other}").into()),

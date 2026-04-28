@@ -405,6 +405,23 @@ fn build_polymarket_market_slug_filters_for_venue(
 /// by the planner), so the only `Err` paths reachable inside the
 /// closure are extreme clock values; those surface as an empty slug
 /// list so the provider's `load_all` loop continues without panicking.
+///
+/// Empty-slug-list semantics are not "no restriction / pass all".
+/// At the pinned NT rev (`crates/adapters/polymarket/src/providers.rs`,
+/// `fetch_instruments`), the slug-fetch branch is explicitly gated:
+///
+/// ```text
+/// if let Some(slugs) = filter.market_slugs() && !slugs.is_empty() { ... }
+/// ```
+///
+/// `MarketSlugFilter::market_slugs` always returns `Some(_)` (it is
+/// never `None`), so an `Err` from `updown_period_pair` returning
+/// `Vec::new()` means the provider sees `Some(vec![])`, fails the
+/// `!is_empty()` gate, and skips the slug-fetch for this cycle. The
+/// strategy is therefore starved (no Polymarket instruments fetched
+/// via this filter) rather than flooded (every Polymarket instrument
+/// loaded). The `log::warn!` below is the operator-visible signal for
+/// that starvation cycle.
 fn build_polymarket_market_slug_filter(
     target: &UpdownTargetPlan,
     clock: BoltV3UpdownNowFn,

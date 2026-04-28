@@ -18,8 +18,6 @@ pub mod updown;
 
 use serde::Deserialize;
 
-use updown::RotatingMarketFamily;
-
 /// Family-agnostic target-shape metadata read by core startup
 /// validation for cross-family checks (today: uniqueness of
 /// `configured_target_id` across configured strategies). Family-
@@ -33,7 +31,21 @@ pub struct TargetMetadata {
 
 #[derive(Debug, Clone, Deserialize)]
 struct TargetFamilyDispatch {
-    rotating_market_family: RotatingMarketFamily,
+    rotating_market_family: String,
+}
+
+pub struct MarketFamilyValidationBinding {
+    pub key: &'static str,
+    pub validate_target: fn(&str, &toml::Value) -> Vec<String>,
+}
+
+const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyValidationBinding {
+    key: updown::KEY,
+    validate_target: updown::validate_target_block,
+}];
+
+pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
+    VALIDATION_BINDINGS
 }
 
 /// Family-agnostic surface read by core startup validation.
@@ -52,8 +64,15 @@ pub fn validate_strategy_target(
             return (metadata, vec![format!("{context}: target: {error}")]);
         }
     };
-    let errors = match dispatch.rotating_market_family {
-        RotatingMarketFamily::Updown => updown::validate_target_block(context, target),
+    let errors = match validation_bindings()
+        .iter()
+        .find(|binding| binding.key == dispatch.rotating_market_family)
+    {
+        Some(binding) => (binding.validate_target)(context, target),
+        None => vec![format!(
+            "{context}: target.rotating_market_family `{}` is not supported by this build",
+            dispatch.rotating_market_family
+        )],
     };
     (metadata, errors)
 }

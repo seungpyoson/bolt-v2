@@ -3,12 +3,11 @@
 //!
 //! Owns the concrete shape of `[venues.<name>.data]`,
 //! `[venues.<name>.execution]`, and `[venues.<name>.secrets]` for any
-//! venue whose `kind = "polymarket"` dispatch identifier appears in
-//! `VenueKind::Polymarket`. Core config in `crate::bolt_v3_config` only
-//! owns the root/strategy envelope and the dispatch identifier; the
-//! provider-shaped block types and their serde rules live here so
-//! provider-specific schema evolution does not reach back into the
-//! envelope module.
+//! venue whose `kind = "polymarket"` provider key is configured. Core
+//! config in `crate::bolt_v3_config` only owns the root/strategy envelope
+//! and raw provider-key field; the provider-shaped block types and their
+//! serde rules live here so provider-specific schema evolution does not
+//! reach back into the envelope module.
 //!
 //! This module also owns the per-venue startup-validation policy for
 //! Polymarket venues: typed deserialization of each present block,
@@ -24,7 +23,16 @@
 
 use serde::Deserialize;
 
-use crate::bolt_v3_config::VenueBlock;
+use crate::{bolt_v3_config::VenueBlock, bolt_v3_providers::ProviderValidationBinding};
+
+pub const KEY: &str = "polymarket";
+
+pub fn validation_binding() -> ProviderValidationBinding {
+    ProviderValidationBinding {
+        key: KEY,
+        validate_venue,
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

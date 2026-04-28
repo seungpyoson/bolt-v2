@@ -324,7 +324,7 @@ verifier.
 
 | ID | Decision or residual | Required check | Technique | Physical location |
 | --- | --- | --- | --- | --- |
-| V1 | D2, R2 | Provider root contains no `match venue.kind` or `VenueKind::` dispatch after provider binding slice | Source scan plus evasion fixtures | Not selected |
+| V1 | D2, R2 | Provider root contains no `match venue.kind` or `VenueKind::` dispatch after provider binding slice | Source scan | `scripts/verify_bolt_v3_core_boundary.py` |
 | V2 | D2, R1 | Binding keys are unique and match current `VenueKind::as_str()` while `VenueKind` remains closed | Behavioral test | Not selected |
 | V3 | D2, R1 | Provider key string literals do not appear in provider root except structural module paths and allowed residual tests | Source scan | Not selected |
 | V4 | D4, R6 | Leaf modules under `src/bolt_v3_market_families/`, such as `updown.rs` and future family-specific files, import no provider modules or provider NT crates. The family root may import core config but not provider modules. | Source scan | Not selected |
@@ -338,7 +338,7 @@ verifier.
 | V12 | R21 | No new Bolt-v3 provider logic lands in legacy non-`bolt_v3_*` modules | Review gate plus source scan | Not selected |
 | V13 | D3 | Provider validation rules carry approved category labels or registry entries. Blocked on O5. | Process-only until O5 selects a mechanism | Not selected |
 | V14 | R22 | Fixture and generated-config provider hardcodes are owner-scoped or fixture-scoped | Process-only until fixture policy selects a mechanism | Not selected |
-| V15 | D2 | Provider binding keys are string literals owned by provider modules, and provider binding structs do not use `VenueKind` as their key type | Source scan plus type-shape review | Not selected |
+| V15 | D2 | Provider binding keys are string literals owned by provider modules, and provider binding structs do not use `VenueKind` as their key type | Source scan plus type-shape review | `scripts/verify_bolt_v3_core_boundary.py` |
 
 ## Future Slice Gate
 

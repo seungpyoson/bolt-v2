@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use bolt_v2::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3VenueAdapterConfig, map_bolt_v3_adapters},
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, VenueKind, load_bolt_v3_config},
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
+    bolt_v3_providers::polymarket,
     bolt_v3_secrets::{
         ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,
         ResolvedBoltV3VenueSecrets,
@@ -303,10 +304,10 @@ ack_timeout_seconds = 5
     match error {
         BoltV3AdapterMappingError::MissingResolvedSecrets {
             venue_key,
-            expected,
+            expected_provider_key,
         } => {
             assert_eq!(venue_key, "polymarket_main");
-            assert_eq!(expected, VenueKind::Polymarket);
+            assert_eq!(expected_provider_key, polymarket::KEY);
         }
         other => panic!("expected MissingResolvedSecrets, got {other}"),
     }

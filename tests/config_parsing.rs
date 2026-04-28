@@ -690,7 +690,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
         ArchetypeOrderType, ArchetypeTimeInForce, ParametersBlock,
     };
-    use bolt_v2::bolt_v3_config::{RuntimeMode, StrategyArchetype, VenueKind, load_bolt_v3_config};
+    use bolt_v2::bolt_v3_config::{RuntimeMode, load_bolt_v3_config};
     use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -700,12 +700,12 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(loaded.root.trader_id, "BOLT-001");
     assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
     assert_eq!(
-        loaded.root.venues["polymarket_main"].kind,
-        VenueKind::Polymarket
+        loaded.root.venues["polymarket_main"].kind.as_str(),
+        "polymarket"
     );
     assert_eq!(
-        loaded.root.venues["binance_reference"].kind,
-        VenueKind::Binance
+        loaded.root.venues["binance_reference"].kind.as_str(),
+        "binance"
     );
     assert!(loaded.root.venues["polymarket_main"].execution.is_some());
     assert!(loaded.root.venues["binance_reference"].execution.is_none());
@@ -713,8 +713,8 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(loaded.strategies.len(), 1);
     let strategy = &loaded.strategies[0].config;
     assert_eq!(
-        strategy.strategy_archetype,
-        StrategyArchetype::BinaryOracleEdgeTaker
+        strategy.strategy_archetype.as_str(),
+        "binary_oracle_edge_taker"
     );
     let target: TargetBlock = strategy
         .target

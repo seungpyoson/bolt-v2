@@ -28,13 +28,15 @@ use nautilus_polymarket::{
 };
 
 use crate::{
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, VenueBlock, VenueKind},
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, VenueBlock},
     bolt_v3_market_families::updown::{
         MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
     },
     bolt_v3_providers::{
-        binance::{BinanceDataConfig, BinanceEnvironment, BinanceProductType},
-        polymarket::{PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSignatureType},
+        binance::{self, BinanceDataConfig, BinanceEnvironment, BinanceProductType},
+        polymarket::{
+            self, PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSignatureType,
+        },
     },
     bolt_v3_secrets::{
         ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,
@@ -91,7 +93,7 @@ pub enum BoltV3AdapterMappingError {
     /// and the mapper inputs.
     SecretKindMismatch {
         venue_key: String,
-        expected: VenueKind,
+        expected_provider_key: &'static str,
     },
     /// A venue requires resolved secrets but none were found in the
     /// passed-in `ResolvedBoltV3Secrets`. Validation guarantees a
@@ -100,7 +102,7 @@ pub enum BoltV3AdapterMappingError {
     /// loaded config.
     MissingResolvedSecrets {
         venue_key: String,
-        expected: VenueKind,
+        expected_provider_key: &'static str,
     },
     /// A `[data]` or `[execution]` block existed but failed to
     /// deserialize into the corresponding NT-native shape. The validator
@@ -136,21 +138,21 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
         match self {
             BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key,
-                expected,
+                expected_provider_key,
             } => write!(
                 f,
                 "venues.{venue_key}: resolved secret kind does not match validated venue kind \
                  (expected {kind})",
-                kind = expected.as_str(),
+                kind = expected_provider_key,
             ),
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 venue_key,
-                expected,
+                expected_provider_key,
             } => write!(
                 f,
                 "venues.{venue_key} (kind={kind}) requires resolved SSM secrets but none were \
                  supplied to the adapter mapper",
-                kind = expected.as_str(),
+                kind = expected_provider_key,
             ),
             BoltV3AdapterMappingError::SchemaParse {
                 venue_key,
@@ -234,8 +236,8 @@ pub fn map_bolt_v3_adapters_with_market_identity(
     validate_updown_target_venue_bindings(&loaded.root.venues, plan)?;
     let mut venues = BTreeMap::new();
     for (venue_key, venue) in &loaded.root.venues {
-        let mapped = match venue.kind {
-            VenueKind::Polymarket => map_polymarket_venue(
+        let mapped = match venue.kind.as_str() {
+            polymarket::KEY => map_polymarket_venue(
                 &loaded.root,
                 venue_key,
                 venue,
@@ -243,7 +245,17 @@ pub fn map_bolt_v3_adapters_with_market_identity(
                 plan,
                 clock.clone(),
             )?,
-            VenueKind::Binance => map_binance_venue(venue_key, venue, resolved)?,
+            binance::KEY => map_binance_venue(venue_key, venue, resolved)?,
+            _ => {
+                return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                    venue_key: venue_key.clone(),
+                    field: "kind",
+                    message: format!(
+                        "provider key `{}` is not supported by this build",
+                        venue.kind.as_str()
+                    ),
+                });
+            }
         };
         venues.insert(venue_key.clone(), mapped);
     }
@@ -273,15 +285,16 @@ fn validate_updown_target_venue_bindings(
                     ),
                 });
             }
-            Some(venue) if !matches!(venue.kind, VenueKind::Polymarket) => {
+            Some(venue) if venue.kind.as_str() != polymarket::KEY => {
                 return Err(BoltV3AdapterMappingError::ValidationInvariant {
                     venue_key: target.venue_config_key.clone(),
                     field: "strategy.target.venue_config_key",
                     message: format!(
-                        "configured target `{}` is bound to venue `{}` of kind `{}`, but rotating-market filter installation requires a venue of kind `polymarket`",
+                        "configured target `{}` is bound to venue `{}` of kind `{}`, but rotating-market filter installation requires a venue of kind `{}`",
                         target.configured_target_id,
                         target.venue_config_key,
                         venue.kind.as_str(),
+                        polymarket::KEY,
                     ),
                 });
             }
@@ -526,12 +539,12 @@ fn polymarket_secrets_for<'a>(
         Some(ResolvedBoltV3VenueSecrets::Binance(_)) => {
             Err(BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key: venue_key.to_string(),
-                expected: VenueKind::Polymarket,
+                expected_provider_key: polymarket::KEY,
             })
         }
         None => Err(BoltV3AdapterMappingError::MissingResolvedSecrets {
             venue_key: venue_key.to_string(),
-            expected: VenueKind::Polymarket,
+            expected_provider_key: polymarket::KEY,
         }),
     }
 }
@@ -545,12 +558,12 @@ fn binance_secrets_for<'a>(
         Some(ResolvedBoltV3VenueSecrets::Polymarket(_)) => {
             Err(BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key: venue_key.to_string(),
-                expected: VenueKind::Binance,
+                expected_provider_key: binance::KEY,
             })
         }
         None => Err(BoltV3AdapterMappingError::MissingResolvedSecrets {
             venue_key: venue_key.to_string(),
-            expected: VenueKind::Binance,
+            expected_provider_key: binance::KEY,
         }),
     }
 }
@@ -825,10 +838,10 @@ mod tests {
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 venue_key,
-                expected,
+                expected_provider_key,
             } => {
                 assert_eq!(venue_key, "polymarket_main");
-                assert_eq!(expected, VenueKind::Polymarket);
+                assert_eq!(expected_provider_key, polymarket::KEY);
             }
             other => panic!("expected MissingResolvedSecrets, got {other}"),
         }
@@ -853,10 +866,10 @@ mod tests {
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 venue_key,
-                expected,
+                expected_provider_key,
             } => {
                 assert_eq!(venue_key, "binance_reference");
-                assert_eq!(expected, VenueKind::Binance);
+                assert_eq!(expected_provider_key, binance::KEY);
             }
             other => panic!("expected MissingResolvedSecrets, got {other}"),
         }
@@ -881,10 +894,10 @@ mod tests {
         match error {
             BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key,
-                expected,
+                expected_provider_key,
             } => {
                 assert_eq!(venue_key, "polymarket_main");
-                assert_eq!(expected, VenueKind::Polymarket);
+                assert_eq!(expected_provider_key, polymarket::KEY);
             }
             other => panic!("expected SecretKindMismatch, got {other}"),
         }

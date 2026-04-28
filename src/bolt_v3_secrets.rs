@@ -18,8 +18,11 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, VenueKind},
-    bolt_v3_providers::{binance::BinanceSecretsConfig, polymarket::PolymarketSecretsConfig},
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, ProviderKey},
+    bolt_v3_providers::{
+        binance::{self, BinanceSecretsConfig},
+        polymarket::{self, PolymarketSecretsConfig},
+    },
     secrets::{SsmResolverSession, pad_base64, validate_binance_api_secret_shape},
 };
 
@@ -45,7 +48,7 @@ pub fn binance_forbidden_env_vars() -> &'static [&'static str] {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForbiddenEnvVarFinding {
     pub venue_key: String,
-    pub venue_kind: VenueKind,
+    pub provider_key: ProviderKey,
     pub env_var: &'static str,
 }
 
@@ -56,7 +59,7 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
             "venues.{key} (kind={kind}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
              the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this venue kind",
             key = self.venue_key,
-            kind = self.venue_kind.as_str(),
+            kind = self.provider_key.as_str(),
             var = self.env_var,
         )
     }
@@ -102,15 +105,16 @@ where
         if venue.secrets.is_none() {
             continue;
         }
-        let blocklist: &[&'static str] = match venue.kind {
-            VenueKind::Polymarket => polymarket_forbidden_env_vars(),
-            VenueKind::Binance => binance_forbidden_env_vars(),
+        let blocklist: &[&'static str] = match venue.kind.as_str() {
+            polymarket::KEY => polymarket_forbidden_env_vars(),
+            binance::KEY => binance_forbidden_env_vars(),
+            _ => &[],
         };
         for env_var in blocklist {
             if env_is_set(env_var) {
                 findings.push(ForbiddenEnvVarFinding {
                     venue_key: key.clone(),
-                    venue_kind: venue.kind,
+                    provider_key: venue.kind.clone(),
                     env_var,
                 });
             }
@@ -273,15 +277,15 @@ where
             None => continue,
         };
 
-        let resolved = match venue.kind {
-            VenueKind::Polymarket => {
+        let resolved = match venue.kind.as_str() {
+            polymarket::KEY => {
                 let secrets: PolymarketSecretsConfig =
                     secrets_value
                         .clone()
                         .try_into()
                         .map_err(|error: toml::de::Error| BoltV3SecretError {
                             venue_key: venue_key.clone(),
-                            field: VenueKind::Polymarket.as_str().to_string(),
+                            field: polymarket::KEY.to_string(),
                             ssm_path: String::new(),
                             source: format!("invalid polymarket secrets schema: {error}"),
                         })?;
@@ -321,14 +325,14 @@ where
                     passphrase,
                 })
             }
-            VenueKind::Binance => {
+            binance::KEY => {
                 let secrets: BinanceSecretsConfig =
                     secrets_value
                         .clone()
                         .try_into()
                         .map_err(|error: toml::de::Error| BoltV3SecretError {
                             venue_key: venue_key.clone(),
-                            field: VenueKind::Binance.as_str().to_string(),
+                            field: binance::KEY.to_string(),
                             ssm_path: String::new(),
                             source: format!("invalid binance secrets schema: {error}"),
                         })?;
@@ -363,6 +367,17 @@ where
                     api_key,
                     api_secret,
                 })
+            }
+            _ => {
+                return Err(BoltV3SecretError {
+                    venue_key: venue_key.clone(),
+                    field: "kind".to_string(),
+                    ssm_path: String::new(),
+                    source: format!(
+                        "provider key `{}` is not supported by this build",
+                        venue.kind.as_str()
+                    ),
+                });
             }
         };
         venues.insert(venue_key.clone(), resolved);
@@ -467,7 +482,7 @@ mod tests {
                 .expect_err("POLYMARKET_PK should trip the polymarket blocklist");
         assert_eq!(error.findings.len(), 1);
         assert_eq!(error.findings[0].venue_key, "polymarket_main");
-        assert_eq!(error.findings[0].venue_kind, VenueKind::Polymarket);
+        assert_eq!(error.findings[0].provider_key.as_str(), polymarket::KEY);
         assert_eq!(error.findings[0].env_var, "POLYMARKET_PK");
     }
 
@@ -479,7 +494,7 @@ mod tests {
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
         assert_eq!(error.findings.len(), 1);
         assert_eq!(error.findings[0].venue_key, "binance_reference");
-        assert_eq!(error.findings[0].venue_kind, VenueKind::Binance);
+        assert_eq!(error.findings[0].provider_key.as_str(), binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
     }
 

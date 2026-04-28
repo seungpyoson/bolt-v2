@@ -175,17 +175,17 @@ fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
         errors.push("venues must define at least one venue block".to_string());
         return errors;
     }
-    // The current bolt-v3 scope is one venue per kind. Multi-venue
-    // routing (multiple keyed Polymarket or Binance venues) is not yet
+    // The current bolt-v3 scope is one venue per provider key. Multi-venue
+    // routing (multiple keyed venues for the same provider) is not yet
     // covered by the NT typed-venue routing path or by bolt-v3 strategy
     // validation. NT client registration names can differ, but engine
     // instrument subscriptions still key on typed venues such as
     // POLYMARKET/BINANCE, so we fail closed until that routing is
     // explicitly designed.
-    let mut kind_counts: BTreeMap<&'static str, Vec<&str>> = BTreeMap::new();
+    let mut kind_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for (key, venue) in venues {
         kind_counts
-            .entry(venue.kind.as_str())
+            .entry(venue.kind.as_str().to_string())
             .or_default()
             .push(key.as_str());
     }

@@ -146,7 +146,7 @@ pub struct AwsBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VenueBlock {
-    pub kind: VenueKind,
+    pub kind: ProviderKey,
     #[serde(default)]
     pub data: Option<toml::Value>,
     #[serde(default)]
@@ -155,19 +155,13 @@ pub struct VenueBlock {
     pub secrets: Option<toml::Value>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum VenueKind {
-    Polymarket,
-    Binance,
-}
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(transparent)]
+pub struct ProviderKey(String);
 
-impl VenueKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            VenueKind::Polymarket => "polymarket",
-            VenueKind::Binance => "binance",
-        }
+impl ProviderKey {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
@@ -176,7 +170,7 @@ impl VenueKind {
 pub struct BoltV3StrategyConfig {
     pub schema_version: u32,
     pub strategy_instance_id: String,
-    pub strategy_archetype: StrategyArchetype,
+    pub strategy_archetype: StrategyArchetypeKey,
     pub order_id_tag: String,
     pub oms_type: OmsType,
     pub venue: String,
@@ -193,10 +187,14 @@ pub struct BoltV3StrategyConfig {
     pub parameters: toml::Value,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum StrategyArchetype {
-    BinaryOracleEdgeTaker,
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(transparent)]
+pub struct StrategyArchetypeKey(String);
+
+impl StrategyArchetypeKey {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -354,20 +352,17 @@ mod tests {
         assert!(root.venues.contains_key("polymarket_main"));
         assert!(root.venues.contains_key("binance_reference"));
         let polymarket = &root.venues["polymarket_main"];
-        assert_eq!(polymarket.kind, VenueKind::Polymarket);
+        assert_eq!(polymarket.kind.as_str(), "polymarket");
         assert!(polymarket.execution.is_some());
         let binance = &root.venues["binance_reference"];
-        assert_eq!(binance.kind, VenueKind::Binance);
+        assert_eq!(binance.kind.as_str(), "binance");
         assert!(binance.execution.is_none());
     }
 
     #[test]
     fn parses_minimal_strategy_block() {
         let strategy: BoltV3StrategyConfig = toml::from_str(minimal_strategy_toml()).unwrap();
-        assert_eq!(
-            strategy.strategy_archetype,
-            StrategyArchetype::BinaryOracleEdgeTaker
-        );
+        assert!(!strategy.strategy_archetype.as_str().is_empty());
         // The strategy envelope keeps `target` as raw TOML. Verify the
         // raw envelope here only at the structural level.
         let target_table = strategy

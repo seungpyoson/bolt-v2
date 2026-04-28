@@ -36,7 +36,19 @@
 
 use serde::Deserialize;
 
-use crate::bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy};
+use crate::{
+    bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_market_families::MarketFamilyValidationBinding,
+};
+
+pub const KEY: &str = "updown";
+
+pub fn validation_binding() -> MarketFamilyValidationBinding {
+    MarketFamilyValidationBinding {
+        key: KEY,
+        validate_target: validate_target_block,
+    }
+}
 
 /// Updown rotating-cadence target block. Owned by the updown market-
 /// family binding because `cadence_seconds`, `underlying_asset`,

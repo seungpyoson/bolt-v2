@@ -755,15 +755,13 @@ If `kind = "rotating_market"`:
 
 - type: positive integer
 - required for rotating-market targets
-- current expected value:
-  - `5`
+- configured per strategy; examples use `5`
 
 ##### `blocked_after_seconds`
 
 - type: positive integer
 - required for rotating-market targets
-- current expected value:
-  - `60`
+- configured per strategy; examples use `60`
 
 These fields live in the strategy file because they control that strategy's market-selection behavior.
 The schema does not hardcode `BTC`, `ETH`, or `300` as the only supported `updown` target values; those may appear in examples only.

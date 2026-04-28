@@ -36,7 +36,16 @@
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::bolt_v3_config::BoltV3StrategyConfig;
+use crate::{bolt_v3_archetypes::ArchetypeValidationBinding, bolt_v3_config::BoltV3StrategyConfig};
+
+pub const KEY: &str = "binary_oracle_edge_taker";
+
+pub fn validation_binding() -> ArchetypeValidationBinding {
+    ArchetypeValidationBinding {
+        key: KEY,
+        validate_strategy,
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

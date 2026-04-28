@@ -166,6 +166,9 @@ The binding table is explicit and static by design. Its value is grouping
 provider changes into provider-owned modules and one visible registration list,
 not dynamic plugin discovery.
 
+The binding struct must not name `VenueKind` as its key type. Provider binding
+keys are provider-owned string literals, not closed core enum values.
+
 While `VenueKind` remains closed, this is transitional binding-table dispatch,
 not truly open provider identity. The root module still declares concrete child
 modules and the registration list; that structural coupling is accepted for
@@ -175,7 +178,8 @@ static Rust without proc-macro registration.
 
 Status: approved
 
-Every Bolt provider validation rule must fit exactly one category:
+Every Bolt provider runtime validation rule must fit exactly one of these
+runtime categories:
 
 - `BOLT-POLICY`: Bolt rejects behavior NT permits because of deployment,
   operations, security, or runtime-value policy.
@@ -305,13 +309,13 @@ different date.
 | R23 | Provider identity in diagnostics, logs, and errors | `src/bolt_v3_adapters.rs`, `src/bolt_v3_validate.rs`, core and assembly diagnostics | Bolt-v3 maintainers | Diagnostic provider identity is owner-scoped or explicitly allowed as non-runtime output | Process-only |
 | R24 | Doctrine decisions not yet verifier-enforced | This file | Bolt-v3 maintainers | Each approved decision has a physical verifier or is explicitly process-only | Process-only |
 | R25 | Verifier rot and evasion risk | Future verifier files | Bolt-v3 maintainers | Verifiers include positive failing fixtures, path-scope evasion fixtures, pattern-weakening fixtures, and a no-ignored-tests gate | Process-only |
-| R26 | NT config field type-change audit gap | NT rev bumps | Bolt-v3 maintainers | NT type changes trigger mandatory doctrine re-audit, not only compile fixes | Process-only |
+| R26 | NT config field and citation drift audit gap | NT rev bumps or doctrine edits touching NT evidence | Bolt-v3 maintainers | NT type changes and NT source-citation movement trigger mandatory doctrine re-audit, not only compile fixes | Process-only |
 | R27 | BoltV3UpdownNowFn type location conflicts with provider-owned glue | `src/bolt_v3_adapters.rs` | Bolt-v3 maintainers | Clock type moves to neutral location accessible to adapter mapping and provider-owned glue without adapter import | Process-only |
 | R28 | NT-internal value transformations between typed-config construction and wire emission. Distinct from R17/R18 substitution risk, where NT may replace absent values with env vars; R28 covers mutation of values Bolt provided. | R17 and R18 are observed adjacent instances | Bolt-v3 maintainers | End-to-end behavioral test proves Bolt-configured values reach NT use unchanged for runtime-bearing fields. Enumerating accepted NT-internal transformations is documentation only and does not retire this residual by itself. | Process-only |
 
 ## Verifier Coverage Map
 
-This map is authoritative for the doctrine candidate. Entries with no physical
+This map is authoritative for this doctrine. Entries with no physical
 location are not yet implemented; they are process-only until a slice lands the
 verifier.
 
@@ -325,12 +329,13 @@ verifier.
 | V6 | D5 | NT config mapping contains no `..Default::default()` for NT config structs | Process-only until source scanner or AST-aware lint is selected | Not selected |
 | V7 | D5 | No `impl From<...>` or `impl Into<...>` constructs NT provider config structs in this crate | Source scan | Not selected |
 | V8 | D5, O6 | Every NT runtime-bearing field has an explicit field decision | Process-only until O6 selects a mechanism | Not selected |
-| V9 | Governance | `Cargo.toml` NT rev matches this file's last audited NT rev. Implement first because all NT evidence assumes the rev matches. | Process-only manual comparison until source scan or TOML parser is selected | Code review |
+| V9 | Governance | All `nautilus-*` git dependency revs in `Cargo.toml`, and the resolved revs in `Cargo.lock` when present, match this file's last audited NT rev. Implement first because all NT evidence assumes the rev matches. | Process-only manual comparison until source scan or TOML parser is selected | Code review |
 | V10 | R25 | Verifier files have no `#[ignore]` tests and include positive-failure fixtures, path-scope evasion fixtures, and pattern-weakening fixtures | Test meta-check | Not selected |
 | V11 | R20 | No `bolt_v3_*` module imports an NT provider crate that is not registered in the active provider binding table | Source scan | Not selected |
 | V12 | R21 | No new Bolt-v3 provider logic lands in legacy non-`bolt_v3_*` modules | Review gate plus source scan | Not selected |
 | V13 | D3 | Provider validation rules carry approved category labels or registry entries. Blocked on O5. | Process-only until O5 selects a mechanism | Not selected |
 | V14 | R22 | Fixture and generated-config provider hardcodes are owner-scoped or fixture-scoped | Process-only until fixture policy selects a mechanism | Not selected |
+| V15 | D2 | Provider binding keys are string literals owned by provider modules, and provider binding structs do not use `VenueKind` as their key type | Source scan plus type-shape review | Not selected |
 
 ## Future Slice Gate
 

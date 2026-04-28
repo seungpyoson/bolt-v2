@@ -575,23 +575,19 @@ mod tests {
         let rendered = format!("{err}");
         assert!(
             !rendered.contains("venues."),
-            "SecretResolverSetup must not render through the venue/SSM-path \
-             template; got: {rendered}"
+            "SecretResolverSetup must not render through the venue/SSM-path template"
         );
         assert!(
             !rendered.contains("ssm_path"),
-            "SecretResolverSetup must not include an empty ssm_path field; \
-             got: {rendered}"
+            "SecretResolverSetup must not include an empty ssm_path field"
         );
         assert!(
             rendered.contains("SSM resolver session"),
-            "SecretResolverSetup message must name the resolver-session \
-             setup boundary; got: {rendered}"
+            "SecretResolverSetup message must name the resolver-session setup boundary"
         );
         assert!(
             rendered.contains("simulated"),
-            "SecretResolverSetup must surface the wrapped SecretError; \
-             got: {rendered}"
+            "SecretResolverSetup must surface the wrapped SecretError"
         );
         let source = std::error::Error::source(&err);
         assert!(

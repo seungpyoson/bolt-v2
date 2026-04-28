@@ -106,6 +106,8 @@ The following source anchors were verified before writing this doctrine:
   by matching `RotatingMarketFamily`.
 - `src/bolt_v3_validate.rs` currently has a one-venue-per-kind scope rule that
   groups venues by `venue.kind.as_str()`.
+- `src/bolt_v3_market_identity.rs` is currently a provider-neutral,
+  family-agnostic market-identity boundary with source-level guard tests.
 - `src/bolt_v3_adapters.rs` owns `BoltV3VenueAdapterConfig`,
   `MarketSlugFilter` construction, adapter dispatch, and secrets-enum
   extraction.

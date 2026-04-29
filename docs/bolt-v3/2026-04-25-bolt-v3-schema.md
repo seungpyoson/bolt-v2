@@ -277,6 +277,8 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ### `[nautilus]`
 
+The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-level `LiveNodeConfig` surfaces not represented here are intentionally disabled or empty in the Bolt-v3 builder path (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`). They are not inherited from `LiveNodeConfig::default()`.
+
 #### `load_state`
 
 - type: boolean

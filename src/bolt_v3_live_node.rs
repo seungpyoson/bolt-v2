@@ -35,7 +35,7 @@
 //! API, registers a strategy actor, constructs an order, or enables
 //! any submit path.
 
-use std::{str::FromStr, time::Duration};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use ahash::AHashMap;
 use anyhow::Result;
@@ -401,22 +401,32 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         qsize: loaded.root.risk.nt_qsize,
     };
 
+    // Explicit struct literal: upstream NT `LiveNodeConfig` field additions must be
+    // considered here instead of silently inherited through `Default`.
     LiveNodeConfig {
         environment,
         trader_id,
         load_state: nautilus.load_state,
         save_state: nautilus.save_state,
         logging,
+        instance_id: None,
         timeout_connection: Duration::from_secs(nautilus.timeout_connection_seconds),
         timeout_reconciliation: Duration::from_secs(nautilus.timeout_reconciliation_seconds),
         timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_seconds),
         timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_seconds),
         delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_seconds),
         timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_seconds),
+        cache: None,
+        msgbus: None,
+        portfolio: None,
+        emulator: None,
+        streaming: None,
+        loop_debug: false,
         data_engine,
         risk_engine,
         exec_engine,
-        ..Default::default()
+        data_clients: HashMap::new(),
+        exec_clients: HashMap::new(),
     }
 }
 
@@ -610,6 +620,22 @@ mod tests {
         assert_eq!(cfg.timeout_disconnection, Duration::from_secs(10));
         assert_eq!(cfg.delay_post_stop, Duration::from_secs(5));
         assert_eq!(cfg.timeout_shutdown, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn live_node_config_top_level_residuals_are_disabled_or_empty() {
+        let loaded = fixture_loaded_config();
+        let cfg = make_live_node_config(&loaded);
+
+        assert!(cfg.instance_id.is_none());
+        assert!(cfg.cache.is_none());
+        assert!(cfg.msgbus.is_none());
+        assert!(cfg.portfolio.is_none());
+        assert!(cfg.emulator.is_none());
+        assert!(cfg.streaming.is_none());
+        assert!(!cfg.loop_debug);
+        assert!(cfg.data_clients.is_empty());
+        assert!(cfg.exec_clients.is_empty());
     }
 
     #[test]

@@ -401,6 +401,8 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         qsize: loaded.root.risk.nt_qsize,
     };
 
+    // Explicit struct literal: upstream NT `LiveNodeConfig` field additions must be
+    // considered here instead of silently inherited through `Default`.
     LiveNodeConfig {
         environment,
         trader_id,
@@ -618,6 +620,13 @@ mod tests {
         assert_eq!(cfg.timeout_disconnection, Duration::from_secs(10));
         assert_eq!(cfg.delay_post_stop, Duration::from_secs(5));
         assert_eq!(cfg.timeout_shutdown, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn live_node_config_top_level_residuals_are_disabled_or_empty() {
+        let loaded = fixture_loaded_config();
+        let cfg = make_live_node_config(&loaded);
+
         assert!(cfg.instance_id.is_none());
         assert!(cfg.cache.is_none());
         assert!(cfg.msgbus.is_none());

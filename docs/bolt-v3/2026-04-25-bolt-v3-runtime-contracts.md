@@ -147,6 +147,7 @@ Rules:
 - NautilusTrader live data-engine defaults must be explicit in TOML and mapped into `LiveDataEngineConfig`; the builder path must not inherit `LiveDataEngineConfig::default()` silently
 - NautilusTrader live risk-engine defaults must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the builder path must not inherit `LiveRiskEngineConfig::default()` silently
 - NautilusTrader live exec-engine defaults are explicit in TOML and mapped into `LiveExecEngineConfig`; the builder path must not inherit `LiveExecEngineConfig::default()` silently
+- NautilusTrader logger fields not represented in TOML must be explicit accepted defaults or disabled settings in the bolt-v3 builder path; the builder path must not inherit `LoggerConfig::default()` silently
 - remaining top-level `LiveNodeConfig` fields not represented in TOML must be explicit disabled/empty settings in the bolt-v3 builder path; the builder path must not inherit top-level `LiveNodeConfig::default()` silently
 
 Current contract:
@@ -155,6 +156,7 @@ Current contract:
 - every `LiveDataEngineConfig` field is explicit under `[nautilus.data_engine]` in TOML and mapped into NautilusTrader live data config
 - every `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config
 - every `LiveExecEngineConfig` field is explicit under `[nautilus.exec_engine]` in TOML and mapped into NautilusTrader live exec config
+- `[logging]` owns `stdout_level` and `fileout_level`; bolt-v3 owns the credential-log module filters and explicitly fixes the remaining pinned `LoggerConfig` fields to current accepted defaults or disabled settings before `LiveNodeBuilder::from_config`
 - unsupported or intentionally unowned top-level `LiveNodeConfig` surfaces (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`) are set explicitly to `None`, `false`, or empty maps before `LiveNodeBuilder::from_config`
 
 Authority rule:
@@ -169,6 +171,7 @@ Current implementation behavior:
 - Bolt-v3 maps the complete live data-engine block into NautilusTrader `LiveDataEngineConfig`
 - Bolt-v3 maps the complete live risk-engine block into NautilusTrader `LiveRiskEngineConfig`
 - Bolt-v3 maps the complete live exec-engine block into NautilusTrader `LiveExecEngineConfig`
+- Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
 - Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance
 - the baseline fixture asserts all explicit data-engine values, `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
 

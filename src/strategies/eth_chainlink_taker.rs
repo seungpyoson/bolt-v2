@@ -5624,7 +5624,7 @@ mod tests {
         }
 
         assert!(
-            strategy.pricing.realized_vol_by_venue.get("okx").is_none(),
+            !strategy.pricing.realized_vol_by_venue.contains_key("okx"),
             "non-eligible venues should not warm in the background"
         );
 

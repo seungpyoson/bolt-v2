@@ -57,15 +57,19 @@ listed below.
    - `auto_load_debounce_ms: 100` is hardcoded in this probe and is only
      effective when auto-load is enabled, which is false in the Bolt-v3 path.
 
-   `src/clients/polymarket.rs` compiled without source changes because its
-   existing `..Default::default()` absorbed the new fields. That leaves the
-   legacy/shared path inheriting NT's candidate default
-   `auto_load_missing_instruments = true` at runtime. This probe does not
-   validate that path for live use.
+   Follow-up PR #262 (`956c50e`) resolved the production
+   `src/clients/polymarket.rs` data-client path by explicitly setting
+   `auto_load_missing_instruments: false` and adding a regression assertion.
 
 3. Binance data config literals gained `transport_backend`.
    - `src/bolt_v3_adapters.rs`
    - `src/clients/binance.rs`
+
+   Full lib-test execution after this probe also exposed an upstream Binance
+   credential validation change: `Ed25519Credential::new` now rejects raw
+   32-byte base64 seeds and requires Ed25519 PKCS#8 key material carrying the
+   Ed25519 OID. Bolt test fixtures were updated to use synthetic PKCS#8
+   material; runtime validation remains strict.
 
 4. `DataClient` subscription methods now take owned command values in the
    surfaces Bolt implements in tests and Chainlink.
@@ -107,9 +111,8 @@ All commands were run in `.worktrees/probe-nt-clob-v2-compat-b290678` with
 
 - This probe did not validate live Polymarket CLOB V2 order submission, fills,
   signing, or match-time fee behavior.
-- The legacy/shared Polymarket path in `src/clients/polymarket.rs` was not
-  changed. A production pin-bump slice must either explicitly set
-  `auto_load_missing_instruments = false` there or remove/deprecate that path.
+- The production `src/clients/polymarket.rs` data-client path now explicitly
+  sets `auto_load_missing_instruments = false` as of PR #262 (`956c50e`).
 - `src/clients/polymarket.rs` also inherits the new
   `PolymarketExecClientConfig.transport_backend` default through
   `..Default::default()`.
@@ -121,7 +124,10 @@ All commands were run in `.worktrees/probe-nt-clob-v2-compat-b290678` with
   `LiveExecEngineConfig.max_single_order_queries_per_cycle = 10` and
   `LiveExecEngineConfig.position_check_threshold_ms = 5_000`.
 - This probe did not validate Binance runtime behavior; Binance changes were
-  compile/config compatibility only.
+  compile/config compatibility plus secret-shape validation only. A
+  format-only SSM check on 2026-04-29 confirmed the configured
+  `/bolt/binance/api-secret` SecureString is PEM-wrapped Ed25519 PKCS#8
+  material; the secret value was not printed or stored.
 - No `BinanceExecClientConfig` struct literal exists in Bolt in this probe, so
   candidate fields such as `use_trade_lite` are not exercised here.
 - This probe did not refactor provider boundaries or update runtime contracts.
@@ -139,16 +145,18 @@ Before any real pin-bump PR, run broader verification and dependency review:
 - `/Users/spson/.cargo/bin/cargo deny check`
 - `cargo audit`, if available
 - `cargo tree -d`
-- A source-grounded decision on whether the legacy/shared Polymarket path remains
-  callable
+- A source-grounded decision on whether the production Polymarket execution
+  path should explicitly configure `transport_backend`
 - Runtime-contract updates for any accepted CLOB V2, auto-load, transport, and
   live-engine-default decisions
 
 ## Review Follow-Up
 
-After PR review, the legacy/shared Polymarket path decision was tracked in
-GitHub issue #261. That issue must be resolved before live use or before the
-legacy path is treated as production-valid under this NT pin.
+After PR review, the Polymarket data-client auto-load decision was tracked in
+GitHub issue #261 and resolved by PR #262 (`956c50e`). The remaining production
+Polymarket execution-path question is whether to explicitly configure
+`PolymarketExecClientConfig.transport_backend` instead of inheriting the NT
+default.
 
 Additional dependency checks run after the initial probe:
 

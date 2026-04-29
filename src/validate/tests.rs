@@ -1424,13 +1424,10 @@ fn without_phase1_audit(base: &str) -> String {
 
 fn valid_phase1_runtime_toml() -> String {
     format!(
-        "{}\n{}",
-        format!(
-            "{VALID_BINANCE_SHARED_BLOCK}\n{}",
-            valid_runtime_toml().replace(
-                "event_slugs = [\"btc-updown-5m\"]\n",
-                "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 8\n",
-            )
+        "{VALID_BINANCE_SHARED_BLOCK}\n{}\n{}",
+        valid_runtime_toml().replace(
+            "event_slugs = [\"btc-updown-5m\"]\n",
+            "event_slugs = [\"btc-updown-5m\"]\ngamma_event_fetch_max_concurrent = 8\n",
         ),
         r#"
 [reference]

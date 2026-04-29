@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 use std::sync::Arc;
 
 use nautilus_core::UnixNanos;

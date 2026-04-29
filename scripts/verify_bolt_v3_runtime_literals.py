@@ -23,17 +23,25 @@ SCAN_GLOBS = ("src/bolt_v3_*.rs", "src/bolt_v3_*/**/*.rs")
 
 DIAGNOSTIC_WORDS = (
     "already",
+    "allowed",
     "contains",
+    "declares",
     "does not",
+    "error",
     "expected",
+    "exceeded",
     "failed",
     "forbidden",
     "invalid",
     "missing",
     "must",
+    "requires",
+    "required",
     "rejected",
     "resolved",
+    "supported",
     "unsupported",
+    "unknown",
 )
 
 IGNORED_CONTEXT_PATTERNS = [
@@ -50,8 +58,6 @@ IGNORED_CONTEXT_PATTERNS = [
     r"\.contains\(",
     r"\.join\(",
     r"\.as_str\(",
-    r'^\s*\("[a-z0-9_]+",\s*',
-    r'^\s*"[a-z0-9_]+",\s*$',
     r"\bPathBuf::from\(",
     r"\bErr\(",
     r"\bok_or_else\(",
@@ -355,14 +361,12 @@ def scan_file(path: Path) -> list[Literal]:
             index = string_end
             continue
 
-        if char.isdigit() and not is_ident_char(text[index - 1] if index > 0 else ""):
+        number_end = rust_number_literal_end(text, index)
+        if number_end is not None:
             start = index
-            index += 1
-            while index < len(text) and (text[index].isdigit() or text[index] in "_."):
-                index += 1
-            if not is_ident_char(text[index] if index < len(text) else ""):
-                literals.append(Literal(rel, line, "number", text[start:index], current_context()))
-                continue
+            index = number_end
+            literals.append(Literal(rel, line, "number", text[start:index], current_context()))
+            continue
 
         if char == "\n":
             line += 1
@@ -375,6 +379,49 @@ def is_ident_char(char: str) -> bool:
     return char.isalnum() or char == "_"
 
 
+def rust_number_literal_end(text: str, start: int) -> int | None:
+    if start >= len(text) or not text[start].isdigit():
+        return None
+    if is_ident_char(text[start - 1] if start > 0 else ""):
+        return None
+
+    index = start
+    if text[index] == "0" and index + 1 < len(text) and text[index + 1] in {"b", "o", "x"}:
+        index += 2
+        while index < len(text) and (text[index].isalnum() or text[index] == "_"):
+            index += 1
+        if is_ident_char(text[index] if index < len(text) else ""):
+            return None
+        return index
+
+    while index < len(text) and (text[index].isdigit() or text[index] == "_"):
+        index += 1
+    if (
+        index + 1 < len(text)
+        and text[index] == "."
+        and text[index + 1] != "."
+        and text[index + 1].isdigit()
+    ):
+        index += 1
+        while index < len(text) and (text[index].isdigit() or text[index] == "_"):
+            index += 1
+    if index < len(text) and text[index] in {"e", "E"}:
+        exponent = index + 1
+        if exponent < len(text) and text[exponent] in {"+", "-"}:
+            exponent += 1
+        if exponent < len(text) and text[exponent].isdigit():
+            index = exponent + 1
+            while index < len(text) and (text[index].isdigit() or text[index] == "_"):
+                index += 1
+    if index < len(text) and text[index].isalpha():
+        index += 1
+        while index < len(text) and is_ident_char(text[index]):
+            index += 1
+    if is_ident_char(text[index] if index < len(text) else ""):
+        return None
+    return index
+
+
 def is_ignored_by_rule(literal: Literal) -> bool:
     context = literal.context
     if any(re.search(pattern, context) for pattern in IGNORED_CONTEXT_PATTERNS):
@@ -383,10 +430,9 @@ def is_ignored_by_rule(literal: Literal) -> bool:
         text = literal.literal.strip('"')
         if text.startswith(("nautilus.", "risk.")) or text.endswith("_ssm_path"):
             return True
-        if "{" in text or "}" in text:
-            return True
         lowered = text.lower()
-        if any(word in lowered for word in DIAGNOSTIC_WORDS):
+        words = set(re.findall(r"[a-z_]+", lowered))
+        if words & set(DIAGNOSTIC_WORDS):
             return True
         if " not " in f" {lowered} ":
             return True

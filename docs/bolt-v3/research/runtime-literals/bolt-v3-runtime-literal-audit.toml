@@ -14,6 +14,14 @@ classification = "accepted_current_residual"
 reason = "Pinned NT Polymarket data config needs a debounce value. This is a current provider-adapter residual tracked by status-map rows 14 and 24, not a new runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_adapters.rs"
+kind = "number"
+literal = "0_i64"
+context = "let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);"
+classification = "no_identity_clock_sentinel"
+reason = "The no-identity adapter entry point supplies an empty market-identity plan, so this deterministic clock closure is never invoked and is documented as a sentinel for that no-filter path."
+
+[[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = "\"nautilus_polymarket::common::credential\""
@@ -262,6 +270,30 @@ classification = "market_identity_shape_bound"
 reason = "This is the accepted updown underlying_asset identifier length bound documented by the market-family validation contract."
 
 [[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping\""
+context = "\"{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping\","
+classification = "diagnostic_template"
+reason = "This is an error-display template for an unsupported updown cadence after validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})\""
+context = "\"updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})\""
+classification = "diagnostic_template"
+reason = "This is an error-display template for period arithmetic overflow, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_seconds}\""
+context = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_seconds}\","
+classification = "runtime_contract_slug_template"
+reason = "This is the accepted runtime-contract slug template for the updown market family, derived from validated TOML target identity plus the audited cadence slug-token table."
+
+[[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"binance\""
@@ -292,3 +324,91 @@ literal = "40"
 context = "if rest.len() != 40 {"
 classification = "evm_address_syntax_gate"
 reason = "This is the required 20-byte EVM address payload length after the 0x prefix, enforced before Polymarket execution credentials are accepted."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"http_timeout_seconds\""
+context = "(\"http_timeout_seconds\", data.http_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"ws_timeout_seconds\""
+context = "(\"ws_timeout_seconds\", data.ws_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"update_instruments_interval_minutes\""
+context = "\"update_instruments_interval_minutes\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"websocket_max_subscriptions_per_connection\""
+context = "\"websocket_max_subscriptions_per_connection\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"http_timeout_seconds\""
+context = "(\"http_timeout_seconds\", execution.http_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"max_retries\""
+context = "(\"max_retries\", execution.max_retries),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"retry_delay_initial_milliseconds\""
+context = "\"retry_delay_initial_milliseconds\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"retry_delay_max_milliseconds\""
+context = "\"retry_delay_max_milliseconds\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"ack_timeout_seconds\""
+context = "(\"ack_timeout_seconds\", execution.ack_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"venues.{venue}.secrets.{field}: {source}\""
+context = "\"venues.{venue}.secrets.{field}: {source}\","
+classification = "diagnostic_template"
+reason = "This is an error-display template for a failed SSM secret resolution without an exposed path, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"venues.{venue}.secrets.{field} (path={path}): {source}\""
+context = "\"venues.{venue}.secrets.{field} (path={path}): {source}\","
+classification = "diagnostic_template"
+reason = "This is an error-display template for a failed SSM secret resolution with a redacted path context, not an operator runtime value."

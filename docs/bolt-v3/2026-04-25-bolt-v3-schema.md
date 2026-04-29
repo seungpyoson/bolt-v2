@@ -309,7 +309,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ### `[nautilus.exec_engine]`
 
-All `LiveExecEngineConfig` fields are explicit in TOML and mapped into the pinned NautilusTrader Rust live-node config. `0` disables optional intervals or optional lookback/buffer fields and maps to Nautilus `None`; empty identifier arrays map to Nautilus `None`.
+All `LiveExecEngineConfig` fields are explicit in TOML and mapped into the pinned NautilusTrader Rust live-node config. For fields documented below as optional, `0` maps to Nautilus `None`; other non-negative fields pass their numeric value through. Empty identifier arrays map to Nautilus `None`.
 
 Fields rejected by NautilusTrader's current Rust live runtime are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 

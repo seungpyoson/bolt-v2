@@ -1248,10 +1248,13 @@ mod tests {
         }
     }
 
-    fn synthetic_ed25519_seed_base64() -> String {
+    fn synthetic_ed25519_pkcs8_base64() -> String {
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
-        BASE64_STANDARD.encode((0_u8..32).collect::<Vec<_>>())
+        let mut der = vec![0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03];
+        der.extend_from_slice(&[0x2B, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+        der.extend(0_u8..32);
+        BASE64_STANDARD.encode(der)
     }
 
     fn binance_reference_config(
@@ -1362,7 +1365,7 @@ mod tests {
             Some("http://127.0.0.1:19999"),
             Some("wss://stream.binance.com/ws"),
         );
-        let secret = synthetic_ed25519_seed_base64();
+        let secret = synthetic_ed25519_pkcs8_base64();
         let session = crate::secrets::SsmResolverSession::new()
             .expect("SsmResolverSession should build for reference-builder test");
         let (factory, config) = build_reference_data_client_with_resolver(
@@ -1404,7 +1407,7 @@ mod tests {
             Some("https://api.binance.com"),
             Some("wss://stream.binance.com/ws"),
         );
-        let secret = synthetic_ed25519_seed_base64();
+        let secret = synthetic_ed25519_pkcs8_base64();
         let session = crate::secrets::SsmResolverSession::new()
             .expect("SsmResolverSession should build for reference-builder test");
         let (factory, config) = build_reference_data_client_with_resolver(

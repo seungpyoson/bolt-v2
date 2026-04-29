@@ -553,9 +553,16 @@ mod tests {
     }
 
     #[test]
-    fn validate_binance_api_secret_shape_accepts_raw_32_byte_seed_base64() {
+    fn validate_binance_api_secret_shape_rejects_raw_32_byte_seed_base64() {
         let secret = BASE64_STANDARD.encode((0_u8..32).collect::<Vec<_>>());
-        validate_binance_api_secret_shape(&secret).expect("raw 32-byte ed25519 seed should pass");
+
+        let error = validate_binance_api_secret_shape(&secret)
+            .expect_err("raw 32-byte ed25519 seed should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Decoded key does not carry the Ed25519 PKCS#8 OID")
+        );
     }
 
     #[test]
@@ -576,7 +583,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("Ed25519 private key must be 32 bytes")
+                .contains("Decoded key does not carry the Ed25519 PKCS#8 OID")
         );
     }
 
@@ -589,7 +596,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("Ed25519 private key must be 32 bytes")
+                .contains("Decoded key does not carry the Ed25519 PKCS#8 OID")
         );
     }
 

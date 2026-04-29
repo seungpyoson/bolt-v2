@@ -418,7 +418,7 @@ fn binary_up_down_token_ids(clob_token_ids: &str, outcomes: &str) -> Option<(Str
 
     let mut up_token_id = None;
     let mut down_token_id = None;
-    for (outcome, token_id) in outcomes.into_iter().zip(token_ids.into_iter()) {
+    for (outcome, token_id) in outcomes.into_iter().zip(token_ids) {
         match outcome.as_str() {
             "Up" => up_token_id = Some(token_id),
             "Down" => down_token_id = Some(token_id),

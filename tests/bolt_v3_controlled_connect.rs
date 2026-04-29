@@ -28,6 +28,8 @@
 
 mod support;
 
+use std::sync::{Mutex, MutexGuard};
+
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{
@@ -42,6 +44,14 @@ use support::{
     clear_mock_data_subscriptions, clear_mock_exec_submissions, recorded_mock_data_subscriptions,
     recorded_mock_exec_submissions, repo_path,
 };
+
+static LIVE_NODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn live_node_test_guard() -> MutexGuard<'static, ()> {
+    LIVE_NODE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn fixture_loaded_with_timeouts(
     connection_timeout_secs: u64,
@@ -60,6 +70,7 @@ fn fixture_loaded_with_timeouts(
 
 #[test]
 fn controlled_connect_dispatches_engine_connect_on_mock_clients_without_starting_trader() {
+    let _guard = live_node_test_guard();
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
@@ -154,6 +165,7 @@ fn controlled_connect_dispatches_engine_connect_on_mock_clients_without_starting
 
 #[test]
 fn controlled_connect_returns_timeout_when_engine_connect_exceeds_configured_bound() {
+    let _guard = live_node_test_guard();
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
@@ -199,6 +211,7 @@ fn controlled_connect_returns_timeout_when_engine_connect_exceeds_configured_bou
 
 #[test]
 fn controlled_connect_returns_incomplete_when_engine_swallows_client_connect_failure() {
+    let _guard = live_node_test_guard();
     // Pinned NT engine-level connect dispatchers
     // (`DataEngine::connect`, `ExecutionEngine::connect`) swallow
     // individual client `connect()` errors and only log them (see
@@ -257,6 +270,7 @@ fn controlled_connect_returns_incomplete_when_engine_swallows_client_connect_fai
 
 #[test]
 fn controlled_disconnect_after_successful_connect_returns_ok_and_disconnects_engine_clients() {
+    let _guard = live_node_test_guard();
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
@@ -314,6 +328,7 @@ fn controlled_disconnect_after_successful_connect_returns_ok_and_disconnects_eng
 
 #[test]
 fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configured_bound() {
+    let _guard = live_node_test_guard();
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
@@ -366,6 +381,7 @@ fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configur
 
 #[test]
 fn controlled_disconnect_propagates_engine_disconnect_failure() {
+    let _guard = live_node_test_guard();
     clear_mock_data_subscriptions();
     clear_mock_exec_submissions();
 
@@ -420,6 +436,7 @@ fn controlled_disconnect_propagates_engine_disconnect_failure() {
 
 #[test]
 fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
+    let _guard = live_node_test_guard();
     // After `connect_bolt_v3_clients` returns a `ConnectTimeout`, the
     // bolt-v3 LiveNode is left in a partially-connected state owned by
     // NT (the tokio::time::timeout dropped the awaiting future, but

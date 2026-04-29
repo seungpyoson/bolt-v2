@@ -348,7 +348,7 @@ fn workflow_step_env_value<'a>(step: &'a serde_yaml::Mapping, key: &str) -> Opti
         .and_then(YamlValue::as_str)
 }
 
-fn workflow_step_run<'a>(step: &'a serde_yaml::Mapping) -> &'a str {
+fn workflow_step_run(step: &serde_yaml::Mapping) -> &str {
     step.get(YamlValue::String("run".to_string()))
         .and_then(YamlValue::as_str)
         .expect("workflow step should declare a run script")

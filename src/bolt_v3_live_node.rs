@@ -305,8 +305,15 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
     let logging = LoggerConfig {
         stdout_level: loaded.root.logging.standard_output_level.to_level_filter(),
         fileout_level: loaded.root.logging.file_level.to_level_filter(),
+        component_level: AHashMap::new(),
         module_level,
-        ..Default::default()
+        log_components_only: false,
+        is_colored: true,
+        print_config: false,
+        use_tracing: false,
+        bypass_logging: false,
+        file_config: None,
+        clear_log_file: false,
     };
     let nautilus = &loaded.root.nautilus;
     let data = &nautilus.data_engine;
@@ -771,6 +778,40 @@ mod tests {
         let cfg = make_live_node_config(&loaded);
         assert_eq!(cfg.logging.stdout_level, log::LevelFilter::Info);
         assert_eq!(cfg.logging.fileout_level, log::LevelFilter::Info);
+    }
+
+    #[test]
+    fn live_node_config_logger_literal_does_not_inherit_nt_defaults() {
+        let src = include_str!("bolt_v3_live_node.rs");
+        let logging_literal = src
+            .split("let logging = LoggerConfig {")
+            .nth(1)
+            .expect("logger config literal must exist")
+            .split("let nautilus =")
+            .next()
+            .expect("logger config literal must precede nautilus config");
+
+        // Field-add drift is caught by Rust struct literal exhaustiveness; this
+        // guards against silently re-introducing inherited NT defaults.
+        assert!(
+            !logging_literal.contains(concat!("..", "Default::default()")),
+            "LoggerConfig must set every pinned NT field explicitly"
+        );
+    }
+
+    #[test]
+    fn live_node_config_maps_explicit_logger_residuals_in_builder_path() {
+        let loaded = fixture_loaded_config();
+        let cfg = make_live_node_config(&loaded);
+
+        assert!(cfg.logging.component_level.is_empty());
+        assert!(!cfg.logging.log_components_only);
+        assert!(cfg.logging.is_colored);
+        assert!(!cfg.logging.print_config);
+        assert!(!cfg.logging.use_tracing);
+        assert!(!cfg.logging.bypass_logging);
+        assert!(cfg.logging.file_config.is_none());
+        assert!(!cfg.logging.clear_log_file);
     }
 
     #[test]

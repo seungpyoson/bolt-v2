@@ -94,6 +94,34 @@ fn builder_path_passes_explicit_exec_engine_to_nt_build() {
 }
 
 #[test]
+fn builder_path_passes_explicit_data_engine_to_nt_build() {
+    let _guard = live_node_test_guard();
+
+    let mut loaded = fixture_loaded_with_timeouts(30, 10);
+    // Mutate after Bolt's config-load validation so this test proves the
+    // production builder passes the data engine config to NT's own build-time
+    // validation, instead of constructing a fresh default engine config.
+    loaded
+        .root
+        .nautilus
+        .data_engine
+        .time_bars_origins
+        .insert("INVALID".to_string(), 1);
+
+    let error = make_bolt_v3_live_node_builder(&loaded)
+        .expect("v3 builder should construct from fixture")
+        .build()
+        .expect_err("NT build should validate the data engine config passed through builder");
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid LiveDataEngineConfig.time_bars_origins"),
+        "expected NT data-engine validation error, got: {error}"
+    );
+}
+
+#[test]
 fn builder_path_passes_explicit_risk_engine_to_nt_build() {
     let _guard = live_node_test_guard();
 

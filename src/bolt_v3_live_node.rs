@@ -35,7 +35,7 @@
 //! API, registers a strategy actor, constructs an order, or enables
 //! any submit path.
 
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use ahash::AHashMap;
 use anyhow::Result;
@@ -46,7 +46,10 @@ use nautilus_live::{
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle},
 };
-use nautilus_model::identifiers::{ClientId, TraderId};
+use nautilus_model::{
+    enums::BarIntervalType,
+    identifiers::{ClientId, TraderId},
+};
 use ustr::Ustr;
 
 /// NT adapter modules whose `log::info!` calls embed credential
@@ -306,6 +309,25 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         ..Default::default()
     };
     let nautilus = &loaded.root.nautilus;
+    let data = &nautilus.data_engine;
+    let data_engine = nautilus_live::config::LiveDataEngineConfig {
+        time_bars_build_with_no_updates: data.time_bars_build_with_no_updates,
+        time_bars_timestamp_on_close: data.time_bars_timestamp_on_close,
+        time_bars_skip_first_non_full_bar: data.time_bars_skip_first_non_full_bar,
+        time_bars_interval_type: bar_interval_type_from_str(&data.time_bars_interval_type),
+        time_bars_build_delay: data.time_bars_build_delay,
+        // Bolt stores this as a BTreeMap for deterministic config/debug output;
+        // NT's live data config consumes the same aggregation/nanosecond pairs as a HashMap.
+        time_bars_origins: data.time_bars_origins.clone().into_iter().collect(),
+        validate_data_sequence: data.validate_data_sequence,
+        buffer_deltas: data.buffer_deltas,
+        emit_quotes_from_book: data.emit_quotes_from_book,
+        emit_quotes_from_book_depths: data.emit_quotes_from_book_depths,
+        external_clients: strings_as_client_ids(&data.external_client_ids),
+        debug: data.debug,
+        graceful_shutdown_on_error: data.graceful_shutdown_on_error,
+        qsize: data.qsize,
+    };
     let exec = &nautilus.exec_engine;
     let reconciliation_lookback_mins = u32_zero_as_none(exec.reconciliation_lookback_mins);
     let exec_engine = nautilus_live::config::LiveExecEngineConfig {
@@ -391,6 +413,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_seconds),
         delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_seconds),
         timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_seconds),
+        data_engine,
         risk_engine,
         exec_engine,
         ..Default::default()
@@ -407,6 +430,11 @@ fn u64_zero_as_none_f64(value: u64) -> Option<f64> {
 
 fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
+}
+
+/// Caller must run root validation first so the string is a valid NT `BarIntervalType`.
+fn bar_interval_type_from_str(value: &str) -> BarIntervalType {
+    BarIntervalType::from_str(value).expect("root validation must accept data bar interval type")
 }
 
 /// Caller must run root validation first so every value is a valid NT `ClientId`.
@@ -596,6 +624,23 @@ mod tests {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);
 
+        assert!(cfg.data_engine.time_bars_build_with_no_updates);
+        assert!(cfg.data_engine.time_bars_timestamp_on_close);
+        assert!(!cfg.data_engine.time_bars_skip_first_non_full_bar);
+        assert_eq!(
+            cfg.data_engine.time_bars_interval_type,
+            nautilus_model::enums::BarIntervalType::LeftOpen
+        );
+        assert_eq!(cfg.data_engine.time_bars_build_delay, 0);
+        assert!(cfg.data_engine.time_bars_origins.is_empty());
+        assert!(!cfg.data_engine.validate_data_sequence);
+        assert!(!cfg.data_engine.buffer_deltas);
+        assert!(!cfg.data_engine.emit_quotes_from_book);
+        assert!(!cfg.data_engine.emit_quotes_from_book_depths);
+        assert_eq!(cfg.data_engine.external_clients, None);
+        assert!(!cfg.data_engine.debug);
+        assert!(!cfg.data_engine.graceful_shutdown_on_error);
+        assert_eq!(cfg.data_engine.qsize, 100_000);
         assert!(cfg.exec_engine.load_cache);
         assert!(!cfg.exec_engine.snapshot_orders);
         assert!(!cfg.exec_engine.snapshot_positions);
@@ -653,6 +698,16 @@ mod tests {
         let cfg = make_live_node_config(&loaded);
 
         assert!(cfg.risk_engine.debug);
+    }
+
+    #[test]
+    fn live_node_config_maps_explicit_nt_data_engine_debug_from_v3_root() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.nautilus.data_engine.debug = true;
+
+        let cfg = make_live_node_config(&loaded);
+
+        assert!(cfg.data_engine.debug);
     }
 
     #[test]

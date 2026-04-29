@@ -144,12 +144,14 @@ Rules:
 
 - strategy-local notional limits are not sufficient by themselves
 - current root-level risk settings must be explicit in TOML
+- NautilusTrader live data-engine defaults must be explicit in TOML and mapped into `LiveDataEngineConfig`; the builder path must not inherit `LiveDataEngineConfig::default()` silently
 - NautilusTrader live risk-engine defaults must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the builder path must not inherit `LiveRiskEngineConfig::default()` silently
 - NautilusTrader live exec-engine defaults are explicit in TOML and mapped into `LiveExecEngineConfig`; the builder path must not inherit `LiveExecEngineConfig::default()` silently
 
 Current contract:
 
 - `default_max_notional_per_order` is explicit
+- every `LiveDataEngineConfig` field is explicit under `[nautilus.data_engine]` in TOML and mapped into NautilusTrader live data config
 - every `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config
 - every `LiveExecEngineConfig` field is explicit under `[nautilus.exec_engine]` in TOML and mapped into NautilusTrader live exec config
 
@@ -162,9 +164,10 @@ Authority rule:
 Current implementation behavior:
 
 - `default_max_notional_per_order` is enforced by Bolt-v3 config validation against each strategy's `parameters.order_notional_target`
+- Bolt-v3 maps the complete live data-engine block into NautilusTrader `LiveDataEngineConfig`
 - Bolt-v3 maps the complete live risk-engine block into NautilusTrader `LiveRiskEngineConfig`
 - Bolt-v3 maps the complete live exec-engine block into NautilusTrader `LiveExecEngineConfig`
-- the baseline fixture asserts `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
+- the baseline fixture asserts all explicit data-engine values, `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
 

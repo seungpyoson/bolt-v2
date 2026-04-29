@@ -850,6 +850,22 @@ timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
+
 [nautilus.exec_engine]
 load_cache = true
 snapshot_orders = false
@@ -968,6 +984,22 @@ timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
+
 [nautilus.exec_engine]
 load_cache = true
 snapshot_orders = false
@@ -1079,6 +1111,22 @@ timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
+
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
 
 [nautilus.exec_engine]
 load_cache = true
@@ -1290,6 +1338,48 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
         "nautilus.exec_engine.open_check_threshold_milliseconds must be a positive integer",
         "nautilus.exec_engine.max_single_order_queries_per_cycle must be a positive integer",
         "nautilus.exec_engine.position_check_threshold_milliseconds must be a positive integer",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_nt_data_engine_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "time_bars_interval_type = \"LEFT_OPEN\"",
+        "time_bars_interval_type = \"SIDEWAYS\"",
+    )
+    .replace("time_bars_origins = {}", "time_bars_origins = { INVALID = 1 }")
+    .replace(
+        "emit_quotes_from_book_depths = false\nexternal_client_ids = []\ndebug = false",
+        "emit_quotes_from_book_depths = false\nexternal_client_ids = [\"\"]\ndebug = false",
+    )
+    .replace(
+        "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000\n\n[nautilus.exec_engine]",
+        "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000\n\n[nautilus.exec_engine]",
+    );
+    assert!(
+        mutated.contains("time_bars_interval_type = \"SIDEWAYS\"")
+            && mutated.contains("time_bars_origins = { INVALID = 1 }")
+            && mutated.contains("external_client_ids = [\"\"]")
+            && mutated.contains("graceful_shutdown_on_error = true")
+            && mutated.contains("qsize = 1000"),
+        "test fixture mutation must exercise every invalid data-engine branch"
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid NT data-engine fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.data_engine.time_bars_interval_type is not valid",
+        "nautilus.data_engine.time_bars_origins key `INVALID` is not a valid Nautilus bar aggregation",
+        "nautilus.data_engine.external_client_ids contains invalid client ID",
+        "nautilus.data_engine.graceful_shutdown_on_error must be false",
+        "nautilus.data_engine.qsize must match NT default",
     ] {
         assert!(
             messages.iter().any(|m| m.contains(needle)),

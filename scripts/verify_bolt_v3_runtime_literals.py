@@ -63,7 +63,6 @@ IGNORED_CONTEXT_PATTERNS = [
     r"\bself\.0\b",
     r"\.len\(\)\s*(==|>)\s*1\b",
     r"\bif\b.*[=!]=\s*0\b",
-    r"\bif\b.*>=\s*60\b",
     r"\bif\b.*&&.*==\s*0\b",
 ]
 

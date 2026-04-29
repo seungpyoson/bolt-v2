@@ -134,6 +134,22 @@ classification = "schema_version_gate"
 reason = "The strategy schema version is a structural compatibility gate, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "60"
+context = "if minutes >= 60 {"
+classification = "rate_limit_parser_clock_bound"
+reason = "The Bolt-v3 rate-limit parser enforces conventional HH:MM:SS minute bounds before NT config build validation."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "60"
+context = "if seconds >= 60 {"
+classification = "rate_limit_parser_clock_bound"
+reason = "The Bolt-v3 rate-limit parser enforces conventional HH:MM:SS second bounds before NT config build validation."
+
+[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = "\"binary_oracle_edge_taker\""

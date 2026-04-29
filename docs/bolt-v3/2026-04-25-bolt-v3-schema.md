@@ -147,6 +147,9 @@ nt_bypass = false
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
 
 [logging]
 standard_output_level = "INFO"
@@ -391,7 +394,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 
 ### `[risk]`
 
-This section owns both Bolt-v3 strategy-sizing limits and the selected NautilusTrader live risk-engine fields owned by this slice. Those selected NT risk fields are required in TOML and mapped into `LiveRiskEngineConfig`; full NT risk-engine default ownership remains a separate production-readiness gate. Fields prefixed `nt_*` map directly into NautilusTrader `LiveRiskEngineConfig`; `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
+This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTrader live risk-engine fields. All `nt_*` fields are required in TOML and mapped into `LiveRiskEngineConfig`; `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
 
 #### `default_max_notional_per_order`
 
@@ -427,6 +430,27 @@ This section owns both Bolt-v3 strategy-sizing limits and the selected NautilusT
 - maps to Nautilus `LiveRiskEngineConfig.max_notional_per_order`
 - values must be positive decimal strings
 - `{}` means no NT per-instrument cap is configured; Bolt-v3 still enforces `default_max_notional_per_order` at config validation time
+
+#### `nt_debug`
+
+- type: boolean
+- required: yes
+- maps to Nautilus `LiveRiskEngineConfig.debug`
+- current baseline value is `false`
+
+#### `nt_graceful_shutdown_on_error`
+
+- type: boolean
+- required: yes
+- maps to Nautilus `LiveRiskEngineConfig.graceful_shutdown_on_error`
+- must remain `false`; NautilusTrader rejects non-default values on the current Rust live runtime
+
+#### `nt_qsize`
+
+- type: positive integer
+- required: yes
+- maps to Nautilus `LiveRiskEngineConfig.qsize`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, currently `100000` at NT rev `56a438216442f079edf322a39cdc0d9e655ba6d8`
 
 ### `[logging]`
 
@@ -1149,6 +1173,9 @@ nt_bypass = false
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
 
 [logging]
 standard_output_level = "INFO"

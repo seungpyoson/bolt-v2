@@ -226,6 +226,19 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     if block.nt_bypass {
         errors.push("risk.nt_bypass must be false".to_string());
     }
+    if block.nt_graceful_shutdown_on_error {
+        errors.push(
+            "risk.nt_graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
+                .to_string(),
+        );
+    }
+    let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
+    if block.nt_qsize != nt_risk_default.qsize {
+        errors.push(format!(
+            "risk.nt_qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
+            nt_risk_default.qsize
+        ));
+    }
     for (label, value) in [
         (
             "risk.nt_max_order_submit_rate",

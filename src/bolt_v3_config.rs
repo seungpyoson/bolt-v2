@@ -31,14 +31,14 @@ pub struct BoltV3RootConfig {
     pub venues: BTreeMap<String, VenueBlock>,
 }
 
-// `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
-// NautilusTrader live risk-engine defaults that affect runtime
+// `[risk]` owns Bolt-v3 strategy-sizing limits and the selected
+// NautilusTrader live risk-engine fields that affect runtime
 // behavior. `default_max_notional_per_order` is enforced by Bolt-v3
 // strategy validation and is not automatically expanded into NT's
 // per-instrument map; use `nt_max_notional_per_order` for intentional
 // NT instrument-level caps. The `nt_*` fields map into
-// `LiveRiskEngineConfig` and are required so upstream default drift
-// cannot silently change live risk behavior.
+// `LiveRiskEngineConfig`. Full NT risk-engine default ownership remains
+// tracked by the source-grounded status map.
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -59,14 +59,56 @@ pub struct NautilusBlock {
     pub save_state: bool,
     pub timeout_connection_seconds: u64,
     pub timeout_reconciliation_seconds: u64,
-    pub reconciliation_lookback_mins: u64,
-    pub reconciliation_startup_delay_seconds: u64,
-    pub max_single_order_queries_per_cycle: u32,
-    pub position_check_threshold_milliseconds: u32,
+    pub exec_engine: NautilusExecEngineBlock,
     pub timeout_portfolio_seconds: u64,
     pub timeout_disconnection_seconds: u64,
     pub delay_post_stop_seconds: u64,
     pub timeout_shutdown_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NautilusExecEngineBlock {
+    pub load_cache: bool,
+    pub snapshot_orders: bool,
+    pub snapshot_positions: bool,
+    pub snapshot_positions_interval_seconds: u64,
+    pub external_client_ids: Vec<String>,
+    pub debug: bool,
+    pub reconciliation: bool,
+    pub reconciliation_startup_delay_seconds: u64,
+    pub reconciliation_lookback_mins: u32,
+    pub reconciliation_instrument_ids: Vec<String>,
+    pub filter_unclaimed_external_orders: bool,
+    pub filter_position_reports: bool,
+    pub filtered_client_order_ids: Vec<String>,
+    pub generate_missing_orders: bool,
+    pub inflight_check_interval_milliseconds: u32,
+    pub inflight_check_threshold_milliseconds: u32,
+    pub inflight_check_retries: u32,
+    pub open_check_interval_seconds: u64,
+    pub open_check_lookback_mins: u32,
+    pub open_check_threshold_milliseconds: u32,
+    pub open_check_missing_retries: u32,
+    pub open_check_open_only: bool,
+    pub max_single_order_queries_per_cycle: u32,
+    pub single_order_query_delay_milliseconds: u32,
+    pub position_check_interval_seconds: u64,
+    pub position_check_lookback_mins: u32,
+    pub position_check_threshold_milliseconds: u32,
+    pub position_check_retries: u32,
+    pub purge_closed_orders_interval_mins: u32,
+    pub purge_closed_orders_buffer_mins: u32,
+    pub purge_closed_positions_interval_mins: u32,
+    pub purge_closed_positions_buffer_mins: u32,
+    pub purge_account_events_interval_mins: u32,
+    pub purge_account_events_lookback_mins: u32,
+    pub purge_from_database: bool,
+    pub own_books_audit_interval_seconds: u64,
+    pub graceful_shutdown_on_error: bool,
+    pub qsize: u32,
+    pub allow_overfills: bool,
+    pub manage_own_order_books: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

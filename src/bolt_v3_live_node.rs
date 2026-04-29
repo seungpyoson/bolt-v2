@@ -46,7 +46,7 @@ use nautilus_live::{
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle},
 };
-use nautilus_model::identifiers::TraderId;
+use nautilus_model::identifiers::{ClientId, TraderId};
 use ustr::Ustr;
 
 /// NT adapter modules whose `log::info!` calls embed credential
@@ -306,18 +306,60 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         ..Default::default()
     };
     let nautilus = &loaded.root.nautilus;
-    let reconciliation_lookback_mins = if nautilus.reconciliation_lookback_mins == 0 {
-        None
-    } else {
-        Some(nautilus.reconciliation_lookback_mins as u32)
-    };
+    let exec = &nautilus.exec_engine;
+    let reconciliation_lookback_mins = u32_zero_as_none(exec.reconciliation_lookback_mins);
     let exec_engine = nautilus_live::config::LiveExecEngineConfig {
+        load_cache: exec.load_cache,
+        snapshot_orders: exec.snapshot_orders,
+        snapshot_positions: exec.snapshot_positions,
+        snapshot_positions_interval_secs: u64_zero_as_none_f64(
+            exec.snapshot_positions_interval_seconds,
+        ),
+        external_clients: strings_as_client_ids(&exec.external_client_ids),
+        debug: exec.debug,
+        reconciliation: exec.reconciliation,
         reconciliation_lookback_mins,
         // `f64` is lossless for all practical delay values (< 2^53 seconds).
-        reconciliation_startup_delay_secs: nautilus.reconciliation_startup_delay_seconds as f64,
-        max_single_order_queries_per_cycle: nautilus.max_single_order_queries_per_cycle,
-        position_check_threshold_ms: nautilus.position_check_threshold_milliseconds,
-        ..Default::default()
+        reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_seconds as f64,
+        reconciliation_instrument_ids: non_empty_strings(&exec.reconciliation_instrument_ids),
+        filter_unclaimed_external_orders: exec.filter_unclaimed_external_orders,
+        filter_position_reports: exec.filter_position_reports,
+        filtered_client_order_ids: non_empty_strings(&exec.filtered_client_order_ids),
+        generate_missing_orders: exec.generate_missing_orders,
+        inflight_check_interval_ms: exec.inflight_check_interval_milliseconds,
+        inflight_check_threshold_ms: exec.inflight_check_threshold_milliseconds,
+        inflight_check_retries: exec.inflight_check_retries,
+        open_check_interval_secs: u64_zero_as_none_f64(exec.open_check_interval_seconds),
+        open_check_lookback_mins: u32_zero_as_none(exec.open_check_lookback_mins),
+        open_check_threshold_ms: exec.open_check_threshold_milliseconds,
+        open_check_missing_retries: exec.open_check_missing_retries,
+        open_check_open_only: exec.open_check_open_only,
+        max_single_order_queries_per_cycle: exec.max_single_order_queries_per_cycle,
+        single_order_query_delay_ms: exec.single_order_query_delay_milliseconds,
+        position_check_interval_secs: u64_zero_as_none_f64(exec.position_check_interval_seconds),
+        position_check_lookback_mins: exec.position_check_lookback_mins,
+        position_check_threshold_ms: exec.position_check_threshold_milliseconds,
+        position_check_retries: exec.position_check_retries,
+        purge_closed_orders_interval_mins: u32_zero_as_none(exec.purge_closed_orders_interval_mins),
+        purge_closed_orders_buffer_mins: u32_zero_as_none(exec.purge_closed_orders_buffer_mins),
+        purge_closed_positions_interval_mins: u32_zero_as_none(
+            exec.purge_closed_positions_interval_mins,
+        ),
+        purge_closed_positions_buffer_mins: u32_zero_as_none(
+            exec.purge_closed_positions_buffer_mins,
+        ),
+        purge_account_events_interval_mins: u32_zero_as_none(
+            exec.purge_account_events_interval_mins,
+        ),
+        purge_account_events_lookback_mins: u32_zero_as_none(
+            exec.purge_account_events_lookback_mins,
+        ),
+        purge_from_database: exec.purge_from_database,
+        own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_seconds),
+        graceful_shutdown_on_error: exec.graceful_shutdown_on_error,
+        qsize: exec.qsize,
+        allow_overfills: exec.allow_overfills,
+        manage_own_order_books: exec.manage_own_order_books,
     };
     let risk_engine = nautilus_live::config::LiveRiskEngineConfig {
         bypass: loaded.root.risk.nt_bypass,
@@ -351,6 +393,22 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         exec_engine,
         ..Default::default()
     }
+}
+
+fn u32_zero_as_none(value: u32) -> Option<u32> {
+    (value != 0).then_some(value)
+}
+
+fn u64_zero_as_none_f64(value: u64) -> Option<f64> {
+    (value != 0).then_some(value as f64)
+}
+
+fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
+    (!values.is_empty()).then(|| values.to_vec())
+}
+
+fn strings_as_client_ids(values: &[String]) -> Option<Vec<ClientId>> {
+    (!values.is_empty()).then(|| values.iter().map(ClientId::new).collect())
 }
 
 pub fn wire_bolt_v3_runtime_capture(
@@ -535,9 +593,46 @@ mod tests {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);
 
+        assert!(cfg.exec_engine.load_cache);
+        assert!(!cfg.exec_engine.snapshot_orders);
+        assert!(!cfg.exec_engine.snapshot_positions);
+        assert_eq!(cfg.exec_engine.snapshot_positions_interval_secs, None);
+        assert_eq!(cfg.exec_engine.external_clients, None);
+        assert!(!cfg.exec_engine.debug);
+        assert!(cfg.exec_engine.reconciliation);
         assert_eq!(cfg.exec_engine.reconciliation_startup_delay_secs, 10.0);
+        assert_eq!(cfg.exec_engine.reconciliation_lookback_mins, None);
+        assert_eq!(cfg.exec_engine.reconciliation_instrument_ids, None);
+        assert!(!cfg.exec_engine.filter_unclaimed_external_orders);
+        assert!(!cfg.exec_engine.filter_position_reports);
+        assert_eq!(cfg.exec_engine.filtered_client_order_ids, None);
+        assert!(cfg.exec_engine.generate_missing_orders);
+        assert_eq!(cfg.exec_engine.inflight_check_interval_ms, 2_000);
+        assert_eq!(cfg.exec_engine.inflight_check_threshold_ms, 5_000);
+        assert_eq!(cfg.exec_engine.inflight_check_retries, 5);
+        assert_eq!(cfg.exec_engine.open_check_interval_secs, None);
+        assert_eq!(cfg.exec_engine.open_check_lookback_mins, Some(60));
+        assert_eq!(cfg.exec_engine.open_check_threshold_ms, 5_000);
+        assert_eq!(cfg.exec_engine.open_check_missing_retries, 5);
+        assert!(cfg.exec_engine.open_check_open_only);
         assert_eq!(cfg.exec_engine.max_single_order_queries_per_cycle, 10);
+        assert_eq!(cfg.exec_engine.single_order_query_delay_ms, 100);
+        assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
+        assert_eq!(cfg.exec_engine.position_check_lookback_mins, 60);
         assert_eq!(cfg.exec_engine.position_check_threshold_ms, 5_000);
+        assert_eq!(cfg.exec_engine.position_check_retries, 3);
+        assert_eq!(cfg.exec_engine.purge_closed_orders_interval_mins, None);
+        assert_eq!(cfg.exec_engine.purge_closed_orders_buffer_mins, None);
+        assert_eq!(cfg.exec_engine.purge_closed_positions_interval_mins, None);
+        assert_eq!(cfg.exec_engine.purge_closed_positions_buffer_mins, None);
+        assert_eq!(cfg.exec_engine.purge_account_events_interval_mins, None);
+        assert_eq!(cfg.exec_engine.purge_account_events_lookback_mins, None);
+        assert!(!cfg.exec_engine.purge_from_database);
+        assert_eq!(cfg.exec_engine.own_books_audit_interval_secs, None);
+        assert!(!cfg.exec_engine.graceful_shutdown_on_error);
+        assert_eq!(cfg.exec_engine.qsize, 100_000);
+        assert!(!cfg.exec_engine.allow_overfills);
+        assert!(!cfg.exec_engine.manage_own_order_books);
         assert!(!cfg.risk_engine.bypass);
         assert_eq!(cfg.risk_engine.max_order_submit_rate, "100/00:00:01");
         assert_eq!(cfg.risk_engine.max_order_modify_rate, "100/00:00:01");

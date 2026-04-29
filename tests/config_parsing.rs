@@ -845,14 +845,52 @@ load_state = true
 save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
-reconciliation_lookback_mins = 0
-reconciliation_startup_delay_seconds = 10
-max_single_order_queries_per_cycle = 10
-position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
@@ -922,14 +960,52 @@ load_state = true
 save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
-reconciliation_lookback_mins = 0
-reconciliation_startup_delay_seconds = 10
-max_single_order_queries_per_cycle = 10
-position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
@@ -993,14 +1069,52 @@ load_state = true
 save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
-reconciliation_lookback_mins = 0
-reconciliation_startup_delay_seconds = 10
-max_single_order_queries_per_cycle = 10
-position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
@@ -1144,15 +1258,92 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "max_single_order_queries_per_cycle = 10\nposition_check_threshold_milliseconds = 5000",
-        "max_single_order_queries_per_cycle = 0\nposition_check_threshold_milliseconds = 0",
+        "inflight_check_threshold_milliseconds = 5000\ninflight_check_retries = 5",
+        "inflight_check_threshold_milliseconds = 0\ninflight_check_retries = 5",
+    )
+    .replace(
+        "open_check_threshold_milliseconds = 5000\nopen_check_missing_retries = 5",
+        "open_check_threshold_milliseconds = 0\nopen_check_missing_retries = 5",
+    )
+    .replace(
+        "max_single_order_queries_per_cycle = 10\nsingle_order_query_delay_milliseconds = 100",
+        "max_single_order_queries_per_cycle = 0\nsingle_order_query_delay_milliseconds = 100",
+    )
+    .replace(
+        "position_check_threshold_milliseconds = 5000\nposition_check_retries = 3",
+        "position_check_threshold_milliseconds = 0\nposition_check_retries = 3",
+    )
+    .replace(
+        "qsize = 100000\nallow_overfills = false",
+        "qsize = 0\nallow_overfills = false",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("zero NT exec defaults fixture should parse");
     let messages = validate_root_only(&root);
     for needle in [
-        "nautilus.max_single_order_queries_per_cycle must be a positive integer",
-        "nautilus.position_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.inflight_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.open_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.max_single_order_queries_per_cycle must be a positive integer",
+        "nautilus.exec_engine.position_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.qsize must be a positive integer",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("snapshot_orders = false", "snapshot_orders = true")
+        .replace("snapshot_positions = false", "snapshot_positions = true")
+        .replace("purge_from_database = false", "purge_from_database = true")
+        .replace(
+            "graceful_shutdown_on_error = false",
+            "graceful_shutdown_on_error = true",
+        )
+        .replace("qsize = 100000", "qsize = 1000");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unsupported NT exec values fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.exec_engine.snapshot_orders must be false",
+        "nautilus.exec_engine.snapshot_positions must be false",
+        "nautilus.exec_engine.purge_from_database must be false",
+        "nautilus.exec_engine.graceful_shutdown_on_error must be false",
+        "nautilus.exec_engine.qsize must match NT default",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_nt_exec_filter_identifiers() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated =
+        replace_in_fixture_root("external_client_ids = []", "external_client_ids = [\"\"]")
+            .replace(
+                "reconciliation_instrument_ids = []",
+                "reconciliation_instrument_ids = [\"INVALID\"]",
+            )
+            .replace(
+                "filtered_client_order_ids = []",
+                "filtered_client_order_ids = [\"\"]",
+            );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid NT exec filter identifiers fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.exec_engine.external_client_ids contains invalid client ID",
+        "nautilus.exec_engine.reconciliation_instrument_ids contains invalid instrument ID",
+        "nautilus.exec_engine.filtered_client_order_ids contains invalid client order ID",
     ] {
         assert!(
             messages.iter().any(|m| m.contains(needle)),

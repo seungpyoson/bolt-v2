@@ -51,6 +51,7 @@ require-rust-verification-owner:
     RUST_VERIFICATION_SOURCE_REPO="{{rust_verification_source_repo}}" RUST_VERIFICATION_SOURCE_SHA="{{rust_verification_source_sha}}" bash "{{rust_verification_require_script}}" "{{rust_verification_owner}}"
 
 verify-bolt-v3-runtime-literals: check-workspace
+    python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
 
 fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals

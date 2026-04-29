@@ -26,7 +26,6 @@ DIAGNOSTIC_WORDS = (
     "allowed",
     "contains",
     "declares",
-    "does not",
     "error",
     "expected",
     "exceeded",
@@ -413,6 +412,8 @@ def rust_number_literal_end(text: str, start: int) -> int | None:
             index = exponent + 1
             while index < len(text) and (text[index].isdigit() or text[index] == "_"):
                 index += 1
+    if index + 1 < len(text) and text[index] == "_" and text[index + 1].isalpha():
+        index += 1
     if index < len(text) and text[index].isalpha():
         index += 1
         while index < len(text) and is_ident_char(text[index]):

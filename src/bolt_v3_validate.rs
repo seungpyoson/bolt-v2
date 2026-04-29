@@ -177,10 +177,18 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 "risk.nt_max_notional_per_order key `{instrument_id}` is not a valid Nautilus instrument ID ({error})"
             ));
         }
-        if let Err(reason) = parse_decimal_string(notional) {
-            errors.push(format!(
-                "risk.nt_max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
-            ));
+        match parse_decimal_string(notional) {
+            Ok(value) if value <= Decimal::ZERO => {
+                errors.push(format!(
+                    "risk.nt_max_notional_per_order[`{instrument_id}`] must be a positive decimal string: `{notional}`"
+                ));
+            }
+            Ok(_) => {}
+            Err(reason) => {
+                errors.push(format!(
+                    "risk.nt_max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
+                ));
+            }
         }
     }
     errors

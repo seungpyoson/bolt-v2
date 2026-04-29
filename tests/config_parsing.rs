@@ -1249,6 +1249,27 @@ fn rejects_invalid_nt_risk_max_notional_map_entries() {
 }
 
 #[test]
+fn rejects_non_positive_nt_risk_max_notional_map_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for notional in ["0", "-1.00"] {
+        let mutated = replace_in_fixture_root(
+            "nt_max_notional_per_order = {}",
+            &format!("nt_max_notional_per_order = {{ \"ETHUSDT.BINANCE\" = \"{notional}\" }}"),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("non-positive NT max-notional fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| m.contains(
+                "risk.nt_max_notional_per_order[`ETHUSDT.BINANCE`] must be a positive decimal string"
+            )),
+            "expected positive notional validation error for `{notional}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

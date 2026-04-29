@@ -334,6 +334,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the selected NautilusT
 - type: TOML inline table mapping Nautilus instrument IDs to decimal notional strings
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.max_notional_per_order`
+- values must be positive decimal strings
 - `{}` means no NT per-instrument cap is configured; Bolt-v3 still enforces `default_max_notional_per_order` at config validation time
 
 ### `[logging]`

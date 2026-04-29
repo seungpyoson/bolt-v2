@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Verify Bolt-v3 production literals are classified.
 
-This verifier is intentionally narrow. It scans production code in
-`src/bolt_v3_*.rs`, skips `#[cfg(test)] mod tests` regions and diagnostics by
-rule, then requires every remaining candidate runtime literal to be explicitly
-allowlisted with a rationale.
+This verifier is intentionally narrow. It scans production code in root
+`src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories,
+skips `#[cfg(test)] mod tests` regions and diagnostics by rule, then requires
+every remaining candidate runtime literal to be explicitly allowlisted with a
+rationale.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDIT_PATH = REPO_ROOT / "docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml"
-SCAN_GLOB = "src/bolt_v3_*.rs"
+SCAN_GLOBS = ("src/bolt_v3_*.rs", "src/bolt_v3_*/**/*.rs")
 
 DIAGNOSTIC_WORDS = (
     "already",
@@ -49,6 +50,8 @@ IGNORED_CONTEXT_PATTERNS = [
     r"\.contains\(",
     r"\.join\(",
     r"\.as_str\(",
+    r'^\s*\("[a-z0-9_]+",\s*',
+    r'^\s*"[a-z0-9_]+",\s*$',
     r"\bPathBuf::from\(",
     r"\bErr\(",
     r"\bok_or_else\(",
@@ -110,13 +113,22 @@ def test_ranges(text: str) -> list[tuple[int, int]]:
     ranges: list[tuple[int, int]] = []
     pending_cfg = False
     for index, line in enumerate(lines):
-        if "#[cfg(test)]" in line:
-            pending_cfg = True
-        if pending_cfg and re.match(r"\s*mod\s+tests\s*\{", line):
+        cfg_match = re.search(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]", line)
+        mod_match = re.search(r"(?:pub\s+)?mod\s+tests\s*\{", line)
+        if mod_match and (pending_cfg or cfg_match):
             start = starts[index]
-            opening = text.find("{", start)
+            opening = text.find("{", start + mod_match.start())
             closing = matching_brace(text, opening)
             ranges.append((start, closing + 1 if closing is not None else len(text)))
+            pending_cfg = False
+            continue
+        if cfg_match:
+            pending_cfg = line[cfg_match.end() :].strip() == ""
+            continue
+        if pending_cfg:
+            stripped = line.strip()
+            if stripped == "" or stripped.startswith("//") or stripped.startswith("#["):
+                continue
             pending_cfg = False
     return ranges
 
@@ -152,32 +164,22 @@ def matching_brace(text: str, opening: int) -> int | None:
             block_comment_depth = 1
             index += 2
             continue
-        if char == "r":
-            raw_match = re.match(r'r(#+)?"', text[index:])
-            if raw_match:
-                hashes = raw_match.group(1) or ""
-                terminator = '"' + hashes
-                index += len(raw_match.group(0))
-                end = text.find(terminator, index)
-                index = len(text) if end == -1 else end + len(terminator)
+        raw_end = rust_raw_string_literal_end(text, index)
+        if raw_end is not None:
+            index = raw_end
+            continue
+        if char == "b" and nxt == "'":
+            char_end = rust_char_literal_end(text, index + 1)
+            if char_end is not None:
+                index = char_end
                 continue
         char_end = rust_char_literal_end(text, index)
         if char_end is not None:
             index = char_end
             continue
-        if char == '"':
-            index += 1
-            escaped = False
-            while index < len(text):
-                current = text[index]
-                if escaped:
-                    escaped = False
-                elif current == "\\":
-                    escaped = True
-                elif current == '"':
-                    index += 1
-                    break
-                index += 1
+        string_end = rust_string_literal_end(text, index)
+        if string_end is not None:
+            index = string_end
             continue
         if char == "{":
             depth += 1
@@ -217,6 +219,12 @@ def rust_char_literal_end(text: str, start: int) -> int | None:
             if index >= len(text):
                 return None
             index += 1
+        elif (
+            text[index] == "x"
+            and index + 2 < len(text)
+            and all(char in "0123456789abcdefABCDEF" for char in text[index + 1 : index + 3])
+        ):
+            index += 3
         else:
             index += 1
     else:
@@ -225,6 +233,42 @@ def rust_char_literal_end(text: str, start: int) -> int | None:
     if index < len(text) and text[index] == "'":
         return index + 1
     return None
+
+
+def rust_raw_string_literal_end(text: str, start: int) -> int | None:
+    """Return the end offset for a Rust raw string or byte string literal."""
+
+    raw_match = re.match(r'br(#+)?"|r(#+)?"', text[start:])
+    if not raw_match:
+        return None
+    hashes = raw_match.group(1) or raw_match.group(2) or ""
+    terminator = '"' + hashes
+    index = start + len(raw_match.group(0))
+    end = text.find(terminator, index)
+    return len(text) if end == -1 else end + len(terminator)
+
+
+def rust_string_literal_end(text: str, start: int) -> int | None:
+    """Return the end offset for a Rust string or byte string literal."""
+
+    if start < len(text) and text[start] == '"':
+        index = start + 1
+    elif start + 1 < len(text) and text[start] == "b" and text[start + 1] == '"':
+        index = start + 2
+    else:
+        return None
+
+    escaped = False
+    while index < len(text):
+        current = text[index]
+        if escaped:
+            escaped = False
+        elif current == "\\":
+            escaped = True
+        elif current == '"':
+            return index + 1
+        index += 1
+    return len(text)
 
 
 def inside_ranges(position: int, ranges: list[tuple[int, int]]) -> bool:
@@ -284,47 +328,32 @@ def scan_file(path: Path) -> list[Literal]:
             index += 2
             continue
 
-        if char == "r":
-            raw_match = re.match(r'r(#+)?"', text[index:])
-            if raw_match:
-                hashes = raw_match.group(1) or ""
-                start = index
-                terminator = '"' + hashes
-                index += len(raw_match.group(0))
-                end = text.find(terminator, index)
-                if end == -1:
-                    end = len(text)
-                else:
-                    end += len(terminator)
-                literal = text[start:end]
-                literals.append(Literal(rel, line, "string", literal, current_context()))
-                line += literal.count("\n")
-                index = end
-                continue
+        raw_end = rust_raw_string_literal_end(text, index)
+        if raw_end is not None:
+            start = index
+            literal = text[start:raw_end]
+            literals.append(Literal(rel, line, "string", literal, current_context()))
+            line += literal.count("\n")
+            index = raw_end
+            continue
 
+        if char == "b" and nxt == "'":
+            char_end = rust_char_literal_end(text, index + 1)
+            if char_end is not None:
+                index = char_end
+                continue
         char_end = rust_char_literal_end(text, index)
         if char_end is not None:
             index = char_end
             continue
 
-        if char == '"':
+        string_end = rust_string_literal_end(text, index)
+        if string_end is not None:
             start = index
-            index += 1
-            escaped = False
-            while index < len(text):
-                current = text[index]
-                if current == "\n":
-                    line += 1
-                if escaped:
-                    escaped = False
-                elif current == "\\":
-                    escaped = True
-                elif current == '"':
-                    index += 1
-                    break
-                index += 1
-            literal = text[start:index]
+            literal = text[start:string_end]
             literals.append(Literal(rel, line - literal.count("\n"), "string", literal, current_context()))
+            line += literal.count("\n")
+            index = string_end
             continue
 
         if char.isdigit() and not is_ident_char(text[index - 1] if index > 0 else ""):
@@ -372,7 +401,13 @@ def is_ignored_by_rule(literal: Literal) -> bool:
 
 def scan_literals() -> list[Literal]:
     candidates: list[Literal] = []
-    for path in sorted(REPO_ROOT.glob(SCAN_GLOB)):
+    paths = {
+        path
+        for pattern in SCAN_GLOBS
+        for path in REPO_ROOT.glob(pattern)
+        if path.is_file()
+    }
+    for path in sorted(paths):
         for literal in scan_file(path):
             if not is_ignored_by_rule(literal):
                 candidates.append(literal)

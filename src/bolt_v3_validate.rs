@@ -35,7 +35,7 @@
 
 use std::{collections::BTreeMap, collections::HashSet, path::Path, str::FromStr};
 
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::identifiers::{ClientId, ClientOrderId, InstrumentId};
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
@@ -125,18 +125,91 @@ fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
             "nautilus.timeout_shutdown_seconds",
             block.timeout_shutdown_seconds,
         ),
+    ];
+    for (label, value) in positive_fields {
+        if *value == 0 {
+            errors.push(format!("{label} must be a positive integer"));
+        }
+    }
+    errors.extend(validate_exec_engine_block(&block.exec_engine));
+    errors
+}
+
+fn validate_exec_engine_block(
+    block: &crate::bolt_v3_config::NautilusExecEngineBlock,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let positive_fields: &[(&str, u64)] = &[
         (
-            "nautilus.max_single_order_queries_per_cycle",
+            "nautilus.exec_engine.inflight_check_threshold_milliseconds",
+            block.inflight_check_threshold_milliseconds as u64,
+        ),
+        (
+            "nautilus.exec_engine.open_check_threshold_milliseconds",
+            block.open_check_threshold_milliseconds as u64,
+        ),
+        (
+            "nautilus.exec_engine.max_single_order_queries_per_cycle",
             block.max_single_order_queries_per_cycle as u64,
         ),
         (
-            "nautilus.position_check_threshold_milliseconds",
+            "nautilus.exec_engine.position_check_threshold_milliseconds",
             block.position_check_threshold_milliseconds as u64,
         ),
     ];
     for (label, value) in positive_fields {
         if *value == 0 {
             errors.push(format!("{label} must be a positive integer"));
+        }
+    }
+
+    if block.snapshot_orders {
+        errors.push(
+            "nautilus.exec_engine.snapshot_orders must be false; NT rejects true on the Rust live runtime".to_string(),
+        );
+    }
+    if block.snapshot_positions {
+        errors.push(
+            "nautilus.exec_engine.snapshot_positions must be false; NT rejects true on the Rust live runtime".to_string(),
+        );
+    }
+    if block.purge_from_database {
+        errors.push(
+            "nautilus.exec_engine.purge_from_database must be false; NT rejects true on the Rust live runtime".to_string(),
+        );
+    }
+    if block.graceful_shutdown_on_error {
+        errors.push(
+            "nautilus.exec_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime".to_string(),
+        );
+    }
+    let nt_exec_default = nautilus_live::config::LiveExecEngineConfig::default();
+    if block.qsize != nt_exec_default.qsize {
+        errors.push(format!(
+            "nautilus.exec_engine.qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
+            nt_exec_default.qsize
+        ));
+    }
+
+    for client_id in &block.external_client_ids {
+        if let Err(error) = ClientId::new_checked(client_id) {
+            errors.push(format!(
+                "nautilus.exec_engine.external_client_ids contains invalid client ID `{client_id}` ({error})"
+            ));
+        }
+    }
+    for instrument_id in &block.reconciliation_instrument_ids {
+        if let Err(error) = InstrumentId::from_str(instrument_id) {
+            errors.push(format!(
+                "nautilus.exec_engine.reconciliation_instrument_ids contains invalid instrument ID `{instrument_id}` ({error})"
+            ));
+        }
+    }
+    for client_order_id in &block.filtered_client_order_ids {
+        if let Err(error) = ClientOrderId::new_checked(client_order_id) {
+            errors.push(format!(
+                "nautilus.exec_engine.filtered_client_order_ids contains invalid client order ID `{client_order_id}` ({error})"
+            ));
         }
     }
     errors

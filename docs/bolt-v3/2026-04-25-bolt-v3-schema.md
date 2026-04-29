@@ -94,14 +94,52 @@ load_state = true
 save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
-reconciliation_lookback_mins = 0
-reconciliation_startup_delay_seconds = 10
-max_single_order_queries_per_cycle = 10
-position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
@@ -243,6 +281,44 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - type: positive integer
 - required: yes
 
+#### `timeout_portfolio_seconds`
+
+- type: positive integer
+- required: yes
+
+#### `timeout_disconnection_seconds`
+
+- type: positive integer
+- required: yes
+- bounds the explicit bolt-v3 controlled-disconnect boundary
+
+#### `delay_post_stop_seconds`
+
+- type: non-negative integer
+- required: yes
+- maps to Nautilus `LiveNodeConfig.delay_post_stop`
+- note: Nautilus builder helper naming uses `with_delay_post_stop_secs`, but the config field itself is `delay_post_stop`
+
+#### `timeout_shutdown_seconds`
+
+- type: positive integer
+- required: yes
+- maps to Nautilus live-node shutdown timeout, not a custom bolt concept
+- exact mapping target: Nautilus `LiveNodeConfig.timeout_shutdown`
+- note: Nautilus builder helper naming uses `with_delay_shutdown_secs`, but the config field itself is `timeout_shutdown`
+
+### `[nautilus.exec_engine]`
+
+All `LiveExecEngineConfig` fields are explicit in TOML and mapped into the pinned NautilusTrader Rust live-node config. For fields documented below as optional, `0` maps to Nautilus `None`; other non-negative fields pass their numeric value through. Empty identifier arrays map to Nautilus `None`.
+
+Fields rejected by NautilusTrader's current Rust live runtime are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
+
+- `snapshot_orders = false`
+- `snapshot_positions = false`
+- `purge_from_database = false`
+- `graceful_shutdown_on_error = false`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `56a438216442f079edf322a39cdc0d9e655ba6d8`
+
 #### `reconciliation_lookback_mins`
 
 - type: non-negative integer
@@ -272,31 +348,46 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - maps to Nautilus `LiveExecEngineConfig.position_check_threshold_ms`
 - current baseline value is `5000`
 
-#### `timeout_portfolio_seconds`
+#### Remaining explicit exec-engine fields
 
-- type: positive integer
-- required: yes
-
-#### `timeout_disconnection_seconds`
-
-- type: positive integer
-- required: yes
-- bounds the explicit bolt-v3 controlled-disconnect boundary
-
-#### `delay_post_stop_seconds`
-
-- type: non-negative integer
-- required: yes
-- maps to Nautilus `LiveNodeConfig.delay_post_stop`
-- note: Nautilus builder helper naming uses `with_delay_post_stop_secs`, but the config field itself is `delay_post_stop`
-
-#### `timeout_shutdown_seconds`
-
-- type: positive integer
-- required: yes
-- maps to Nautilus live-node shutdown timeout, not a custom bolt concept
-- exact mapping target: Nautilus `LiveNodeConfig.timeout_shutdown`
-- note: Nautilus builder helper naming uses `with_delay_shutdown_secs`, but the config field itself is `timeout_shutdown`
+| Field | Type / Rule | Maps to |
+|---|---|---|
+| `load_cache` | boolean | `LiveExecEngineConfig.load_cache` |
+| `snapshot_orders` | must be `false` | `LiveExecEngineConfig.snapshot_orders` |
+| `snapshot_positions` | must be `false` | `LiveExecEngineConfig.snapshot_positions` |
+| `snapshot_positions_interval_seconds` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.snapshot_positions_interval_secs` |
+| `external_client_ids` | array of valid NT client IDs; empty maps to `None` | `LiveExecEngineConfig.external_clients` |
+| `debug` | boolean | `LiveExecEngineConfig.debug` |
+| `reconciliation` | boolean | `LiveExecEngineConfig.reconciliation` |
+| `reconciliation_instrument_ids` | array of valid NT instrument IDs; empty maps to `None` | `LiveExecEngineConfig.reconciliation_instrument_ids` |
+| `filter_unclaimed_external_orders` | boolean | `LiveExecEngineConfig.filter_unclaimed_external_orders` |
+| `filter_position_reports` | boolean | `LiveExecEngineConfig.filter_position_reports` |
+| `filtered_client_order_ids` | array of valid NT client order IDs; empty maps to `None` | `LiveExecEngineConfig.filtered_client_order_ids` |
+| `generate_missing_orders` | boolean | `LiveExecEngineConfig.generate_missing_orders` |
+| `inflight_check_interval_milliseconds` | non-negative integer | `LiveExecEngineConfig.inflight_check_interval_ms` |
+| `inflight_check_threshold_milliseconds` | positive integer | `LiveExecEngineConfig.inflight_check_threshold_ms` |
+| `inflight_check_retries` | non-negative integer | `LiveExecEngineConfig.inflight_check_retries` |
+| `open_check_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.open_check_interval_secs` |
+| `open_check_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.open_check_lookback_mins` |
+| `open_check_threshold_milliseconds` | positive integer | `LiveExecEngineConfig.open_check_threshold_ms` |
+| `open_check_missing_retries` | non-negative integer | `LiveExecEngineConfig.open_check_missing_retries` |
+| `open_check_open_only` | boolean | `LiveExecEngineConfig.open_check_open_only` |
+| `single_order_query_delay_milliseconds` | non-negative integer | `LiveExecEngineConfig.single_order_query_delay_ms` |
+| `position_check_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.position_check_interval_secs` |
+| `position_check_lookback_mins` | non-negative integer; NT pins this as `u32`, so `0` passes through as a 0-minute lookback rather than mapping to `None` | `LiveExecEngineConfig.position_check_lookback_mins` |
+| `position_check_retries` | non-negative integer | `LiveExecEngineConfig.position_check_retries` |
+| `purge_closed_orders_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_closed_orders_interval_mins` |
+| `purge_closed_orders_buffer_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_closed_orders_buffer_mins` |
+| `purge_closed_positions_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_closed_positions_interval_mins` |
+| `purge_closed_positions_buffer_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_closed_positions_buffer_mins` |
+| `purge_account_events_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_account_events_interval_mins` |
+| `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
+| `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
+| `own_books_audit_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
+| `graceful_shutdown_on_error` | must be `false` | `LiveExecEngineConfig.graceful_shutdown_on_error` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `56a438216442f079edf322a39cdc0d9e655ba6d8` | `LiveExecEngineConfig.qsize` |
+| `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
+| `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
 ### `[risk]`
 
@@ -1005,14 +1096,52 @@ load_state = true
 save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
-reconciliation_lookback_mins = 0
-reconciliation_startup_delay_seconds = 10
-max_single_order_queries_per_cycle = 10
-position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"

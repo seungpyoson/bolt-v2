@@ -1,0 +1,9 @@
+/target
+config/live.toml
+config/live.local.toml
+/*_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.log
+var/logs/
+/tmp_tests/*.log
+.omx/
+.claude/findings/
+.DS_Store

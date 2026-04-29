@@ -1,0 +1,56 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    # See #155: our transitive graph (alloy, k256, ed25519-dalek, nautilus-*)
+    # is still on hmac 0.12 / sha2 0.10. Accepting 0.13 / 0.11 would force a
+    # dual-major build. Remove these ignores when upstream converges; see the
+    # "Revisit Conditions" in #155.
+    ignore:
+      - dependency-name: "hmac"
+        versions: [">=0.13"]
+      - dependency-name: "sha2"
+        versions: [">=0.11"]
+      # Keep this NT crate list aligned with config/nt_pointer_probe/control.toml.
+      # validate-control-plane fails closed if they drift.
+      - dependency-name: "nautilus-common"
+      - dependency-name: "nautilus-core"
+      - dependency-name: "nautilus-data"
+      - dependency-name: "nautilus-binance"
+      - dependency-name: "nautilus-bybit"
+      - dependency-name: "nautilus-deribit"
+      - dependency-name: "nautilus-hyperliquid"
+      - dependency-name: "nautilus-kraken"
+      - dependency-name: "nautilus-live"
+      - dependency-name: "nautilus-model"
+      - dependency-name: "nautilus-network"
+      - dependency-name: "nautilus-okx"
+      - dependency-name: "nautilus-persistence"
+      - dependency-name: "nautilus-persistence-macros"
+      - dependency-name: "nautilus-polymarket"
+      - dependency-name: "nautilus-serialization"
+      - dependency-name: "nautilus-system"
+      - dependency-name: "nautilus-trading"
+      - dependency-name: "nautilus-execution"
+    groups:
+      cargo-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      action-dependencies:
+        patterns:
+          - "*"

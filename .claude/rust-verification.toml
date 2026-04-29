@@ -1,0 +1,17 @@
+schema_version = 1
+project_id = "bolt-v2"
+target_namespace = "bolt-v2"
+
+[commands]
+
+[commands.test]
+recipe = "managed-test"
+
+[commands.clippy]
+recipe = "managed-clippy"
+
+[commands.build]
+recipe = "managed-build"
+artifact_layout = "cargo"
+profile = "release"
+target = "aarch64-unknown-linux-gnu"

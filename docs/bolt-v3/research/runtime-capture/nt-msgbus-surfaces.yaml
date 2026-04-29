@@ -1,0 +1,811 @@
+# NautilusTrader runtime message-bus pub/sub surface inventory
+# Pinned NT source/rev are verified from Cargo.toml by scripts/verify_runtime_capture_yaml.py.
+# Bolt comparator:  src/nt_runtime_capture.rs (this branch)
+# Scope:            runtime live capture only -- backtest, Python, tests, mocks, internal helpers excluded.
+# Classification legend:
+#   captured_now                                       -- Bolt already subscribes
+#   safe_missing_passive_stream                        -- passive pub/sub, NT publishes runtime traffic, Bolt does not subscribe yet
+#   not_safe_to_subscribe_directly_command_or_endpoint -- register/send/request style, hijacks NT command dispatch
+#   not_runtime_capture_surface                        -- publish-side, unsubscribe cleanup, topic builder, or non-traffic helper
+
+surfaces:
+
+  # ============================================================
+  # Passive pub/sub subscribe_* APIs (the actual capture surface)
+  # ============================================================
+
+  - nt_api: subscribe_quotes
+    nt_path: crates/common/src/msgbus/api.rs:310
+    message_type: QuoteTick
+    topic_pattern: "data.quotes.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_quotes
+    bolt_pattern_helper: quotes_pattern
+    capture_stream: quotes
+    storage_format: Feather
+    reason: "Subscribed in wire_nt_runtime_capture via quotes_pattern() -> data.quotes.*.*"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_trades
+    nt_path: crates/common/src/msgbus/api.rs:322
+    message_type: TradeTick
+    topic_pattern: "data.trades.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_trades
+    bolt_pattern_helper: trades_pattern
+    capture_stream: trades
+    storage_format: Feather
+    reason: "Subscribed via trades_pattern() -> data.trades.*.*"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_bars
+    nt_path: crates/common/src/msgbus/api.rs:334
+    message_type: Bar
+    topic_pattern: "data.bars.{bar_type}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_bars
+    bolt_pattern_helper: bars_pattern
+    capture_stream: bars
+    storage_format: Feather
+    reason: "Subscribed via bars_pattern() -> data.bars.*; bars excluded from per-instrument FeatherWriter grouping by per_instrument_stream_types()"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_book_deltas
+    nt_path: crates/common/src/msgbus/api.rs:273
+    message_type: OrderBookDeltas
+    topic_pattern: "data.book.deltas.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_book_deltas
+    bolt_pattern_helper: book_deltas_pattern
+    capture_stream: order_book_deltas
+    storage_format: Feather
+    reason: "Subscribed via book_deltas_pattern() -> data.book.deltas.*.*"
+    suggested_capture_storage: unwrap_to_orderbookdelta
+
+  - nt_api: subscribe_book_depth10
+    nt_path: crates/common/src/msgbus/api.rs:285
+    message_type: OrderBookDepth10
+    topic_pattern: "data.book.depth10.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_book_depth10
+    bolt_pattern_helper: book_depth10_pattern
+    capture_stream: order_book_depth10
+    storage_format: Feather
+    reason: "Subscribed via book_depth10_pattern() -> data.book.depth10.*.*"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_book_snapshots
+    nt_path: crates/common/src/msgbus/api.rs:298
+    message_type: OrderBook
+    topic_pattern: "data.book.snapshots.{venue}.{symbol}.{interval_ms}"
+    topic_evidence: "crates/common/src/msgbus/switchboard.rs:218-220 -> get_book_snapshots_topic uses format!(\"data.book.snapshots.{}.{}.{}\", venue, symbol, interval_ms)"
+    api_kind: passive_pubsub
+    bolt_status: safe_missing_passive_stream
+    publisher_evidence: "crates/data/src/engine/book.rs:170 -> msgbus::publish_book(topic, book); (DataEngine emits periodic OrderBook snapshots on this topic)"
+    subscriber_evidence: "crates/common/src/msgbus/api.rs:298 -> pub fn subscribe_book_snapshots(pattern: MStr<Pattern>, handler: TypedHandler<OrderBook>, priority: Option<u8>); Bolt does not subscribe."
+    reason: "Periodic full OrderBook snapshots emitted alongside deltas. Bolt currently captures only deltas; snapshots are a different runtime surface and not subscribed."
+    suggested_capture_storage: boundary_wrapper
+    storage_evidence: "OrderBook (crates/model/src/orderbook/book.rs:50-72) derives only Clone+Debug -- no serde::Serialize/Deserialize, no Arrow trait. Cannot be written directly via FeatherWriter or JsonlAppender; requires a Bolt-side wrapper that projects OrderBook to a stable serializable row before write."
+
+  - nt_api: subscribe_mark_prices
+    nt_path: crates/common/src/msgbus/api.rs:342
+    message_type: MarkPriceUpdate
+    topic_pattern: "data.mark_prices.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_mark_prices
+    bolt_pattern_helper: mark_prices_pattern
+    capture_stream: mark_prices
+    storage_format: Feather
+    reason: "Subscribed via mark_prices_pattern() -> data.mark_prices.*.*"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_index_prices
+    nt_path: crates/common/src/msgbus/api.rs:355
+    message_type: IndexPriceUpdate
+    topic_pattern: "data.index_prices.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_index_prices
+    bolt_pattern_helper: index_prices_pattern
+    capture_stream: index_prices
+    storage_format: Feather
+    reason: "Subscribed via index_prices_pattern() -> data.index_prices.*.*"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_funding_rates
+    nt_path: crates/common/src/msgbus/api.rs:367
+    message_type: FundingRateUpdate
+    topic_pattern: "data.funding_rates.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_funding_rates
+    bolt_pattern_helper: funding_rates_pattern
+    capture_stream: funding_rates
+    storage_format: JSONL
+    reason: "Subscribed via funding_rates_pattern() -> data.funding_rates.*.*; JSONL capture because no Feather schema in NT for this type yet."
+    suggested_capture_storage: jsonl
+
+  - nt_api: subscribe_greeks
+    nt_path: crates/common/src/msgbus/api.rs:379
+    message_type: GreeksData
+    topic_pattern: "data.GreeksData.instrument_id={instrument_id}"
+    topic_evidence: "crates/common/src/greeks.rs:634 publishes via msgbus::publish_greeks(topic, &greeks_data) where the topic literal is constructed in the surrounding builder as data.GreeksData.instrument_id={symbol}. There is NO get_greeks_topic helper in switchboard.rs."
+    api_kind: passive_pubsub
+    bolt_status: safe_missing_passive_stream
+    publisher_evidence: "crates/common/src/greeks.rs:634 -> msgbus::publish_greeks(topic, &greeks_data)"
+    subscriber_evidence: "crates/common/src/msgbus/api.rs:379 -> pub fn subscribe_greeks(pattern: MStr<Pattern>, handler: TypedHandler<GreeksData>, priority: Option<u8>); Bolt does not subscribe."
+    reason: "Polymarket binary outcomes have no greeks today; only relevant if NT-derived synthetic greeks (currently produced by crates/common/src/greeks.rs) are routed for Polymarket instruments. The publisher is the BlackScholes/greeks helper, not a venue adapter, so this is a derivation surface, not a venue feed."
+    suggested_capture_storage: wrapper_required
+    storage_evidence: "GreeksData (crates/model/src/data/greeks.rs:300-321) does NOT derive serde::Serialize/Deserialize and has no Arrow trait. Direct JSONL/Feather write impossible; requires Bolt wrapper."
+
+  - nt_api: subscribe_option_greeks
+    nt_path: crates/common/src/msgbus/api.rs:391
+    message_type: OptionGreeks
+    topic_pattern: "data.option_greeks.{venue}.{symbol}"
+    topic_evidence: "crates/common/src/msgbus/switchboard.rs:254-256 -> get_option_greeks_topic uses format!(\"data.option_greeks.{}.{}\", instrument_id.venue, instrument_id.symbol)"
+    api_kind: passive_pubsub
+    bolt_status: safe_missing_passive_stream
+    publisher_evidence: "crates/data/src/engine/mod.rs:891 -> msgbus::publish_option_greeks(topic, option_greeks)"
+    subscriber_evidence: "crates/common/src/msgbus/api.rs:391 -> pub fn subscribe_option_greeks(pattern: MStr<Pattern>, handler: TypedHandler<OptionGreeks>, priority: Option<u8>); Bolt does not subscribe."
+    reason: "Not produced by Polymarket adapter."
+    suggested_capture_storage: wrapper_required
+    storage_evidence: "OptionGreeks (crates/model/src/data/option_chain.rs:142-161) does NOT derive serde::Serialize/Deserialize and has no Arrow trait. Requires Bolt wrapper."
+
+  - nt_api: subscribe_option_chain
+    nt_path: crates/common/src/msgbus/api.rs:403
+    message_type: OptionChainSlice
+    topic_pattern: "data.option_chain.{series_id}"
+    topic_evidence: "crates/common/src/msgbus/switchboard.rs:258-260 -> get_option_chain_topic uses format!(\"data.option_chain.{}\", series_id)"
+    api_kind: passive_pubsub
+    bolt_status: safe_missing_passive_stream
+    publisher_evidence: "crates/data/src/option_chains/manager.rs:736 -> msgbus::publish_option_chain(self.topic, &slice)"
+    subscriber_evidence: "crates/common/src/msgbus/api.rs:403 -> pub fn subscribe_option_chain(pattern: MStr<Pattern>, handler: TypedHandler<OptionChainSlice>, priority: Option<u8>); Bolt does not subscribe."
+    reason: "Option chain snapshot stream. Not produced by Polymarket adapter."
+    suggested_capture_storage: wrapper_required
+    storage_evidence: "OptionChainSlice (crates/model/src/data/option_chain.rs:235-248) does NOT derive serde::Serialize/Deserialize and has no Arrow trait. Requires Bolt wrapper."
+
+  - nt_api: subscribe_order_events
+    nt_path: crates/common/src/msgbus/api.rs:415
+    message_type: OrderEventAny
+    topic_pattern: "events.order.{strategy_id}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_order_events
+    bolt_pattern_helper: order_events_pattern
+    capture_stream: order_events
+    storage_format: JSONL
+    reason: "Subscribed via order_events_pattern() -> events.order.*; JSONL capture via execution_state::order_event_row"
+    suggested_capture_storage: boundary_wrapper
+
+  - nt_api: subscribe_position_events
+    nt_path: crates/common/src/msgbus/api.rs:427
+    message_type: PositionEvent
+    topic_pattern: "events.position.{strategy_id}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_position_events
+    bolt_pattern_helper: position_events_pattern
+    capture_stream: position_events
+    storage_format: JSONL
+    reason: "Subscribed via position_events_pattern() -> events.position.*; JSONL capture via execution_state::position_event_row"
+    suggested_capture_storage: boundary_wrapper
+
+  - nt_api: subscribe_account_state
+    nt_path: crates/common/src/msgbus/api.rs:439
+    message_type: AccountState
+    topic_pattern: "events.account.*"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_account_state
+    bolt_pattern_helper: account_states_pattern
+    capture_stream: account_states
+    storage_format: JSONL
+    reason: "Subscribed via account_states_pattern() -> events.account.*; JSONL capture"
+    suggested_capture_storage: jsonl
+
+  - nt_api: subscribe_positions
+    nt_path: crates/common/src/msgbus/api.rs:451
+    message_type: Position
+    topic_pattern: "positions.snapshots.{position_id}"
+    topic_evidence: "crates/common/src/msgbus/switchboard.rs:327 -> get_positions_snapshots_topic uses format!(\"positions.snapshots.{}\", position_id)"
+    api_kind: passive_pubsub
+    bolt_status: not_runtime_capture_surface
+    publisher_evidence: "NO_PUBLISHER -- exhaustive search of crates/common, crates/risk, crates/execution, crates/data, crates/portfolio in pinned NT found no publish_positions helper in api.rs and no msgbus::publish call on a topic literal starting with \"positions.snapshots\""
+    subscriber_evidence: "crates/common/src/msgbus/api.rs:451 -> pub fn subscribe_positions(pattern: MStr<Pattern>, handler: TypedHandler<Position>, priority: Option<u8>)"
+    reason: "Downgraded from safe_missing_passive_stream because publisher evidence is missing in pinned NT. Subscribing is a no-op on this rev. Reclassify if a publisher is added upstream."
+    suggested_capture_storage: none
+
+  - nt_api: subscribe_instruments
+    nt_path: crates/common/src/msgbus/api.rs:255
+    message_type: InstrumentAny
+    topic_pattern: "data.instrument.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_instruments
+    bolt_pattern_helper: instruments_pattern
+    capture_stream: instruments
+    storage_format: Feather
+    reason: "Subscribed via instruments_pattern() -> data.instrument.*.* using ShareableMessageHandler::from_any (boxed Any -> InstrumentAny downcast)"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_instrument_close
+    nt_path: crates/common/src/msgbus/api.rs:264
+    message_type: InstrumentClose
+    topic_pattern: "data.close.{venue}.{symbol}"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_instrument_close
+    bolt_pattern_helper: instrument_closes_pattern
+    capture_stream: instrument_closes
+    storage_format: Feather
+    reason: "Subscribed via instrument_closes_pattern() -> data.close.*.* using ShareableMessageHandler::from_any"
+    suggested_capture_storage: feather
+
+  - nt_api: subscribe_any
+    nt_path: crates/common/src/msgbus/api.rs:223
+    message_type: dyn Any
+    topic_pattern: "<caller-supplied>"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_any
+    bolt_pattern_helper: instrument_statuses_pattern
+    capture_stream: instrument_statuses
+    storage_format: JSONL
+    storage_message_type: InstrumentStatus
+    reason: "Used by Bolt with instrument_statuses_pattern() -> data.status.*.* to receive InstrumentStatus (no typed subscribe_instrument_status helper exists in NT)."
+    suggested_capture_storage: jsonl
+
+  - nt_api: 'subscribe_any("events.risk")'
+    nt_path: crates/common/src/msgbus/api.rs:223
+    message_type: dyn Any
+    topic_pattern: "events.risk"
+    api_kind: passive_pubsub
+    bolt_status: captured_now
+    source_subscribe_fn: subscribe_any
+    bolt_pattern_helper: trading_state_changed_events_pattern
+    capture_stream: trading_state_changed
+    storage_format: JSONL
+    storage_message_type: TradingStateChanged
+    publisher_evidence: "crates/risk/src/engine/mod.rs:379 -> msgbus::publish_any(\"events.risk\".into(), &event) where event: TradingStateChanged constructed at lines 376-377"
+    subscriber_evidence: "Bolt subscribes via MStr::pattern(\"events.risk\") in trading_state_changed_events_pattern(), with the Any handler downcasting to TradingStateChanged and forwarding CaptureMessage::TradingStateChanged(Box<TradingStateChanged>)."
+    reason: "Bolt now captures this stream. There is no typed subscribe_trading_state helper in NT -- consumers must use subscribe_any with the literal \"events.risk\" topic and downcast in the Any handler. TradingStateChanged is defined at crates/common/src/messages/system/trading.rs:34 with #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)] (line 28) and #[serde(tag = \"type\")] (line 29)."
+    suggested_capture_storage: jsonl
+    storage_evidence: "TradingStateChanged derives serde::Serialize + serde::Deserialize (crates/common/src/messages/system/trading.rs:28). Bolt writes to risk/trading_state_changed.jsonl via JsonlAppender (JSONL path constructed at src/nt_runtime_capture.rs:653; write call at src/nt_runtime_capture.rs:617)."
+
+  # DeFi feature-gated subscribe_* (compiled only with `defi` feature; not used by Polymarket today)
+
+  - nt_api: subscribe_defi_blocks
+    nt_path: crates/common/src/msgbus/api.rs:465
+    message_type: Block
+    topic_pattern: "data.defi.blocks.{chain}"
+    topic_evidence: "crates/common/src/defi/switchboard.rs:89 -> format!(\"data.defi.blocks.{chain}\")"
+    api_kind: passive_pubsub
+    bolt_status: not_runtime_capture_surface
+    reason: "Cargo feature `defi` only; Polymarket adapter does not enable it. If feature is ever enabled, reclassify to safe_missing_passive_stream. Topic is keyed by chain name, NOT block_number."
+    suggested_capture_storage: none
+
+  - nt_api: subscribe_defi_pools
+    nt_path: crates/common/src/msgbus/api.rs:479
+    message_type: Pool
+    topic_pattern: "data.defi.pool.{instrument_id}"
+    topic_evidence: "crates/common/src/defi/switchboard.rs:98 -> format!(\"data.defi.pool.{instrument_id}\") (singular \"pool\", keyed by instrument_id, NOT pool_id)"
+    api_kind: passive_pubsub
+    bolt_status: not_runtime_capture_surface
+    reason: "Cargo feature `defi` only; not enabled in Bolt build."
+    suggested_capture_storage: none
+
+  - nt_api: subscribe_defi_swaps
+    nt_path: crates/common/src/msgbus/api.rs:493
+    message_type: PoolSwap
+    topic_pattern: "data.defi.pool_swaps.{instrument_id}"
+    topic_evidence: "crates/common/src/defi/switchboard.rs:107 -> format!(\"data.defi.pool_swaps.{instrument_id}\")"
+    api_kind: passive_pubsub
+    bolt_status: not_runtime_capture_surface
+    reason: "Cargo feature `defi` only; not enabled in Bolt build."
+    suggested_capture_storage: none
+
+  - nt_api: subscribe_defi_liquidity
+    nt_path: crates/common/src/msgbus/api.rs:507
+    message_type: PoolLiquidityUpdate
+    topic_pattern: "data.defi.pool_liquidity.{instrument_id}"
+    topic_evidence: "crates/common/src/defi/switchboard.rs:116 -> format!(\"data.defi.pool_liquidity.{instrument_id}\")"
+    api_kind: passive_pubsub
+    bolt_status: not_runtime_capture_surface
+    reason: "Cargo feature `defi` only; not enabled in Bolt build."
+    suggested_capture_storage: none
+
+  - nt_api: subscribe_defi_collects
+    nt_path: crates/common/src/msgbus/api.rs:520
+    message_type: PoolFeeCollect
+    topic_pattern: "data.defi.pool_collect.{instrument_id}"
+    topic_evidence: "crates/common/src/defi/switchboard.rs:125 -> format!(\"data.defi.pool_collect.{instrument_id}\") (singular \"collect\")"
+    api_kind: passive_pubsub
+    bolt_status: not_runtime_capture_surface
+    reason: "Cargo feature `defi` only; not enabled in Bolt build."
+    suggested_capture_storage: none
+
+  - nt_api: subscribe_defi_flash
+    nt_path: crates/common/src/msgbus/api.rs:533
+    message_type: PoolFlash
+    topic_pattern: "data.defi.pool_flash.{instrument_id}"
+    topic_evidence: "crates/common/src/defi/switchboard.rs:135 -> format!(\"data.defi.pool_flash.{instrument_id}\")"
+    api_kind: passive_pubsub
+    bolt_status: not_runtime_capture_surface
+    reason: "Cargo feature `defi` only; not enabled in Bolt build."
+    suggested_capture_storage: none
+
+  # ============================================================
+  # publish_* APIs -- broadcast helpers (kind: publish_helper).
+  # They route to the SAME pub/sub mechanism that subscribe_* listens to:
+  # each publish_* calls publish_typed -> TopicRouter<T>.fill_matching_handlers(topic, ...)
+  # which broadcasts to every matching subscriber. They are NOT capture surfaces
+  # themselves (you would re-enter the bus), but they are not point-to-point endpoints
+  # either, so they are classified separately from command_endpoint.
+  # ============================================================
+
+  - nt_api: publish_quote
+    nt_path: crates/common/src/msgbus/api.rs:883
+    message_type: QuoteTick
+    topic_pattern: "data.quotes.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Calls publish_typed with bus.router_quotes.fill_matching_handlers(topic, h) -- broadcast to all matching subscribers. Capture happens via subscribe_quotes; subscribing on the publish side is meaningless."
+    suggested_capture_storage: none
+
+  - nt_api: publish_trade
+    nt_path: crates/common/src/msgbus/api.rs:892
+    message_type: TradeTick
+    topic_pattern: "data.trades.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_trades.fill_matching_handlers; symmetric with subscribe_trades."
+    suggested_capture_storage: none
+
+  - nt_api: publish_bar
+    nt_path: crates/common/src/msgbus/api.rs:901
+    message_type: Bar
+    topic_pattern: "data.bars.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_bars.fill_matching_handlers; symmetric with subscribe_bars."
+    suggested_capture_storage: none
+
+  - nt_api: publish_deltas
+    nt_path: crates/common/src/msgbus/api.rs:856
+    message_type: OrderBookDeltas
+    topic_pattern: "data.book.deltas.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_deltas.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_depth10
+    nt_path: crates/common/src/msgbus/api.rs:865
+    message_type: OrderBookDepth10
+    topic_pattern: "data.book.depth10.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_depth10.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_book
+    nt_path: crates/common/src/msgbus/api.rs:874
+    message_type: OrderBook
+    topic_pattern: "data.book.snapshots.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_book_snapshots.fill_matching_handlers; capture via subscribe_book_snapshots (boundary_wrapper required)."
+    suggested_capture_storage: none
+
+  - nt_api: publish_mark_price
+    nt_path: crates/common/src/msgbus/api.rs:910
+    message_type: MarkPriceUpdate
+    topic_pattern: "data.mark_prices.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_mark_prices.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_index_price
+    nt_path: crates/common/src/msgbus/api.rs:919
+    message_type: IndexPriceUpdate
+    topic_pattern: "data.index_prices.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_index_prices.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_funding_rate
+    nt_path: crates/common/src/msgbus/api.rs:928
+    message_type: FundingRateUpdate
+    topic_pattern: "data.funding_rates.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_funding_rates.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_account_state
+    nt_path: crates/common/src/msgbus/api.rs:964
+    message_type: AccountState
+    topic_pattern: "events.account.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_account_state.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_order_event
+    nt_path: crates/common/src/msgbus/api.rs:973
+    message_type: OrderEventAny
+    topic_pattern: "events.order.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_order_events.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_position_event
+    nt_path: crates/common/src/msgbus/api.rs:982
+    message_type: PositionEvent
+    topic_pattern: "events.position.*"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Broadcast helper via router_position_events.fill_matching_handlers."
+    suggested_capture_storage: none
+
+  - nt_api: publish_any
+    nt_path: crates/common/src/msgbus/api.rs:839
+    message_type: dyn Any
+    topic_pattern: "<caller-supplied>"
+    api_kind: publish_helper
+    bolt_status: not_runtime_capture_surface
+    reason: "Fills ANY_HANDLERS and invokes handler.handle(message) for each matching subscriber. Used by adapters and by RiskEngine (events.risk topic, see TradingStateChanged surface above)."
+    suggested_capture_storage: none
+
+  # ============================================================
+  # register_* / send_* / response APIs -- command/endpoint plumbing.
+  # These are NOT pub/sub: they are typed point-to-point endpoints. Subscribing
+  # cannot intercept them, and registering an additional handler would HIJACK
+  # NT command dispatch (DataEngine, ExecutionEngine, RiskEngine etc.).
+  # ============================================================
+
+  - nt_api: register_any
+    nt_path: crates/common/src/msgbus/api.rs:69
+    message_type: dyn Any
+    topic_pattern: "<endpoint name (MStr<Endpoint>)>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Generic Any-handler endpoint registration. Signature: pub fn register_any(endpoint: MStr<Endpoint>, handler: ShareableMessageHandler). Each endpoint has at most one owning handler in NT's MessageBus; registering from the capture layer would replace whatever component (DataEngine, ExecutionEngine, RiskEngine, BookEngine) already owns that endpoint name."
+    suggested_capture_storage: none
+
+  - nt_api: register_data_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:181
+    message_type: Data
+    topic_pattern: "<endpoint name (MStr<Endpoint>)>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Typed-handler registration. Signature: pub fn register_data_endpoint(endpoint: MStr<Endpoint>, handler: TypedIntoHandler<Data>). Owned endpoint -- the DataEngine wires this for cross-component data delivery. Re-registering would steal data routing."
+    suggested_capture_storage: none
+
+  - nt_api: register_defi_data_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:190
+    message_type: DefiData
+    topic_pattern: "<endpoint name (MStr<Endpoint>)>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Typed-handler registration. Signature: pub fn register_defi_data_endpoint(endpoint: MStr<Endpoint>, handler: TypedIntoHandler<DefiData>). Behind the `defi` Cargo feature; owned by the DeFi data engine. Bolt build does not enable `defi`."
+    suggested_capture_storage: none
+
+  - nt_api: send_any_value
+    nt_path: crates/common/src/msgbus/api.rs:1092
+    message_type: T (generic; any 'static)
+    topic_pattern: "<endpoint name (MStr<Endpoint>)>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Generic point-to-point send helper. Signature: pub fn send_any_value<T: 'static>(endpoint: MStr<Endpoint>, message: &T). Invocation side of register_any -- not a broadcast; subscribers cannot intercept. Capture must happen at the call boundary (boundary_wrapper) if specific endpoint traffic ever needs persistence."
+    suggested_capture_storage: boundary_wrapper
+
+  - nt_api: register_data_command_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:148
+    message_type: DataCommand
+    topic_pattern: "<endpoint name e.g. DataEngine.execute>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Endpoint is owned by NT DataEngine. A second handler would either replace or steal commands. Capture must happen at adapter boundary or via DataCommand log, not here."
+    suggested_capture_storage: boundary_wrapper
+
+  - nt_api: register_trading_command_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:137
+    message_type: TradingCommand
+    topic_pattern: "<endpoint name e.g. ExecEngine.execute>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Endpoint owned by NT ExecutionEngine. Re-registering hijacks order routing. Capture trading commands at the strategy boundary or by tapping the OrderEventAny stream."
+    suggested_capture_storage: boundary_wrapper
+
+  - nt_api: register_data_response_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:159
+    message_type: DataResponse
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Owned endpoint; do not register from capture layer."
+    suggested_capture_storage: none
+
+  - nt_api: register_execution_report_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:170
+    message_type: ExecutionReport
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Execution reports flow through a single owned endpoint. Mirror via OrderEventAny / AccountState which are passive."
+    suggested_capture_storage: none
+
+  - nt_api: register_quote_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:91
+    message_type: QuoteTick
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Typed point-to-point. Use subscribe_quotes for capture."
+    suggested_capture_storage: none
+
+  - nt_api: register_trade_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:99
+    message_type: TradeTick
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Typed point-to-point. Use subscribe_trades for capture."
+    suggested_capture_storage: none
+
+  - nt_api: register_bar_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:107
+    message_type: Bar
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Typed point-to-point. Use subscribe_bars for capture."
+    suggested_capture_storage: none
+
+  - nt_api: register_order_event_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:115
+    message_type: OrderEventAny
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Typed point-to-point. Use subscribe_order_events for capture."
+    suggested_capture_storage: none
+
+  - nt_api: register_account_state_endpoint
+    nt_path: crates/common/src/msgbus/api.rs:126
+    message_type: AccountState
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Typed point-to-point. Use subscribe_account_state for capture."
+    suggested_capture_storage: none
+
+  - nt_api: register_response_handler
+    nt_path: crates/common/src/msgbus/api.rs:81
+    message_type: dyn Any
+    topic_pattern: "<correlation_id>"
+    api_kind: request_response
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Per-correlation-id handler used by request/response. Not a broadcast surface."
+    suggested_capture_storage: none
+
+  - nt_api: send_any
+    nt_path: crates/common/src/msgbus/api.rs:1081
+    message_type: dyn Any
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Send is the invocation half of register_*; not a capture surface."
+    suggested_capture_storage: none
+
+  - nt_api: send_response
+    nt_path: crates/common/src/msgbus/api.rs:1103
+    message_type: DataResponse
+    topic_pattern: "<correlation_id>"
+    api_kind: request_response
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Sends a response to a registered correlation handler."
+    suggested_capture_storage: none
+
+  - nt_api: send_data_command
+    nt_path: crates/common/src/msgbus/api.rs:1187
+    message_type: DataCommand
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side; capture commands at boundary if needed."
+    suggested_capture_storage: boundary_wrapper
+
+  - nt_api: send_trading_command
+    nt_path: crates/common/src/msgbus/api.rs:1177
+    message_type: TradingCommand
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Strategy -> ExecutionEngine invocation. Capture at strategy boundary or via OrderEventAny."
+    suggested_capture_storage: boundary_wrapper
+
+  - nt_api: send_data_response
+    nt_path: crates/common/src/msgbus/api.rs:1197
+    message_type: DataResponse
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side."
+    suggested_capture_storage: none
+
+  - nt_api: send_execution_report
+    nt_path: crates/common/src/msgbus/api.rs:1207
+    message_type: ExecutionReport
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side; reports manifest as OrderEventAny / AccountState on passive bus."
+    suggested_capture_storage: none
+
+  - nt_api: send_quote
+    nt_path: crates/common/src/msgbus/api.rs:1127
+    message_type: QuoteTick
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side; symmetric with subscribe_quotes."
+    suggested_capture_storage: none
+
+  - nt_api: send_trade
+    nt_path: crates/common/src/msgbus/api.rs:1137
+    message_type: TradeTick
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side."
+    suggested_capture_storage: none
+
+  - nt_api: send_bar
+    nt_path: crates/common/src/msgbus/api.rs:1147
+    message_type: Bar
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side."
+    suggested_capture_storage: none
+
+  - nt_api: send_order_event
+    nt_path: crates/common/src/msgbus/api.rs:1157
+    message_type: OrderEventAny
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side."
+    suggested_capture_storage: none
+
+  - nt_api: send_account_state
+    nt_path: crates/common/src/msgbus/api.rs:1167
+    message_type: AccountState
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side."
+    suggested_capture_storage: none
+
+  - nt_api: send_data
+    nt_path: crates/common/src/msgbus/api.rs:1217
+    message_type: Data
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side."
+    suggested_capture_storage: none
+
+  - nt_api: send_defi_data
+    nt_path: crates/common/src/msgbus/api.rs:1228
+    message_type: DefiData
+    topic_pattern: "<endpoint name>"
+    api_kind: command_endpoint
+    bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
+    reason: "Invocation side; defi feature only."
+    suggested_capture_storage: none
+
+  # ============================================================
+  # Switchboard topic builders -- string constructors, not traffic surfaces.
+  # Listed once as a class because each is a same-shape pure helper. Bolt builds
+  # its own MStr::pattern strings instead of calling these (they expect concrete
+  # ids; Bolt subscribes by wildcard pattern).
+  # ============================================================
+
+  - nt_api: switchboard::get_*_topic family
+    nt_path: crates/common/src/msgbus/switchboard.rs:308-329
+    message_type: "N/A (returns String / MStr<Topic>)"
+    topic_pattern: "see individual builder; covers data.{quotes,trades,bars,book.deltas,book.depth10,book.snapshots,mark_prices,index_prices,funding_rates,status,close,instrument,option_greeks,option_chain}.* and events.{order,position,fills,cancels}.* and order.snapshots.* / positions.snapshots.*"
+    api_kind: topic_builder
+    bolt_status: not_runtime_capture_surface
+    reason: "Pure topic-string constructors. They do not produce or consume traffic. Bolt independently constructs equivalent MStr patterns in nt_runtime_capture.rs (quotes_pattern, trades_pattern, etc.). Listed for completeness."
+    suggested_capture_storage: none
+
+  - nt_api: switchboard::get_instruments_pattern
+    nt_path: crates/common/src/msgbus/switchboard.rs:338
+    message_type: "N/A (returns Pattern)"
+    topic_pattern: "data.instrument.{venue}.*"
+    api_kind: topic_builder
+    bolt_status: not_runtime_capture_surface
+    reason: "Pattern helper for instruments_topic; analogous purpose to Bolt's instruments_pattern()."
+    suggested_capture_storage: none
+
+# ============================================================
+# Summary
+# ============================================================
+summary:
+  total_subscribe_apis: 25
+  captured_now: 15
+  captured_now_includes:
+    - 'subscribe_any("events.risk") -> TradingStateChanged'  # added in Bolt; JSONL capture risk/trading_state_changed.jsonl
+  safe_missing_passive_stream:
+    - subscribe_book_snapshots          # OrderBook periodic snapshots -- publisher: data/src/engine/book.rs:170; requires Bolt boundary wrapper (no serde/Arrow on OrderBook)
+    - subscribe_greeks                  # GreeksData -- publisher: common/src/greeks.rs:634 (synthetic, not venue feed); not Polymarket-relevant
+    - subscribe_option_greeks           # OptionGreeks -- publisher: data/src/engine/mod.rs:891; not Polymarket-relevant
+    - subscribe_option_chain            # OptionChainSlice -- publisher: data/src/option_chains/manager.rs:736; not Polymarket-relevant
+  no_runtime_publisher_in_pinned_nt:
+    - subscribe_positions               # api.rs:451 declares it but no publisher of positions.snapshots.* exists in pinned crates -- subscribing is a no-op
+  defi_feature_gated_skip:
+    - subscribe_defi_blocks             # data.defi.blocks.{chain}        (switchboard.rs:89)
+    - subscribe_defi_pools              # data.defi.pool.{instrument_id}  (switchboard.rs:98, singular)
+    - subscribe_defi_swaps              # data.defi.pool_swaps.{instrument_id}     (switchboard.rs:107)
+    - subscribe_defi_liquidity          # data.defi.pool_liquidity.{instrument_id} (switchboard.rs:116)
+    - subscribe_defi_collects           # data.defi.pool_collect.{instrument_id}   (switchboard.rs:125, singular)
+    - subscribe_defi_flash              # data.defi.pool_flash.{instrument_id}     (switchboard.rs:135)
+  command_endpoints_unsafe_to_intercept:
+    - DataCommand          # via register_data_command_endpoint / send_data_command
+    - TradingCommand       # via register_trading_command_endpoint / send_trading_command
+    - DataResponse         # via register_data_response_endpoint / send_data_response
+    - ExecutionReport      # via register_execution_report_endpoint / send_execution_report
+    - typed quote/trade/bar/order_event/account_state endpoints  # all rely on a single owned handler
+    - response_handler (correlation_id request/response)
+  publish_helper_apis:
+    apis:
+      - publish_quote
+      - publish_trade
+      - publish_bar
+      - publish_deltas
+      - publish_depth10
+      - publish_book
+      - publish_mark_price
+      - publish_index_price
+      - publish_funding_rate
+      - publish_account_state
+      - publish_order_event
+      - publish_position_event
+      - publish_any
+    note: "All route via TopicRouter<T>.fill_matching_handlers (broadcast). Reclassified as api_kind: publish_helper to distinguish them from passive subscribe-side pubsub. Not capture surfaces."
+  recommendation: |
+    Bolt now captures the events.risk -> TradingStateChanged stream
+    (JSONL capture risk/trading_state_changed.jsonl), so risk-engine state transitions
+    (HALT/REDUCE/RESUME) are no longer invisible in the live capture lake.
+
+    Remaining safe_missing_passive_stream surfaces (subscribe_book_snapshots,
+    subscribe_greeks, subscribe_option_greeks, subscribe_option_chain) all have
+    confirmed publishers in pinned NT but their payload types (OrderBook, GreeksData,
+    OptionGreeks, OptionChainSlice) lack serde and Arrow derives, so capturing them
+    requires a Bolt-side boundary wrapper that projects to a stable serializable row
+    before write -- not a direct Feather/JSONL append. Defer until a Polymarket use
+    case actually demands them; today none of these streams are produced for Polymarket
+    instruments by the Polymarket adapter.
+
+    subscribe_positions is reclassified out of safe_missing_passive_stream: pinned NT
+    has NO publisher on positions.snapshots.*, so subscribing would be a no-op on this
+    rev. Reconstruct position state from the already-captured events.position.* stream.
+
+    Command/endpoint surfaces (register_*/send_*) MUST NOT be added to the capture
+    layer: doing so would either replace or steal NT's owned dispatch handlers
+    (DataEngine, ExecutionEngine, RiskEngine). If command-side capture is later
+    required, do it at the adapter boundary (boundary_wrapper) or by tapping the
+    existing passive event streams that mirror the command outcomes.

@@ -1,0 +1,182 @@
+types:
+  - message_type: QuoteTick
+    nt_path: crates/model/src/data/quote.rs:41-66
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("quotes"); already captured to feather
+
+  - message_type: TradeTick
+    nt_path: crates/model/src/data/trade.rs:34-59
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("trades"); already captured to feather
+
+  - message_type: Bar
+    nt_path: crates/model/src/data/bar.rs:787-814
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("bars"); per-instrument grouping disabled because schema is bar_type-specific
+
+  - message_type: OrderBookDelta
+    nt_path: crates/model/src/data/delta.rs:36-61
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("order_book_deltas"); already captured per-delta. This is the persisted unit -- the OrderBookDeltas container that arrives on data.book.deltas.*.* is unwrapped on the Bolt side and each contained OrderBookDelta is written as its own Feather row.
+
+  - message_type: OrderBookDeltas
+    nt_path: crates/model/src/data/deltas.rs:36-58
+    serde_supported: true
+    feather_supported: false
+    recommended_storage: unwrap_to_orderbookdelta
+    reason: "Container is NOT persisted directly. NT publishes a batch via subscribe_book_deltas (crates/common/src/msgbus/api.rs:273) carrying OrderBookDeltas, and Bolt unwraps the batch on receipt -- iterating deltas.deltas and calling FeatherWriter::write(delta) per element (src/nt_runtime_capture.rs ~535-543, in the OrderBookDeltas arm of write_capture_message). The Arrow row schema lives on OrderBookDelta, not on the container. Do NOT add a separate storage path for OrderBookDeltas."
+
+  - message_type: OrderBookDepth10
+    nt_path: crates/model/src/data/depth.rs:39-67
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("order_book_depths"); already captured to feather
+
+  - message_type: MarkPriceUpdate
+    nt_path: crates/model/src/data/prices.rs:32-51
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("mark_prices"); already captured to feather
+
+  - message_type: IndexPriceUpdate
+    nt_path: crates/model/src/data/prices.rs:113-132
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("index_prices"); already captured to feather
+
+  - message_type: InstrumentAny
+    nt_path: crates/model/src/instruments/any.rs:30-49
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("instruments"); already captured via FeatherWriter::write_instrument
+
+  - message_type: InstrumentClose
+    nt_path: crates/model/src/data/close.rs:43-54
+    serde_supported: true
+    feather_supported: true
+    recommended_storage: feather
+    reason: EncodeToRecordBatch + CatalogPathPrefix("instrument_closes"); already captured to feather
+
+  - message_type: FundingRateUpdate
+    nt_path: crates/model/src/data/funding.rs:40-53
+    serde_supported: true
+    feather_supported: false
+    recommended_storage: jsonl
+    reason: derive(Serialize, Deserialize) present; no Arrow impl in NT; bolt currently writes JSONL capture (funding_rates/updates.jsonl)
+
+  - message_type: InstrumentStatus
+    nt_path: crates/model/src/data/status.rs:40-59
+    serde_supported: true
+    feather_supported: false
+    recommended_storage: jsonl
+    reason: derive(Serialize, Deserialize) present; no Arrow impl in NT; bolt currently writes JSONL capture (status/instrument_status.jsonl)
+
+  - message_type: AccountState
+    nt_path: crates/model/src/events/account/state.rs:38-58
+    serde_supported: true
+    feather_supported: false
+    recommended_storage: jsonl
+    reason: derive(Serialize, Deserialize) present; no Arrow impl in NT; bolt currently writes JSONL capture (accounts/account_state.jsonl)
+
+  - message_type: OrderEventAny
+    nt_path: crates/model/src/events/order/any.rs:36-53
+    serde_supported: true
+    feather_supported: false
+    recommended_storage: boundary_wrapper
+    reason: enum derives Serialize/Deserialize but raw variants are wide; bolt projects to a stable summary row via execution_state::order_event_row before JSONL
+
+  - message_type: PositionEvent
+    nt_path: crates/model/src/events/position/mod.rs:27-32
+    serde_supported: false
+    feather_supported: false
+    recommended_storage: boundary_wrapper
+    reason: enum derives only Debug/Clone -- no serde on raw type; bolt projects to a stable summary row via execution_state::position_event_row before JSONL
+
+  - message_type: GreeksData
+    nt_path: crates/model/src/data/greeks.rs:300-321
+    serde_supported: false
+    feather_supported: false
+    recommended_storage: wrapper_required
+    reason: pinned NT struct definition at crates/model/src/data/greeks.rs:300-321 derives only Clone/Debug -- no serde::Serialize, no serde::Deserialize, no Arrow trait. Direct JSONL/Feather append impossible. Requires a Bolt-side wrapper that projects GreeksData to a stable serializable row before write. Publisher exists at crates/common/src/greeks.rs:634 (synthetic helper, not a venue feed). Not currently captured; not produced by Polymarket adapter today.
+
+  - message_type: OptionGreeks
+    nt_path: crates/model/src/data/option_chain.rs:142-161
+    serde_supported: false
+    feather_supported: false
+    recommended_storage: wrapper_required
+    reason: pinned NT struct at crates/model/src/data/option_chain.rs:142-161 lacks serde::Serialize/Deserialize and Arrow derives. Topic builder confirmed at crates/common/src/msgbus/switchboard.rs:254-256 -> "data.option_greeks.{venue}.{symbol}". Publisher at crates/data/src/engine/mod.rs:891. Requires Bolt wrapper before any persistence. Not relevant to Polymarket -- defer.
+
+  - message_type: OptionChainSlice
+    nt_path: crates/model/src/data/option_chain.rs:235-248
+    serde_supported: false
+    feather_supported: false
+    recommended_storage: wrapper_required
+    reason: pinned NT struct at crates/model/src/data/option_chain.rs:235-248 lacks serde::Serialize/Deserialize and Arrow derives. Topic builder at crates/common/src/msgbus/switchboard.rs:258-260 -> "data.option_chain.{series_id}". Publisher at crates/data/src/option_chains/manager.rs:736. Requires Bolt wrapper. Not relevant to Polymarket -- defer.
+
+  - message_type: YieldCurveData
+    nt_path: crates/model/src/data/greeks.rs:624-630
+    serde_supported: unknown
+    feather_supported: false
+    recommended_storage: skip
+    reason: no subscribe_yield_curve helper found in crates/common/src/msgbus/api.rs; not a passive runtime msgbus stream -- nothing to capture
+
+  - message_type: OrderBook
+    nt_path: crates/model/src/orderbook/book.rs:50-72
+    serde_supported: false
+    feather_supported: false
+    recommended_storage: boundary_wrapper
+    reason: pinned NT struct at crates/model/src/orderbook/book.rs:50-72 derives only Clone/Debug -- no serde::Serialize/Deserialize and no Arrow trait. subscribe_book_snapshots (crates/common/src/msgbus/api.rs:298) carries TypedHandler<OrderBook>, and the publisher exists at crates/data/src/engine/book.rs:170 (msgbus::publish_book(topic, book)). Capture is technically possible but requires a Bolt-side boundary wrapper that projects OrderBook to a stable serializable form (e.g. a level-array row keyed by venue/symbol/ts_event) before JSONL/Feather write. Not equivalent to the already-captured OrderBookDeltas + OrderBookDepth10 streams (snapshots arrive on a separate timer). Defer until Polymarket actually publishes on data.book.snapshots.*.
+
+  - message_type: Position
+    nt_path: crates/model/src/position.rs:59-97
+    serde_supported: unknown
+    feather_supported: false
+    recommended_storage: skip
+    reason: subscribe_positions is declared (crates/common/src/msgbus/api.rs:451) and the topic builder exists (crates/common/src/msgbus/switchboard.rs:327 -> "positions.snapshots.{position_id}"), BUT no publisher of positions.snapshots.* was located in pinned NT runtime crates (exhaustive search of crates/common, crates/risk, crates/execution, crates/data, crates/portfolio found no publish_positions helper in api.rs and no msgbus::publish on that topic literal). On this NT rev subscribing is a no-op, so storage feasibility is moot. Reconstruct position state from already-captured events.position.* (PositionEvent -> execution_state::position_event_row JSONL). Reclassify if a publisher is added upstream.
+
+  - message_type: TradingStateChanged
+    nt_path: crates/common/src/messages/system/trading.rs:27-45
+    serde_supported: true
+    feather_supported: false
+    recommended_storage: jsonl
+    reason: pinned NT struct definition at crates/common/src/messages/system/trading.rs:34 derives Clone+Debug+PartialEq+Eq+Serialize+Deserialize (line 28) and uses #[serde(tag = "type")] (line 29). Published by RiskEngine on the literal topic "events.risk" via msgbus::publish_any at crates/risk/src/engine/mod.rs:379 (event constructed at lines 376-377). No Arrow impl, but direct JSONL via existing JsonlAppender pattern is supported with no Bolt-side wrapper. Bolt now captures this stream -- subscribed via MStr::pattern("events.risk") at src/nt_runtime_capture.rs:299 with the Any handler at src/nt_runtime_capture.rs:884-888; JSONL path constructed at src/nt_runtime_capture.rs:653 (risk/trading_state_changed.jsonl); write call at src/nt_runtime_capture.rs:617.
+
+  - message_type: TradingCommand
+    nt_path: crates/common/src/messages/execution/mod.rs:56-65
+    serde_supported: unknown
+    feather_supported: false
+    recommended_storage: boundary_wrapper
+    reason: request endpoint (register_trading_command_endpoint at crates/common/src/msgbus/api.rs:137), not passive pub/sub; capture only at the bolt->NT submission boundary as a serialized row, not via msgbus subscription
+
+  - message_type: ExecutionReport
+    nt_path: crates/common/src/messages/execution/mod.rs:46-51
+    serde_supported: unknown
+    feather_supported: false
+    recommended_storage: boundary_wrapper
+    reason: request/response pattern (register_execution_report_endpoint at crates/common/src/msgbus/api.rs:170), not passive pub/sub; capture at the adapter->bolt response boundary as a serialized row
+
+  - message_type: DataResponse
+    nt_path: crates/common/src/messages/data/mod.rs:453-463
+    serde_supported: false
+    feather_supported: false
+    recommended_storage: skip
+    reason: payload is Arc<dyn Any>; no serde possible without per-variant unwrap; payloads of interest (instruments, bars, etc.) are already captured via their own pub/sub streams
+
+  - message_type: DefiBlock
+    nt_path: crates/model/src/defi/data/block.rs:67
+    serde_supported: unknown
+    feather_supported: false
+    recommended_storage: skip
+    reason: feature-gated DeFi streams (subscribe_defi_blocks/pools/swaps/liquidity/collects/flash); not enabled for Polymarket build -- out of scope

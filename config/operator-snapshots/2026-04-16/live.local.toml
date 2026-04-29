@@ -1,0 +1,158 @@
+[node]
+name = "BOLT-V2-ETH-001"
+trader_id = "BOLT-ETH-001"
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[timeouts]
+connection_secs = 60
+reconciliation_secs = 60
+portfolio_secs = 10
+disconnection_secs = 10
+post_stop_delay_secs = 5
+shutdown_delay_secs = 5
+
+[polymarket]
+instrument_id = "0x8213d395e079614d6c4d7f4cbb9be9337ab51648a21cc2a334ae8f1966d164b4-111128191581505463501777127559667396812474366956707382672202929745167742497287.POLYMARKET"
+account_id = "POLYMARKET-001"
+funder = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
+signature_type = 2
+subscribe_new_markets = true
+update_instruments_interval_mins = 60
+gamma_refresh_interval_secs = 5
+ws_max_subscriptions = 200
+
+[secrets]
+region = "eu-west-1"
+pk = "/bolt/polymarket/private-key"
+api_key = "/bolt/polymarket/api-key"
+api_secret = "/bolt/polymarket/api-secret"
+passphrase = "/bolt/polymarket/api-passphrase"
+
+[raw_capture]
+output_dir = "/srv/bolt-v2/var/raw"
+
+[streaming]
+catalog_path = ""
+flush_interval_ms = 1000
+
+[reference]
+publish_topic = "platform.reference.default"
+min_publish_interval_ms = 10
+
+[reference.chainlink]
+region = "eu-west-1"
+api_key = "/bolt/testnet/chainlink/api-key"
+api_secret = "/bolt/testnet/chainlink/api-secret"
+ws_url = "wss://streams.chain.link"
+ws_reconnect_alert_threshold = 5
+
+[[reference.venues]]
+name = "CHAINLINK-ETH"
+type = "chainlink"
+instrument_id = "ETHUSD.CHAINLINK"
+base_weight = 0.12
+stale_after_ms = 1000
+disable_after_ms = 5000
+[reference.venues.chainlink]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+price_scale = 18
+
+[[reference.venues]]
+name = "BINANCE-ETH"
+type = "binance"
+instrument_id = "ETHUSDT.BINANCE"
+base_weight = 0.17
+stale_after_ms = 1000
+disable_after_ms = 5000
+
+[[reference.venues]]
+name = "BYBIT-ETH"
+type = "bybit"
+instrument_id = "ETHUSDT-SPOT.BYBIT"
+base_weight = 0.16
+stale_after_ms = 1000
+disable_after_ms = 5000
+
+[[reference.venues]]
+name = "OKX-ETH"
+type = "okx"
+instrument_id = "ETH-USDT.OKX"
+base_weight = 0.18
+stale_after_ms = 1000
+disable_after_ms = 5000
+
+[[reference.venues]]
+name = "KRAKEN-ETH"
+type = "kraken"
+instrument_id = "ETH/USD.KRAKEN"
+base_weight = 0.15
+stale_after_ms = 1000
+disable_after_ms = 5000
+
+[[reference.venues]]
+name = "DERIBIT-ETH"
+type = "deribit"
+instrument_id = "ETH_USDT.DERIBIT"
+base_weight = 0.11
+stale_after_ms = 1000
+disable_after_ms = 5000
+
+[[reference.venues]]
+name = "HYPERLIQUID-ETH"
+type = "hyperliquid"
+instrument_id = "UETH-USDC-SPOT.HYPERLIQUID"
+base_weight = 0.11
+stale_after_ms = 1000
+disable_after_ms = 5000
+
+[[rulesets]]
+id = "ETHCHAINLINKTAKER"
+venue = "polymarket"
+resolution_basis = "chainlink_ethusd"
+min_time_to_expiry_secs = 30
+max_time_to_expiry_secs = 300
+min_liquidity_num = 1000
+require_accepting_orders = true
+freeze_before_end_secs = 35
+selector_poll_interval_ms = 1000
+candidate_load_timeout_secs = 30
+
+[rulesets.selector]
+tag_slug = "ethereum"
+event_slug_prefix = "eth-updown-5m"
+
+[[strategies]]
+type = "eth_chainlink_taker"
+[strategies.config]
+strategy_id = "ETHCHAINLINKTAKER-001"
+client_id = "POLYMARKET"
+warmup_tick_count = 50
+period_duration_secs = 300
+reentry_cooldown_secs = 30
+max_position_usdc = 25.0
+book_impact_cap_bps = 15
+risk_lambda = 0.5
+worst_case_ev_min_bps = 50
+exit_hysteresis_bps = 20
+vol_window_secs = 60
+vol_gap_reset_secs = 10
+vol_min_observations = 20
+vol_bridge_valid_secs = 10
+pricing_kurtosis = 0.0
+theta_decay_factor = 1.0
+forced_flat_stale_chainlink_ms = 1500
+forced_flat_thin_book_min_liquidity = 100.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
+
+[audit]
+local_dir = "/srv/bolt-v2/var/audit"
+s3_uri = "s3://bolt-runtime-history/phase1"
+ship_interval_secs = 30
+upload_attempt_timeout_secs = 30
+roll_max_bytes = 1048576
+roll_max_secs = 300
+max_local_backlog_bytes = 10485760

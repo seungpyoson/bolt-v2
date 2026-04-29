@@ -1,0 +1,53 @@
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[licenses]
+version = 2
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-2-Clause-Patent",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "LGPL-3.0-or-later",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[licenses.private]
+ignore = true
+
+[[licenses.clarify]]
+crate = "implied-vol"
+expression = "MIT"
+license-files = [
+    { path = "LICENSE", hash = 0xb0803f0e },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[advisories]
+ignore = [
+    # Transitive dep from NautilusTrader (alloy-primitives, datafusion-common).
+    # "Unmaintained" notice — repo archived, not a security vulnerability.
+    # Remove when NT upstream replaces paste with pastey.
+    "RUSTSEC-2024-0436", # paste
+
+    # Transitive dep from NautilusTrader (nautilus-network).
+    # "Unmaintained" notice — repo archived, functionality moved to rustls-pki-types.
+    # Remove when NT upstream drops rustls-pemfile.
+    "RUSTSEC-2025-0134", # rustls-pemfile
+]

@@ -1,0 +1,76 @@
+name: NT Pointer Trust Root
+
+on:
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TRUST_ROOT_VALIDATOR_REPO: "seungpyoson/claude-config"
+  TRUST_ROOT_VALIDATOR_SHA: ${{ vars.NT_POINTER_TRUST_ROOT_VALIDATOR_SHA }}
+
+concurrency:
+  group: nt-pointer-trust-root-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trust_root:
+    name: nt-pointer-trust-root
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate trust-root validator SHA pin
+        shell: bash
+        run: |
+          if ! [[ "${TRUST_ROOT_VALIDATOR_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "NT_POINTER_TRUST_ROOT_VALIDATOR_SHA must be a 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+
+      - name: Fetch external trust-root validator
+        shell: bash
+        env:
+          CLAUDE_CONFIG_READ_TOKEN: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+        run: |
+          source_repo="$RUNNER_TEMP/trust-root-source"
+          auth_header="$(printf 'x-access-token:%s' "$CLAUDE_CONFIG_READ_TOKEN" | base64 | tr -d '\n')"
+          rm -rf "$source_repo"
+          git init -q "$source_repo"
+          git -C "$source_repo" remote add origin "https://github.com/${TRUST_ROOT_VALIDATOR_REPO}.git"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" \
+            git -C "$source_repo" fetch --depth=1 --no-tags origin "$TRUST_ROOT_VALIDATOR_SHA"
+          fetched_sha="$(git -C "$source_repo" rev-parse FETCH_HEAD)"
+          if [ "$fetched_sha" != "$TRUST_ROOT_VALIDATOR_SHA" ]; then
+            echo "Fetched trust-root bundle SHA $fetched_sha does not match pinned SHA $TRUST_ROOT_VALIDATOR_SHA" >&2
+            exit 1
+          fi
+          git -C "$source_repo" show "FETCH_HEAD:lib/bolt_trust_root_validator.py" > "$RUNNER_TEMP/bolt_trust_root_validator.py"
+          git -C "$source_repo" show "FETCH_HEAD:config/bolt-v2-trust-root-policy.json" > "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"
+          chmod +x "$RUNNER_TEMP/bolt_trust_root_validator.py"
+
+      - name: Materialize protected files from PR head
+        shell: bash
+        env:
+          HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          repo_root="$RUNNER_TEMP/bolt-v2-trust-root"
+          mkdir -p "$repo_root"
+          jq -r '.protected_entries[].path' "$RUNNER_TEMP/bolt-v2-trust-root-policy.json" | while read -r relative_path; do
+            target_path="$repo_root/$relative_path"
+            mkdir -p "$(dirname "$target_path")"
+            file_url="https://raw.githubusercontent.com/${HEAD_REPO_FULL_NAME}/${HEAD_SHA}/${relative_path}"
+            curl --retry 3 --retry-all-errors -fsSLo "$target_path" "$file_url"
+          done
+          printf '%s\n' "$repo_root" > "$RUNNER_TEMP/bolt-v2-trust-root-path"
+
+      - name: Validate external trust root
+        shell: bash
+        run: |
+          repo_root="$(cat "$RUNNER_TEMP/bolt-v2-trust-root-path")"
+          python3 "$RUNNER_TEMP/bolt_trust_root_validator.py" \
+            --repo "$repo_root" \
+            --policy "$RUNNER_TEMP/bolt-v2-trust-root-policy.json"

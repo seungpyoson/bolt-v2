@@ -1,0 +1,11 @@
+schema_version = 1
+
+[[entries]]
+id = "subscription-routing-regression"
+description = "Known-dangerous fixture for subscription routing changes."
+changed_paths = [
+  "crates/common/src/msgbus.rs",
+  "crates/adapters/polymarket/src/http/mod.rs",
+]
+expected_seams = ["subscription_custom_data_semantics"]
+expected_result = "ambiguous"

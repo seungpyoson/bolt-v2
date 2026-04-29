@@ -156,7 +156,6 @@ fn validate_exec_engine_block(
             "nautilus.exec_engine.position_check_threshold_milliseconds",
             block.position_check_threshold_milliseconds as u64,
         ),
-        ("nautilus.exec_engine.qsize", block.qsize as u64),
     ];
     for (label, value) in positive_fields {
         if *value == 0 {

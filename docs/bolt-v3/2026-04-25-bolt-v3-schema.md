@@ -317,7 +317,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_positions = false`
 - `purge_from_database = false`
 - `graceful_shutdown_on_error = false`
-- `qsize = 100000`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `56a438216442f079edf322a39cdc0d9e655ba6d8`
 
 #### `reconciliation_lookback_mins`
 
@@ -364,7 +364,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `filter_position_reports` | boolean | `LiveExecEngineConfig.filter_position_reports` |
 | `filtered_client_order_ids` | array of valid NT client order IDs; empty maps to `None` | `LiveExecEngineConfig.filtered_client_order_ids` |
 | `generate_missing_orders` | boolean | `LiveExecEngineConfig.generate_missing_orders` |
-| `inflight_check_interval_milliseconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.inflight_check_interval_ms` |
+| `inflight_check_interval_milliseconds` | non-negative integer | `LiveExecEngineConfig.inflight_check_interval_ms` |
 | `inflight_check_threshold_milliseconds` | positive integer | `LiveExecEngineConfig.inflight_check_threshold_ms` |
 | `inflight_check_retries` | non-negative integer | `LiveExecEngineConfig.inflight_check_retries` |
 | `open_check_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.open_check_interval_secs` |
@@ -374,7 +374,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `open_check_open_only` | boolean | `LiveExecEngineConfig.open_check_open_only` |
 | `single_order_query_delay_milliseconds` | non-negative integer | `LiveExecEngineConfig.single_order_query_delay_ms` |
 | `position_check_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.position_check_interval_secs` |
-| `position_check_lookback_mins` | non-negative integer | `LiveExecEngineConfig.position_check_lookback_mins` |
+| `position_check_lookback_mins` | non-negative integer; NT pins this as `u32`, so `0` passes through as a 0-minute lookback rather than mapping to `None` | `LiveExecEngineConfig.position_check_lookback_mins` |
 | `position_check_retries` | non-negative integer | `LiveExecEngineConfig.position_check_retries` |
 | `purge_closed_orders_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_closed_orders_interval_mins` |
 | `purge_closed_orders_buffer_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_closed_orders_buffer_mins` |
@@ -385,7 +385,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
 | `graceful_shutdown_on_error` | must be `false` | `LiveExecEngineConfig.graceful_shutdown_on_error` |
-| `qsize` | must be `100000` on the current Rust live runtime | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `56a438216442f079edf322a39cdc0d9e655ba6d8` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 

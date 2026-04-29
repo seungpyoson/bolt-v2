@@ -1272,10 +1272,6 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
     .replace(
         "position_check_threshold_milliseconds = 5000\nposition_check_retries = 3",
         "position_check_threshold_milliseconds = 0\nposition_check_retries = 3",
-    )
-    .replace(
-        "qsize = 100000\nallow_overfills = false",
-        "qsize = 0\nallow_overfills = false",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("zero NT exec defaults fixture should parse");
@@ -1285,7 +1281,6 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
         "nautilus.exec_engine.open_check_threshold_milliseconds must be a positive integer",
         "nautilus.exec_engine.max_single_order_queries_per_cycle must be a positive integer",
         "nautilus.exec_engine.position_check_threshold_milliseconds must be a positive integer",
-        "nautilus.exec_engine.qsize must be a positive integer",
     ] {
         assert!(
             messages.iter().any(|m| m.contains(needle)),

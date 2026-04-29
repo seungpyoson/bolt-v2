@@ -407,6 +407,7 @@ fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
 }
 
+/// Caller must run root validation first so every value is a valid NT `ClientId`.
 fn strings_as_client_ids(values: &[String]) -> Option<Vec<ClientId>> {
     (!values.is_empty()).then(|| values.iter().map(ClientId::new).collect())
 }

@@ -287,20 +287,7 @@ pub fn make_bolt_v3_live_node_builder(
     loaded: &LoadedBoltV3Config,
 ) -> anyhow::Result<LiveNodeBuilder> {
     let cfg = make_live_node_config(loaded);
-    let mut builder = LiveNode::builder(cfg.trader_id, cfg.environment)?
-        .with_logging(cfg.logging.clone())
-        .with_load_state(cfg.load_state)
-        .with_save_state(cfg.save_state)
-        .with_timeout_connection(cfg.timeout_connection.as_secs())
-        .with_timeout_reconciliation(cfg.timeout_reconciliation.as_secs())
-        .with_timeout_portfolio(cfg.timeout_portfolio.as_secs())
-        .with_timeout_disconnection_secs(cfg.timeout_disconnection.as_secs())
-        .with_delay_post_stop_secs(cfg.delay_post_stop.as_secs())
-        .with_delay_shutdown_secs(cfg.timeout_shutdown.as_secs());
-    if let Some(mins) = cfg.exec_engine.reconciliation_lookback_mins {
-        builder = builder.with_reconciliation_lookback_mins(mins);
-    }
-    Ok(builder)
+    LiveNodeBuilder::from_config(cfg)
 }
 
 pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
@@ -326,6 +313,25 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
     };
     let exec_engine = nautilus_live::config::LiveExecEngineConfig {
         reconciliation_lookback_mins,
+        // `f64` is lossless for all practical delay values (< 2^53 seconds).
+        reconciliation_startup_delay_secs: nautilus.reconciliation_startup_delay_seconds as f64,
+        max_single_order_queries_per_cycle: nautilus.max_single_order_queries_per_cycle,
+        position_check_threshold_ms: nautilus.position_check_threshold_milliseconds,
+        ..Default::default()
+    };
+    let risk_engine = nautilus_live::config::LiveRiskEngineConfig {
+        bypass: loaded.root.risk.nt_bypass,
+        max_order_submit_rate: loaded.root.risk.nt_max_order_submit_rate.clone(),
+        max_order_modify_rate: loaded.root.risk.nt_max_order_modify_rate.clone(),
+        // Bolt stores this as a BTreeMap for deterministic config/debug output;
+        // NT's live risk config consumes the same string pairs as a HashMap.
+        max_notional_per_order: loaded
+            .root
+            .risk
+            .nt_max_notional_per_order
+            .clone()
+            .into_iter()
+            .collect(),
         ..Default::default()
     };
 
@@ -341,6 +347,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_seconds),
         delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_seconds),
         timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_seconds),
+        risk_engine,
         exec_engine,
         ..Default::default()
     }
@@ -521,6 +528,49 @@ mod tests {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);
         assert_eq!(cfg.exec_engine.reconciliation_lookback_mins, None);
+    }
+
+    #[test]
+    fn live_node_config_maps_explicit_nt_runtime_defaults_from_v3_root() {
+        let loaded = fixture_loaded_config();
+        let cfg = make_live_node_config(&loaded);
+
+        assert_eq!(cfg.exec_engine.reconciliation_startup_delay_secs, 10.0);
+        assert_eq!(cfg.exec_engine.max_single_order_queries_per_cycle, 10);
+        assert_eq!(cfg.exec_engine.position_check_threshold_ms, 5_000);
+        assert!(!cfg.risk_engine.bypass);
+        assert_eq!(cfg.risk_engine.max_order_submit_rate, "100/00:00:01");
+        assert_eq!(cfg.risk_engine.max_order_modify_rate, "100/00:00:01");
+        assert!(cfg.risk_engine.max_notional_per_order.is_empty());
+    }
+
+    #[test]
+    fn live_node_config_maps_non_empty_nt_max_notional_per_order() {
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .risk
+            .nt_max_notional_per_order
+            .insert("ETHUSDT.BINANCE".to_string(), "12345.00".to_string());
+        loaded
+            .root
+            .risk
+            .nt_max_notional_per_order
+            .insert("BTCUSDT.BINANCE".to_string(), "25000.50".to_string());
+        let cfg = make_live_node_config(&loaded);
+
+        assert_eq!(
+            cfg.risk_engine
+                .max_notional_per_order
+                .get("ETHUSDT.BINANCE"),
+            Some(&"12345.00".to_string())
+        );
+        assert_eq!(
+            cfg.risk_engine
+                .max_notional_per_order
+                .get("BTCUSDT.BINANCE"),
+            Some(&"25000.50".to_string())
+        );
     }
 
     #[test]

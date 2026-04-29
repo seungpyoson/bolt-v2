@@ -846,6 +846,9 @@ save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 reconciliation_lookback_mins = 0
+reconciliation_startup_delay_seconds = 10
+max_single_order_queries_per_cycle = 10
+position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
@@ -853,6 +856,10 @@ timeout_shutdown_seconds = 10
 
 [risk]
 default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
 
 [logging]
 standard_output_level = "INFO"
@@ -916,6 +923,9 @@ save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 reconciliation_lookback_mins = 0
+reconciliation_startup_delay_seconds = 10
+max_single_order_queries_per_cycle = 10
+position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
@@ -923,6 +933,10 @@ timeout_shutdown_seconds = 10
 
 [risk]
 default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
 
 [logging]
 standard_output_level = "INFO"
@@ -980,6 +994,9 @@ save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 reconciliation_lookback_mins = 0
+reconciliation_startup_delay_seconds = 10
+max_single_order_queries_per_cycle = 10
+position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
@@ -987,6 +1004,10 @@ timeout_shutdown_seconds = 10
 
 [risk]
 default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
 
 [logging]
 standard_output_level = "INFO"
@@ -1116,6 +1137,136 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
         "fixture must contain `{needle}` for this validation test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+#[test]
+fn rejects_zero_explicit_nt_exec_runtime_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "max_single_order_queries_per_cycle = 10\nposition_check_threshold_milliseconds = 5000",
+        "max_single_order_queries_per_cycle = 0\nposition_check_threshold_milliseconds = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero NT exec defaults fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.max_single_order_queries_per_cycle must be a positive integer",
+        "nautilus.position_check_threshold_milliseconds must be a positive integer",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_nt_risk_bypass_true() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("nt_bypass = false", "nt_bypass = true");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("nt_bypass=true fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("risk.nt_bypass must be false")),
+        "expected nt_bypass=false validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_invalid_nt_risk_rate_limit_strings() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (submit_rate, modify_rate) in [
+        ("0/00:00:01", "100/00:00:00"),
+        ("100", "100/00:00:01"),
+        ("abc/00:00:01", "100/00:00:01"),
+        ("100/00:01", "100/00:00:01"),
+        ("100/00:00:01:00", "100/00:00:01"),
+    ] {
+        let mutated = replace_in_fixture_root(
+            "nt_max_order_submit_rate = \"100/00:00:01\"\nnt_max_order_modify_rate = \"100/00:00:01\"",
+            &format!(
+                "nt_max_order_submit_rate = \"{submit_rate}\"\nnt_max_order_modify_rate = \"{modify_rate}\""
+            ),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("invalid NT rate limit fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m
+                    .contains("risk.nt_max_order_submit_rate is not a valid Nautilus rate limit")),
+            "expected submit-rate validation message for `{submit_rate}`, got: {messages:#?}"
+        );
+        // Only the first case mutates modify_rate; the remaining cases keep it
+        // valid so submit-rate parsing branches are isolated.
+        if modify_rate == "100/00:00:00" {
+            assert!(
+                messages.iter().any(|m| m
+                    .contains("risk.nt_max_order_modify_rate is not a valid Nautilus rate limit")),
+                "expected modify-rate validation message for `{modify_rate}`, got: {messages:#?}"
+            );
+        } else {
+            assert!(
+                !messages.iter().any(|m| m
+                    .contains("risk.nt_max_order_modify_rate is not a valid Nautilus rate limit")),
+                "valid modify_rate `{modify_rate}` must not produce a modify-rate error: {messages:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_invalid_nt_risk_max_notional_map_entries() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "nt_max_notional_per_order = {}",
+        "nt_max_notional_per_order = { \"BAD\" = \"not-a-decimal\" }",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid NT max-notional map fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains(
+            "risk.nt_max_notional_per_order key `BAD` is not a valid Nautilus instrument ID"
+        )),
+        "expected invalid instrument-id validation error, got: {messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m
+                .contains("risk.nt_max_notional_per_order[`BAD`] is not a valid decimal string")),
+        "expected invalid notional validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_non_positive_nt_risk_max_notional_map_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for notional in ["0", "-1.00"] {
+        let mutated = replace_in_fixture_root(
+            "nt_max_notional_per_order = {}",
+            &format!("nt_max_notional_per_order = {{ \"ETHUSDT.BINANCE\" = \"{notional}\" }}"),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("non-positive NT max-notional fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| m.contains(
+                "risk.nt_max_notional_per_order[`ETHUSDT.BINANCE`] must be a positive decimal string"
+            )),
+            "expected positive notional validation error for `{notional}`, got: {messages:#?}"
+        );
+    }
 }
 
 #[test]

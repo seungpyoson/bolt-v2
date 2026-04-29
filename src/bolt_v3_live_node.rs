@@ -791,6 +791,8 @@ mod tests {
             .next()
             .expect("logger config literal must precede nautilus config");
 
+        // Field-add drift is caught by Rust struct literal exhaustiveness; this
+        // guards against silently re-introducing inherited NT defaults.
         assert!(
             !logging_literal.contains(concat!("..", "Default::default()")),
             "LoggerConfig must set every pinned NT field explicitly"
@@ -798,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn live_node_config_maps_explicit_logger_residual_defaults_from_v3_root() {
+    fn live_node_config_maps_explicit_logger_residuals_in_builder_path() {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);
 

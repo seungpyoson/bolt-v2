@@ -1363,6 +1363,14 @@ fn rejects_invalid_nt_data_engine_values() {
         "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000\n\n[nautilus.exec_engine]",
         "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000\n\n[nautilus.exec_engine]",
     );
+    assert!(
+        mutated.contains("time_bars_interval_type = \"SIDEWAYS\"")
+            && mutated.contains("time_bars_origins = { INVALID = 1 }")
+            && mutated.contains("external_client_ids = [\"\"]")
+            && mutated.contains("graceful_shutdown_on_error = true")
+            && mutated.contains("qsize = 1000"),
+        "test fixture mutation must exercise every invalid data-engine branch"
+    );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("invalid NT data-engine fixture should parse");
     let messages = validate_root_only(&root);

@@ -898,6 +898,9 @@ nt_bypass = false
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
 
 [logging]
 standard_output_level = "INFO"
@@ -1013,6 +1016,9 @@ nt_bypass = false
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
 
 [logging]
 standard_output_level = "INFO"
@@ -1122,6 +1128,9 @@ nt_bypass = false
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
 
 [logging]
 standard_output_level = "INFO"
@@ -1361,6 +1370,29 @@ fn rejects_nt_risk_bypass_true() {
             .any(|m| m.contains("risk.nt_bypass must be false")),
         "expected nt_bypass=false validation error, got: {messages:#?}"
     );
+}
+
+#[test]
+fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "nt_graceful_shutdown_on_error = false",
+        "nt_graceful_shutdown_on_error = true",
+    )
+    .replace("nt_qsize = 100000", "nt_qsize = 1000");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unsupported NT risk values fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "risk.nt_graceful_shutdown_on_error must be false",
+        "risk.nt_qsize must match NT default",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
 }
 
 #[test]

@@ -289,6 +289,9 @@ nt_bypass = false
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
 
 [logging]
 standard_output_level = "INFO"

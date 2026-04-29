@@ -374,7 +374,9 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
             .clone()
             .into_iter()
             .collect(),
-        ..Default::default()
+        debug: loaded.root.risk.nt_debug,
+        graceful_shutdown_on_error: loaded.root.risk.nt_graceful_shutdown_on_error,
+        qsize: loaded.root.risk.nt_qsize,
     };
 
     LiveNodeConfig {
@@ -638,6 +640,19 @@ mod tests {
         assert_eq!(cfg.risk_engine.max_order_submit_rate, "100/00:00:01");
         assert_eq!(cfg.risk_engine.max_order_modify_rate, "100/00:00:01");
         assert!(cfg.risk_engine.max_notional_per_order.is_empty());
+        assert!(!cfg.risk_engine.debug);
+        assert!(!cfg.risk_engine.graceful_shutdown_on_error);
+        assert_eq!(cfg.risk_engine.qsize, 100_000);
+    }
+
+    #[test]
+    fn live_node_config_maps_explicit_nt_risk_debug_from_v3_root() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.risk.nt_debug = true;
+
+        let cfg = make_live_node_config(&loaded);
+
+        assert!(cfg.risk_engine.debug);
     }
 
     #[test]

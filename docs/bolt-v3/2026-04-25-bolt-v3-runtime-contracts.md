@@ -144,13 +144,13 @@ Rules:
 
 - strategy-local notional limits are not sufficient by themselves
 - current root-level risk settings must be explicit in TOML
-- selected NautilusTrader live risk-engine fields owned by this slice must be explicit in TOML and mapped into `LiveRiskEngineConfig`; full NT risk-engine default ownership remains a separate production-readiness gate tracked by the source-grounded status map
+- NautilusTrader live risk-engine defaults must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the builder path must not inherit `LiveRiskEngineConfig::default()` silently
 - NautilusTrader live exec-engine defaults are explicit in TOML and mapped into `LiveExecEngineConfig`; the builder path must not inherit `LiveExecEngineConfig::default()` silently
 
 Current contract:
 
 - `default_max_notional_per_order` is explicit
-- `nt_bypass`, submit throttles, modify throttles, and the NT per-instrument notional map are explicit in TOML and mapped into NautilusTrader live risk config
+- every `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config
 - every `LiveExecEngineConfig` field is explicit under `[nautilus.exec_engine]` in TOML and mapped into NautilusTrader live exec config
 
 Authority rule:
@@ -162,9 +162,9 @@ Authority rule:
 Current implementation behavior:
 
 - `default_max_notional_per_order` is enforced by Bolt-v3 config validation against each strategy's `parameters.order_notional_target`
-- Bolt-v3 maps `nt_bypass`, `nt_max_order_submit_rate`, `nt_max_order_modify_rate`, and `nt_max_notional_per_order` into NautilusTrader `LiveRiskEngineConfig`
+- Bolt-v3 maps the complete live risk-engine block into NautilusTrader `LiveRiskEngineConfig`
 - Bolt-v3 maps the complete live exec-engine block into NautilusTrader `LiveExecEngineConfig`
-- the baseline fixture asserts `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, and all explicit exec-engine values
+- the baseline fixture asserts `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
 

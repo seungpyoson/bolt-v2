@@ -31,14 +31,13 @@ pub struct BoltV3RootConfig {
     pub venues: BTreeMap<String, VenueBlock>,
 }
 
-// `[risk]` owns Bolt-v3 strategy-sizing limits and the selected
+// `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
 // NautilusTrader live risk-engine fields that affect runtime
 // behavior. `default_max_notional_per_order` is enforced by Bolt-v3
 // strategy validation and is not automatically expanded into NT's
 // per-instrument map; use `nt_max_notional_per_order` for intentional
 // NT instrument-level caps. The `nt_*` fields map into
-// `LiveRiskEngineConfig`. Full NT risk-engine default ownership remains
-// tracked by the source-grounded status map.
+// `LiveRiskEngineConfig`.
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +118,9 @@ pub struct RiskBlock {
     pub nt_max_order_submit_rate: String,
     pub nt_max_order_modify_rate: String,
     pub nt_max_notional_per_order: BTreeMap<String, String>,
+    pub nt_debug: bool,
+    pub nt_graceful_shutdown_on_error: bool,
+    pub nt_qsize: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

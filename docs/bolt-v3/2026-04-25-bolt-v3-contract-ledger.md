@@ -39,6 +39,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 - invariant:
   - root risk authority for Bolt-owned strategy sizing is live now; NautilusTrader live risk-engine fields are explicit in TOML and mapped into `LiveRiskEngineConfig`
   - NautilusTrader live data-, risk-, and exec-engine config fields are explicit in TOML for the current pin and mapped into their corresponding `Live*EngineConfig` structs
+  - remaining top-level NautilusTrader `LiveNodeConfig` fields not represented in TOML are explicit disabled/empty settings in the Bolt-v3 builder path rather than inherited through `LiveNodeConfig::default()`
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 4
 - dependent references:

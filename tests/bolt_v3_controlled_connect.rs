@@ -34,9 +34,10 @@ use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{
         BoltV3LiveNodeError, connect_bolt_v3_clients, disconnect_bolt_v3_clients,
-        make_bolt_v3_live_node_builder,
+        make_bolt_v3_live_node_builder, make_live_node_config,
     },
 };
+use nautilus_live::builder::LiveNodeBuilder;
 use nautilus_live::node::NodeState;
 use nautilus_model::identifiers::ClientId;
 use support::{
@@ -66,6 +67,53 @@ fn fixture_loaded_with_timeouts(
     loaded.root.nautilus.timeout_connection_seconds = connection_timeout_secs;
     loaded.root.nautilus.timeout_disconnection_seconds = disconnection_timeout_secs;
     loaded
+}
+
+#[test]
+fn builder_path_passes_explicit_exec_engine_to_nt_build() {
+    let _guard = live_node_test_guard();
+
+    let loaded = fixture_loaded_with_timeouts(30, 10);
+    let mut cfg = make_live_node_config(&loaded);
+    // Mutate after Bolt's config-load validation so this test proves the
+    // production builder passes the exec engine config to NT's own build-time
+    // validation, instead of constructing a fresh default engine config.
+    cfg.exec_engine.reconciliation_startup_delay_secs = -1.0;
+
+    let error = LiveNodeBuilder::from_config(cfg)
+        .expect("v3 builder should construct from fixture")
+        .build()
+        .expect_err("NT build should validate the exec engine config passed through builder");
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid LiveExecEngineConfig.reconciliation_startup_delay_secs"),
+        "expected NT exec-engine validation error, got: {error}"
+    );
+}
+
+#[test]
+fn builder_path_passes_explicit_risk_engine_to_nt_build() {
+    let _guard = live_node_test_guard();
+
+    let mut loaded = fixture_loaded_with_timeouts(30, 10);
+    // Mutate after Bolt's config-load validation so this test proves the
+    // production builder passes the risk engine config to NT's own build-time
+    // validation, instead of constructing a fresh default engine config.
+    loaded.root.risk.nt_max_order_submit_rate = "not-a-rate-limit".to_string();
+
+    let error = make_bolt_v3_live_node_builder(&loaded)
+        .expect("v3 builder should construct from fixture")
+        .build()
+        .expect_err("NT build should validate the risk engine config passed through builder");
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid LiveRiskEngineConfig.max_order_submit_rate"),
+        "expected NT risk-engine validation error, got: {error}"
+    );
 }
 
 #[test]

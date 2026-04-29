@@ -95,6 +95,9 @@ save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 reconciliation_lookback_mins = 0
+reconciliation_startup_delay_seconds = 10
+max_single_order_queries_per_cycle = 10
+position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
@@ -102,6 +105,10 @@ timeout_shutdown_seconds = 10
 
 [risk]
 default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
 
 [logging]
 standard_output_level = "INFO"
@@ -243,6 +250,28 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - `0` means unbounded lookback and maps to Nautilus `None`
 - any positive value maps to that exact bounded minute count
 
+#### `reconciliation_startup_delay_seconds`
+
+- type: non-negative integer
+- required: yes
+- maps to Nautilus `LiveExecEngineConfig.reconciliation_startup_delay_secs`
+- this is explicit to prevent inheriting upstream reconciliation startup timing changes silently
+- `0` is valid and disables the post-startup reconciliation grace period before continuous reconciliation checks begin
+
+#### `max_single_order_queries_per_cycle`
+
+- type: positive integer
+- required: yes
+- maps to Nautilus `LiveExecEngineConfig.max_single_order_queries_per_cycle`
+- current baseline value is `10`
+
+#### `position_check_threshold_milliseconds`
+
+- type: positive integer
+- required: yes
+- maps to Nautilus `LiveExecEngineConfig.position_check_threshold_ms`
+- current baseline value is `5000`
+
 #### `timeout_portfolio_seconds`
 
 - type: positive integer
@@ -271,7 +300,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ### `[risk]`
 
-This section is intentionally narrow in the current bolt-v3 scope. NT's pinned `LiveRiskEngineConfig` discards every field except `qsize` when its `From` impl builds the runtime `RiskEngineConfig`, so carrying NT-side risk-engine knobs (`bypass`, submit/modify rate limits) here would silently no-op against capital risk. Only the bolt-v3-owned per-order notional cap is exposed; runtime-wired NT risk-engine knobs are reintroduced only when a future slice plumbs them through a real supported path.
+This section owns both Bolt-v3 strategy-sizing limits and the selected NautilusTrader live risk-engine fields owned by this slice. Those selected NT risk fields are required in TOML and mapped into `LiveRiskEngineConfig`; full NT risk-engine default ownership remains a separate production-readiness gate. Fields prefixed `nt_*` map directly into NautilusTrader `LiveRiskEngineConfig`; `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
 
 #### `default_max_notional_per_order`
 
@@ -279,7 +308,33 @@ This section is intentionally narrow in the current bolt-v3 scope. NT's pinned `
 - required: yes
 - root-level entity per-order notional cap
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
-- not currently passed to NautilusTrader; runtime synchronization to NautilusTrader per-instrument `max_notional_per_order` maps remains a future-slice concern (the relevant integration contract is `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 4)
+- not automatically expanded into NautilusTrader per-instrument maps; `nt_max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
+
+#### `nt_bypass`
+
+- type: boolean
+- required: yes
+- maps to Nautilus `LiveRiskEngineConfig.bypass`
+- must remain `false` for production configurations unless a separately reviewed safety exception is approved
+
+#### `nt_max_order_submit_rate`
+
+- type: rate-limit string in Nautilus `limit/HH:MM:SS` format
+- required: yes
+- maps to Nautilus `LiveRiskEngineConfig.max_order_submit_rate`
+
+#### `nt_max_order_modify_rate`
+
+- type: rate-limit string in Nautilus `limit/HH:MM:SS` format
+- required: yes
+- maps to Nautilus `LiveRiskEngineConfig.max_order_modify_rate`
+
+#### `nt_max_notional_per_order`
+
+- type: TOML inline table mapping Nautilus instrument IDs to decimal notional strings
+- required: yes
+- maps to Nautilus `LiveRiskEngineConfig.max_notional_per_order`
+- `{}` means no NT per-instrument cap is configured; Bolt-v3 still enforces `default_max_notional_per_order` at config validation time
 
 ### `[logging]`
 
@@ -950,6 +1005,9 @@ save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 reconciliation_lookback_mins = 0
+reconciliation_startup_delay_seconds = 10
+max_single_order_queries_per_cycle = 10
+position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
@@ -957,6 +1015,10 @@ timeout_shutdown_seconds = 10
 
 [risk]
 default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
 
 [logging]
 standard_output_level = "INFO"

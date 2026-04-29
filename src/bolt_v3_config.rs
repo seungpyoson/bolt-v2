@@ -31,20 +31,14 @@ pub struct BoltV3RootConfig {
     pub venues: BTreeMap<String, VenueBlock>,
 }
 
-// `[risk]` is intentionally narrow in the current bolt-v3 scope.
-//
-// The pinned NautilusTrader live-node API discards every
-// `LiveRiskEngineConfig` field except `qsize` when constructing the
-// runtime `RiskEngineConfig` (see `From<LiveRiskEngineConfig> for
-// RiskEngineConfig` in the pinned `nautilus_live` crate). Carrying NT
-// risk-engine knobs (rate limits, `bypass`) in the bolt-v3 schema while
-// the build path drops them is a silent footgun: operators would see
-// the keys validated and then have no effect on capital risk. So the
-// only field this bolt-v3 slice owns under `[risk]` is the
-// `default_max_notional_per_order` cap that bolt-v3 itself enforces in
-// strategy validation. NautilusTrader-wired risk-engine knobs are
-// re-introduced only when a future slice plumbs them through a real
-// supported path.
+// `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
+// NautilusTrader live risk-engine defaults that affect runtime
+// behavior. `default_max_notional_per_order` is enforced by Bolt-v3
+// strategy validation and is not automatically expanded into NT's
+// per-instrument map; use `nt_max_notional_per_order` for intentional
+// NT instrument-level caps. The `nt_*` fields map into
+// `LiveRiskEngineConfig` and are required so upstream default drift
+// cannot silently change live risk behavior.
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +60,9 @@ pub struct NautilusBlock {
     pub timeout_connection_seconds: u64,
     pub timeout_reconciliation_seconds: u64,
     pub reconciliation_lookback_mins: u64,
+    pub reconciliation_startup_delay_seconds: u64,
+    pub max_single_order_queries_per_cycle: u32,
+    pub position_check_threshold_milliseconds: u32,
     pub timeout_portfolio_seconds: u64,
     pub timeout_disconnection_seconds: u64,
     pub delay_post_stop_seconds: u64,
@@ -76,6 +73,10 @@ pub struct NautilusBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
+    pub nt_bypass: bool,
+    pub nt_max_order_submit_rate: String,
+    pub nt_max_order_modify_rate: String,
+    pub nt_max_notional_per_order: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

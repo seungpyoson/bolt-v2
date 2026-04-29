@@ -237,6 +237,9 @@ save_state = true
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 reconciliation_lookback_mins = 0
+reconciliation_startup_delay_seconds = 10
+max_single_order_queries_per_cycle = 10
+position_check_threshold_milliseconds = 5000
 timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
@@ -244,6 +247,10 @@ timeout_shutdown_seconds = 10
 
 [risk]
 default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
 
 [logging]
 standard_output_level = "INFO"

@@ -33,8 +33,9 @@
 //! `pub(crate)` so the per-provider secret validators can call it the
 //! same way the archetype binding calls `parse_decimal_string`.
 
-use std::{collections::BTreeMap, collections::HashSet, path::Path};
+use std::{collections::BTreeMap, collections::HashSet, path::Path, str::FromStr};
 
+use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
@@ -124,6 +125,14 @@ fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
             "nautilus.timeout_shutdown_seconds",
             block.timeout_shutdown_seconds,
         ),
+        (
+            "nautilus.max_single_order_queries_per_cycle",
+            block.max_single_order_queries_per_cycle as u64,
+        ),
+        (
+            "nautilus.position_check_threshold_milliseconds",
+            block.position_check_threshold_milliseconds as u64,
+        ),
     ];
     for (label, value) in positive_fields {
         if *value == 0 {
@@ -141,7 +150,70 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             value = block.default_max_notional_per_order
         ));
     }
+    if block.nt_bypass {
+        errors.push("risk.nt_bypass must be false".to_string());
+    }
+    for (label, value) in [
+        (
+            "risk.nt_max_order_submit_rate",
+            block.nt_max_order_submit_rate.as_str(),
+        ),
+        (
+            "risk.nt_max_order_modify_rate",
+            block.nt_max_order_modify_rate.as_str(),
+        ),
+    ] {
+        if let Err(reason) = validate_rate_limit_string(value) {
+            errors.push(format!(
+                "{label} is not a valid Nautilus rate limit ({reason}): `{value}`"
+            ));
+        }
+    }
+    for (instrument_id, notional) in &block.nt_max_notional_per_order {
+        // Mirrors NT's `LiveRiskEngineConfig::validate_runtime_support`;
+        // keep this early-bound config validation aligned on pin bumps.
+        if let Err(error) = InstrumentId::from_str(instrument_id) {
+            errors.push(format!(
+                "risk.nt_max_notional_per_order key `{instrument_id}` is not a valid Nautilus instrument ID ({error})"
+            ));
+        }
+        if let Err(reason) = parse_decimal_string(notional) {
+            errors.push(format!(
+                "risk.nt_max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
+            ));
+        }
+    }
     errors
+}
+
+fn validate_rate_limit_string(value: &str) -> Result<(), String> {
+    let (limit, interval) = value
+        .split_once('/')
+        .ok_or_else(|| "expected `limit/HH:MM:SS`".to_string())?;
+    let limit = limit.parse::<usize>().map_err(|error| error.to_string())?;
+    if limit == 0 {
+        return Err("limit must be greater than zero".to_string());
+    }
+
+    let mut parts = interval.split(':');
+    let mut next_part = |label: &str| -> Result<u64, String> {
+        parts
+            .next()
+            .ok_or_else(|| format!("missing {label} component"))?
+            .parse::<u64>()
+            .map_err(|error| format!("{label}: {error}"))
+    };
+    let hours = next_part("hours")?;
+    let minutes = next_part("minutes")?;
+    let seconds = next_part("seconds")?;
+    if parts.next().is_some() {
+        return Err("expected `limit/HH:MM:SS`".to_string());
+    }
+    if hours == 0 && minutes == 0 && seconds == 0 {
+        return Err("interval must be greater than zero".to_string());
+    }
+
+    Ok(())
 }
 
 fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {

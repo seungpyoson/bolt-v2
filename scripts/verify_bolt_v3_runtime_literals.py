@@ -347,8 +347,9 @@ def main() -> int:
         print(f"ERROR: failed to load runtime literal audit: {error}", file=sys.stderr)
         return 2
 
-    unclassified = [literal for literal in scan_literals() if literal.key() not in allowed]
-    stale = allowed - {literal.key() for literal in scan_literals()}
+    scanned_literals = scan_literals()
+    unclassified = [literal for literal in scanned_literals if literal.key() not in allowed]
+    stale = allowed - {literal.key() for literal in scanned_literals}
 
     if unclassified or stale:
         for literal in unclassified:

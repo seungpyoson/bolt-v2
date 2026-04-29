@@ -1187,6 +1187,8 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
         ("abc/00:00:01", "100/00:00:01"),
         ("100/00:01", "100/00:00:01"),
         ("100/00:00:01:00", "100/00:00:01"),
+        ("100/00:60:00", "100/00:00:01"),
+        ("100/00:00:60", "100/00:00:01"),
     ] {
         let mutated = replace_in_fixture_root(
             "nt_max_order_submit_rate = \"100/00:00:01\"\nnt_max_order_modify_rate = \"100/00:00:01\"",

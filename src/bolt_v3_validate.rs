@@ -217,6 +217,12 @@ fn validate_rate_limit_string(value: &str) -> Result<(), String> {
     if parts.next().is_some() {
         return Err("expected `limit/HH:MM:SS`".to_string());
     }
+    if minutes >= 60 {
+        return Err("minutes must be less than 60".to_string());
+    }
+    if seconds >= 60 {
+        return Err("seconds must be less than 60".to_string());
+    }
     if hours == 0 && minutes == 0 && seconds == 0 {
         return Err("interval must be greater than zero".to_string());
     }

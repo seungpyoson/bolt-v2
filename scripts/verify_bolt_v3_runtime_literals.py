@@ -35,11 +35,6 @@ DIAGNOSTIC_WORDS = (
     "unsupported",
 )
 
-NON_RUNTIME_STRING_LITERALS = {
-    "data",
-    "instrument_status_poll_secs",
-}
-
 IGNORED_CONTEXT_PATTERNS = [
     r"^\s*#\[serde\(",
     r"\bwrite!?\(",
@@ -166,6 +161,10 @@ def matching_brace(text: str, opening: int) -> int | None:
                 end = text.find(terminator, index)
                 index = len(text) if end == -1 else end + len(terminator)
                 continue
+        char_end = rust_char_literal_end(text, index)
+        if char_end is not None:
+            index = char_end
+            continue
         if char == '"':
             index += 1
             escaped = False
@@ -188,6 +187,43 @@ def matching_brace(text: str, opening: int) -> int | None:
                 return index
         index += 1
 
+    return None
+
+
+def rust_char_literal_end(text: str, start: int) -> int | None:
+    """Return the end offset for a Rust char literal starting at `start`.
+
+    Lifetimes such as `'a` are intentionally not matched because they do not
+    close with a second quote.
+    """
+
+    if start >= len(text) or text[start] != "'":
+        return None
+
+    index = start + 1
+    if index >= len(text) or text[index] in {"\n", "\r", "'"}:
+        return None
+
+    if text[index] == "\\":
+        index += 1
+        if index >= len(text):
+            return None
+        if text[index] == "u" and index + 1 < len(text) and text[index + 1] == "{":
+            index += 2
+            while index < len(text) and text[index] != "}":
+                if text[index] in {"\n", "\r"}:
+                    return None
+                index += 1
+            if index >= len(text):
+                return None
+            index += 1
+        else:
+            index += 1
+    else:
+        index += 1
+
+    if index < len(text) and text[index] == "'":
+        return index + 1
     return None
 
 
@@ -266,6 +302,11 @@ def scan_file(path: Path) -> list[Literal]:
                 index = end
                 continue
 
+        char_end = rust_char_literal_end(text, index)
+        if char_end is not None:
+            index = char_end
+            continue
+
         if char == '"':
             start = index
             index += 1
@@ -312,8 +353,6 @@ def is_ignored_by_rule(literal: Literal) -> bool:
         return True
     if literal.kind == "string":
         text = literal.literal.strip('"')
-        if text in NON_RUNTIME_STRING_LITERALS:
-            return True
         if text.startswith(("nautilus.", "risk.")) or text.endswith("_ssm_path"):
             return True
         if "{" in text or "}" in text:

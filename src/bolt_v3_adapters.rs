@@ -595,11 +595,9 @@ fn nt_binance_environment(value: BinanceEnvironment) -> NtBinanceEnvironment {
 
 impl std::fmt::Debug for BoltV3BinanceAdapters {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let data = self.data.as_ref().map(BinanceDataClientConfigRedacted);
         f.debug_struct("BoltV3BinanceAdapters")
-            .field(
-                "data",
-                &self.data.as_ref().map(BinanceDataClientConfigRedacted),
-            )
+            .field("data", &data)
             .finish()
     }
 }
@@ -609,6 +607,7 @@ struct BinanceDataClientConfigRedacted<'a>(&'a BinanceDataClientConfig);
 impl std::fmt::Debug for BinanceDataClientConfigRedacted<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cfg = self.0;
+        let instrument_status_poll_secs = &cfg.instrument_status_poll_secs;
         f.debug_struct("BinanceDataClientConfig")
             .field("product_types", &cfg.product_types)
             .field("environment", &cfg.environment)
@@ -616,10 +615,7 @@ impl std::fmt::Debug for BinanceDataClientConfigRedacted<'_> {
             .field("base_url_ws", &cfg.base_url_ws)
             .field("api_key", &cfg.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("api_secret", &cfg.api_secret.as_ref().map(|_| "[REDACTED]"))
-            .field(
-                "instrument_status_poll_secs",
-                &cfg.instrument_status_poll_secs,
-            )
+            .field("instrument_status_poll_secs", instrument_status_poll_secs)
             .finish()
     }
 }

@@ -35,7 +35,10 @@
 
 use std::{collections::BTreeMap, collections::HashSet, path::Path, str::FromStr};
 
-use nautilus_model::identifiers::{ClientId, ClientOrderId, InstrumentId};
+use nautilus_model::{
+    enums::{BarAggregation, BarIntervalType},
+    identifiers::{ClientId, ClientOrderId, InstrumentId},
+};
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
@@ -131,7 +134,48 @@ fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
             errors.push(format!("{label} must be a positive integer"));
         }
     }
+    errors.extend(validate_data_engine_block(&block.data_engine));
     errors.extend(validate_exec_engine_block(&block.exec_engine));
+    errors
+}
+
+fn validate_data_engine_block(
+    block: &crate::bolt_v3_config::NautilusDataEngineBlock,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Err(error) = BarIntervalType::from_str(&block.time_bars_interval_type) {
+        errors.push(format!(
+            "nautilus.data_engine.time_bars_interval_type is not valid ({error}): `{}`",
+            block.time_bars_interval_type
+        ));
+    }
+    for aggregation in block.time_bars_origins.keys() {
+        if let Err(error) = BarAggregation::from_str(aggregation) {
+            errors.push(format!(
+                "nautilus.data_engine.time_bars_origins key `{aggregation}` is not a valid Nautilus bar aggregation ({error})"
+            ));
+        }
+    }
+    for client_id in &block.external_client_ids {
+        if let Err(error) = ClientId::new_checked(client_id) {
+            errors.push(format!(
+                "nautilus.data_engine.external_client_ids contains invalid client ID `{client_id}` ({error})"
+            ));
+        }
+    }
+    if block.graceful_shutdown_on_error {
+        errors.push(
+            "nautilus.data_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
+                .to_string(),
+        );
+    }
+    let nt_data_default = nautilus_live::config::LiveDataEngineConfig::default();
+    if block.qsize != nt_data_default.qsize {
+        errors.push(format!(
+            "nautilus.data_engine.qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
+            nt_data_default.qsize
+        ));
+    }
     errors
 }
 

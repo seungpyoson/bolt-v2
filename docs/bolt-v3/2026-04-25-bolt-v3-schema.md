@@ -99,6 +99,22 @@ timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
 
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
+
 [nautilus.exec_engine]
 load_cache = true
 snapshot_orders = false
@@ -309,6 +325,32 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - maps to Nautilus live-node shutdown timeout, not a custom bolt concept
 - exact mapping target: Nautilus `LiveNodeConfig.timeout_shutdown`
 - note: Nautilus builder helper naming uses `with_delay_shutdown_secs`, but the config field itself is `timeout_shutdown`
+
+### `[nautilus.data_engine]`
+
+All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into the NautilusTrader Rust live-node config. Empty `external_client_ids` maps to Nautilus `None`. `time_bars_origins` keys must be Nautilus `BarAggregation` variant strings such as `Minute`, and values are origin offsets in nanoseconds.
+
+Fields rejected by NautilusTrader's current Rust live runtime are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
+
+- `graceful_shutdown_on_error = false`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `56a438216442f079edf322a39cdc0d9e655ba6d8`
+
+| Field | Type / Rule | Maps to |
+|---|---|---|
+| `time_bars_build_with_no_updates` | boolean | `LiveDataEngineConfig.time_bars_build_with_no_updates` |
+| `time_bars_timestamp_on_close` | boolean | `LiveDataEngineConfig.time_bars_timestamp_on_close` |
+| `time_bars_skip_first_non_full_bar` | boolean | `LiveDataEngineConfig.time_bars_skip_first_non_full_bar` |
+| `time_bars_interval_type` | valid NT `BarIntervalType` string; current baseline `LEFT_OPEN` | `LiveDataEngineConfig.time_bars_interval_type` |
+| `time_bars_build_delay` | non-negative integer microseconds | `LiveDataEngineConfig.time_bars_build_delay` |
+| `time_bars_origins` | TOML inline table mapping valid NT `BarAggregation` strings to origin offsets in nanoseconds | `LiveDataEngineConfig.time_bars_origins` |
+| `validate_data_sequence` | boolean | `LiveDataEngineConfig.validate_data_sequence` |
+| `buffer_deltas` | boolean | `LiveDataEngineConfig.buffer_deltas` |
+| `emit_quotes_from_book` | boolean | `LiveDataEngineConfig.emit_quotes_from_book` |
+| `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
+| `external_client_ids` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
+| `debug` | boolean | `LiveDataEngineConfig.debug` |
+| `graceful_shutdown_on_error` | must be `false` | `LiveDataEngineConfig.graceful_shutdown_on_error` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `56a438216442f079edf322a39cdc0d9e655ba6d8` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -1124,6 +1166,22 @@ timeout_portfolio_seconds = 10
 timeout_disconnection_seconds = 10
 delay_post_stop_seconds = 5
 timeout_shutdown_seconds = 10
+
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
 
 [nautilus.exec_engine]
 load_cache = true

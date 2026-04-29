@@ -58,11 +58,31 @@ pub struct NautilusBlock {
     pub save_state: bool,
     pub timeout_connection_seconds: u64,
     pub timeout_reconciliation_seconds: u64,
+    pub data_engine: NautilusDataEngineBlock,
     pub exec_engine: NautilusExecEngineBlock,
     pub timeout_portfolio_seconds: u64,
     pub timeout_disconnection_seconds: u64,
     pub delay_post_stop_seconds: u64,
     pub timeout_shutdown_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NautilusDataEngineBlock {
+    pub time_bars_build_with_no_updates: bool,
+    pub time_bars_timestamp_on_close: bool,
+    pub time_bars_skip_first_non_full_bar: bool,
+    pub time_bars_interval_type: String,
+    pub time_bars_build_delay: u64,
+    pub time_bars_origins: BTreeMap<String, u64>,
+    pub validate_data_sequence: bool,
+    pub buffer_deltas: bool,
+    pub emit_quotes_from_book: bool,
+    pub emit_quotes_from_book_depths: bool,
+    pub external_client_ids: Vec<String>,
+    pub debug: bool,
+    pub graceful_shutdown_on_error: bool,
+    pub qsize: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

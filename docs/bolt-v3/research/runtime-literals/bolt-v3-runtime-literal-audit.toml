@@ -1,0 +1,446 @@
+# Bolt-v3 runtime literal audit.
+#
+# The verifier scans production code in root src/bolt_v3_*.rs files and files
+# under src/bolt_v3_* module directories, skips tests and diagnostics by rule,
+# and requires every remaining candidate runtime literal to be recorded here
+# with a classification and rationale.
+
+[[allowed]]
+path = "src/bolt_v3_adapters.rs"
+kind = "number"
+literal = "100"
+context = "auto_load_debounce_ms: 100,"
+classification = "accepted_current_residual"
+reason = "Pinned NT Polymarket data config needs a debounce value. This is a current provider-adapter residual tracked by status-map rows 14 and 24, not a new runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_adapters.rs"
+kind = "number"
+literal = "0_i64"
+context = "let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);"
+classification = "no_identity_clock_sentinel"
+reason = "The no-identity adapter entry point supplies an empty market-identity plan, so this deterministic clock closure is never invoked and is documented as a sentinel for that no-filter path."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = "\"nautilus_polymarket::common::credential\""
+context = "\"nautilus_polymarket::common::credential\","
+classification = "accepted_current_residual"
+reason = "Credential-log suppression metadata is currently centralized in the Bolt-v3 builder path and tracked as a provider-binding residual in status-map row 17."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = "\"nautilus_binance::common::credential\""
+context = "\"nautilus_binance::common::credential\","
+classification = "accepted_current_residual"
+reason = "Credential-log suppression metadata is currently centralized in the Bolt-v3 builder path and tracked as a provider-binding residual in status-map row 17."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = "0"
+context = "(value != 0).then_some(value)"
+classification = "toml_zero_as_none_encoding"
+reason = "Schema documents zero as the TOML encoding for NT None on selected optional u32 fields."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = "0"
+context = "(value != 0).then_some(value as f64)"
+classification = "toml_zero_as_none_encoding"
+reason = "Schema documents zero as the TOML encoding for NT None on selected optional second-based fields."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"POLYMARKET_PK\""
+context = "\"POLYMARKET_PK\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"POLYMARKET_FUNDER\""
+context = "\"POLYMARKET_FUNDER\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"POLYMARKET_API_KEY\""
+context = "\"POLYMARKET_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"POLYMARKET_API_SECRET\""
+context = "\"POLYMARKET_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"POLYMARKET_PASSPHRASE\""
+context = "\"POLYMARKET_PASSPHRASE\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"BINANCE_ED25519_API_KEY\""
+context = "\"BINANCE_ED25519_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"BINANCE_ED25519_API_SECRET\""
+context = "\"BINANCE_ED25519_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"BINANCE_API_KEY\""
+context = "\"BINANCE_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"BINANCE_API_SECRET\""
+context = "\"BINANCE_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "1"
+context = "pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;"
+classification = "schema_version_gate"
+reason = "The schema version is a structural compatibility gate, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "1"
+context = "pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 1;"
+classification = "schema_version_gate"
+reason = "The strategy schema version is a structural compatibility gate, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = "\", \""
+context = "keys.join(\", \")"
+classification = "diagnostic_separator"
+reason = "This separator is used only to format duplicate venue-kind validation diagnostics, not as an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "60"
+context = "if minutes >= 60 {"
+classification = "rate_limit_parser_clock_bound"
+reason = "The Bolt-v3 rate-limit parser enforces conventional HH:MM:SS minute bounds before NT config build validation."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "60"
+context = "if seconds >= 60 {"
+classification = "rate_limit_parser_clock_bound"
+reason = "The Bolt-v3 rate-limit parser enforces conventional HH:MM:SS second bounds before NT config build validation."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = "\"binary_oracle_edge_taker\""
+context = "pub const KEY: &str = \"binary_oracle_edge_taker\";"
+classification = "archetype_dispatch_key"
+reason = "This is the accepted strategy_archetype registry key for the currently implemented Bolt-v3 archetype binding, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = "\"primary\""
+context = "if strategy.reference_data.contains_key(\"primary\") {"
+classification = "archetype_reference_data_role"
+reason = "The binary_oracle_edge_taker archetype contract requires the [reference_data.primary] role; this literal names that archetype-owned role."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"updown\""
+context = "pub const KEY: &str = \"updown\";"
+classification = "market_family_dispatch_key"
+reason = "This is the accepted market_family registry key for the currently implemented Bolt-v3 updown binding, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "60"
+context = "} else if cadence_seconds % 60 != 0 {"
+classification = "runtime_contract_cadence_alignment"
+reason = "The updown cadence validator requires minute-aligned periods before consulting the supported runtime-contract slug table."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "60"
+context = "(60, \"1m\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"1m\""
+context = "(60, \"1m\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "300"
+context = "(300, \"5m\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"5m\""
+context = "(300, \"5m\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "900"
+context = "(900, \"15m\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"15m\""
+context = "(900, \"15m\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "3600"
+context = "(3600, \"1h\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"1h\""
+context = "(3600, \"1h\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "14400"
+context = "(14400, \"4h\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"4h\""
+context = "(14400, \"4h\"),"
+classification = "runtime_contract_slug_token_table"
+reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "32"
+context = "} else if underlying.chars().count() > 32 {"
+classification = "market_identity_shape_bound"
+reason = "This is the accepted updown underlying_asset identifier length bound documented by the market-family validation contract."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping\""
+context = "\"{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping\","
+classification = "diagnostic_template"
+reason = "This is an error-display template for an unsupported updown cadence after validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})\""
+context = "\"updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})\""
+classification = "diagnostic_template"
+reason = "This is an error-display template for period arithmetic overflow, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_seconds}\""
+context = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_seconds}\","
+classification = "runtime_contract_slug_template"
+reason = "This is the accepted runtime-contract slug template for the updown market family, derived from validated TOML target identity plus the audited cadence slug-token table."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"binance\""
+context = "pub const KEY: &str = \"binance\";"
+classification = "provider_dispatch_key"
+reason = "This is the accepted provider registry key for the Binance venue binding, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"polymarket\""
+context = "pub const KEY: &str = \"polymarket\";"
+classification = "provider_dispatch_key"
+reason = "This is the accepted provider registry key for the Polymarket venue binding, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"0x\""
+context = "let rest = value.strip_prefix(\"0x\").ok_or(\"missing `0x` prefix\")?;"
+classification = "evm_address_syntax_gate"
+reason = "This is the required EVM hexadecimal address prefix enforced by Polymarket funder-address validation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "number"
+literal = "40"
+context = "if rest.len() != 40 {"
+classification = "evm_address_syntax_gate"
+reason = "This is the required 20-byte EVM address payload length after the 0x prefix, enforced before Polymarket execution credentials are accepted."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"base_url_http\""
+context = "(\"base_url_http\", data.base_url_http.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Binance data config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"base_url_ws\""
+context = "(\"base_url_ws\", data.base_url_ws.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Binance data config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"http_timeout_seconds\""
+context = "(\"http_timeout_seconds\", data.http_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"ws_timeout_seconds\""
+context = "(\"ws_timeout_seconds\", data.ws_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"update_instruments_interval_minutes\""
+context = "\"update_instruments_interval_minutes\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"websocket_max_subscriptions_per_connection\""
+context = "\"websocket_max_subscriptions_per_connection\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"http_timeout_seconds\""
+context = "(\"http_timeout_seconds\", execution.http_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"max_retries\""
+context = "(\"max_retries\", execution.max_retries),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"retry_delay_initial_milliseconds\""
+context = "\"retry_delay_initial_milliseconds\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"retry_delay_max_milliseconds\""
+context = "\"retry_delay_max_milliseconds\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"ack_timeout_seconds\""
+context = "(\"ack_timeout_seconds\", execution.ack_timeout_seconds),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"venues.{venue}.secrets.{field}: {source}\""
+context = "\"venues.{venue}.secrets.{field}: {source}\","
+classification = "diagnostic_template"
+reason = "This is an error-display template for a failed SSM secret resolution without an exposed path, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_secrets.rs"
+kind = "string"
+literal = "\"venues.{venue}.secrets.{field} (path={path}): {source}\""
+context = "\"venues.{venue}.secrets.{field} (path={path}): {source}\","
+classification = "diagnostic_template"
+reason = "This is an error-display template for a failed SSM secret resolution with a redacted path context, not an operator runtime value."

@@ -50,7 +50,11 @@ check-workspace:
 require-rust-verification-owner:
     RUST_VERIFICATION_SOURCE_REPO="{{rust_verification_source_repo}}" RUST_VERIFICATION_SOURCE_SHA="{{rust_verification_source_sha}}" bash "{{rust_verification_require_script}}" "{{rust_verification_owner}}"
 
-fmt-check: check-workspace require-rust-verification-owner
+verify-bolt-v3-runtime-literals: check-workspace
+    python3 scripts/test_verify_bolt_v3_runtime_literals.py
+    python3 scripts/verify_bolt_v3_runtime_literals.py
+
+fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
 fmt: check-workspace require-rust-verification-owner

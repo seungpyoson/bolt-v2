@@ -52,6 +52,7 @@ url = "2"
 [dev-dependencies]
 arrow = "58.1.0"
 tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"

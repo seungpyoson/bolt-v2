@@ -843,7 +843,7 @@ Definitions:
   - file paths are not included
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `56a438216442f079edf322a39cdc0d9e655ba6d8`
+  - current value: `38b912a8b0fe14e4046773973ff46a3b798b1e3e`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1443,11 +1443,11 @@ Unknown panic behavior is not acceptable.
 
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
-Current status: this branch pins NautilusTrader to audited candidate
-`56a438216442f079edf322a39cdc0d9e655ba6d8`, which contains upstream Polymarket
-CLOB V2 adapter support. The compatibility probe proves focused Bolt-v3 compile
-and test compatibility only. It does not prove live order signing, submission,
-fill parsing, collateral accounting, or fee behavior.
+Current status: this branch pins NautilusTrader to upstream release `v1.226.0`
+(`38b912a8b0fe14e4046773973ff46a3b798b1e3e`), which contains upstream
+Polymarket CLOB V2 adapter support. The compatibility evidence proves focused
+Bolt-v3 compile and test compatibility only. It does not prove live order
+signing, submission, fill parsing, collateral accounting, or fee behavior.
 
 Live trading is allowed only if:
 

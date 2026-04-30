@@ -1,6 +1,6 @@
 # Bolt-v3 Source-Grounded Status Map
 
-Date: 2026-04-28
+Date: 2026-04-30
 
 Status: review draft.
 
@@ -30,12 +30,11 @@ Bolt-v3 is still in foundation work. The safest source-backed position is:
 - The baseline must not be treated as ready for merge to `main` as a general
   Bolt-v3 foundation until the remaining provider-specific core-adjacent
   boundaries are addressed or explicitly accepted as scoped residuals.
-- This branch pins NautilusTrader to
-  `56a438216442f079edf322a39cdc0d9e655ba6d8`, the audited upstream commit which
-  migrates the Polymarket adapter to CLOB V2. The pin-change audit and
-  compatibility probe are recorded under
-  `docs/bolt-v3/research/nt-pin-change/`. This reduces the former upstream
-  support blocker, but it does not prove Bolt live CLOB V2 execution readiness.
+- This branch pins NautilusTrader to upstream release `v1.226.0`
+  (`38b912a8b0fe14e4046773973ff46a3b798b1e3e`). The pin-change evidence is
+  recorded under `docs/bolt-v3/research/nt-pin-change/`. This keeps the
+  upstream Polymarket CLOB V2 support in a tagged NT beta release, but it does
+  not prove Bolt live CLOB V2 execution readiness.
 
 ## Roadmap State
 
@@ -86,7 +85,7 @@ Bolt-v3 is still in foundation work. The safest source-backed position is:
 | 43 | CI compile/test gating | Partial | `.github/workflows/ci.yml` runs `just fmt-check`, `just deny`, `just clippy`, `just test`, and conditional `just build`; `justfile` defines those recipes | Existing checks do not exercise live trading, readiness, or production sockets | Track what CI proves separately from roadmap completeness. |
 | 44 | Release identity and deploy trust | Missing | Contract ledger marks release identity/deploy trust as accepted contract requiring evidence | No deploy-trust evidence found in this status pass | Required before canary or production. |
 | 45 | Panic gate and service policy | Missing | Contract ledger marks panic gate/systemd policy as requiring issue evidence | No panic-gate evidence found in this status pass | Required before live capital. |
-| 46 | Polymarket CLOB V2 readiness gate | Partial; live gate still blocked | Contract ledger marks CLOB V2 readiness as blocker; this branch pins NT to audited candidate `56a438216442f079edf322a39cdc0d9e655ba6d8`, which contains upstream Polymarket CLOB V2 migration support | Pin-change audit: `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-audit.md`; compatibility probe: `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-probe.md`; focused compile/tests passed in the probe | Upstream support blocker is reduced, not closed. Bolt still needs live CLOB V2 signing/order/fill/fee validation, runtime-contract updates, dependency review, and explicit production approval before this gate can close. |
+| 46 | Polymarket CLOB V2 readiness gate | Partial; live gate still blocked | Contract ledger marks CLOB V2 readiness as blocker; this branch pins NT to release `v1.226.0` (`38b912a8b0fe14e4046773973ff46a3b798b1e3e`), which contains upstream Polymarket CLOB V2 migration support | Historical pin-change audit/probe: `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-audit.md` and `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-probe.md`; v1.226.0 bump evidence: `docs/bolt-v3/research/nt-pin-change/2026-04-30-nt-v1-226-pin-bump.md`; compile and focused Bolt-v3 tests passed | Upstream support blocker is reduced, not closed. Bolt still needs live CLOB V2 signing/order/fill/fee validation, runtime-contract updates for pUSD/fee behavior, dependency review, and explicit production approval before this gate can close. |
 | 47 | Tiny live canary trade | Missing | No live trade path accepted | No live trade verification found | Only after readiness, reconciliation, audit/local-evidence, execution-gate, deploy-trust, panic-gate, provider-signing, and explicit user approval. |
 | 48 | Production live trading | Missing | No production deployment path accepted for Bolt-v3 | No production verification found | Not in scope until canary/reconciliation/audit are proven. |
 

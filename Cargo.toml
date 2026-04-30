@@ -57,6 +57,7 @@ ustr = "1.1.0"
 arrow = "58.1.0"
 libc = "0.2"
 tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"

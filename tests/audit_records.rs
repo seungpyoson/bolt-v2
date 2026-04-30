@@ -247,6 +247,21 @@ async fn wait_for_attempts(uploader: &MockUploader, expected: usize) {
     );
 }
 
+// Use this in start_paused tests: yielding lets spawned tasks run without advancing virtual time.
+async fn wait_for_attempts_without_advancing_time(uploader: &MockUploader, expected: usize) {
+    for _ in 0..100 {
+        if uploader.attempt_count() >= expected {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    panic!(
+        "timed out waiting for {expected} upload attempts, saw {}",
+        uploader.attempt_count()
+    );
+}
+
 async fn wait_for_jsonl_file_count(root: &Path, expected: usize) {
     for _ in 0..100 {
         if jsonl_files(root).len() >= expected {
@@ -463,7 +478,7 @@ async fn failed_retained_upload_retries_on_next_ship_tick_not_failure_deadline()
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn failed_upload_immediately_starts_next_ready_file_without_retrying_failed_one() {
     let dir = tempdir().unwrap();
     let retained_dir = dir.path().join("date=1970-01-01");
@@ -483,16 +498,15 @@ async fn failed_upload_immediately_starts_next_ready_file_without_retrying_faile
     cfg.ship_interval = Duration::from_millis(250);
     let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
 
-    wait_for_attempts(&uploader, 1).await;
-    tokio::time::timeout(Duration::from_millis(150), wait_for_attempts(&uploader, 2))
-        .await
-        .expect("ready retained file should start immediately after a non-final failure");
+    wait_for_attempts_without_advancing_time(&uploader, 1).await;
+    tokio::time::advance(Duration::from_millis(50)).await;
+    wait_for_attempts_without_advancing_time(&uploader, 2).await;
 
     let calls_after_ready_upload = uploader.calls();
     assert_eq!(calls_after_ready_upload[0].local_path, failed_path);
     assert_eq!(calls_after_ready_upload[1].local_path, ready_path);
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::advance(Duration::from_millis(199)).await;
     let calls_before_retry = uploader.calls();
     assert_eq!(
         calls_before_retry.len(),
@@ -508,9 +522,8 @@ async fn failed_upload_immediately_starts_next_ready_file_without_retrying_faile
         "failed file should not retry before the next ship tick"
     );
 
-    tokio::time::timeout(Duration::from_millis(250), wait_for_attempts(&uploader, 3))
-        .await
-        .expect("failed upload should retry on the next ship tick");
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_for_attempts_without_advancing_time(&uploader, 3).await;
     assert_eq!(
         uploader
             .calls()

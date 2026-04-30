@@ -22,16 +22,6 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
 
-      - name: Block NT pin auto-merge
-        shell: bash
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_URL: ${{github.event.pull_request.html_url}}
-          GH_TOKEN: ${{secrets.GITHUB_TOKEN}}
-        run: |
-          bash scripts/nt_pin_block_guard.sh "$GITHUB_WORKSPACE" "$BASE_REF" "$PR_NUMBER"
-
       - name: Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3

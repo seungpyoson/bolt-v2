@@ -64,7 +64,12 @@ def atomic_write(path: Path, payload: dict[str, object]) -> None:
     with tmp.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, sort_keys=True)
         fh.write("\n")
-    tmp.replace(path)
+    try:
+        tmp.replace(path)
+    except OSError as exc:
+        raise OSError(
+            f"failed to commit manifest via atomic rename from {tmp} to {path}: {exc}"
+        ) from exc
 
 
 def capture(repo: Path, manifest: Path) -> int:

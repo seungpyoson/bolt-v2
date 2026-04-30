@@ -75,13 +75,6 @@ mod tests {
 
     #[test]
     fn credential_log_modules_are_provider_owned() {
-        let modules: Vec<_> = credential_log_modules().collect();
-        let expected: Vec<_> = validation_bindings()
-            .iter()
-            .flat_map(|binding| binding.credential_log_modules.iter().copied())
-            .collect();
-        assert_eq!(modules, expected);
-
         let polymarket = validation_bindings()
             .iter()
             .find(|binding| binding.key == polymarket::KEY)

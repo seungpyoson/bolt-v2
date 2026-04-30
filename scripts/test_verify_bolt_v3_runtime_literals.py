@@ -197,6 +197,35 @@ def test_allowlist_exactness() -> None:
         )
 
 
+def test_provider_credential_log_modules_are_provider_scoped() -> None:
+    scratch = VERIFIER.REPO_ROOT / ".tmp_verify_bolt_v3_runtime_literals_audit.toml"
+    original_audit_path = VERIFIER.AUDIT_PATH
+    scratch.write_text(
+        """
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = "\\"nautilus_polymarket::common::credential\\""
+context = "const MODULE: &str = \\"nautilus_polymarket::common::credential\\";"
+classification = "provider_credential_log_module"
+reason = "invalid probe"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    try:
+        VERIFIER.AUDIT_PATH = scratch
+        try:
+            VERIFIER.load_allowed()
+        except ValueError as error:
+            if "provider_credential_log_module must be owned" not in str(error):
+                raise AssertionError(f"unexpected error: {error}") from error
+        else:
+            raise AssertionError("expected provider_credential_log_module scope failure")
+    finally:
+        VERIFIER.AUDIT_PATH = original_audit_path
+        scratch.unlink(missing_ok=True)
+
+
 def main() -> int:
     tests = [
         test_scan_universe,
@@ -206,6 +235,7 @@ def main() -> int:
         test_not_diagnostic_guard_is_word_bounded,
         test_char_literals_do_not_corrupt_scanning,
         test_allowlist_exactness,
+        test_provider_credential_log_modules_are_provider_scoped,
     ]
     for test in tests:
         test()

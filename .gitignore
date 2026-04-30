@@ -6,4 +6,5 @@ var/logs/
 /tmp_tests/*.log
 .omx/
 .claude/findings/
+graphify-out/
 .DS_Store

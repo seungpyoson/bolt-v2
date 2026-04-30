@@ -1,0 +1,10 @@
+---
+description: graphify knowledge graph context
+alwaysApply: true
+---
+
+If `graphify-out/GRAPH_REPORT.md` exists, read it before answering architecture questions, tracing dependencies, or searching broad code areas.
+
+If `graphify-out/wiki/index.md` exists, prefer the wiki entry points before raw file search.
+
+Do not treat generated `graphify-out/` artifacts as source of truth. Use them as navigation/evidence aids, then verify claims against source files.

@@ -176,7 +176,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 12
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 13
 - implementation status:
-  - current branch contains a dedicated NT pin-bump compatibility slice for `56a438216442f079edf322a39cdc0d9e655ba6d8`; future pin changes still require re-verification
+  - current branch contains a dedicated NT pin-bump compatibility slice for release `v1.226.0` (`38b912a8b0fe14e4046773973ff46a3b798b1e3e`); future pin changes still require re-verification
 
 ## 13. Panic and service policy
 

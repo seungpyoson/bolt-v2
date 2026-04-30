@@ -143,6 +143,14 @@ reason = "The strategy schema version is a structural compatibility gate, not an
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = "\", \""
+context = "keys.join(\", \")"
+classification = "diagnostic_separator"
+reason = "This separator is used only to format duplicate venue-kind validation diagnostics, not as an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = "60"
 context = "if minutes >= 60 {"
@@ -180,6 +188,14 @@ literal = "\"updown\""
 context = "pub const KEY: &str = \"updown\";"
 classification = "market_family_dispatch_key"
 reason = "This is the accepted market_family registry key for the currently implemented Bolt-v3 updown binding, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "60"
+context = "} else if cadence_seconds % 60 != 0 {"
+classification = "runtime_contract_cadence_alignment"
+reason = "The updown cadence validator requires minute-aligned periods before consulting the supported runtime-contract slug table."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -324,6 +340,22 @@ literal = "40"
 context = "if rest.len() != 40 {"
 classification = "evm_address_syntax_gate"
 reason = "This is the required 20-byte EVM address payload length after the 0x prefix, enforced before Polymarket execution credentials are accepted."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"base_url_http\""
+context = "(\"base_url_http\", data.base_url_http.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Binance data config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"base_url_ws\""
+context = "(\"base_url_ws\", data.base_url_ws.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Binance data config URL field being validated for non-empty input."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"

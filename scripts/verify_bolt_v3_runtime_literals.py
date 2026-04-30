@@ -54,11 +54,7 @@ IGNORED_CONTEXT_PATTERNS = [
     r"\bdebug_tuple\(",
     r"\bf\.write_str\(",
     r"\.field\(",
-    r"\.contains\(",
-    r"\.join\(",
-    r"\.as_str\(",
     r"\bPathBuf::from\(",
-    r"\bErr\(",
     r"\bok_or_else\(",
     r"\bmap_err\(",
     r"\bsource:\s*format!\(",
@@ -67,8 +63,6 @@ IGNORED_CONTEXT_PATTERNS = [
     r"\bmessage:\s*\"",
     r"\bself\.0\b",
     r"\.len\(\)\s*(==|>)\s*1\b",
-    r"\bif\b.*[=!]=\s*0\b",
-    r"\bif\b.*&&.*==\s*0\b",
 ]
 
 

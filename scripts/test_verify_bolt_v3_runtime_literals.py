@@ -127,6 +127,39 @@ def test_bypass_shapes_emit() -> None:
     )
 
 
+def test_context_shape_bypasses_emit() -> None:
+    assert_emits(
+        """
+        pub fn context_shape_probe(value: &str, data: &Data) -> Result<(), &'static str> {
+            let _ = value.contains("custom_runtime_key");
+            let _ = keys.join("custom_runtime_key");
+            let _ = ("custom_runtime_key", data.base_url_http.as_str());
+            if cadence_seconds % 60 != 0 {}
+            return Err("custom_runtime_key");
+        }
+        """,
+        '"custom_runtime_key"',
+        "60",
+    )
+
+
+def test_not_diagnostic_guard_is_word_bounded() -> None:
+    assert_emits(
+        """
+        pub const UNDERSCORE: &str = "not_a_runtime_key";
+        pub const SUBWORD: &str = "venue_notional_limit";
+        """,
+        '"not_a_runtime_key"',
+        '"venue_notional_limit"',
+    )
+    assert_no_emits(
+        """
+        pub const DIAGNOSTIC: &str = "is not ready";
+        """,
+        '"is not ready"',
+    )
+
+
 def test_char_literals_do_not_corrupt_scanning() -> None:
     assert_emits(
         """
@@ -169,6 +202,8 @@ def main() -> int:
         test_scan_universe,
         test_cfg_test_module_ranges,
         test_bypass_shapes_emit,
+        test_context_shape_bypasses_emit,
+        test_not_diagnostic_guard_is_word_bounded,
         test_char_literals_do_not_corrupt_scanning,
         test_allowlist_exactness,
     ]

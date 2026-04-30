@@ -90,6 +90,14 @@ def load_allowed() -> set[tuple[str, str, str, str]]:
         if missing:
             joined = ", ".join(missing)
             raise ValueError(f"{AUDIT_PATH}: allowlist row missing {joined}: {row!r}")
+        if row["classification"] == "provider_credential_log_module" and (
+            not row["path"].startswith("src/bolt_v3_providers/")
+            or row["path"] == "src/bolt_v3_providers/mod.rs"
+        ):
+            raise ValueError(
+                f"{AUDIT_PATH}: provider_credential_log_module must be owned by "
+                f"a concrete provider module: {row!r}"
+            )
         allowed.add((row["path"], row["kind"], row["literal"], row["context"]))
     return allowed
 

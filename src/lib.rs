@@ -6,7 +6,6 @@ mod live_config;
 pub mod live_node_setup;
 pub mod log_sweep;
 pub mod normalized_sink;
-pub mod nt_pointer_probe;
 pub mod platform;
 pub mod raw_capture_transport;
 pub mod raw_types;

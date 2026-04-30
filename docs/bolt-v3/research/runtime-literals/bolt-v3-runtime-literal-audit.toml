@@ -22,20 +22,20 @@ classification = "no_identity_clock_sentinel"
 reason = "The no-identity adapter entry point supplies an empty market-identity plan, so this deterministic clock closure is never invoked and is documented as a sentinel for that no-filter path."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"nautilus_polymarket::common::credential\""
-context = "\"nautilus_polymarket::common::credential\","
-classification = "accepted_current_residual"
-reason = "Credential-log suppression metadata is currently centralized in the Bolt-v3 builder path and tracked as a provider-binding residual in status-map row 17."
+context = "pub const CREDENTIAL_LOG_MODULES: &[&str] = &[\"nautilus_polymarket::common::credential\"];"
+classification = "provider_credential_log_module"
+reason = "The Polymarket provider binding owns the NT credential-log module path that Bolt-v3 forces to WARN before LiveNode construction."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"nautilus_binance::common::credential\""
-context = "\"nautilus_binance::common::credential\","
-classification = "accepted_current_residual"
-reason = "Credential-log suppression metadata is currently centralized in the Bolt-v3 builder path and tracked as a provider-binding residual in status-map row 17."
+context = "pub const CREDENTIAL_LOG_MODULES: &[&str] = &[\"nautilus_binance::common::credential\"];"
+classification = "provider_credential_log_module"
+reason = "The Binance provider binding owns the NT credential-log module path that Bolt-v3 forces to WARN before LiveNode construction."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"

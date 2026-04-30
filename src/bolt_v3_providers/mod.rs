@@ -23,21 +23,34 @@ use crate::bolt_v3_config::VenueBlock;
 pub struct ProviderValidationBinding {
     pub key: &'static str,
     pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
+    pub credential_log_modules: &'static [&'static str],
 }
 
 const VALIDATION_BINDINGS: &[ProviderValidationBinding] = &[
     ProviderValidationBinding {
         key: polymarket::KEY,
         validate_venue: polymarket::validate_venue,
+        credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
     },
     ProviderValidationBinding {
         key: binance::KEY,
         validate_venue: binance::validate_venue,
+        credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
     },
 ];
 
 pub fn validation_bindings() -> &'static [ProviderValidationBinding] {
     VALIDATION_BINDINGS
+}
+
+/// Provider-owned NT adapter modules whose info logs can expose
+/// credential metadata. The live-node builder consumes this provider
+/// binding surface to install `WARN` module filters without hardcoding
+/// concrete provider module paths in the live-node assembly layer.
+pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
+    validation_bindings()
+        .iter()
+        .flat_map(|binding| binding.credential_log_modules.iter().copied())
 }
 
 /// Family-agnostic surface read by core startup validation. Routes
@@ -53,5 +66,40 @@ pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
             "venues.{key}.kind `{}` is not supported by this build",
             venue.kind.as_str()
         )],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_log_modules_are_provider_owned() {
+        let modules: Vec<_> = credential_log_modules().collect();
+
+        assert_eq!(
+            modules,
+            vec![
+                "nautilus_polymarket::common::credential",
+                "nautilus_binance::common::credential",
+            ]
+        );
+        let polymarket = validation_bindings()
+            .iter()
+            .find(|binding| binding.key == polymarket::KEY)
+            .expect("Polymarket binding must be registered");
+        assert_eq!(
+            polymarket.credential_log_modules,
+            polymarket::CREDENTIAL_LOG_MODULES
+        );
+
+        let binance = validation_bindings()
+            .iter()
+            .find(|binding| binding.key == binance::KEY)
+            .expect("Binance binding must be registered");
+        assert_eq!(
+            binance.credential_log_modules,
+            binance::CREDENTIAL_LOG_MODULES
+        );
     }
 }

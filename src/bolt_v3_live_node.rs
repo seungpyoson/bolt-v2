@@ -23,9 +23,8 @@
 //!   without entering the NT runner loop
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
-//! - installs module-level logger filters that suppress NT credential
-//!   info logs from `nautilus_polymarket::common::credential` and
-//!   `nautilus_binance::common::credential` even when the root TOML log
+//! - installs module-level logger filters from provider-owned bindings
+//!   that suppress NT credential info logs even when the root TOML log
 //!   level is `INFO`
 //!
 //! The caller owns the `LiveNode`; the build path never opens an
@@ -52,25 +51,13 @@ use nautilus_model::{
 };
 use ustr::Ustr;
 
-/// NT adapter modules whose `log::info!` calls embed credential
-/// material (Polymarket address/funder/api-key prefixes; Binance
-/// auto-detected key type). Bolt-v3 forces these targets to `WARN` even
-/// when the root TOML log level is `INFO`, so credential prefixes never
-/// land in stdout or the file writer. NT's logger does prefix matching
-/// on the `component` field, which defaults to the source module path
-/// when no `component=` key-value pair is supplied — the credential log
-/// sites use the bare `log::info!` macro, so the module path applies.
-pub const NT_CREDENTIAL_LOG_MODULES: &[&str] = &[
-    "nautilus_polymarket::common::credential",
-    "nautilus_binance::common::credential",
-];
-
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
+    bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets,
@@ -299,7 +286,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         RuntimeMode::Live => Environment::Live,
     };
     let mut module_level: AHashMap<Ustr, LevelFilter> = AHashMap::new();
-    for module_path in NT_CREDENTIAL_LOG_MODULES {
+    for module_path in bolt_v3_providers::credential_log_modules() {
         module_level.insert(Ustr::from(module_path), LevelFilter::Warn);
     }
     let logging = LoggerConfig {
@@ -492,7 +479,8 @@ pub fn wire_bolt_v3_runtime_capture(
 /// returned by one of those builders. In a bolt-v3-only process, NT's
 /// first-wins logger is initialized by the bolt-v3 `LoggerConfig`
 /// passed through `LiveNodeBuilder::build`, so the
-/// `NT_CREDENTIAL_LOG_MODULES` filter remains active during connect.
+/// provider-owned credential log module filters remain active during
+/// connect.
 /// A future production v3 entrypoint must preserve that ordering.
 ///
 /// This boundary is **bounded**: the dispatched engine-level connect
@@ -826,7 +814,7 @@ mod tests {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);
 
-        for module_path in NT_CREDENTIAL_LOG_MODULES {
+        for module_path in crate::bolt_v3_providers::credential_log_modules() {
             let key = Ustr::from(module_path);
             let level = cfg
                 .logging

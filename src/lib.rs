@@ -15,7 +15,6 @@ pub mod lake_batch;
 mod live_config;
 pub mod live_node_setup;
 pub mod log_sweep;
-pub mod nt_pointer_probe;
 pub mod nt_runtime_capture;
 pub mod platform;
 pub mod raw_capture_transport;

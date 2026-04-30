@@ -124,10 +124,6 @@ ci-lint-workflow:
 
     [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
     [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
-    [ -f .github/workflows/nt-pointer-control-plane.yml ] && workflow_files+=(.github/workflows/nt-pointer-control-plane.yml)
-    [ -f .github/workflows/nt-pointer-trust-root.yml ] && workflow_files+=(.github/workflows/nt-pointer-trust-root.yml)
-    [ -f .github/workflows/nt-pointer-probe-self-test.yml ] && workflow_files+=(.github/workflows/nt-pointer-probe-self-test.yml)
-    [ -f .github/workflows/nt-pointer-branch-governance-drift.yml ] && workflow_files+=(.github/workflows/nt-pointer-branch-governance-drift.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
@@ -140,7 +136,7 @@ ci-lint-workflow:
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|nt-pointer-probe-forbid-build-injection-surfaces|nt-pointer-probe-validate-control-plane|nt-pointer-probe-self-test|nt-pointer-probe-compare-branch-protection|nt-pointer-probe-compare-branch-governance|nt-pointer-probe-print-nt-crate-diff-pattern|nt-pointer-probe-check-nt-mutation)([^[:alnum:]_]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_lint_literal='lint-workflow-contract:'
     setup_lint_true_literal='lint-workflow-contract: "true"'
@@ -912,34 +908,6 @@ ci-lint-workflow:
     else
         echo "OK: No raw cargo workflow commands, explicit Rust-wrapper bypasses, CI setup action drift, or repo-local managed build artifact paths found"
     fi
-
-nt-pointer-probe-forbid-build-injection-surfaces: check-workspace
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for path in build.rs .cargo/config .cargo/config.toml .cargo/config.d; do
-        if [ -e "$path" ]; then
-            echo "unexpected build-time injection surface present: $path" >&2
-            exit 1
-        fi
-    done
-
-nt-pointer-probe-validate-control-plane: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- validate-control-plane --repo-root "{{repo_root}}"
-
-nt-pointer-probe-self-test: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test nt_pointer_probe_control_plane -- --nocapture
-
-nt-pointer-probe-compare-branch-protection actual_json: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-protection --repo-root "{{repo_root}}" --actual-json "{{actual_json}}"
-
-nt-pointer-probe-compare-branch-governance actual_json actual_rules_json actual_ruleset_details_json: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- compare-branch-governance --repo-root "{{repo_root}}" --actual-json "{{actual_json}}" --actual-rules-json "{{actual_rules_json}}" --actual-ruleset-details-json "{{actual_ruleset_details_json}}"
-
-nt-pointer-probe-print-nt-crate-diff-pattern: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- print-nt-crate-diff-pattern --repo-root "{{repo_root}}"
-
-nt-pointer-probe-check-nt-mutation base_ref head_ref: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin nt_pointer_probe -- check-nt-mutation --repo-root "{{repo_root}}" --base-ref "{{base_ref}}" --head-ref "{{head_ref}}"
 
 worktree branch:
     #!/usr/bin/env bash

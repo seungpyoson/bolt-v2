@@ -24,18 +24,10 @@
 
 use serde::Deserialize;
 
-use crate::{bolt_v3_config::VenueBlock, bolt_v3_providers::ProviderValidationBinding};
+use crate::bolt_v3_config::VenueBlock;
 
 pub const KEY: &str = "binance";
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];
-
-pub fn validation_binding() -> ProviderValidationBinding {
-    ProviderValidationBinding {
-        key: KEY,
-        validate_venue,
-        credential_log_modules: CREDENTIAL_LOG_MODULES,
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

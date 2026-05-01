@@ -20,30 +20,14 @@ use std::collections::BTreeMap;
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, ProviderKey},
     bolt_v3_providers::{
-        binance::{self, BinanceSecretsConfig},
-        polymarket::{self, PolymarketSecretsConfig},
+        self, ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
     },
-    secrets::{SsmResolverSession, pad_base64, validate_binance_api_secret_shape},
+    secrets::SsmResolverSession,
 };
 
-pub fn polymarket_forbidden_env_vars() -> &'static [&'static str] {
-    &[
-        "POLYMARKET_PK",
-        "POLYMARKET_FUNDER",
-        "POLYMARKET_API_KEY",
-        "POLYMARKET_API_SECRET",
-        "POLYMARKET_PASSPHRASE",
-    ]
-}
-
-pub fn binance_forbidden_env_vars() -> &'static [&'static str] {
-    &[
-        "BINANCE_ED25519_API_KEY",
-        "BINANCE_ED25519_API_SECRET",
-        "BINANCE_API_KEY",
-        "BINANCE_API_SECRET",
-    ]
-}
+pub use crate::bolt_v3_providers::{
+    binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForbiddenEnvVarFinding {
@@ -105,10 +89,9 @@ where
         if venue.secrets.is_none() {
             continue;
         }
-        let blocklist: &[&'static str] = match venue.kind.as_str() {
-            polymarket::KEY => polymarket_forbidden_env_vars(),
-            binance::KEY => binance_forbidden_env_vars(),
-            _ => &[],
+        let blocklist = match bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) {
+            Some(binding) => binding.forbidden_env_vars,
+            None => &[],
         };
         for env_var in blocklist {
             if env_is_set(env_var) {
@@ -128,73 +111,18 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct ResolvedBoltV3PolymarketSecrets {
-    pub private_key: String,
-    pub api_key: String,
-    pub api_secret: String,
-    pub passphrase: String,
-}
-
-#[derive(Clone)]
-pub struct ResolvedBoltV3BinanceSecrets {
-    pub api_key: String,
-    pub api_secret: String,
-}
-
-#[derive(Clone)]
-pub enum ResolvedBoltV3VenueSecrets {
-    Polymarket(ResolvedBoltV3PolymarketSecrets),
-    Binance(ResolvedBoltV3BinanceSecrets),
-}
+pub type ResolvedBoltV3VenueSecrets = ResolvedVenueSecrets;
 
 #[derive(Clone)]
 pub struct ResolvedBoltV3Secrets {
     pub venues: BTreeMap<String, ResolvedBoltV3VenueSecrets>,
 }
 
-struct RedactedDebug;
-
-impl std::fmt::Debug for RedactedDebug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[REDACTED]")
-    }
-}
-
-impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted = RedactedDebug;
-        f.debug_struct("ResolvedBoltV3PolymarketSecrets")
-            .field("private_key", &redacted)
-            .field("api_key", &redacted)
-            .field("api_secret", &redacted)
-            .field("passphrase", &redacted)
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for ResolvedBoltV3BinanceSecrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted = RedactedDebug;
-        f.debug_struct("ResolvedBoltV3BinanceSecrets")
-            .field("api_key", &redacted)
-            .field("api_secret", &redacted)
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for ResolvedBoltV3VenueSecrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ResolvedBoltV3VenueSecrets::Polymarket(inner) => f
-                .debug_tuple("ResolvedBoltV3VenueSecrets::Polymarket")
-                .field(inner)
-                .finish(),
-            ResolvedBoltV3VenueSecrets::Binance(inner) => f
-                .debug_tuple("ResolvedBoltV3VenueSecrets::Binance")
-                .field(inner)
-                .finish(),
-        }
+impl ResolvedBoltV3Secrets {
+    pub fn get_as<T: 'static>(&self, venue_key: &str) -> Option<&T> {
+        self.venues
+            .get(venue_key)
+            .and_then(|secrets| secrets.as_any().downcast_ref())
     }
 }
 
@@ -272,143 +200,58 @@ where
     let mut venues = BTreeMap::new();
 
     for (venue_key, venue) in &loaded.root.venues {
-        let secrets_value = match venue.secrets.as_ref() {
-            Some(value) => value,
+        match venue.secrets.as_ref() {
+            Some(_) => {}
             None => continue,
-        };
+        }
 
-        let resolved = match venue.kind.as_str() {
-            polymarket::KEY => {
-                let secrets: PolymarketSecretsConfig =
-                    secrets_value
-                        .clone()
-                        .try_into()
-                        .map_err(|error: toml::de::Error| BoltV3SecretError {
-                            venue_key: venue_key.clone(),
-                            field: polymarket::KEY.to_string(),
-                            ssm_path: String::new(),
-                            source: format!("invalid polymarket secrets schema: {error}"),
-                        })?;
-                let private_key = resolve_field(
-                    venue_key,
-                    "private_key_ssm_path",
-                    region,
-                    &secrets.private_key_ssm_path,
-                    &mut resolver,
-                )?;
-                let api_key = resolve_field(
-                    venue_key,
-                    "api_key_ssm_path",
-                    region,
-                    &secrets.api_key_ssm_path,
-                    &mut resolver,
-                )?;
-                let api_secret_raw = resolve_field(
-                    venue_key,
-                    "api_secret_ssm_path",
-                    region,
-                    &secrets.api_secret_ssm_path,
-                    &mut resolver,
-                )?;
-                let api_secret = pad_base64(api_secret_raw);
-                let passphrase = resolve_field(
-                    venue_key,
-                    "passphrase_ssm_path",
-                    region,
-                    &secrets.passphrase_ssm_path,
-                    &mut resolver,
-                )?;
-                ResolvedBoltV3VenueSecrets::Polymarket(ResolvedBoltV3PolymarketSecrets {
-                    private_key,
-                    api_key,
-                    api_secret,
-                    passphrase,
-                })
-            }
-            binance::KEY => {
-                let secrets: BinanceSecretsConfig =
-                    secrets_value
-                        .clone()
-                        .try_into()
-                        .map_err(|error: toml::de::Error| BoltV3SecretError {
-                            venue_key: venue_key.clone(),
-                            field: binance::KEY.to_string(),
-                            ssm_path: String::new(),
-                            source: format!("invalid binance secrets schema: {error}"),
-                        })?;
-                // Resolve and validate the api_secret first so a corrupt
-                // Ed25519 secret blocks startup before the companion api_key
-                // is fetched. Validation never echoes the resolved value into
-                // the returned error.
-                let api_secret = resolve_field(
-                    venue_key,
-                    "api_secret_ssm_path",
-                    region,
-                    &secrets.api_secret_ssm_path,
-                    &mut resolver,
-                )?;
-                validate_binance_api_secret_shape(&api_secret).map_err(|_| BoltV3SecretError {
-                    venue_key: venue_key.clone(),
-                    field: "api_secret_ssm_path".to_string(),
-                    ssm_path: secrets.api_secret_ssm_path.clone(),
-                    source: "resolved binance api_secret is not valid Ed25519 PKCS8 \
-                                 base64 key material accepted by the NautilusTrader binance \
-                                 adapter"
-                        .to_string(),
-                })?;
-                let api_key = resolve_field(
-                    venue_key,
-                    "api_key_ssm_path",
-                    region,
-                    &secrets.api_key_ssm_path,
-                    &mut resolver,
-                )?;
-                ResolvedBoltV3VenueSecrets::Binance(ResolvedBoltV3BinanceSecrets {
-                    api_key,
-                    api_secret,
-                })
-            }
-            _ => {
-                return Err(BoltV3SecretError {
-                    venue_key: venue_key.clone(),
-                    field: "kind".to_string(),
-                    ssm_path: String::new(),
-                    source: format!(
-                        "provider key `{}` is not supported by this build",
-                        venue.kind.as_str()
-                    ),
-                });
-            }
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) else {
+            return Err(BoltV3SecretError {
+                venue_key: venue_key.clone(),
+                field: "kind".to_string(),
+                ssm_path: String::new(),
+                source: format!(
+                    "provider key `{}` is not supported by this build",
+                    venue.kind.as_str()
+                ),
+            });
         };
+        let resolved = (binding.resolve_secrets)(
+            ProviderSecretResolveContext {
+                venue_key,
+                region,
+                venue,
+            },
+            &mut resolver,
+        )?;
         venues.insert(venue_key.clone(), resolved);
     }
 
     Ok(ResolvedBoltV3Secrets { venues })
 }
 
-fn resolve_field<F, E>(
+pub fn resolve_field(
     venue_key: &str,
     field: &'static str,
     region: &str,
     ssm_path: &str,
-    resolver: &mut F,
-) -> Result<String, BoltV3SecretError>
-where
-    F: FnMut(&str, &str) -> Result<String, E>,
-    E: std::fmt::Display,
-{
-    resolver(region, ssm_path).map_err(|error| BoltV3SecretError {
-        venue_key: venue_key.to_string(),
-        field: field.to_string(),
-        ssm_path: ssm_path.to_string(),
-        source: error.to_string(),
-    })
+    resolver: &mut dyn SsmSecretResolver,
+) -> Result<String, BoltV3SecretError> {
+    resolver
+        .resolve_secret(region, ssm_path)
+        .map_err(|error| BoltV3SecretError {
+            venue_key: venue_key.to_string(),
+            field: field.to_string(),
+            ssm_path: ssm_path.to_string(),
+            source: error,
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config};
+    use crate::bolt_v3_providers::{binance, polymarket};
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use std::path::PathBuf;
 
@@ -450,7 +293,7 @@ mod tests {
     #[test]
     fn polymarket_blocklist_matches_runtime_contract() {
         assert_eq!(
-            polymarket_forbidden_env_vars(),
+            polymarket::FORBIDDEN_ENV_VARS,
             &[
                 "POLYMARKET_PK",
                 "POLYMARKET_FUNDER",
@@ -464,7 +307,7 @@ mod tests {
     #[test]
     fn binance_blocklist_matches_runtime_contract() {
         assert_eq!(
-            binance_forbidden_env_vars(),
+            binance::FORBIDDEN_ENV_VARS,
             &[
                 "BINANCE_ED25519_API_KEY",
                 "BINANCE_ED25519_API_SECRET",
@@ -536,24 +379,16 @@ mod tests {
         }
 
         let polymarket = resolved
-            .venues
-            .get("polymarket_main")
-            .expect("polymarket venue should resolve");
-        let ResolvedBoltV3VenueSecrets::Polymarket(polymarket) = polymarket else {
-            panic!("polymarket_main should resolve to Polymarket secrets");
-        };
+            .get_as::<ResolvedBoltV3PolymarketSecrets>("polymarket_main")
+            .expect("polymarket_main should resolve to Polymarket secrets");
         assert_eq!(polymarket.private_key, "poly-private-key");
         assert_eq!(polymarket.api_key, "poly-api-key");
         assert_eq!(polymarket.api_secret, "abc=");
         assert_eq!(polymarket.passphrase, "poly-passphrase");
 
         let binance = resolved
-            .venues
-            .get("binance_reference")
-            .expect("binance venue should resolve");
-        let ResolvedBoltV3VenueSecrets::Binance(binance) = binance else {
-            panic!("binance_reference should resolve to Binance secrets");
-        };
+            .get_as::<ResolvedBoltV3BinanceSecrets>("binance_reference")
+            .expect("binance_reference should resolve to Binance secrets");
         assert_eq!(binance.api_key, "binance-api-key");
         assert_eq!(binance.api_secret, synthetic_binance_secret());
     }

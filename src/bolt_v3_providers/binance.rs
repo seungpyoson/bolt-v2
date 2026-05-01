@@ -22,12 +22,38 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
+use std::{any::Any, sync::Arc};
+
+use nautilus_binance::{
+    common::enums::{
+        BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
+    },
+    config::BinanceDataClientConfig,
+    factories::BinanceDataClientFactory,
+};
 use serde::Deserialize;
 
-use crate::bolt_v3_config::VenueBlock;
+use crate::{
+    bolt_v3_adapters::{
+        BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig, BoltV3VenueAdapterConfig,
+    },
+    bolt_v3_config::VenueBlock,
+    bolt_v3_providers::{
+        ProviderAdapterMapContext, ProviderResolvedSecrets, ProviderSecretResolveContext,
+        ResolvedVenueSecrets, SsmSecretResolver,
+    },
+    bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    secrets::validate_binance_api_secret_shape,
+};
 
 pub const KEY: &str = "binance";
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];
+pub const FORBIDDEN_ENV_VARS: &[&str] = &[
+    "BINANCE_ED25519_API_KEY",
+    "BINANCE_ED25519_API_SECRET",
+    "BINANCE_API_KEY",
+    "BINANCE_API_SECRET",
+];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +90,40 @@ pub enum BinanceEnvironment {
 pub struct BinanceSecretsConfig {
     pub api_key_ssm_path: String,
     pub api_secret_ssm_path: String,
+}
+
+#[derive(Clone)]
+pub struct ResolvedBoltV3BinanceSecrets {
+    pub api_key: String,
+    pub api_secret: String,
+}
+
+struct RedactedDebug;
+
+impl std::fmt::Debug for RedactedDebug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl std::fmt::Debug for ResolvedBoltV3BinanceSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted = RedactedDebug;
+        f.debug_struct("ResolvedBoltV3BinanceSecrets")
+            .field("api_key", &redacted)
+            .field("api_secret", &redacted)
+            .finish()
+    }
+}
+
+impl ProviderResolvedSecrets for ResolvedBoltV3BinanceSecrets {
+    fn provider_key(&self) -> &'static str {
+        KEY
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
@@ -142,4 +202,150 @@ fn validate_secret_paths(key: &str, secrets: &BinanceSecretsConfig) -> Vec<Strin
         ));
     }
     errors
+}
+
+pub fn resolve_secrets(
+    context: ProviderSecretResolveContext<'_>,
+    resolver: &mut dyn SsmSecretResolver,
+) -> Result<ResolvedVenueSecrets, BoltV3SecretError> {
+    let secrets_value = context
+        .venue
+        .secrets
+        .as_ref()
+        .ok_or_else(|| BoltV3SecretError {
+            venue_key: context.venue_key.to_string(),
+            field: "secrets".to_string(),
+            ssm_path: String::new(),
+            source: "missing [secrets] block".to_string(),
+        })?;
+    let secrets: BinanceSecretsConfig =
+        secrets_value
+            .clone()
+            .try_into()
+            .map_err(|error: toml::de::Error| BoltV3SecretError {
+                venue_key: context.venue_key.to_string(),
+                field: KEY.to_string(),
+                ssm_path: String::new(),
+                source: format!("invalid binance secrets schema: {error}"),
+            })?;
+    let api_secret = resolve_field(
+        context.venue_key,
+        "api_secret_ssm_path",
+        context.region,
+        &secrets.api_secret_ssm_path,
+        resolver,
+    )?;
+    validate_binance_api_secret_shape(&api_secret).map_err(|_| BoltV3SecretError {
+        venue_key: context.venue_key.to_string(),
+        field: "api_secret_ssm_path".to_string(),
+        ssm_path: secrets.api_secret_ssm_path.clone(),
+        source: "resolved binance api_secret is not valid Ed25519 PKCS8 base64 key material accepted by the NautilusTrader binance adapter".to_string(),
+    })?;
+    let api_key = resolve_field(
+        context.venue_key,
+        "api_key_ssm_path",
+        context.region,
+        &secrets.api_key_ssm_path,
+        resolver,
+    )?;
+    Ok(Arc::new(ResolvedBoltV3BinanceSecrets {
+        api_key,
+        api_secret,
+    }))
+}
+
+pub fn map_adapters(
+    context: ProviderAdapterMapContext<'_>,
+) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
+    reject_unsupported_market_identity_targets(&context)?;
+    let data = match &context.venue.data {
+        Some(value) => {
+            let secrets = secrets_for(context.venue_key, context.resolved)?;
+            Some(BoltV3DataClientAdapterConfig {
+                factory: Box::new(BinanceDataClientFactory::new()),
+                config: Box::new(map_data(context.venue_key, value, secrets)?),
+            })
+        }
+        None => None,
+    };
+    Ok(BoltV3VenueAdapterConfig {
+        data,
+        execution: None,
+    })
+}
+
+fn reject_unsupported_market_identity_targets(
+    context: &ProviderAdapterMapContext<'_>,
+) -> Result<(), BoltV3AdapterMappingError> {
+    for target in context
+        .plan
+        .updown_targets
+        .iter()
+        .filter(|target| target.venue_config_key == context.venue_key)
+    {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key: context.venue_key.to_string(),
+            field: "strategy.target.venue_config_key",
+            message: format!(
+                "configured target `{}` is bound to venue `{}`, but this provider binding does not install rotating-market filters",
+                target.configured_target_id, target.venue_config_key,
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn map_data(
+    venue_key: &str,
+    value: &toml::Value,
+    secrets: &ResolvedBoltV3BinanceSecrets,
+) -> Result<BinanceDataClientConfig, BoltV3AdapterMappingError> {
+    let cfg: BinanceDataConfig = value.clone().try_into().map_err(|error: toml::de::Error| {
+        BoltV3AdapterMappingError::SchemaParse {
+            venue_key: venue_key.to_string(),
+            block: "data",
+            message: error.to_string(),
+        }
+    })?;
+    let product_types = cfg.product_types.into_iter().map(nt_product_type).collect();
+    Ok(BinanceDataClientConfig {
+        product_types,
+        environment: nt_environment(cfg.environment),
+        base_url_http: Some(cfg.base_url_http),
+        base_url_ws: Some(cfg.base_url_ws),
+        api_key: Some(secrets.api_key.clone()),
+        api_secret: Some(secrets.api_secret.clone()),
+        instrument_status_poll_secs: cfg.instrument_status_poll_seconds,
+        transport_backend: Default::default(),
+    })
+}
+
+fn secrets_for<'a>(
+    venue_key: &str,
+    resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<&'a ResolvedBoltV3BinanceSecrets, BoltV3AdapterMappingError> {
+    match resolved.venues.get(venue_key) {
+        Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
+            BoltV3AdapterMappingError::SecretKindMismatch {
+                venue_key: venue_key.to_string(),
+                expected_provider_key: KEY,
+            }
+        }),
+        None => Err(BoltV3AdapterMappingError::MissingResolvedSecrets {
+            venue_key: venue_key.to_string(),
+            expected_provider_key: KEY,
+        }),
+    }
+}
+
+fn nt_product_type(value: BinanceProductType) -> NtBinanceProductType {
+    match value {
+        BinanceProductType::Spot => NtBinanceProductType::Spot,
+    }
+}
+
+fn nt_environment(value: BinanceEnvironment) -> NtBinanceEnvironment {
+    match value {
+        BinanceEnvironment::Mainnet => NtBinanceEnvironment::Mainnet,
+    }
 }

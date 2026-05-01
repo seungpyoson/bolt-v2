@@ -18,7 +18,6 @@ mod support;
 use std::collections::BTreeMap;
 
 use bolt_v2::{
-    bolt_v3_client_registration::BoltV3RegisteredVenue,
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
 };
@@ -35,30 +34,27 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
 
     // The summary records bolt-v3's intent at the registration boundary.
     assert_eq!(summary.venues.len(), 2, "two configured venues");
-    match summary
+    let polymarket = summary
         .venues
         .get("polymarket_main")
-        .expect("polymarket_main must appear in summary")
-    {
-        BoltV3RegisteredVenue::Polymarket { data, execution } => {
-            assert!(*data, "fixture polymarket_main has a [data] block");
-            assert!(
-                *execution,
-                "fixture polymarket_main has an [execution] block"
-            );
-        }
-        other => panic!("expected Polymarket entry, got {other:?}"),
-    }
-    match summary
+        .expect("polymarket_main must appear in summary");
+    assert!(
+        polymarket.data,
+        "fixture polymarket_main has a [data] block"
+    );
+    assert!(
+        polymarket.execution,
+        "fixture polymarket_main has an [execution] block"
+    );
+    let binance = summary
         .venues
         .get("binance_reference")
-        .expect("binance_reference must appear in summary")
-    {
-        BoltV3RegisteredVenue::Binance { data } => {
-            assert!(*data, "fixture binance_reference has a [data] block");
-        }
-        other => panic!("expected Binance entry, got {other:?}"),
-    }
+        .expect("binance_reference must appear in summary");
+    assert!(binance.data, "fixture binance_reference has a [data] block");
+    assert!(
+        !binance.execution,
+        "fixture binance_reference has no [execution] block"
+    );
 
     // NT-side state confirms the actual registrations happened. The
     // bolt-v3 venue identifier is reused as the NT registration name,

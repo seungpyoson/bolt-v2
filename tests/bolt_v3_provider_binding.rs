@@ -38,8 +38,7 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig,
-        map_bolt_v3_adapters_with_market_identity,
+        BoltV3AdapterMappingError, BoltV3UpdownNowFn, map_bolt_v3_adapters_with_market_identity,
     },
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
@@ -48,6 +47,7 @@ use bolt_v2::{
         ResolvedBoltV3VenueSecrets,
     },
 };
+use nautilus_polymarket::config::PolymarketDataClientConfig;
 
 /// Mutate a single field in the strategy's raw `[target]` TOML
 /// envelope. Mirrors the helper in `tests/bolt_v3_market_identity.rs`;
@@ -64,10 +64,10 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues = BTreeMap::new();
+    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
     venues.insert(
         "polymarket_main".to_string(),
-        ResolvedBoltV3VenueSecrets::Polymarket(ResolvedBoltV3PolymarketSecrets {
+        Arc::new(ResolvedBoltV3PolymarketSecrets {
             private_key: "binding-poly-private-key".to_string(),
             api_key: "binding-poly-api-key".to_string(),
             api_secret: "binding-poly-api-secret".to_string(),
@@ -76,7 +76,7 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     );
     venues.insert(
         "binance_reference".to_string(),
-        ResolvedBoltV3VenueSecrets::Binance(ResolvedBoltV3BinanceSecrets {
+        Arc::new(ResolvedBoltV3BinanceSecrets {
             api_key: "binding-binance-api-key".to_string(),
             api_secret: "binding-binance-api-secret".to_string(),
         }),
@@ -104,20 +104,16 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping with market identity should succeed");
 
-    let polymarket = match configs
+    let polymarket = configs
         .venues
         .get("polymarket_main")
-        .expect("polymarket_main must be present in mapper output")
-    {
-        BoltV3VenueAdapterConfig::Polymarket(inner) => inner,
-        BoltV3VenueAdapterConfig::Binance(_) => {
-            panic!("polymarket_main must map to a Polymarket adapter config")
-        }
-    };
+        .expect("polymarket_main must be present in mapper output");
     let data = polymarket
         .data
         .as_ref()
-        .expect("polymarket [data] block must produce an NT data config");
+        .expect("polymarket [data] block must produce an NT data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
 
     assert_eq!(
         data.filters.len(),
@@ -206,20 +202,16 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping should succeed");
 
-    let polymarket = match configs
+    let polymarket = configs
         .venues
         .get("polymarket_main")
-        .expect("polymarket_main must be present")
-    {
-        BoltV3VenueAdapterConfig::Polymarket(inner) => inner,
-        BoltV3VenueAdapterConfig::Binance(_) => {
-            panic!("polymarket_main must map to a Polymarket adapter config")
-        }
-    };
+        .expect("polymarket_main must be present");
     let data = polymarket
         .data
         .as_ref()
-        .expect("polymarket [data] block must produce an NT data config");
+        .expect("polymarket [data] block must produce an NT data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
 
     assert_eq!(
         data.filters.len(),
@@ -312,20 +304,16 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &empty_plan, clock)
         .expect("mapping should succeed");
 
-    let polymarket = match configs
+    let polymarket = configs
         .venues
         .get("polymarket_main")
-        .expect("polymarket_main must be present")
-    {
-        BoltV3VenueAdapterConfig::Polymarket(inner) => inner,
-        BoltV3VenueAdapterConfig::Binance(_) => {
-            panic!("polymarket_main must map to a Polymarket adapter config")
-        }
-    };
+        .expect("polymarket_main must be present");
     let data = polymarket
         .data
         .as_ref()
-        .expect("polymarket [data] block must produce an NT data config");
+        .expect("polymarket [data] block must produce an NT data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
     assert!(
         data.filters.is_empty(),
         "an empty market-identity plan must not install any provider filter"
@@ -359,20 +347,16 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping should succeed");
 
-    let polymarket = match configs
+    let polymarket = configs
         .venues
         .get("polymarket_main")
-        .expect("polymarket_main must be present")
-    {
-        BoltV3VenueAdapterConfig::Polymarket(inner) => inner,
-        BoltV3VenueAdapterConfig::Binance(_) => {
-            panic!("polymarket_main must map to a Polymarket adapter config")
-        }
-    };
+        .expect("polymarket_main must be present");
     let data = polymarket
         .data
         .as_ref()
-        .expect("polymarket [data] block must produce an NT data config");
+        .expect("polymarket [data] block must produce an NT data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
     let filter = &data.filters[0];
 
     // First cycle at counter=601: BTC/5m window [600, 900).
@@ -426,8 +410,8 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
             assert_eq!(venue_key, "binance_reference");
             assert_eq!(field, "strategy.target.venue_config_key");
             assert!(
-                message.contains("polymarket"),
-                "error message should explain the required venue kind: {message}"
+                message.contains("provider binding"),
+                "error message should explain the provider-owned filter boundary: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),

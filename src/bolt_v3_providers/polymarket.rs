@@ -21,12 +21,43 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
+use std::{any::Any, sync::Arc};
+
+use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_polymarket::{
+    common::enums::SignatureType as NtPolymarketSignatureType,
+    config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
+    factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
+    filters::{InstrumentFilter, MarketSlugFilter},
+};
 use serde::Deserialize;
 
-use crate::bolt_v3_config::VenueBlock;
+use crate::{
+    bolt_v3_adapters::{
+        BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig,
+        BoltV3ExecutionClientAdapterConfig, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig,
+    },
+    bolt_v3_config::VenueBlock,
+    bolt_v3_market_families::updown::{
+        MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
+    },
+    bolt_v3_providers::{
+        ProviderAdapterMapContext, ProviderResolvedSecrets, ProviderSecretResolveContext,
+        ResolvedVenueSecrets, SsmSecretResolver,
+    },
+    bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    secrets::pad_base64,
+};
 
 pub const KEY: &str = "polymarket";
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_polymarket::common::credential"];
+pub const FORBIDDEN_ENV_VARS: &[&str] = &[
+    "POLYMARKET_PK",
+    "POLYMARKET_FUNDER",
+    "POLYMARKET_API_KEY",
+    "POLYMARKET_API_SECRET",
+    "POLYMARKET_PASSPHRASE",
+];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +110,44 @@ pub struct PolymarketSecretsConfig {
     pub api_key_ssm_path: String,
     pub api_secret_ssm_path: String,
     pub passphrase_ssm_path: String,
+}
+
+#[derive(Clone)]
+pub struct ResolvedBoltV3PolymarketSecrets {
+    pub private_key: String,
+    pub api_key: String,
+    pub api_secret: String,
+    pub passphrase: String,
+}
+
+struct RedactedDebug;
+
+impl std::fmt::Debug for RedactedDebug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted = RedactedDebug;
+        f.debug_struct("ResolvedBoltV3PolymarketSecrets")
+            .field("private_key", &redacted)
+            .field("api_key", &redacted)
+            .field("api_secret", &redacted)
+            .field("passphrase", &redacted)
+            .finish()
+    }
+}
+
+impl ProviderResolvedSecrets for ResolvedBoltV3PolymarketSecrets {
+    fn provider_key(&self) -> &'static str {
+        KEY
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
@@ -262,4 +331,253 @@ fn validate_secret_paths(key: &str, secrets: &PolymarketSecretsConfig) -> Vec<St
         ));
     }
     errors
+}
+
+pub fn resolve_secrets(
+    context: ProviderSecretResolveContext<'_>,
+    resolver: &mut dyn SsmSecretResolver,
+) -> Result<ResolvedVenueSecrets, BoltV3SecretError> {
+    let secrets_value = context
+        .venue
+        .secrets
+        .as_ref()
+        .ok_or_else(|| BoltV3SecretError {
+            venue_key: context.venue_key.to_string(),
+            field: "secrets".to_string(),
+            ssm_path: String::new(),
+            source: "missing [secrets] block".to_string(),
+        })?;
+    let secrets: PolymarketSecretsConfig =
+        secrets_value
+            .clone()
+            .try_into()
+            .map_err(|error: toml::de::Error| BoltV3SecretError {
+                venue_key: context.venue_key.to_string(),
+                field: KEY.to_string(),
+                ssm_path: String::new(),
+                source: format!("invalid polymarket secrets schema: {error}"),
+            })?;
+    let private_key = resolve_field(
+        context.venue_key,
+        "private_key_ssm_path",
+        context.region,
+        &secrets.private_key_ssm_path,
+        resolver,
+    )?;
+    let api_key = resolve_field(
+        context.venue_key,
+        "api_key_ssm_path",
+        context.region,
+        &secrets.api_key_ssm_path,
+        resolver,
+    )?;
+    let api_secret_raw = resolve_field(
+        context.venue_key,
+        "api_secret_ssm_path",
+        context.region,
+        &secrets.api_secret_ssm_path,
+        resolver,
+    )?;
+    let api_secret = pad_base64(api_secret_raw);
+    let passphrase = resolve_field(
+        context.venue_key,
+        "passphrase_ssm_path",
+        context.region,
+        &secrets.passphrase_ssm_path,
+        resolver,
+    )?;
+    Ok(Arc::new(ResolvedBoltV3PolymarketSecrets {
+        private_key,
+        api_key,
+        api_secret,
+        passphrase,
+    }))
+}
+
+pub fn map_adapters(
+    context: ProviderAdapterMapContext<'_>,
+) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
+    let data = match &context.venue.data {
+        Some(value) => Some(BoltV3DataClientAdapterConfig {
+            factory: Box::new(PolymarketDataClientFactory),
+            config: Box::new(map_data(
+                context.venue_key,
+                value,
+                context.plan,
+                context.clock,
+            )?),
+        }),
+        None => None,
+    };
+    let execution = match &context.venue.execution {
+        Some(value) => {
+            let secrets = secrets_for(context.venue_key, context.resolved)?;
+            Some(BoltV3ExecutionClientAdapterConfig {
+                factory: Box::new(PolymarketExecutionClientFactory),
+                config: Box::new(map_execution(
+                    context.root,
+                    context.venue_key,
+                    value,
+                    secrets,
+                )?),
+            })
+        }
+        None => None,
+    };
+    Ok(BoltV3VenueAdapterConfig { data, execution })
+}
+
+fn map_data(
+    venue_key: &str,
+    value: &toml::Value,
+    plan: &MarketIdentityPlan,
+    clock: BoltV3UpdownNowFn,
+) -> Result<PolymarketDataClientConfig, BoltV3AdapterMappingError> {
+    let cfg: PolymarketDataConfig =
+        value.clone().try_into().map_err(|error: toml::de::Error| {
+            BoltV3AdapterMappingError::SchemaParse {
+                venue_key: venue_key.to_string(),
+                block: "data",
+                message: error.to_string(),
+            }
+        })?;
+    if cfg.subscribe_new_markets {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key: venue_key.to_string(),
+            field: "data.subscribe_new_markets",
+            message: "must be false before mapping to NT because pinned NT subscribes to all Polymarket markets when this flag is true".to_string(),
+        });
+    }
+    let ws_max_subscriptions = usize::try_from(cfg.websocket_max_subscriptions_per_connection)
+        .map_err(|_| BoltV3AdapterMappingError::NumericRange {
+            venue_key: venue_key.to_string(),
+            field: "data.websocket_max_subscriptions_per_connection",
+            message: format!(
+                "value {} does not fit in usize on this target",
+                cfg.websocket_max_subscriptions_per_connection
+            ),
+        })?;
+    let filters = build_market_slug_filters_for_venue(plan, venue_key, clock);
+    Ok(PolymarketDataClientConfig {
+        base_url_http: Some(cfg.base_url_http),
+        base_url_ws: Some(cfg.base_url_ws),
+        base_url_gamma: Some(cfg.base_url_gamma),
+        base_url_data_api: Some(cfg.base_url_data_api),
+        http_timeout_secs: cfg.http_timeout_seconds,
+        ws_timeout_secs: cfg.ws_timeout_seconds,
+        ws_max_subscriptions,
+        update_instruments_interval_mins: cfg.update_instruments_interval_minutes,
+        subscribe_new_markets: cfg.subscribe_new_markets,
+        auto_load_missing_instruments: false,
+        auto_load_debounce_ms: 100,
+        transport_backend: Default::default(),
+        filters,
+        new_market_filter: None,
+    })
+}
+
+fn build_market_slug_filters_for_venue(
+    plan: &MarketIdentityPlan,
+    venue_key: &str,
+    clock: BoltV3UpdownNowFn,
+) -> Vec<Arc<dyn InstrumentFilter>> {
+    plan.updown_targets
+        .iter()
+        .filter(|target| target.venue_config_key == venue_key)
+        .map(|target| build_market_slug_filter(target, clock.clone()))
+        .collect()
+}
+
+fn build_market_slug_filter(
+    target: &UpdownTargetPlan,
+    clock: BoltV3UpdownNowFn,
+) -> Arc<dyn InstrumentFilter> {
+    let asset = target.underlying_asset.clone();
+    let token = target.cadence_slug_token.clone();
+    let cadence = target.cadence_seconds;
+    Arc::new(MarketSlugFilter::new(move || {
+        let now = (clock)();
+        match updown_period_pair(cadence, now) {
+            Ok((current, next)) => vec![
+                updown_market_slug(&asset, &token, current),
+                updown_market_slug(&asset, &token, next),
+            ],
+            Err(error) => {
+                log::warn!(
+                    "bolt-v3 provider binding: skipping updown filter cycle (cadence={cadence}, now_unix_seconds={now}): {error}"
+                );
+                Vec::new()
+            }
+        }
+    }))
+}
+
+fn map_execution(
+    root: &crate::bolt_v3_config::BoltV3RootConfig,
+    venue_key: &str,
+    value: &toml::Value,
+    secrets: &ResolvedBoltV3PolymarketSecrets,
+) -> Result<PolymarketExecClientConfig, BoltV3AdapterMappingError> {
+    let cfg: PolymarketExecutionConfig =
+        value.clone().try_into().map_err(|error: toml::de::Error| {
+            BoltV3AdapterMappingError::SchemaParse {
+                venue_key: venue_key.to_string(),
+                block: "execution",
+                message: error.to_string(),
+            }
+        })?;
+    let max_retries =
+        u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
+            venue_key: venue_key.to_string(),
+            field: "execution.max_retries",
+            message: format!(
+                "value {} does not fit in u32 expected by NT",
+                cfg.max_retries
+            ),
+        })?;
+    Ok(PolymarketExecClientConfig {
+        trader_id: TraderId::from(root.trader_id.as_str()),
+        account_id: AccountId::from(cfg.account_id.as_str()),
+        private_key: Some(secrets.private_key.clone()),
+        api_key: Some(secrets.api_key.clone()),
+        api_secret: Some(secrets.api_secret.clone()),
+        passphrase: Some(secrets.passphrase.clone()),
+        funder: cfg.funder_address,
+        signature_type: nt_signature_type(cfg.signature_type),
+        base_url_http: Some(cfg.base_url_http),
+        base_url_ws: Some(cfg.base_url_ws),
+        base_url_data_api: Some(cfg.base_url_data_api),
+        http_timeout_secs: cfg.http_timeout_seconds,
+        max_retries,
+        retry_delay_initial_ms: cfg.retry_delay_initial_milliseconds,
+        retry_delay_max_ms: cfg.retry_delay_max_milliseconds,
+        ack_timeout_secs: cfg.ack_timeout_seconds,
+        transport_backend: Default::default(),
+    })
+}
+
+fn secrets_for<'a>(
+    venue_key: &str,
+    resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<&'a ResolvedBoltV3PolymarketSecrets, BoltV3AdapterMappingError> {
+    match resolved.venues.get(venue_key) {
+        Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
+            BoltV3AdapterMappingError::SecretKindMismatch {
+                venue_key: venue_key.to_string(),
+                expected_provider_key: KEY,
+            }
+        }),
+        None => Err(BoltV3AdapterMappingError::MissingResolvedSecrets {
+            venue_key: venue_key.to_string(),
+            expected_provider_key: KEY,
+        }),
+    }
+}
+
+fn nt_signature_type(value: PolymarketSignatureType) -> NtPolymarketSignatureType {
+    match value {
+        PolymarketSignatureType::Eoa => NtPolymarketSignatureType::Eoa,
+        PolymarketSignatureType::PolyProxy => NtPolymarketSignatureType::PolyProxy,
+        PolymarketSignatureType::PolyGnosisSafe => NtPolymarketSignatureType::PolyGnosisSafe,
+    }
 }

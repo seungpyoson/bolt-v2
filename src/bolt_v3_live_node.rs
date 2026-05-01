@@ -211,7 +211,7 @@ pub fn build_bolt_v3_live_node(
         resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (node, _summary) = build_live_node_with_clients(loaded, &adapters)?;
+    let (node, _summary) = build_live_node_with_clients(loaded, adapters)?;
     Ok(node)
 }
 
@@ -254,12 +254,12 @@ where
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_with_clients(loaded, &adapters)
+    build_live_node_with_clients(loaded, adapters)
 }
 
 fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
-    adapters: &BoltV3AdapterConfigs,
+    adapters: BoltV3AdapterConfigs,
 ) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let builder = make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::Build)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)

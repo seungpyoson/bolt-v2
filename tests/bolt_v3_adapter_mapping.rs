@@ -1,9 +1,9 @@
 mod support;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use bolt_v2::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3VenueAdapterConfig, map_bolt_v3_adapters},
+    bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
     bolt_v3_providers::polymarket,
@@ -15,7 +15,11 @@ use bolt_v2::{
 use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
 };
-use nautilus_polymarket::common::enums::SignatureType as NtPolymarketSignatureType;
+use nautilus_binance::config::BinanceDataClientConfig;
+use nautilus_polymarket::{
+    common::enums::SignatureType as NtPolymarketSignatureType,
+    config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
+};
 
 fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
     ResolvedBoltV3PolymarketSecrets {
@@ -34,14 +38,14 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues = BTreeMap::new();
+    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
     venues.insert(
         "polymarket_main".to_string(),
-        ResolvedBoltV3VenueSecrets::Polymarket(fixture_polymarket_secrets()),
+        Arc::new(fixture_polymarket_secrets()),
     );
     venues.insert(
         "binance_reference".to_string(),
-        ResolvedBoltV3VenueSecrets::Binance(fixture_binance_secrets()),
+        Arc::new(fixture_binance_secrets()),
     );
     ResolvedBoltV3Secrets { venues }
 }
@@ -54,21 +58,17 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
-    let polymarket = match configs
+    let polymarket = configs
         .venues
         .get("polymarket_main")
-        .expect("polymarket_main must be present in mapper output")
-    {
-        BoltV3VenueAdapterConfig::Polymarket(inner) => inner,
-        BoltV3VenueAdapterConfig::Binance(_) => {
-            panic!("polymarket_main must map to a Polymarket adapter config")
-        }
-    };
+        .expect("polymarket_main must be present in mapper output");
 
     let data = polymarket
         .data
         .as_ref()
-        .expect("polymarket [data] block must produce an NT data config");
+        .expect("polymarket [data] block must produce an NT data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket [data] should downcast to NT PolymarketDataClientConfig");
     assert_eq!(
         data.base_url_http.as_deref(),
         Some("https://clob.polymarket.com")
@@ -94,7 +94,9 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let exec = polymarket
         .execution
         .as_ref()
-        .expect("polymarket [execution] block must produce an NT exec config");
+        .expect("polymarket [execution] block must produce an NT exec config")
+        .config_as::<PolymarketExecClientConfig>()
+        .expect("polymarket [execution] should downcast to NT PolymarketExecClientConfig");
     assert_eq!(exec.signature_type, NtPolymarketSignatureType::PolyProxy);
     assert_eq!(
         exec.private_key.as_deref(),
@@ -176,20 +178,16 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
-    let binance = match configs
+    let binance = configs
         .venues
         .get("binance_reference")
-        .expect("binance_reference must be present in mapper output")
-    {
-        BoltV3VenueAdapterConfig::Binance(inner) => inner,
-        BoltV3VenueAdapterConfig::Polymarket(_) => {
-            panic!("binance_reference must map to a Binance adapter config")
-        }
-    };
+        .expect("binance_reference must be present in mapper output");
     let data = binance
         .data
         .as_ref()
-        .expect("binance [data] block must produce an NT data config");
+        .expect("binance [data] block must produce an NT data config")
+        .config_as::<BinanceDataClientConfig>()
+        .expect("binance [data] should downcast to NT BinanceDataClientConfig");
 
     assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
     assert_eq!(data.environment, NtBinanceEnvironment::Mainnet);

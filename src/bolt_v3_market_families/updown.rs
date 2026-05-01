@@ -224,6 +224,22 @@ pub struct MarketIdentityPlan {
     pub updown_targets: Vec<UpdownTargetPlan>,
 }
 
+pub struct MarketIdentityVenueTargetRef<'a> {
+    pub configured_target_id: &'a str,
+    pub venue_config_key: &'a str,
+}
+
+impl MarketIdentityPlan {
+    pub fn venue_target_refs(&self) -> impl Iterator<Item = MarketIdentityVenueTargetRef<'_>> {
+        self.updown_targets
+            .iter()
+            .map(|target| MarketIdentityVenueTargetRef {
+                configured_target_id: target.configured_target_id.as_str(),
+                venue_config_key: target.venue_config_key.as_str(),
+            })
+    }
+}
+
 /// Pure identity facts for one configured updown rotating-market
 /// target. Every value here is derived from validated configuration
 /// and the runtime-contract slug-token table; nothing here depends on

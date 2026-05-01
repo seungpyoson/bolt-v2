@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Behavioral isolation regression: in a process where bolt-v3 is the
 //! only path initializing the NT global logger, no NT credential-info
 //! log string from `nautilus_polymarket::common::credential` or

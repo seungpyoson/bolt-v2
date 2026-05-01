@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, feat/236-bolt-v3-slice-8-1-baseline]
+    branches: [main]
   push:
-    branches: [main, feat/236-bolt-v3-slice-8-1-baseline]
+    branches: [main]
     tags: ["v*"]
 
 concurrency:

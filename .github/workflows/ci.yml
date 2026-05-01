@@ -179,6 +179,8 @@ jobs:
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
 
       - name: test
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: just test
 
   build:

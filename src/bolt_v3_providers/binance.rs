@@ -277,11 +277,11 @@ pub fn map_adapters(
 fn reject_unsupported_market_identity_targets(
     context: &ProviderAdapterMapContext<'_>,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    for target in context
+    if let Some(target) = context
         .plan
         .updown_targets
         .iter()
-        .filter(|target| target.venue_config_key == context.venue_key)
+        .find(|target| target.venue_config_key == context.venue_key)
     {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             venue_key: context.venue_key.to_string(),

@@ -6,12 +6,12 @@
 # with a classification and rationale.
 
 [[allowed]]
-path = "src/bolt_v3_adapters.rs"
+path = "src/bolt_v3_providers/polymarket.rs"
 kind = "number"
 literal = "100"
 context = "auto_load_debounce_ms: 100,"
 classification = "accepted_current_residual"
-reason = "Pinned NT Polymarket data config needs a debounce value. This is a current provider-adapter residual tracked by status-map rows 14 and 24, not a new runtime value."
+reason = "The Polymarket provider binding owns the pinned NT data config debounce residual. This is a current provider-adapter residual, not a new core runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_adapters.rs"
@@ -54,7 +54,7 @@ classification = "toml_zero_as_none_encoding"
 reason = "Schema documents zero as the TOML encoding for NT None on selected optional second-based fields."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"POLYMARKET_PK\""
 context = "\"POLYMARKET_PK\","
@@ -62,7 +62,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"POLYMARKET_FUNDER\""
 context = "\"POLYMARKET_FUNDER\","
@@ -70,7 +70,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"POLYMARKET_API_KEY\""
 context = "\"POLYMARKET_API_KEY\","
@@ -78,7 +78,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"POLYMARKET_API_SECRET\""
 context = "\"POLYMARKET_API_SECRET\","
@@ -86,7 +86,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"POLYMARKET_PASSPHRASE\""
 context = "\"POLYMARKET_PASSPHRASE\","
@@ -94,7 +94,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Polymarket environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"BINANCE_ED25519_API_KEY\""
 context = "\"BINANCE_ED25519_API_KEY\","
@@ -102,7 +102,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"BINANCE_ED25519_API_SECRET\""
 context = "\"BINANCE_ED25519_API_SECRET\","
@@ -110,7 +110,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"BINANCE_API_KEY\""
 context = "\"BINANCE_API_KEY\","
@@ -118,7 +118,7 @@ classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
 
 [[allowed]]
-path = "src/bolt_v3_secrets.rs"
+path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"BINANCE_API_SECRET\""
 context = "\"BINANCE_API_SECRET\","

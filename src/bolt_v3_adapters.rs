@@ -244,10 +244,26 @@ pub fn map_bolt_v3_adapters_with_market_identity(
     plan: &MarketIdentityPlan,
     clock: BoltV3UpdownNowFn,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
+    map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+        loaded,
+        resolved,
+        plan,
+        clock,
+        bolt_v3_providers::binding_for_provider_key,
+    )
+}
+
+fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    plan: &MarketIdentityPlan,
+    clock: BoltV3UpdownNowFn,
+    binding_for_provider_key: impl Fn(&str) -> Option<&'static bolt_v3_providers::ProviderBinding>,
+) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
     validate_market_identity_target_venues(loaded, plan)?;
     let mut venues = BTreeMap::new();
     for (venue_key, venue) in &loaded.root.venues {
-        let Some(binding) = bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) else {
+        let Some(binding) = binding_for_provider_key(venue.kind.as_str()) else {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
                 venue_key: venue_key.clone(),
                 field: "kind",
@@ -308,10 +324,68 @@ mod tests {
     };
 
     use crate::bolt_v3_config::BoltV3RootConfig;
-    use crate::bolt_v3_providers::{binance, polymarket};
+    use crate::bolt_v3_market_families::updown::UpdownTargetPlan;
+    use crate::bolt_v3_providers::{
+        ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
+        ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver, binance, polymarket,
+    };
     use crate::bolt_v3_secrets::{
-        ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,
-        ResolvedBoltV3VenueSecrets,
+        BoltV3SecretError, ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets,
+        ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets,
+    };
+
+    const FAKE_UPDOWN_PROVIDER_KEY: &str = "fake_updown_provider";
+
+    #[derive(Debug)]
+    struct FakeProviderSecrets;
+
+    impl ProviderResolvedSecrets for FakeProviderSecrets {
+        fn provider_key(&self) -> &'static str {
+            FAKE_UPDOWN_PROVIDER_KEY
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn validate_fake_provider_venue(
+        _key: &str,
+        _venue: &crate::bolt_v3_config::VenueBlock,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn resolve_fake_provider_secrets(
+        _context: ProviderSecretResolveContext<'_>,
+        _resolver: &mut dyn SsmSecretResolver,
+    ) -> Result<ResolvedVenueSecrets, BoltV3SecretError> {
+        Ok(Arc::new(FakeProviderSecrets))
+    }
+
+    fn map_fake_provider_adapters(
+        context: ProviderAdapterMapContext<'_>,
+    ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
+        assert_eq!(context.venue.kind.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
+        assert_eq!(context.venue_key, "polymarket_main");
+        assert_eq!(context.plan.updown_targets.len(), 1);
+        assert_eq!(
+            context.plan.updown_targets[0].venue_config_key,
+            context.venue_key
+        );
+        Ok(BoltV3VenueAdapterConfig {
+            data: None,
+            execution: None,
+        })
+    }
+
+    static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
+        key: FAKE_UPDOWN_PROVIDER_KEY,
+        validate_venue: validate_fake_provider_venue,
+        credential_log_modules: &[],
+        forbidden_env_vars: &[],
+        resolve_secrets: resolve_fake_provider_secrets,
+        map_adapters: map_fake_provider_adapters,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -351,6 +425,57 @@ mod tests {
             Arc::new(fixture_binance_secrets()),
         );
         ResolvedBoltV3Secrets { venues }
+    }
+
+    #[test]
+    fn injected_provider_binding_can_accept_updown_target_without_core_provider_edit() {
+        let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
+            .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
+        let mut loaded = LoadedBoltV3Config {
+            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
+            strategies: Vec::new(),
+        };
+        loaded
+            .root
+            .venues
+            .retain(|venue_key, _venue| venue_key == "polymarket_main");
+        let plan = MarketIdentityPlan {
+            updown_targets: vec![UpdownTargetPlan {
+                strategy_instance_id: "fake-strategy".to_string(),
+                configured_target_id: "fake-updown".to_string(),
+                venue_config_key: "polymarket_main".to_string(),
+                underlying_asset: "BTC".to_string(),
+                cadence_seconds: 300,
+                cadence_slug_token: "5m".to_string(),
+            }],
+        };
+        let resolved = ResolvedBoltV3Secrets {
+            venues: BTreeMap::new(),
+        };
+        let clock = Arc::new(|| 601_i64);
+
+        let configs = map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+            &loaded,
+            &resolved,
+            &plan,
+            clock,
+            |key| {
+                if key == FAKE_UPDOWN_PROVIDER_KEY {
+                    Some(&FAKE_UPDOWN_PROVIDER_BINDING)
+                } else {
+                    None
+                }
+            },
+        )
+        .expect("core mapping should route through the injected fake provider binding");
+
+        let fake = configs
+            .venues
+            .get("polymarket_main")
+            .expect("fake provider venue should map");
+        assert!(fake.data.is_none());
+        assert!(fake.execution.is_none());
     }
 
     #[test]

@@ -110,14 +110,14 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 ## 8. Reference-data contract
 
 - invariant:
-  - reference-data contract and the Gamma narrow-supplement role for `price_to_beat_value`
+  - reference-data contract, Chainlink Data Streams runtime-anchor role for `price_to_beat_value`, and Gamma post-close forensic-validation role
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7
 - dependent references:
   - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Sections 7 and 8
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 1 and 2
 - implementation status:
-  - contract accepted; event page slug mapping and live Gamma readiness evidence required
+  - contract updated from #244 evidence; runtime Chainlink anchor implementation, post-close Gamma validation implementation, and missing probe-script preservation remain open
 
 ## 9. Decision-event contract
 

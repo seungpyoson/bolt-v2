@@ -82,21 +82,19 @@ Implementation rule:
 Current `updown` readiness gates:
 
 - for each configured `updown` target, derive the current and next `updown` market slugs from the NautilusTrader node clock and the current slug rule
-- for each selected market, attempt the runtime-contract-defined mapping to `event_page_slug`
-- if the mapping rule is unset or the selected market cannot be mapped, fail order readiness with `event_page_mapping_missing`
-- once `event_page_slug` is mapped, call Gamma `GET /events?slug=<event_page_slug>`
-- each response must return HTTP 200
-- each response must contain exactly one event
-- `.[0].eventMetadata.priceToBeat` must exist, parse as numeric, and be positive
-- the returned event must link back to the selected NautilusTrader / Polymarket CLOB market by the runtime-owned mapping contract once defined
-- if this path is missing, null, non-numeric, non-positive, or ambiguous, live validation fails for order readiness
+- for the current first-live `updown` Polymarket scope, `event_page_slug` equals the selected CLOB market slug; this is scoped #244 evidence for sampled BTC/ETH 5m updown markets, not a universal Polymarket rule
+- resolve `price_to_beat_value` from Chainlink Data Streams REST for the selected market boundary timestamp
+- the Chainlink Data Streams response must identify exactly one usable report for the configured feed and boundary timestamp
+- the decoded benchmark price must parse as numeric and be positive
+- Gamma `eventMetadata.priceToBeat` is post-close forensic validation only; it is not a runtime order-readiness anchor
+- if the Chainlink Data Streams report is missing, non-numeric, non-positive, or ambiguous, live validation fails for order readiness
 - no readiness check may use broad Gamma polling, standalone market-selection services, midpoint/spot/question/threshold fallback, or strategy-side discovery HTTP
 
 Market-selection validation result classes:
 
 - no currently selectable `active_or_next` market is a live operational warning
 - `request_instruments_failed`, `instruments_not_in_cache`, `no_selected_market`, and `ambiguous_selected_market` are live operational warning failures
-- `event_page_mapping_missing`, `price_to_beat_unavailable`, and `price_to_beat_ambiguous` are fatal order-readiness failures for the current `updown` live-trading scope
+- `price_to_beat_unavailable` and `price_to_beat_ambiguous` are fatal order-readiness failures for the current `updown` live-trading scope
 - all runtime market-selection failures emit `market_selection_result` evidence and keep the strategy non-trading for that configured target
 
 ## 3. Secret Resolution Contract
@@ -250,14 +248,17 @@ There is no standalone market-selection service.
 Market-selection input order:
 
 1. NautilusTrader-loaded venue and instrument state
-2. narrow Polymarket Gamma supplement for current `updown` `price_to_beat_value` extraction only
+2. Chainlink Data Streams runtime anchor for current `updown` `price_to_beat_value`
+3. post-close Polymarket Gamma validation evidence for forensic comparison only
 
 Current rule:
 
-- bolt may call Gamma `GET /events?slug=<event_page_slug>` only to extract `eventMetadata.priceToBeat` after the selected market maps to `event_page_slug` under the runtime-contract-defined mapping rule
-- this supplement must not be used for broad discovery, order state, prices, `NT Portfolio` state, reference data, or strategy-side HTTP
-- if `eventMetadata.priceToBeat` is missing, non-numeric, non-positive, or ambiguous, market selection fails loud and the strategy remains non-trading
-- if the mapping rule is unset or the selected market cannot be mapped to `event_page_slug`, market selection fails loud with `event_page_mapping_missing` and the strategy remains non-trading
+- bolt may query Chainlink Data Streams REST `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>` for the selected market boundary timestamp
+- the selected `feed_id` must come from the configured reference-data surface; raw feed-id ownership and catalog rules are tracked by the reference-data catalog slice
+- for current first-live `updown` Polymarket scope, `event_page_slug` equals the selected CLOB market slug; this is scoped #244 evidence for sampled BTC/ETH 5m updown markets, not a universal Polymarket mapping rule
+- bolt may call Gamma `GET /events?slug=<event_page_slug>` only after close to compare Gamma `eventMetadata.priceToBeat` against the Chainlink-derived runtime anchor for forensic validation
+- Gamma must not be used as a runtime anchor, broad discovery source, order state, prices, `NT Portfolio` state, reference data, or strategy-side HTTP
+- if the Chainlink Data Streams report is missing, non-numeric, non-positive, or ambiguous, market selection fails loud and the strategy remains non-trading
 
 Current Polymarket loading contract:
 
@@ -448,10 +449,10 @@ Definitions:
 
 - `selected_market` = the `selected_market` shape from Section 6.2
 - `selected_market_observed_timestamp` = the timestamp when the selected market facts were observed
-- `price_to_beat_value` = Gamma `eventMetadata.priceToBeat` from `GET /events?slug=<event_page_slug>`
+- `price_to_beat_value` = decoded Chainlink Data Streams benchmark price from `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>`
 - `price_to_beat_observed_timestamp` = the timestamp when `price_to_beat_value` was observed
 - `price_to_beat_source` current launch-scope value:
-  - `event_metadata.priceToBeat`
+  - `chainlink_data_streams.report_at_boundary`
 
 Boundary:
 
@@ -498,17 +499,15 @@ Allowed `market_selection_failure_reason` values:
 - `instruments_not_in_cache`
 - `no_selected_market`
 - `ambiguous_selected_market`
-- `event_page_mapping_missing`
 - `price_to_beat_unavailable`
 - `price_to_beat_ambiguous`
 
 The price-to-beat failure reasons belong here only because the current `updown` launch scope requires `updown_selected_market_facts` before market selection can succeed.
 
-The `event_page_slug` used to fetch `price_to_beat_value` is mapping evidence only.
+The `event_page_slug` used for post-close Gamma validation is mapping evidence only.
 It is not a field on `selected_market` or `updown_selected_market_facts`.
-The runtime contract reserves canonical ownership of the `event_page_slug` mapping rule.
-The rule is currently unset.
-Until that rule is written into this runtime contract, current `updown` live order readiness is blocked.
+For the current first-live `updown` Polymarket scope, scoped #244 evidence says it equals the selected CLOB market slug.
+Future Polymarket market families must prove their own mapping rule before trading.
 
 ### 6.5 `updown_market_mechanical_result`
 
@@ -587,7 +586,7 @@ For the current `binary_oracle_edge_taker`, the reference stream and pricing inp
   - if the latest quote tick does not contain both sides, midpoint is unavailable
   - if the latest midpoint sample is older than `target.retry_interval_seconds` seconds, the reference quote is stale
 - `price_to_beat_source`
-  - `event_metadata.priceToBeat`
+  - `chainlink_data_streams.report_at_boundary`
 
 There is no fallback from missing price-to-beat metadata to midpoint.
 
@@ -998,7 +997,7 @@ When `entry_decision` is `no_action`, values available at evaluation time must b
 
 Allowed `price_to_beat_source` values:
 
-- `event_metadata.priceToBeat`
+- `chainlink_data_streams.report_at_boundary`
 
 #### `entry_order_submission`
 

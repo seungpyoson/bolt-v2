@@ -26,7 +26,9 @@ Bolt-v3 is still in foundation work. The safest source-backed position is:
   (shared/legacy reuse), and pure market identity have code and tests.
 - The provider-neutral architecture is not complete. The latest correction only
   removed closed provider/archetype/family identity dispatch from the first core
-  layer.
+  layer. Adapter mapping, secret projection, client registration, discovery,
+  cost/fee facts, strategy construction, and portfolio-allocation evidence still
+  need explicit boundaries.
 - The baseline must not be treated as ready for merge to `main` as a general
   Bolt-v3 foundation until the remaining provider-specific core-adjacent
   boundaries are addressed or explicitly accepted as scoped residuals.
@@ -35,6 +37,24 @@ Bolt-v3 is still in foundation work. The safest source-backed position is:
   recorded under `docs/bolt-v3/research/nt-pin-change/`. This keeps the
   upstream Polymarket CLOB V2 support in a tagged NT beta release, but it does
   not prove Bolt live CLOB V2 execution readiness.
+
+## Documentation Authority
+
+Use the docs in this order:
+
+1. `docs/bolt-v3/2026-04-28-source-grounded-status-map.md`: status and next
+   evidence-backed work.
+2. `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`: architecture
+   boundary doctrine.
+3. `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md`: detailed runtime
+   contract, subject to reconciliation with the doctrine.
+4. `docs/bolt-v3/2026-04-25-bolt-v3-schema.md`: config/schema contract, subject
+   to reconciliation with the doctrine.
+
+`docs/bolt-v3/research/` files are evidence. `docs/bolt-v3/archive/` files are
+reference only. Prior AI responses and temporary audit packets are not
+implementation inputs unless their conclusions have been source-checked and
+folded into one of the active docs above.
 
 ## Roadmap State
 
@@ -88,6 +108,9 @@ Bolt-v3 is still in foundation work. The safest source-backed position is:
 | 46 | Polymarket CLOB V2 readiness gate | Partial; live gate still blocked | Contract ledger marks CLOB V2 readiness as blocker; this branch pins NT to release `v1.226.0` (`38b912a8b0fe14e4046773973ff46a3b798b1e3e`), which contains upstream Polymarket CLOB V2 migration support | Historical pin-change audit/probe: `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-audit.md` and `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-probe.md`; v1.226.0 bump evidence: `docs/bolt-v3/research/nt-pin-change/2026-04-30-nt-v1-226-pin-bump.md`; compile and focused Bolt-v3 tests passed | Upstream support blocker is reduced, not closed. Bolt still needs live CLOB V2 signing/order/fill/fee validation, runtime-contract updates for pUSD/fee behavior, dependency review, and explicit production approval before this gate can close. |
 | 47 | Tiny live canary trade | Missing | No live trade path accepted | No live trade verification found | Only after readiness, reconciliation, audit/local-evidence, execution-gate, deploy-trust, panic-gate, provider-signing, and explicit user approval. |
 | 48 | Production live trading | Missing | No production deployment path accepted for Bolt-v3 | No production verification found | Not in scope until canary/reconciliation/audit are proven. |
+| 49 | Provider-leak verifier for adapter/secrets/registration | Missing | Doctrine V16 names the required source-scan class | No verifier selected or wired | Build the verifier before the provider-boundary refactor so current closed provider leaks fail for the right reason. |
+| 50 | Provider-neutral cost and fee fact contract | Missing | Doctrine R31 names the missing fact contract | No fact model, freshness gate, or hot-path snapshot test found | Select a typed cost/fee fact contract before strategy edge decisions depend on fees. |
+| 51 | Broad discovery with explicit trading activation | Missing | Doctrine R32 names the discovery/activation split | No broad discovery/classification implementation or activation gate found | Discovery may observe/classify broadly, but execution must activate only explicit provider + family + archetype bindings. |
 
 ## What This Means
 
@@ -102,8 +125,12 @@ The most accurate status is:
   config mapping, NT client registration, controlled connect, runtime capture,
   and pure market identity.
 - Architecture-clean provider neutrality is incomplete.
-- The next implementation work should continue moving narrow verifier or boundary
-  slices forward, not a new trading feature.
+- The next implementation work should be the provider-leak verifier and then the
+  provider-boundary refactor for adapter mapping, secret projection, and client
+  registration. It should not be a new trading feature.
+- Cost/fee facts, broad discovery/classification, and portfolio-allocation
+  evidence are architecture work items, but they should follow the provider
+  boundary because they need the same provider-owned binding surface.
 
 ## Immediate Review Questions
 

@@ -55,6 +55,20 @@ Verifier table entries follow the same change discipline as approved decisions.
 Adding, removing, weakening, or changing the technique or location of a `V-ID`
 requires a review packet that cites the verifier ID.
 
+Active documentation authority is intentionally narrow:
+
+- This doctrine is the authority for Bolt-v3 architecture boundaries.
+- `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` is the authority
+  for source-backed implementation status.
+- `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` and
+  `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` are detailed contracts that must
+  be reconciled to this doctrine before implementation relies on them.
+- `docs/bolt-v3/research/` files are evidence, not policy.
+- `docs/bolt-v3/archive/` files are reference only.
+- Prior AI responses, review transcripts, and temporary audit packets are not
+  authoritative. Only source-backed conclusions folded into this doctrine or
+  the status map may guide implementation.
+
 ## Relation To Repo Rules
 
 This doctrine is the Bolt-v3-specific interpretation of the repo rules in
@@ -83,6 +97,16 @@ Decision to repo-rule mapping:
 - Binding table: a static list, in a vertical root, of provider-contributed
   validation entries that the root iterates instead of matching on a closed
   enum. It is explicit static registration, not dynamic discovery.
+- Provider binding: a provider-owned module boundary that owns the provider key,
+  provider TOML sub-shape, provider secret projection, NT config conversion,
+  NT factory registration metadata, and provider-specific readiness or
+  discovery glue when NT does not already own it.
+- Market family: a venue-independent semantic family, such as a binary
+  up/down market. A venue may expose markets in that family, but the family is
+  not the venue.
+- Strategy archetype: a reusable strategy module instantiated by many strategy
+  TOML files. An archetype owns its validation and construction contract; core
+  runtime assembly must not grow a new branch per strategy instance.
 - Vertical root: a `mod.rs` whose direct job is dispatching among concrete
   children under one discriminator, without owning provider, family, or
   archetype policy.
@@ -275,6 +299,51 @@ Every future implementation slice must state:
 The enforcement mechanism for this gate is open. Candidate mechanisms include a
 slice doc template, PR template, CI check, or verifier test.
 
+## Candidate Direction For Next Slice
+
+Status: candidate clarification for provider-boundary implementation; not an
+approved decision until reviewed.
+
+The intended architecture is static Rust registration with dynamic configured
+instances. Adding a provider, market family, or strategy archetype may require
+adding one owned binding module plus one explicit registration entry. It must
+not require editing core matches, closed provider enum variants, closed secret
+variants, or core client-registration branches.
+
+Provider bindings are conversion membranes into NT, not Bolt-owned venue
+frameworks. A provider binding may own:
+
+- Provider-specific TOML sub-shape.
+- Provider secret-path validation and resolved-secret projection.
+- Explicit NT config construction for that provider.
+- NT data and execution factory registration metadata.
+- Provider-specific credential-log metadata.
+- Provider-specific discovery, readiness, filter, or cost-fact acquisition only
+  where NT does not already expose a suitable Rust fact.
+
+Market families are separate from providers. Discovery may observe and classify
+broad provider market inventory, but first-live trading may use only explicitly
+supported provider + market-family + strategy-archetype bindings. Unknown,
+ambiguous, or unsupported markets are observable evidence, not automatic
+trading targets.
+
+Strategy archetypes are reusable modules. Many strategy TOML files may
+instantiate the same archetype with different configured targets, venues,
+reference inputs, sizing limits, and thresholds. Adding a strategy instance must
+not require runtime assembly changes.
+
+Cost and fee facts are infrastructure inputs, but not strategy-owned fee
+calculation. Provider or family bindings may prepare cost facts outside the
+latency-critical decision path, with freshness and source evidence checked at
+startup and before activation. The hot path reads an already-prepared fact
+snapshot. Research owns alpha and net-opportunity design; infra owns making the
+required facts available without blocking trading decisions on live API calls.
+
+NT Portfolio remains the source of truth for account, balance, position, order,
+fill, average-price, and exposure state. Bolt allocation state may exist only as
+decision-local evidence, TOML limit application, or audit metadata. It must not
+replace NT Portfolio truth.
+
 ## Open Decisions
 
 | ID | Open decision | Notes |
@@ -290,6 +359,11 @@ slice doc template, PR template, CI check, or verifier test.
 | O9 | Future slice gate enforcement | Principle is approved; physical mechanism is open. |
 | O10 | Deep immutability between validation and mapping | Need a mechanism to prove validated config is the config mapped into NT. See R15 for the current concrete gap. |
 | O11 | Rule relaxation audit process | Any change from rejecting a value to accepting it must re-audit NT runtime couplings at the pinned rev. Closes through a process artifact, not code alone. |
+| O12 | Provider binding physical shape beyond validation | Must decide how adapter mapping, secret projection, client registration, credential-log metadata, readiness, discovery, and cost-fact acquisition compose without recreating a venue framework. |
+| O13 | Cost and fee fact source contract | Must decide the typed fact model, freshness gates, provenance fields, hot-path snapshot shape, and NT-owned versus Bolt-owned source boundary. |
+| O14 | Discovery and classification boundary | Must decide where broad market discovery lives, how classification results are represented, and how unsupported/ambiguous markets are prevented from becoming trading targets. |
+| O15 | Strategy archetype construction binding | Must decide the construction interface that lets many strategy TOMLs instantiate one archetype without adding core runtime branches. |
+| O16 | Portfolio allocation interface | Must decide the minimum Bolt-side allocation evidence needed for sizing and audit while keeping NT Portfolio authoritative. |
 
 ## Named Residuals
 
@@ -327,6 +401,9 @@ different date.
 | R27 | BoltV3UpdownNowFn type location conflicts with provider-owned glue | `src/bolt_v3_adapters.rs` | Bolt-v3 maintainers | Clock type moves to neutral location accessible to adapter mapping and provider-owned glue without adapter import | Process-only |
 | R28 | NT-internal value transformations between typed-config construction and wire emission. Distinct from R17/R18 substitution risk, where NT may replace absent values with env vars; R28 covers mutation of values Bolt provided. | R17 and R18 are observed adjacent instances | Bolt-v3 maintainers | End-to-end behavioral test proves Bolt-configured values reach NT use unchanged for runtime-bearing fields. Enumerating accepted NT-internal transformations is documentation only and does not retire this residual by itself. | Process-only |
 | R29 | Archetype binding imports the validation crate's decimal parser, leaving a non-archetype-owned dependency inside archetype code. Migrated from the archived 2026-04-27 core-boundary checkpoint. | `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` calls `bolt_v3_validate::parse_decimal_string` | Bolt-v3 maintainers | Decimal parsing helper moves to a neutral utility module if reused beyond shared validation, or the archetype's reliance on the validation-owned helper is removed | Process-only |
+| R30 | Provider-specific adapter, secret, and client-registration leaks are not yet covered by one physical verifier. | `src/bolt_v3_adapters.rs`, `src/bolt_v3_secrets.rs`, `src/bolt_v3_client_registration.rs` | Bolt-v3 maintainers | A provider-leak verifier fails the current closed provider-adapter/secret/registration shapes, then passes after the provider-boundary slice retires R3-R9. | Planned verifier |
+| R31 | Cost and fee facts do not yet have a provider-neutral typed contract. | Provider fee/cost behavior is currently not represented as a Bolt-v3 fact source with freshness/provenance gates | Bolt-v3 maintainers | Cost/fee fact contract is selected, provider-owned sources are mapped, and hot-path consumers read prepared snapshots only. | Process-only |
+| R32 | Broad discovery and classification are not yet separated from explicit trading activation. | Current target and provider-filter paths are current-stack specific | Bolt-v3 maintainers | Discovery can classify broad provider inventory while execution can activate only reviewed provider + family + archetype bindings. | Process-only |
 
 ## Verifier Coverage Map
 
@@ -351,6 +428,7 @@ verifier.
 | V13 | D3 | Provider validation rules carry approved category labels or registry entries. Blocked on O5. | Process-only until O5 selects a mechanism | Not selected |
 | V14 | R22 | Fixture and generated-config provider hardcodes are owner-scoped or fixture-scoped | Process-only until fixture policy selects a mechanism | Not selected |
 | V15 | D2 | Provider binding keys are string literals owned by provider modules, and provider binding structs do not use `VenueKind` as their key type | Source scan plus type-shape review | `scripts/verify_bolt_v3_core_boundary.py` |
+| V16 | R3-R9, R30 | Core/shared Bolt-v3 code contains no closed provider adapter enum, closed resolved-secret enum, concrete NT provider factory imports, adapter-core `MarketSlugFilter` construction, or core match on concrete provider keys outside approved provider-owned modules | Source scan with failing positive fixtures before rollout | Not selected |
 
 ## Future Slice Gate
 

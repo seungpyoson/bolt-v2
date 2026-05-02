@@ -37,6 +37,40 @@ class Rule:
     message: str
 
 
+@dataclass(frozen=True)
+class FindingAllowance:
+    path: str
+    message: str
+    excerpt_pattern: re.Pattern[str]
+
+
+# The remaining updown-shaped market-identity boundary is intentionally tracked
+# by https://github.com/seungpyoson/bolt-v2/issues/290. Keep these exceptions
+# exact so any new market-family leakage fails this verifier.
+FINDING_ALLOWANCES = (
+    FindingAllowance(
+        "src/bolt_v3_adapters.rs",
+        "core accesses concrete market-family module path",
+        re.compile(r"bolt_v3_market_families::updown::MarketIdentityPlan"),
+    ),
+    FindingAllowance(
+        "src/bolt_v3_providers/mod.rs",
+        "core accesses concrete market-family module path",
+        re.compile(r"bolt_v3_market_families::updown::MarketIdentityPlan"),
+    ),
+    FindingAllowance(
+        "src/bolt_v3_adapters.rs",
+        "concrete market-family type name in core production code",
+        re.compile(r"\bBoltV3UpdownNowFn\b"),
+    ),
+    FindingAllowance(
+        "src/bolt_v3_providers/mod.rs",
+        "concrete market-family type name in core production code",
+        re.compile(r"\bBoltV3UpdownNowFn\b"),
+    ),
+)
+
+
 def rules_for(
     paths: tuple[str, ...],
     pattern: re.Pattern[str],
@@ -89,6 +123,7 @@ def rules_for_root(root: Path) -> list[Rule]:
     provider_alt = alternation(provider_names)
     provider_type_alt = alternation(tuple(snake_to_pascal(name) for name in provider_names))
     family_alt = alternation(family_names)
+    family_type_alt = alternation(tuple(snake_to_pascal(name) for name in family_names))
 
     return [
         *rules_for(
@@ -124,6 +159,16 @@ def rules_for_root(root: Path) -> list[Rule]:
             core_files,
             re.compile(rf'"(?:{family_alt})"'),
             "market-family key string literal in core production code",
+        ),
+        *rules_for(
+            core_files,
+            re.compile(rf"\bbolt_v3_market_families::(?:{family_alt})::"),
+            "core accesses concrete market-family module path",
+        ),
+        *rules_for(
+            core_files,
+            re.compile(rf"\b[A-Za-z0-9_]*(?:{family_type_alt})[A-Za-z0-9_]*\b"),
+            "concrete market-family type name in core production code",
         ),
         Rule(
             "src/bolt_v3_adapters.rs",
@@ -201,11 +246,97 @@ def excerpt_for(text: str, pos: int) -> str:
 
 
 def is_cfg_test_attr(stripped: str) -> bool:
-    return stripped.startswith("#[") and "cfg" in stripped and "test" in stripped
+    if not stripped.startswith("#[cfg("):
+        return False
+
+    expression = stripped[len("#[cfg(") :]
+    if expression.endswith(")]"):
+        expression = expression[:-2]
+
+    expression = re.sub(r"\bnot\s*\(\s*test\s*\)", "", expression)
+    return re.search(r'(?<![\w"])test(?![\w"])', expression) is not None
+
+
+def strip_comments_preserve_lines(text: str) -> str:
+    output: list[str] = []
+    i = 0
+    block_depth = 0
+    string_quote: str | None = None
+    escaped = False
+
+    while i < len(text):
+        char = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+
+        if block_depth:
+            if char == "/" and nxt == "*":
+                block_depth += 1
+                i += 2
+                continue
+            if char == "*" and nxt == "/":
+                block_depth -= 1
+                i += 2
+                continue
+            output.append("\n" if char == "\n" else " ")
+            i += 1
+            continue
+
+        if string_quote is not None:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == string_quote:
+                string_quote = None
+            i += 1
+            continue
+
+        if char == "/" and nxt == "/":
+            while i < len(text) and text[i] != "\n":
+                output.append(" ")
+                i += 1
+            continue
+
+        if char == "/" and nxt == "*":
+            block_depth = 1
+            output.extend((" ", " "))
+            i += 2
+            continue
+
+        if char == '"':
+            string_quote = char
+
+        output.append(char)
+        i += 1
+
+    return "".join(output)
 
 
 def brace_delta(line: str) -> int:
-    return line.count("{") - line.count("}")
+    delta = 0
+    quote: str | None = None
+    escaped = False
+
+    for char in line:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+
+        if char == '"':
+            quote = char
+            continue
+        if char == "{":
+            delta += 1
+        elif char == "}":
+            delta -= 1
+
+    return delta
 
 
 def production_text(text: str) -> str:
@@ -216,7 +347,7 @@ def production_text(text: str) -> str:
     core surface that decides whether adding a provider requires runtime edits.
     """
 
-    lines = text.splitlines()
+    lines = strip_comments_preserve_lines(text).splitlines()
     output: list[str] = []
     cfg_test_depth: int | None = None
     pending_cfg_test = False
@@ -235,22 +366,29 @@ def production_text(text: str) -> str:
             output.append("")
             continue
 
-        if pending_cfg_test and (not stripped or stripped.startswith("//")):
+        if pending_cfg_test and not stripped:
+            output.append("")
+            continue
+
+        if pending_cfg_test and ";" in stripped and "{" not in stripped:
+            pending_cfg_test = False
             output.append("")
             continue
 
         if pending_cfg_test and "{" in stripped:
             cfg_test_depth = brace_delta(line)
+            pending_cfg_test = False
             if cfg_test_depth <= 0:
                 cfg_test_depth = None
             output.append("")
             continue
 
-        pending_cfg_test = False
-        if stripped.startswith("//"):
+        if pending_cfg_test:
             output.append("")
-        else:
-            output.append(line)
+            continue
+
+        pending_cfg_test = False
+        output.append(line)
 
     trailing_newline = "\n" if text.endswith("\n") else ""
     return "\n".join(output) + trailing_newline
@@ -264,15 +402,24 @@ def scan_root(root: Path) -> list[Finding]:
             continue
         text = production_text(path.read_text(encoding="utf-8"))
         for match in rule.pattern.finditer(text):
-            findings.append(
-                Finding(
-                    path=rule.path,
-                    line=line_number(text, match.start()),
-                    message=rule.message,
-                    excerpt=excerpt_for(text, match.start()),
-                )
+            finding = Finding(
+                path=rule.path,
+                line=line_number(text, match.start()),
+                message=rule.message,
+                excerpt=excerpt_for(text, match.start()),
             )
+            if not is_allowed_finding(finding):
+                findings.append(finding)
     return findings
+
+
+def is_allowed_finding(finding: Finding) -> bool:
+    return any(
+        finding.path == allowance.path
+        and finding.message == allowance.message
+        and allowance.excerpt_pattern.search(finding.excerpt)
+        for allowance in FINDING_ALLOWANCES
+    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

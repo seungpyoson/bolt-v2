@@ -60,6 +60,9 @@ def test_clean_fixture_has_no_findings() -> None:
             | {
                 "src/bolt_v3_adapters.rs": """
                     /// Historical note: MarketSlugFilter used to live here.
+                    /* Historical note:
+                       "polymarket" and "updown" used to be mentioned here.
+                    */
                     pub struct ProviderOwnedAdapterConfig;
 
                     #[cfg(test)]
@@ -67,8 +70,17 @@ def test_clean_fixture_has_no_findings() -> None:
                     // Test module comments may sit between cfg and item.
                     mod tests {
                         fn fixture() {
+                            let _brace = "}";
                             let _ = "BoltV3VenueAdapterConfig::Polymarket";
                         }
+                    }
+
+                    #[cfg(test)]
+                    fn multiline_fixture(
+                        value: &str,
+                    ) {
+                        let _ = value;
+                        let _ = "polymarket";
                     }
 
                     pub struct ProductionAfterTests;
@@ -163,6 +175,32 @@ def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
         assert "closed registered venue summary enum" in messages
 
 
+def test_family_module_and_type_leaks_are_findings_for_new_families() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_market_families/fixed_time.rs": """
+                    pub const KEY: &str = "fixed_time";
+                    pub struct FixedTimeTargetPlan;
+                """,
+                "src/bolt_v3_readiness.rs": """
+                    use crate::bolt_v3_market_families::fixed_time::FixedTimeTargetPlan;
+                    pub type BoltV3FixedTimeNowFn = fn() -> i64;
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "core accesses concrete market-family module path" in messages
+        assert "concrete market-family type name in core production code" in messages
+
+
 def test_new_core_file_is_auto_scanned() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -172,6 +210,59 @@ def test_new_core_file_is_auto_scanned() -> None:
             binding_files()
             | {
                 "src/bolt_v3_cost_facts.rs": """
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_production_after_cfg_test_block_is_scanned() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(test)]
+                    mod tests {
+                        fn fixture() {
+                            let _ = "}";
+                            let _ = "polymarket";
+                        }
+                    }
+
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_cfg_not_test_is_scanned_as_production() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(not(test))]
                     pub fn leaked(kind: &str) -> bool {
                         kind == "polymarket"
                     }
@@ -209,7 +300,10 @@ def main() -> int:
     tests = [
         test_clean_fixture_has_no_findings,
         test_closed_provider_variants_and_factory_imports_are_findings,
+        test_family_module_and_type_leaks_are_findings_for_new_families,
         test_new_core_file_is_auto_scanned,
+        test_production_after_cfg_test_block_is_scanned,
+        test_cfg_not_test_is_scanned_as_production,
         test_strict_mode_fails_on_fixture_findings,
     ]
     for test in tests:

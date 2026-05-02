@@ -51,6 +51,12 @@ fn assert_no_resolved_secret_values(text: &str) {
     }
 }
 
+// This suite covers skip-chain behavior and a deterministic final `builder.build()`
+// failure. Direct `make_bolt_v3_live_node_builder` and
+// `register_bolt_v3_clients` failure fixtures are not synthesized here because
+// current public inputs do not provide stable triggers for those boundaries
+// without adding test-only production hooks.
+
 #[test]
 fn startup_check_reports_success_facts_without_connecting() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -170,6 +176,17 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
         }),
         "forbidden env failures should be venue-keyed: {report:#?}"
     );
+    assert!(
+        report
+            .facts
+            .iter()
+            .filter(|fact| {
+                fact.stage == BoltV3StartupCheckStage::ForbiddenCredentialEnv
+                    && fact.status == BoltV3StartupCheckStatus::Failed
+            })
+            .all(|fact| matches!(fact.subject, BoltV3StartupCheckSubject::Venue(_))),
+        "all forbidden env failures should be venue-keyed: {report:#?}"
+    );
     assert_eq!(
         skipped_stages(&report),
         vec![
@@ -205,6 +222,7 @@ fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
     let text = report_text(&report);
     assert!(text.contains("venues.polymarket_main.secrets.private_key"));
     assert!(text.contains("/bolt/polymarket_main/private_key"));
+    assert_no_resolved_secret_values(&text);
     assert_eq!(
         skipped_stages(&report),
         vec![
@@ -248,7 +266,7 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
             fact.stage == BoltV3StartupCheckStage::AdapterMapping
                 && fact.subject == BoltV3StartupCheckSubject::Venue("polymarket_main".to_string())
         }),
-        "adapter mapping failures should be venue-keyed when the mapper error has a venue key: {report:#?}"
+        "adapter mapping failures must be venue-keyed: {report:#?}"
     );
     assert_eq!(
         skipped_stages(&report),

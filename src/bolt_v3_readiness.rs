@@ -1,6 +1,8 @@
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
-    bolt_v3_client_registration::{BoltV3RegistrationSummary, register_bolt_v3_clients},
+    bolt_v3_client_registration::{
+        BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
+    },
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_live_node::make_bolt_v3_live_node_builder,
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with},
@@ -246,7 +248,7 @@ where
         Err(error) => {
             report.push(
                 BoltV3StartupCheckStage::ClientRegistration,
-                BoltV3StartupCheckSubject::Root,
+                client_registration_error_subject(&error),
                 BoltV3StartupCheckStatus::Failed,
                 error.to_string(),
             );
@@ -291,6 +293,16 @@ fn adapter_mapping_error_subject(error: &BoltV3AdapterMappingError) -> BoltV3Sta
     BoltV3StartupCheckSubject::Venue(venue_key.clone())
 }
 
+fn client_registration_error_subject(
+    error: &BoltV3ClientRegistrationError,
+) -> BoltV3StartupCheckSubject {
+    let venue_key = match error {
+        BoltV3ClientRegistrationError::AddDataClient { venue_key, .. }
+        | BoltV3ClientRegistrationError::AddExecClient { venue_key, .. } => venue_key,
+    };
+    BoltV3StartupCheckSubject::Venue(venue_key.clone())
+}
+
 fn push_registration_summary(
     report: &mut BoltV3StartupCheckReport,
     summary: &BoltV3RegistrationSummary,
@@ -314,6 +326,32 @@ fn push_registration_summary(
                 "registered NT clients for venue `{venue_key}`: data={} execution={}",
                 venue.data, venue.execution
             ),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_registration_error_subject_is_venue_keyed() {
+        let data_error = BoltV3ClientRegistrationError::AddDataClient {
+            venue_key: "venue_a".to_string(),
+            message: "data rejected".to_string(),
+        };
+        assert_eq!(
+            client_registration_error_subject(&data_error),
+            BoltV3StartupCheckSubject::Venue("venue_a".to_string())
+        );
+
+        let exec_error = BoltV3ClientRegistrationError::AddExecClient {
+            venue_key: "venue_b".to_string(),
+            message: "execution rejected".to_string(),
+        };
+        assert_eq!(
+            client_registration_error_subject(&exec_error),
+            BoltV3StartupCheckSubject::Venue("venue_b".to_string())
         );
     }
 }

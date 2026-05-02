@@ -400,6 +400,45 @@ def test_raw_strings_do_not_create_fake_comments() -> None:
         assert "provider-key string literal in core production code" in messages
 
 
+def test_multiline_raw_string_braces_do_not_keep_cfg_test_open() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": r'''
+                    #[cfg(test)]
+                    mod tests {
+                        fn fixture() {
+                            let _fixture = r#"
+                                {
+                            "#;
+                            let _ = "polymarket";
+                        }
+                    }
+
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                ''',
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_char_literal_parser_accepts_rust_escape_lengths() -> None:
+    verifier = load_verifier()
+
+    assert verifier.char_literal_end_at(r"'\x7F'", 0) == len(r"'\x7F'")
+    assert verifier.char_literal_end_at(r"'\u{1234}'", 0) == len(r"'\u{1234}'")
+
+
 def test_char_literal_braces_do_not_keep_cfg_test_open() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -462,6 +501,8 @@ def main() -> int:
         test_cfg_not_test_is_scanned_as_production,
         test_cfg_not_any_test_is_scanned_as_production,
         test_raw_strings_do_not_create_fake_comments,
+        test_multiline_raw_string_braces_do_not_keep_cfg_test_open,
+        test_char_literal_parser_accepts_rust_escape_lengths,
         test_char_literal_braces_do_not_keep_cfg_test_open,
         test_strict_mode_fails_on_fixture_findings,
     ]

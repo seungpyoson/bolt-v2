@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import string
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,9 @@ class FindingAllowance:
 # The remaining updown-shaped market-identity boundary is intentionally tracked
 # by https://github.com/seungpyoson/bolt-v2/issues/290. Keep these exceptions
 # exact so any new market-family leakage fails this verifier.
+# `exact_excerpt` must match the stripped source line produced by `excerpt_for`;
+# if the allowed source line is reformatted, update the allowance in the same
+# change.
 FINDING_ALLOWANCES = (
     FindingAllowance(
         "src/bolt_v3_adapters.rs",
@@ -328,16 +332,36 @@ def char_literal_end_at(line: str, start: int) -> int | None:
         return None
 
     i = start + 1
-    while i < len(line):
-        if line[i] == "\\":
-            i += 2
-            continue
-        if line[i] == "'":
-            return i + 1 if i > start + 1 else None
-        if i - start > 4:
+    if i >= len(line) or line[i] in ("'", "\n"):
+        return None
+
+    if line[i] != "\\":
+        quote = i + 1
+        return quote + 1 if quote < len(line) and line[quote] == "'" else None
+
+    if i + 1 >= len(line):
+        return None
+
+    escape = line[i + 1]
+    if escape == "x":
+        hex_digits = line[i + 2 : i + 4]
+        quote = i + 4
+        if len(hex_digits) == 2 and all(char in string.hexdigits for char in hex_digits):
+            return quote + 1 if quote < len(line) and line[quote] == "'" else None
+        return None
+
+    if escape == "u" and i + 2 < len(line) and line[i + 2] == "{":
+        close_brace = line.find("}", i + 3)
+        if close_brace == -1:
             return None
-        i += 1
-    return None
+        hex_digits = line[i + 3 : close_brace]
+        quote = close_brace + 1
+        if 1 <= len(hex_digits) <= 6 and all(char in string.hexdigits for char in hex_digits):
+            return quote + 1 if quote < len(line) and line[quote] == "'" else None
+        return None
+
+    quote = i + 2
+    return quote + 1 if quote < len(line) and line[quote] == "'" else None
 
 
 def strip_comments_preserve_lines(text: str) -> str:
@@ -386,6 +410,13 @@ def strip_comments_preserve_lines(text: str) -> str:
             i += 1
             continue
 
+        if char == "'":
+            char_end = char_literal_end_at(text, i)
+            if char_end is not None:
+                output.append(text[i:char_end])
+                i = char_end
+                continue
+
         if char == "/" and nxt == "/":
             while i < len(text) and text[i] != "\n":
                 output.append(" ")
@@ -414,41 +445,48 @@ def strip_comments_preserve_lines(text: str) -> str:
     return "".join(output)
 
 
-def brace_delta(line: str) -> int:
-    delta = 0
+@dataclass
+class BraceScanState:
     quote: str | None = None
     raw_string_closer: str | None = None
-    escaped = False
+    escaped: bool = False
+
+
+def brace_delta(line: str, state: BraceScanState | None = None) -> int:
+    if state is None:
+        state = BraceScanState()
+
+    delta = 0
     i = 0
 
     while i < len(line):
         char = line[i]
-        if raw_string_closer is not None:
-            if line.startswith(raw_string_closer, i):
-                i += len(raw_string_closer)
-                raw_string_closer = None
+        if state.raw_string_closer is not None:
+            if line.startswith(state.raw_string_closer, i):
+                i += len(state.raw_string_closer)
+                state.raw_string_closer = None
             else:
                 i += 1
             continue
 
-        if quote is not None:
-            if escaped:
-                escaped = False
+        if state.quote is not None:
+            if state.escaped:
+                state.escaped = False
             elif char == "\\":
-                escaped = True
-            elif char == quote:
-                quote = None
+                state.escaped = True
+            elif char == state.quote:
+                state.quote = None
             i += 1
             continue
 
         raw = raw_string_closer_at(line, i)
         if raw is not None:
-            prefix_len, raw_string_closer = raw
+            prefix_len, state.raw_string_closer = raw
             i += prefix_len
             continue
 
         if char == '"':
-            quote = char
+            state.quote = char
             i += 1
             continue
         if char == "'":
@@ -476,15 +514,17 @@ def production_text(text: str) -> str:
     lines = strip_comments_preserve_lines(text).splitlines()
     output: list[str] = []
     cfg_test_depth: int | None = None
+    brace_state = BraceScanState()
     pending_cfg_test = False
 
     for line in lines:
         stripped = line.lstrip()
         if cfg_test_depth is not None:
             output.append("")
-            cfg_test_depth += brace_delta(line)
+            cfg_test_depth += brace_delta(line, brace_state)
             if cfg_test_depth <= 0:
                 cfg_test_depth = None
+                brace_state = BraceScanState()
             continue
 
         if is_cfg_test_attr(stripped):
@@ -502,10 +542,12 @@ def production_text(text: str) -> str:
             continue
 
         if pending_cfg_test and "{" in stripped:
-            cfg_test_depth = brace_delta(line)
+            brace_state = BraceScanState()
+            cfg_test_depth = brace_delta(line, brace_state)
             pending_cfg_test = False
             if cfg_test_depth <= 0:
                 cfg_test_depth = None
+                brace_state = BraceScanState()
             output.append("")
             continue
 

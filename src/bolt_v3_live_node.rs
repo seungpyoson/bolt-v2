@@ -170,9 +170,7 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::AdapterMapping(error) => {
                 write!(f, "bolt-v3 adapter config mapping failed: {error}")
             }
-            BoltV3LiveNodeError::BuilderConstruction(error) => {
-                write!(f, "bolt-v3 LiveNodeBuilder construction failed: {error}")
-            }
+            BoltV3LiveNodeError::BuilderConstruction(error) => write!(f, "{error}"),
             BoltV3LiveNodeError::ClientRegistration(error) => {
                 write!(f, "bolt-v3 client registration failed: {error}")
             }
@@ -655,13 +653,27 @@ mod tests {
     #[test]
     fn live_node_builder_rejects_backtest_environment_before_registration() {
         let loaded = fixture_loaded_config();
-        let mut cfg = make_live_node_config(&loaded);
-        cfg.environment = Environment::Backtest;
+        let make_error = || {
+            let mut cfg = make_live_node_config(&loaded);
+            cfg.environment = Environment::Backtest;
+            make_bolt_v3_live_node_builder_from_config(cfg)
+                .expect_err("NT LiveNodeBuilder must reject Backtest environment")
+        };
 
-        let error = make_bolt_v3_live_node_builder_from_config(cfg)
-            .expect_err("NT LiveNodeBuilder must reject Backtest environment");
+        let rendered = BoltV3LiveNodeError::BuilderConstruction(make_error()).to_string();
+        assert_eq!(
+            rendered
+                .matches("LiveNodeBuilder construction failed")
+                .count(),
+            1,
+            "builder-construction Display should not duplicate layer prefixes: {rendered}"
+        );
+        assert!(
+            rendered.contains("Backtest environment"),
+            "builder-construction failure should identify the invalid environment: {rendered}"
+        );
 
-        let BoltV3LiveNodeBuilderError::BuilderConstruction { source } = error;
+        let BoltV3LiveNodeBuilderError::BuilderConstruction { source } = make_error();
         assert!(
             source.to_string().contains("Backtest environment"),
             "builder-construction failure should identify the invalid environment: {source}"

@@ -6,7 +6,7 @@ use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_readiness::{
         BoltV3StartupCheckReport, BoltV3StartupCheckStage, BoltV3StartupCheckStatus,
-        run_bolt_v3_startup_check_with,
+        BoltV3StartupCheckSubject, run_bolt_v3_startup_check_with,
     },
 };
 
@@ -33,6 +33,22 @@ fn skipped_stages(report: &BoltV3StartupCheckReport) -> Vec<BoltV3StartupCheckSt
 
 fn report_text(report: &BoltV3StartupCheckReport) -> String {
     format!("{report:#?}")
+}
+
+fn assert_no_resolved_secret_values(text: &str) {
+    for secret_value in [
+        "0x4242424242424242424242424242424242424242424242424242424242424242",
+        "polymarket-api-key",
+        "YWJj",
+        "polymarket-passphrase",
+        "binance-api-key",
+        "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+    ] {
+        assert!(
+            !text.contains(secret_value),
+            "report must not contain resolved secret value {secret_value}: {text}"
+        );
+    }
 }
 
 #[test]
@@ -93,6 +109,8 @@ fn startup_check_reports_success_facts_without_connecting() {
         .expect("binance_reference registration fact should exist");
     assert!(binance.detail.contains("data=true"));
     assert!(binance.detail.contains("execution=false"));
+
+    assert_no_resolved_secret_values(&report_text(&report));
 }
 
 #[test]
@@ -114,9 +132,12 @@ fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
     let report = run_bolt_v3_startup_check_with(&empty_loaded, |_| false, resolver);
 
     for stage in [
+        BoltV3StartupCheckStage::ForbiddenCredentialEnv,
         BoltV3StartupCheckStage::SecretResolution,
         BoltV3StartupCheckStage::AdapterMapping,
+        BoltV3StartupCheckStage::LiveNodeBuilder,
         BoltV3StartupCheckStage::ClientRegistration,
+        BoltV3StartupCheckStage::LiveNodeBuild,
     ] {
         assert_eq!(
             statuses_for(&report, stage),
@@ -141,6 +162,13 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
         statuses_for(&report, BoltV3StartupCheckStage::ForbiddenCredentialEnv),
         vec![BoltV3StartupCheckStatus::Failed],
         "{report:#?}"
+    );
+    assert!(
+        report.facts.iter().any(|fact| {
+            fact.stage == BoltV3StartupCheckStage::ForbiddenCredentialEnv
+                && fact.subject == BoltV3StartupCheckSubject::Venue("polymarket_main".to_string())
+        }),
+        "forbidden env failures should be venue-keyed: {report:#?}"
     );
     assert_eq!(
         skipped_stages(&report),
@@ -215,6 +243,13 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
         vec![BoltV3StartupCheckStatus::Failed],
         "{report:#?}"
     );
+    assert!(
+        report.facts.iter().any(|fact| {
+            fact.stage == BoltV3StartupCheckStage::AdapterMapping
+                && fact.subject == BoltV3StartupCheckSubject::Venue("polymarket_main".to_string())
+        }),
+        "adapter mapping failures should be venue-keyed when the mapper error has a venue key: {report:#?}"
+    );
     assert_eq!(
         skipped_stages(&report),
         vec![
@@ -225,20 +260,40 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
         "{report:#?}"
     );
 
-    let text = report_text(&report);
-    for secret_value in [
-        "0x4242424242424242424242424242424242424242424242424242424242424242",
-        "polymarket-api-key",
-        "YWJj",
-        "polymarket-passphrase",
-        "binance-api-key",
-        "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-    ] {
-        assert!(
-            !text.contains(secret_value),
-            "report must not contain resolved secret value {secret_value}: {text}"
-        );
-    }
+    assert_no_resolved_secret_values(&report_text(&report));
+}
+
+#[test]
+fn startup_check_reports_live_node_build_failure_after_registration() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded
+        .root
+        .nautilus
+        .data_engine
+        .time_bars_origins
+        .insert("INVALID".to_string(), 1);
+
+    let report = run_bolt_v3_startup_check_with(&loaded, |_| false, support::fake_bolt_v3_resolver);
+
+    assert!(
+        statuses_for(&report, BoltV3StartupCheckStage::ClientRegistration)
+            .contains(&BoltV3StartupCheckStatus::Satisfied),
+        "client registration should remain satisfied before final build failure: {report:#?}"
+    );
+    assert_eq!(
+        statuses_for(&report, BoltV3StartupCheckStage::LiveNodeBuild),
+        vec![BoltV3StartupCheckStatus::Failed],
+        "{report:#?}"
+    );
+    assert!(
+        report
+            .facts
+            .iter()
+            .all(|fact| fact.status != BoltV3StartupCheckStatus::Skipped),
+        "final build failure should not retroactively skip earlier stages: {report:#?}"
+    );
+    assert_no_resolved_secret_values(&report_text(&report));
 }
 
 #[test]
@@ -254,7 +309,7 @@ fn startup_check_source_does_not_expose_launch_booleans() {
 }
 
 #[test]
-fn startup_check_source_remains_no_trade() {
+fn startup_check_source_does_not_call_trading_apis_directly() {
     let src = source_without_comments_and_strings(include_str!("../src/bolt_v3_readiness.rs"));
     let tokens = identifier_tokens(&src);
     for forbidden in [
@@ -306,6 +361,22 @@ fn source_fence_helper_blanks_raw_strings_without_corrupting_later_tokens() {
     assert!(
         tokens.iter().any(|token| token == "submit_order"),
         "raw strings must not corrupt token scanning after the literal: {stripped}"
+    );
+}
+
+#[test]
+fn source_fence_helper_blanks_bare_unicode_char_escapes() {
+    let src = "const CH: char = '\\u0072';\nfn after() { run_trader(); }\n";
+    let stripped = source_without_comments_and_strings(src);
+    let tokens = identifier_tokens(&stripped);
+
+    assert!(
+        !tokens.iter().any(|token| token == "u0072"),
+        "bare unicode char escape must be blanked before token scanning: {stripped}"
+    );
+    assert!(
+        tokens.iter().any(|token| token == "run_trader"),
+        "bare unicode char escapes must not corrupt later token scanning: {stripped}"
     );
 }
 
@@ -481,6 +552,14 @@ fn rust_char_literal_end(src: &str, start: usize) -> Option<usize> {
                 return None;
             }
             index = close + 1;
+        } else if escape == 'u' {
+            let hex_start = index + escape.len_utf8();
+            let hex_end = hex_start + 4;
+            let hex = src.get(hex_start..hex_end)?;
+            if !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                return None;
+            }
+            index = hex_end;
         } else if escape == 'x' {
             let hex_start = index + escape.len_utf8();
             let hex_end = hex_start + 2;

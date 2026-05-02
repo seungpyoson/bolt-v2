@@ -1,5 +1,5 @@
 use crate::{
-    bolt_v3_adapters::map_bolt_v3_adapters,
+    bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
     bolt_v3_client_registration::{BoltV3RegistrationSummary, register_bolt_v3_clients},
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_live_node::make_bolt_v3_live_node_builder,
@@ -99,12 +99,14 @@ where
             "no forbidden credential environment variables are set",
         ),
         Err(error) => {
-            report.push(
-                BoltV3StartupCheckStage::ForbiddenCredentialEnv,
-                BoltV3StartupCheckSubject::Root,
-                BoltV3StartupCheckStatus::Failed,
-                error.to_string(),
-            );
+            for finding in error.findings {
+                report.push(
+                    BoltV3StartupCheckStage::ForbiddenCredentialEnv,
+                    BoltV3StartupCheckSubject::Venue(finding.venue_key.clone()),
+                    BoltV3StartupCheckStatus::Failed,
+                    finding.to_string(),
+                );
+            }
             report.skip_after(
                 BoltV3StartupCheckStage::ForbiddenCredentialEnv,
                 &[
@@ -188,7 +190,7 @@ where
         Err(error) => {
             report.push(
                 BoltV3StartupCheckStage::AdapterMapping,
-                BoltV3StartupCheckSubject::Root,
+                adapter_mapping_error_subject(&error),
                 BoltV3StartupCheckStatus::Failed,
                 error.to_string(),
             );
@@ -215,6 +217,10 @@ where
             builder
         }
         Err(error) => {
+            // `make_bolt_v3_live_node_builder` currently returns NT's
+            // anyhow error. Keep this first slice narrow by rendering the
+            // existing boundary detail instead of introducing a new typed
+            // builder error family.
             report.push(
                 BoltV3StartupCheckStage::LiveNodeBuilder,
                 BoltV3StartupCheckSubject::Root,
@@ -272,6 +278,17 @@ where
     }
 
     report
+}
+
+fn adapter_mapping_error_subject(error: &BoltV3AdapterMappingError) -> BoltV3StartupCheckSubject {
+    let venue_key = match error {
+        BoltV3AdapterMappingError::SecretKindMismatch { venue_key, .. }
+        | BoltV3AdapterMappingError::MissingResolvedSecrets { venue_key, .. }
+        | BoltV3AdapterMappingError::SchemaParse { venue_key, .. }
+        | BoltV3AdapterMappingError::NumericRange { venue_key, .. }
+        | BoltV3AdapterMappingError::ValidationInvariant { venue_key, .. } => venue_key,
+    };
+    BoltV3StartupCheckSubject::Venue(venue_key.clone())
 }
 
 fn push_registration_summary(

@@ -180,6 +180,8 @@ jobs:
 
       - name: test
         env:
+          # Keep CI test binaries small enough for ubuntu-latest link/disk limits.
+          # This disables test debuginfo only; assertions and test logic still run.
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: just test
 

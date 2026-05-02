@@ -11,7 +11,7 @@
 //! Once the env-var blocklist passes, this module also resolves every
 //! configured `[secrets]` block from Amazon Web Services Systems Manager
 //! using `[aws].region` as the resolver region. Resolved values are held
-//! in typed structs whose Debug output redacts every secret field; the
+//! behind provider-owned handles whose Debug output redacts every secret field; the
 //! resolved error type carries venue key, secret-config field, and SSM
 //! path context, but never the resolved secret value itself.
 
@@ -23,10 +23,6 @@ use crate::{
         self, ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
     },
     secrets::SsmResolverSession,
-};
-
-pub use crate::bolt_v3_providers::{
-    binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,7 +247,10 @@ pub fn resolve_field(
 mod tests {
     use super::*;
     use crate::bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config};
-    use crate::bolt_v3_providers::{binance, polymarket};
+    use crate::bolt_v3_providers::{
+        binance::{self, ResolvedBoltV3BinanceSecrets},
+        polymarket::{self, ResolvedBoltV3PolymarketSecrets},
+    };
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use std::path::PathBuf;
 

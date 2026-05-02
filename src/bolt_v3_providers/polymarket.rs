@@ -39,7 +39,7 @@ use crate::{
     },
     bolt_v3_config::VenueBlock,
     bolt_v3_market_families::updown::{
-        MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
+        self, MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderResolvedSecrets, ProviderSecretResolveContext,
@@ -50,6 +50,7 @@ use crate::{
 };
 
 pub const KEY: &str = "polymarket";
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_polymarket::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "POLYMARKET_PK",

@@ -143,10 +143,10 @@ mod tests {
             BoltV3DataClientAdapterConfig, BoltV3VenueAdapterConfig, map_bolt_v3_adapters,
         },
         bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
-        bolt_v3_secrets::{
-            ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,
-            ResolvedBoltV3VenueSecrets,
+        bolt_v3_providers::{
+            binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
         },
+        bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Audit Bolt-v3 provider-specific leakage in core-adjacent boundaries.
 
-This verifier is intentionally not wired into `just fmt-check` yet. The current
-Bolt-v3 baseline is expected to fail strict mode because adapter mapping,
-resolved secrets, and client registration still encode concrete providers.
-Use `--audit-current` to print those findings without failing while the
-provider-boundary refactor is still pending.
+Provider-specific NT types, provider-key literals, and concrete provider
+dispatch belong in `src/bolt_v3_providers/<provider>.rs`, not in the core
+Bolt-v3 assembly files. This verifier is intentionally strict over production
+code and ignores comments plus `#[cfg(test)] mod tests` fixtures.
 """
 
 from __future__ import annotations
@@ -38,7 +37,59 @@ class Rule:
     message: str
 
 
+CORE_FILES = (
+    "src/bolt_v3_adapters.rs",
+    "src/bolt_v3_client_registration.rs",
+    "src/bolt_v3_config.rs",
+    "src/bolt_v3_live_node.rs",
+    "src/bolt_v3_market_identity.rs",
+    "src/bolt_v3_secrets.rs",
+    "src/bolt_v3_validate.rs",
+    "src/bolt_v3_archetypes/mod.rs",
+    "src/bolt_v3_market_families/mod.rs",
+    "src/bolt_v3_providers/mod.rs",
+)
+
+
+def rules_for(
+    paths: tuple[str, ...],
+    pattern: re.Pattern[str],
+    message: str,
+) -> list[Rule]:
+    return [Rule(path, pattern, message) for path in paths]
+
+
 RULES = [
+    *rules_for(
+        CORE_FILES,
+        re.compile(r"\bnautilus_(?:polymarket|binance)::"),
+        "concrete NT provider crate in core production code",
+    ),
+    *rules_for(
+        CORE_FILES,
+        re.compile(
+            r"\b(?:"
+            r"ResolvedBoltV3(?:Polymarket|Binance)Secrets|"
+            r"Polymarket(?:DataClientConfig|ExecClientConfig|DataClientFactory|ExecutionClientFactory)|"
+            r"Binance(?:DataClientConfig|DataClientFactory)"
+            r")\b"
+        ),
+        "concrete provider type name in core production code",
+    ),
+    *rules_for(
+        CORE_FILES,
+        re.compile(
+            r"\b(?:pub\s+use|use)\s+crate::bolt_v3_providers::[^;]*"
+            r"\b(?:polymarket|binance)\b",
+            re.DOTALL,
+        ),
+        "core imports or re-exports concrete provider module",
+    ),
+    *rules_for(
+        CORE_FILES,
+        re.compile(r'"(?:polymarket|binance)"'),
+        "provider-key string literal in core production code",
+    ),
     Rule(
         "src/bolt_v3_adapters.rs",
         re.compile(
@@ -175,25 +226,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=REPO_ROOT,
         help="repository root to scan; defaults to this checkout",
     )
-    parser.add_argument(
-        "--audit-current",
-        action="store_true",
-        help="print findings but exit 0; use while current baseline is expected to violate",
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     findings = scan_root(args.root)
-
-    if args.audit_current:
-        if findings:
-            for finding in findings:
-                print(finding.render("AUDIT"))
-        else:
-            print("OK: no Bolt-v3 provider leaks found.")
-        return 0
 
     if findings:
         for finding in findings:

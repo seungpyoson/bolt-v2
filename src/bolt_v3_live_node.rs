@@ -7,18 +7,17 @@
 //! - validates the forbidden credential env-var blocklist before
 //!   constructing any NautilusTrader client
 //! - resolves SSM secrets via the bolt-v3 secret resolver
-//! - maps the validated bolt-v3 venue blocks into NT-native adapter
-//!   configs (`PolymarketDataClientConfig`, `PolymarketExecClientConfig`,
-//!   `BinanceDataClientConfig`)
+//! - maps the validated bolt-v3 venue blocks into provider-owned
+//!   NT-native adapter configs
 //! - registers the per-venue NT data and execution client factories on a
 //!   `nautilus_live::builder::LiveNodeBuilder` via the
 //!   [`crate::bolt_v3_client_registration`] boundary
 //! - calls `LiveNodeBuilder::build`, which is **not** purely passive:
-//!   it constructs the NT client objects, parses the Polymarket private
-//!   key into an NT secp256k1 signer (deriving the EVM address), and
-//!   performs internal NT engine/message-bus subscriptions for venue
-//!   instrument topics. None of these steps open a network connection
-//!   or run the event loop.
+//!   it constructs the NT client objects, lets provider-owned NT
+//!   factories parse their credential material, and performs internal
+//!   NT engine/message-bus subscriptions for venue instrument topics.
+//!   None of these steps open a network connection or run the event
+//!   loop.
 //! - returns the resulting `nautilus_live::node::LiveNode` to the caller
 //!   without entering the NT runner loop
 //! - wires the existing `crate::nt_runtime_capture` from the

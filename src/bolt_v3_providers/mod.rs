@@ -66,6 +66,7 @@ pub struct ProviderAdapterMapContext<'a> {
 pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
+    pub supported_market_families: &'static [&'static str],
     pub credential_log_modules: &'static [&'static str],
     pub forbidden_env_vars: &'static [&'static str],
     pub resolve_secrets: for<'a> fn(
@@ -82,6 +83,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
         validate_venue: polymarket::validate_venue,
+        supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
@@ -90,6 +92,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: binance::KEY,
         validate_venue: binance::validate_venue,
+        supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,

@@ -42,10 +42,10 @@ use bolt_v2::{
     },
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
-    bolt_v3_secrets::{
-        ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,
-        ResolvedBoltV3VenueSecrets,
+    bolt_v3_providers::{
+        binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
+    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
 };
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 
@@ -410,8 +410,8 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
             assert_eq!(venue_key, "binance_reference");
             assert_eq!(field, "strategy.target.venue_config_key");
             assert!(
-                message.contains("provider binding"),
-                "error message should explain the provider-owned filter boundary: {message}"
+                message.contains("does not support that market family"),
+                "error message should explain the family/provider compatibility boundary: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),

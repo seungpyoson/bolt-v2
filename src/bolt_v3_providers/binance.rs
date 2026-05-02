@@ -47,6 +47,7 @@ use crate::{
 };
 
 pub const KEY: &str = "binance";
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "BINANCE_ED25519_API_KEY",
@@ -257,7 +258,6 @@ pub fn resolve_secrets(
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
-    reject_unsupported_market_identity_targets(&context)?;
     let data = match &context.venue.data {
         Some(value) => {
             let secrets = secrets_for(context.venue_key, context.resolved)?;
@@ -272,27 +272,6 @@ pub fn map_adapters(
         data,
         execution: None,
     })
-}
-
-fn reject_unsupported_market_identity_targets(
-    context: &ProviderAdapterMapContext<'_>,
-) -> Result<(), BoltV3AdapterMappingError> {
-    if let Some(target) = context
-        .plan
-        .updown_targets
-        .iter()
-        .find(|target| target.venue_config_key == context.venue_key)
-    {
-        return Err(BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key: context.venue_key.to_string(),
-            field: "strategy.target.venue_config_key",
-            message: format!(
-                "configured target `{}` is bound to venue `{}`, but this provider binding does not install rotating-market filters",
-                target.configured_target_id, target.venue_config_key,
-            ),
-        });
-    }
-    Ok(())
 }
 
 fn map_data(

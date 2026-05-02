@@ -225,6 +225,7 @@ pub struct MarketIdentityPlan {
 }
 
 pub struct MarketIdentityVenueTargetRef<'a> {
+    pub family_key: &'static str,
     pub configured_target_id: &'a str,
     pub venue_config_key: &'a str,
 }
@@ -234,6 +235,7 @@ impl MarketIdentityPlan {
         self.updown_targets
             .iter()
             .map(|target| MarketIdentityVenueTargetRef {
+                family_key: KEY,
                 configured_target_id: target.configured_target_id.as_str(),
                 venue_config_key: target.venue_config_key.as_str(),
             })

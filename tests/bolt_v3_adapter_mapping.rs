@@ -6,11 +6,11 @@ use bolt_v2::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
-    bolt_v3_providers::polymarket,
-    bolt_v3_secrets::{
-        ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets, ResolvedBoltV3Secrets,
-        ResolvedBoltV3VenueSecrets,
+    bolt_v3_providers::{
+        binance::ResolvedBoltV3BinanceSecrets,
+        polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
+    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
 };
 use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,

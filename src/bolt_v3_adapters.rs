@@ -273,6 +273,7 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
                 ),
             });
         };
+        validate_provider_market_family_support(venue_key, binding, plan)?;
         let mapped = (binding.map_adapters)(ProviderAdapterMapContext {
             root: &loaded.root,
             venue_key,
@@ -284,6 +285,35 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
         venues.insert(venue_key.clone(), mapped);
     }
     Ok(BoltV3AdapterConfigs { venues })
+}
+
+fn validate_provider_market_family_support(
+    venue_key: &str,
+    binding: &bolt_v3_providers::ProviderBinding,
+    plan: &MarketIdentityPlan,
+) -> Result<(), BoltV3AdapterMappingError> {
+    for target in plan
+        .venue_target_refs()
+        .filter(|target| target.venue_config_key == venue_key)
+    {
+        if !binding
+            .supported_market_families
+            .contains(&target.family_key)
+        {
+            return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                venue_key: target.venue_config_key.to_string(),
+                field: "strategy.target.venue_config_key",
+                message: format!(
+                    "configured target `{}` uses market family `{}` on venue `{}`, but provider kind `{}` does not support that market family",
+                    target.configured_target_id,
+                    target.family_key,
+                    target.venue_config_key,
+                    binding.key,
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_market_identity_target_venues(
@@ -324,14 +354,15 @@ mod tests {
     };
 
     use crate::bolt_v3_config::BoltV3RootConfig;
-    use crate::bolt_v3_market_families::updown::UpdownTargetPlan;
+    use crate::bolt_v3_market_families::updown::{self, UpdownTargetPlan};
     use crate::bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
-        ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver, binance, polymarket,
+        ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
+        binance::{self, ResolvedBoltV3BinanceSecrets},
+        polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     };
     use crate::bolt_v3_secrets::{
-        BoltV3SecretError, ResolvedBoltV3BinanceSecrets, ResolvedBoltV3PolymarketSecrets,
-        ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets,
+        BoltV3SecretError, ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets,
     };
 
     const FAKE_UPDOWN_PROVIDER_KEY: &str = "fake_updown_provider";
@@ -382,6 +413,17 @@ mod tests {
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_venue: validate_fake_provider_venue,
+        supported_market_families: &[updown::KEY],
+        credential_log_modules: &[],
+        forbidden_env_vars: &[],
+        resolve_secrets: resolve_fake_provider_secrets,
+        map_adapters: map_fake_provider_adapters,
+    };
+
+    static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
+        key: FAKE_UPDOWN_PROVIDER_KEY,
+        validate_venue: validate_fake_provider_venue,
+        supported_market_families: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
@@ -476,6 +518,63 @@ mod tests {
             .expect("fake provider venue should map");
         assert!(fake.data.is_none());
         assert!(fake.execution.is_none());
+    }
+
+    #[test]
+    fn injected_provider_binding_without_family_support_rejects_before_provider_mapping() {
+        let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
+            .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
+        let mut loaded = LoadedBoltV3Config {
+            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
+            strategies: Vec::new(),
+        };
+        loaded
+            .root
+            .venues
+            .retain(|venue_key, _venue| venue_key == "polymarket_main");
+        let plan = MarketIdentityPlan {
+            updown_targets: vec![UpdownTargetPlan {
+                strategy_instance_id: "fake-strategy".to_string(),
+                configured_target_id: "fake-updown".to_string(),
+                venue_config_key: "polymarket_main".to_string(),
+                underlying_asset: "BTC".to_string(),
+                cadence_seconds: 300,
+                cadence_slug_token: "5m".to_string(),
+            }],
+        };
+        let resolved = ResolvedBoltV3Secrets {
+            venues: BTreeMap::new(),
+        };
+        let clock = Arc::new(|| 601_i64);
+
+        let error = map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+            &loaded,
+            &resolved,
+            &plan,
+            clock,
+            |key| {
+                if key == FAKE_UPDOWN_PROVIDER_KEY {
+                    Some(&FAKE_UNSUPPORTED_PROVIDER_BINDING)
+                } else {
+                    None
+                }
+            },
+        )
+        .expect_err("core mapping must reject unsupported market families before provider mapping");
+
+        match error {
+            BoltV3AdapterMappingError::ValidationInvariant {
+                venue_key,
+                field,
+                message,
+            } => {
+                assert_eq!(venue_key, "polymarket_main");
+                assert_eq!(field, "strategy.target.venue_config_key");
+                assert!(message.contains("does not support that market family"));
+            }
+            other => panic!("expected ValidationInvariant, got {other}"),
+        }
     }
 
     #[test]

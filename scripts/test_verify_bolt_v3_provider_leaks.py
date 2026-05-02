@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import importlib.util
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -91,6 +90,10 @@ def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
                     }
                 """,
                 "src/bolt_v3_secrets.rs": """
+                    pub use crate::bolt_v3_providers::{
+                        binance::ResolvedBoltV3BinanceSecrets,
+                        polymarket::ResolvedBoltV3PolymarketSecrets,
+                    };
                     pub enum ResolvedBoltV3VenueSecrets {
                         Polymarket(PolymarketSecrets),
                         Binance(BinanceSecrets),
@@ -111,6 +114,12 @@ def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
                         Binance { data: bool },
                     }
                 """,
+                "src/bolt_v3_live_node.rs": """
+                    use nautilus_polymarket::config::PolymarketDataClientConfig;
+                    pub fn literal(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
             },
         )
 
@@ -120,6 +129,10 @@ def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
         assert "closed provider adapter config enum" in messages
         assert "adapter mapping dispatches on concrete provider key" in messages
         assert "provider-specific NT filter in adapter mapper" in messages
+        assert "concrete NT provider crate in core production code" in messages
+        assert "concrete provider type name in core production code" in messages
+        assert "core imports or re-exports concrete provider module" in messages
+        assert "provider-key string literal in core production code" in messages
         assert "closed resolved venue secret enum" in messages
         assert "secret resolution dispatches on concrete provider key" in messages
         assert "concrete NT provider factory import" in messages
@@ -145,35 +158,11 @@ def test_strict_mode_fails_on_fixture_findings() -> None:
         assert "concrete NT provider factory import" in result.stderr
 
 
-def test_audit_current_mode_reports_without_failing() -> None:
-    tmp = Path(tempfile.mkdtemp())
-    try:
-        root = tmp / "repo"
-        shutil.copytree(REPO_ROOT / "scripts", root / "scripts")
-        write_fixture(
-            root,
-            {
-                "src/bolt_v3_client_registration.rs": """
-                    use nautilus_binance::factories::BinanceDataClientFactory;
-                """,
-            },
-        )
-
-        result = run_script("--root", str(root), "--audit-current")
-
-        assert result.returncode == 0
-        assert "AUDIT:" in result.stdout
-        assert "concrete NT provider factory import" in result.stdout
-    finally:
-        shutil.rmtree(tmp)
-
-
 def main() -> int:
     tests = [
         test_clean_fixture_has_no_findings,
         test_closed_provider_variants_and_factory_imports_are_findings,
         test_strict_mode_fails_on_fixture_findings,
-        test_audit_current_mode_reports_without_failing,
     ]
     for test in tests:
         test()

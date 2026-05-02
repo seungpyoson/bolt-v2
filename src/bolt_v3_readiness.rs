@@ -219,10 +219,6 @@ where
             builder
         }
         Err(error) => {
-            // `make_bolt_v3_live_node_builder` currently returns NT's
-            // anyhow error. Keep this first slice narrow by rendering the
-            // existing boundary detail instead of introducing a new typed
-            // builder error family.
             report.push(
                 BoltV3StartupCheckStage::LiveNodeBuilder,
                 BoltV3StartupCheckSubject::Root,

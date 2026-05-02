@@ -38,6 +38,38 @@ classification = "provider_credential_log_module"
 reason = "The Binance provider binding owns the NT credential-log module path that Bolt-v3 forces to WARN before LiveNode construction."
 
 [[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"Binance reference-data venue\""
+context = "consumer: \"Binance reference-data venue\","
+classification = "provider_secret_requirement_label"
+reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"Polymarket execution venue\""
+context = "consumer: \"Polymarket execution venue\","
+classification = "provider_secret_requirement_label"
+reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/mod.rs"
+kind = "string"
+literal = "\"data\""
+context = "Self::Data => \"data\","
+classification = "provider_secret_requirement_block_label"
+reason = "This label renders the provider credentialed-block enum variant in validation diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_providers/mod.rs"
+kind = "string"
+literal = "\"execution\""
+context = "Self::Execution => \"execution\","
+classification = "provider_secret_requirement_block_label"
+reason = "This label renders the provider credentialed-block enum variant in validation diagnostics."
+
+[[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "number"
 literal = "0"

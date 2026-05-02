@@ -292,6 +292,10 @@ fn validate_provider_market_family_support(
     binding: &bolt_v3_providers::ProviderBinding,
     plan: &MarketIdentityPlan,
 ) -> Result<(), BoltV3AdapterMappingError> {
+    // Only venues referenced by a market-identity target need family
+    // support. A provider with an empty `supported_market_families`
+    // remains valid for data-only/reference venues that no strategy
+    // target routes through.
     for target in plan
         .venue_target_refs()
         .filter(|target| target.venue_config_key == venue_key)
@@ -410,10 +414,23 @@ mod tests {
         })
     }
 
+    fn map_fake_no_target_provider_adapters(
+        context: ProviderAdapterMapContext<'_>,
+    ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
+        assert_eq!(context.venue.kind.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
+        assert_eq!(context.venue_key, "polymarket_main");
+        assert!(context.plan.updown_targets.is_empty());
+        Ok(BoltV3VenueAdapterConfig {
+            data: None,
+            execution: None,
+        })
+    }
+
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_venue: validate_fake_provider_venue,
         supported_market_families: &[updown::KEY],
+        required_secret_blocks: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
@@ -424,10 +441,22 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_venue: validate_fake_provider_venue,
         supported_market_families: &[],
+        required_secret_blocks: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         map_adapters: map_fake_provider_adapters,
+    };
+
+    static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
+        key: FAKE_UPDOWN_PROVIDER_KEY,
+        validate_venue: validate_fake_provider_venue,
+        supported_market_families: &[],
+        required_secret_blocks: &[],
+        credential_log_modules: &[],
+        forbidden_env_vars: &[],
+        resolve_secrets: resolve_fake_provider_secrets,
+        map_adapters: map_fake_no_target_provider_adapters,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -575,6 +604,45 @@ mod tests {
             }
             other => panic!("expected ValidationInvariant, got {other}"),
         }
+    }
+
+    #[test]
+    fn provider_without_family_support_can_map_when_no_target_references_venue() {
+        let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
+            .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
+        let mut loaded = LoadedBoltV3Config {
+            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
+            strategies: Vec::new(),
+        };
+        loaded
+            .root
+            .venues
+            .retain(|venue_key, _venue| venue_key == "polymarket_main");
+        let plan = MarketIdentityPlan {
+            updown_targets: Vec::new(),
+        };
+        let resolved = ResolvedBoltV3Secrets {
+            venues: BTreeMap::new(),
+        };
+        let clock = Arc::new(|| 601_i64);
+
+        let configs = map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+            &loaded,
+            &resolved,
+            &plan,
+            clock,
+            |key| {
+                if key == FAKE_UPDOWN_PROVIDER_KEY {
+                    Some(&FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING)
+                } else {
+                    None
+                }
+            },
+        )
+        .expect("family support check applies only to venues referenced by plan targets");
+
+        assert!(configs.venues.contains_key("polymarket_main"));
     }
 
     #[test]

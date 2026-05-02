@@ -11,10 +11,13 @@
 //!
 //! This module also owns the per-venue startup-validation policy for
 //! Polymarket venues: typed deserialization of each present block,
-//! cross-block presence rules ([execution] requires [secrets]; [secrets]
-//! is only allowed alongside [execution]), Polymarket data/execution
-//! bounds, EVM funder-address syntax, and Polymarket secret-path
-//! ownership. Core startup validation in `crate::bolt_v3_validate`
+//! cross-block presence rule ([secrets] is only allowed alongside
+//! [execution]), Polymarket data/execution bounds, EVM funder-address
+//! syntax, and Polymarket secret-path ownership. The cross-provider rule
+//! that [execution] requires [secrets] is declared by
+//! [`REQUIRED_SECRET_BLOCKS`] and enforced centrally in
+//! `bolt_v3_providers::validate_venue_block`. Core startup validation in
+//! `crate::bolt_v3_validate`
 //! dispatches into `bolt_v3_providers::validate_venue_block`, which
 //! routes Polymarket venues here. The neutral SSM-path utility
 //! (`crate::bolt_v3_validate::validate_ssm_parameter_path`) stays in
@@ -42,8 +45,9 @@ use crate::{
         self, MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
     },
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderResolvedSecrets, ProviderSecretResolveContext,
-        ResolvedVenueSecrets, SsmSecretResolver,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
+        SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     secrets::pad_base64,
@@ -51,6 +55,10 @@ use crate::{
 
 pub const KEY: &str = "polymarket";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
+pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
+    block: ProviderCredentialedBlock::Execution,
+    consumer: "Polymarket execution venue",
+}];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_polymarket::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "POLYMARKET_PK",
@@ -173,18 +181,6 @@ pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
             Err(message) => {
                 errors.push(format!("venues.{key}.execution: {message}"));
             }
-        }
-        // Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3,
-        // every Polymarket execution venue must resolve credentials through
-        // SSM. The secret-block requirement is what guarantees the env-var
-        // blocklist actually fires for that venue at startup; without it an
-        // operator could declare [execution] alone and silently bypass the
-        // SSM-only invariant by reading the legacy POLYMARKET_* env vars.
-        if venue.secrets.is_none() {
-            errors.push(format!(
-                "venues.{key} (kind=polymarket) declares [execution] but is missing the required [secrets] block; \
-                 the bolt-v3 secret contract requires SSM credential resolution for every Polymarket execution venue"
-            ));
         }
     }
     if let Some(secrets) = &venue.secrets {

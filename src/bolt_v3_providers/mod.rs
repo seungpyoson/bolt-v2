@@ -63,10 +63,39 @@ pub struct ProviderAdapterMapContext<'a> {
     pub clock: BoltV3UpdownNowFn,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCredentialedBlock {
+    Data,
+    Execution,
+}
+
+impl ProviderCredentialedBlock {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Data => "data",
+            Self::Execution => "execution",
+        }
+    }
+
+    fn is_present(self, venue: &VenueBlock) -> bool {
+        match self {
+            Self::Data => venue.data.is_some(),
+            Self::Execution => venue.execution.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderSecretRequirement {
+    pub block: ProviderCredentialedBlock,
+    pub consumer: &'static str,
+}
+
 pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
+    pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub credential_log_modules: &'static [&'static str],
     pub forbidden_env_vars: &'static [&'static str],
     pub resolve_secrets: for<'a> fn(
@@ -84,6 +113,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: polymarket::KEY,
         validate_venue: polymarket::validate_venue,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
@@ -93,6 +123,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: binance::KEY,
         validate_venue: binance::validate_venue,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,
@@ -125,7 +156,16 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 /// key. Returns the full error list for the venue block.
 pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
     match binding_for_provider_key(venue.kind.as_str()) {
-        Some(binding) => (binding.validate_venue)(key, venue),
+        Some(binding) => {
+            let mut errors = validate_required_secret_blocks(
+                key,
+                binding.key,
+                venue,
+                binding.required_secret_blocks,
+            );
+            errors.extend((binding.validate_venue)(key, venue));
+            errors
+        }
         None => vec![format!(
             "venues.{key}.kind `{}` is not supported by this build",
             venue.kind.as_str()
@@ -133,9 +173,36 @@ pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
     }
 }
 
+fn validate_required_secret_blocks(
+    key: &str,
+    provider_key: &str,
+    venue: &VenueBlock,
+    requirements: &[ProviderSecretRequirement],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if venue.secrets.is_some() {
+        return errors;
+    }
+    for requirement in requirements {
+        if requirement.block.is_present(venue) {
+            errors.push(format!(
+                "venues.{key} (kind={provider_key}) declares [{}] but is missing the required [secrets] block; \
+                 the bolt-v3 secret contract requires SSM credential resolution for every {}",
+                requirement.block.as_str(),
+                requirement.consumer
+            ));
+        }
+    }
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn venue_from_toml(text: &str) -> VenueBlock {
+        toml::from_str(text).expect("test venue should parse")
+    }
 
     #[test]
     fn credential_log_modules_are_provider_owned() {
@@ -152,5 +219,43 @@ mod tests {
             binance.credential_log_modules,
             binance::CREDENTIAL_LOG_MODULES
         );
+    }
+
+    #[test]
+    fn provider_required_secrets_rejects_credentialed_block_without_secrets() {
+        let venue = venue_from_toml(
+            r#"
+            kind = "fake"
+
+            [data]
+            "#,
+        );
+        let requirement = ProviderSecretRequirement {
+            block: ProviderCredentialedBlock::Data,
+            consumer: "fake data adapter",
+        };
+
+        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("declares [data] but is missing the required [secrets] block"));
+        assert!(errors[0].contains("fake data adapter"));
+    }
+
+    #[test]
+    fn provider_required_secrets_ignores_absent_credentialed_block() {
+        let venue = venue_from_toml(
+            r#"
+            kind = "fake"
+            "#,
+        );
+        let requirement = ProviderSecretRequirement {
+            block: ProviderCredentialedBlock::Execution,
+            consumer: "fake execution adapter",
+        };
+
+        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+
+        assert!(errors.is_empty());
     }
 }

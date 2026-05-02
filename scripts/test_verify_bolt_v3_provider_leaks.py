@@ -201,6 +201,84 @@ def test_family_module_and_type_leaks_are_findings_for_new_families() -> None:
         assert "concrete market-family type name in core production code" in messages
 
 
+def test_finding_allowances_are_exact_and_path_scoped() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_adapters.rs": """
+                    use crate::{
+                        bolt_v3_market_families::updown::MarketIdentityPlan,
+                    };
+                    pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+                """,
+                "src/bolt_v3_providers/mod.rs": """
+                    use crate::{
+                        bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},
+                        bolt_v3_market_families::updown::MarketIdentityPlan,
+                    };
+                """,
+                "src/bolt_v3_readiness.rs": """
+                    use crate::bolt_v3_market_families::updown::MarketIdentityPlan;
+                """,
+                "src/bolt_v3_validate.rs": """
+                    pub fn leaked_family_literal() -> &'static str {
+                        "updown"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        by_path_and_message = {
+            (finding.path, finding.message) for finding in findings
+        }
+
+        assert (
+            "src/bolt_v3_adapters.rs",
+            "core accesses concrete market-family module path",
+        ) not in by_path_and_message
+        assert (
+            "src/bolt_v3_providers/mod.rs",
+            "core accesses concrete market-family module path",
+        ) not in by_path_and_message
+        assert (
+            "src/bolt_v3_readiness.rs",
+            "core accesses concrete market-family module path",
+        ) in by_path_and_message
+        assert (
+            "src/bolt_v3_validate.rs",
+            "market-family key string literal in core production code",
+        ) in by_path_and_message
+
+
+def test_allowance_does_not_absorb_sibling_family_path_on_same_line() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_adapters.rs": """
+                    use crate::bolt_v3_market_families::updown::MarketIdentityPlan; use crate::bolt_v3_market_families::updown::UpdownTargetPlan;
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        path_findings = [
+            finding
+            for finding in findings
+            if finding.message == "core accesses concrete market-family module path"
+        ]
+
+        assert path_findings, "sibling family path must not be hidden by the allowance"
+
+
 def test_new_core_file_is_auto_scanned() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -276,6 +354,82 @@ def test_cfg_not_test_is_scanned_as_production() -> None:
         assert "provider-key string literal in core production code" in messages
 
 
+def test_cfg_not_any_test_is_scanned_as_production() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(not(any(test, feature = "fixture-only")))]
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_raw_strings_do_not_create_fake_comments() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": r'''
+                    pub fn leaked(kind: &str) -> bool {
+                        let _fixture = r#"raw " quote // not a comment"#;
+                        kind == "binance"
+                    }
+                ''',
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_char_literal_braces_do_not_keep_cfg_test_open() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(test)]
+                    mod tests {
+                        fn fixture() {
+                            let _brace = '{';
+                            let _ = "polymarket";
+                        }
+                    }
+
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
 def test_strict_mode_fails_on_fixture_findings() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -301,9 +455,14 @@ def main() -> int:
         test_clean_fixture_has_no_findings,
         test_closed_provider_variants_and_factory_imports_are_findings,
         test_family_module_and_type_leaks_are_findings_for_new_families,
+        test_finding_allowances_are_exact_and_path_scoped,
+        test_allowance_does_not_absorb_sibling_family_path_on_same_line,
         test_new_core_file_is_auto_scanned,
         test_production_after_cfg_test_block_is_scanned,
         test_cfg_not_test_is_scanned_as_production,
+        test_cfg_not_any_test_is_scanned_as_production,
+        test_raw_strings_do_not_create_fake_comments,
+        test_char_literal_braces_do_not_keep_cfg_test_open,
         test_strict_mode_fails_on_fixture_findings,
     ]
     for test in tests:

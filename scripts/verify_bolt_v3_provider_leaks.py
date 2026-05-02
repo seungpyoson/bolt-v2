@@ -41,7 +41,7 @@ class Rule:
 class FindingAllowance:
     path: str
     message: str
-    excerpt_pattern: re.Pattern[str]
+    exact_excerpt: str
 
 
 # The remaining updown-shaped market-identity boundary is intentionally tracked
@@ -51,22 +51,37 @@ FINDING_ALLOWANCES = (
     FindingAllowance(
         "src/bolt_v3_adapters.rs",
         "core accesses concrete market-family module path",
-        re.compile(r"bolt_v3_market_families::updown::MarketIdentityPlan"),
+        "bolt_v3_market_families::updown::MarketIdentityPlan,",
     ),
     FindingAllowance(
         "src/bolt_v3_providers/mod.rs",
         "core accesses concrete market-family module path",
-        re.compile(r"bolt_v3_market_families::updown::MarketIdentityPlan"),
+        "bolt_v3_market_families::updown::MarketIdentityPlan,",
     ),
     FindingAllowance(
         "src/bolt_v3_adapters.rs",
         "concrete market-family type name in core production code",
-        re.compile(r"\bBoltV3UpdownNowFn\b"),
+        "pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_adapters.rs",
+        "concrete market-family type name in core production code",
+        "let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_adapters.rs",
+        "concrete market-family type name in core production code",
+        "clock: BoltV3UpdownNowFn,",
     ),
     FindingAllowance(
         "src/bolt_v3_providers/mod.rs",
         "concrete market-family type name in core production code",
-        re.compile(r"\bBoltV3UpdownNowFn\b"),
+        "bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_providers/mod.rs",
+        "concrete market-family type name in core production code",
+        "pub clock: BoltV3UpdownNowFn,",
     ),
 )
 
@@ -253,8 +268,76 @@ def is_cfg_test_attr(stripped: str) -> bool:
     if expression.endswith(")]"):
         expression = expression[:-2]
 
-    expression = re.sub(r"\bnot\s*\(\s*test\s*\)", "", expression)
+    expression = strip_negated_cfg_groups(expression)
     return re.search(r'(?<![\w"])test(?![\w"])', expression) is not None
+
+
+def strip_negated_cfg_groups(expression: str) -> str:
+    output: list[str] = []
+    i = 0
+    while i < len(expression):
+        match = re.match(r"\bnot\s*\(", expression[i:])
+        if match is None:
+            output.append(expression[i])
+            i += 1
+            continue
+
+        group_start = i + match.end() - 1
+        depth = 0
+        j = group_start
+        while j < len(expression):
+            if expression[j] == "(":
+                depth += 1
+            elif expression[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+
+        if depth == 0:
+            output.append(" " * (j + 1 - i))
+            i = j + 1
+        else:
+            output.append(expression[i])
+            i += 1
+
+    return "".join(output)
+
+
+def raw_string_closer_at(text: str, start: int) -> tuple[int, str] | None:
+    prefix_start = start
+    if text.startswith("br", start):
+        start += 2
+    elif text.startswith("r", start):
+        start += 1
+    else:
+        return None
+
+    hash_start = start
+    while start < len(text) and text[start] == "#":
+        start += 1
+    if start >= len(text) or text[start] != '"':
+        return None
+
+    hashes = text[hash_start:start]
+    return start + 1 - prefix_start, '"' + hashes
+
+
+def char_literal_end_at(line: str, start: int) -> int | None:
+    if start >= len(line) or line[start] != "'":
+        return None
+
+    i = start + 1
+    while i < len(line):
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line[i] == "'":
+            return i + 1 if i > start + 1 else None
+        if i - start > 4:
+            return None
+        i += 1
+    return None
 
 
 def strip_comments_preserve_lines(text: str) -> str:
@@ -262,6 +345,7 @@ def strip_comments_preserve_lines(text: str) -> str:
     i = 0
     block_depth = 0
     string_quote: str | None = None
+    raw_string_closer: str | None = None
     escaped = False
 
     while i < len(text):
@@ -279,6 +363,16 @@ def strip_comments_preserve_lines(text: str) -> str:
                 continue
             output.append("\n" if char == "\n" else " ")
             i += 1
+            continue
+
+        if raw_string_closer is not None:
+            if text.startswith(raw_string_closer, i):
+                output.append(text[i : i + len(raw_string_closer)])
+                i += len(raw_string_closer)
+                raw_string_closer = None
+            else:
+                output.append(char)
+                i += 1
             continue
 
         if string_quote is not None:
@@ -306,6 +400,13 @@ def strip_comments_preserve_lines(text: str) -> str:
 
         if char == '"':
             string_quote = char
+        else:
+            raw = raw_string_closer_at(text, i)
+            if raw is not None:
+                prefix_len, raw_string_closer = raw
+                output.append(text[i : i + prefix_len])
+                i += prefix_len
+                continue
 
         output.append(char)
         i += 1
@@ -316,9 +417,20 @@ def strip_comments_preserve_lines(text: str) -> str:
 def brace_delta(line: str) -> int:
     delta = 0
     quote: str | None = None
+    raw_string_closer: str | None = None
     escaped = False
+    i = 0
 
-    for char in line:
+    while i < len(line):
+        char = line[i]
+        if raw_string_closer is not None:
+            if line.startswith(raw_string_closer, i):
+                i += len(raw_string_closer)
+                raw_string_closer = None
+            else:
+                i += 1
+            continue
+
         if quote is not None:
             if escaped:
                 escaped = False
@@ -326,15 +438,29 @@ def brace_delta(line: str) -> int:
                 escaped = True
             elif char == quote:
                 quote = None
+            i += 1
+            continue
+
+        raw = raw_string_closer_at(line, i)
+        if raw is not None:
+            prefix_len, raw_string_closer = raw
+            i += prefix_len
             continue
 
         if char == '"':
             quote = char
+            i += 1
             continue
+        if char == "'":
+            char_end = char_literal_end_at(line, i)
+            if char_end is not None:
+                i = char_end
+                continue
         if char == "{":
             delta += 1
         elif char == "}":
             delta -= 1
+        i += 1
 
     return delta
 
@@ -417,7 +543,7 @@ def is_allowed_finding(finding: Finding) -> bool:
     return any(
         finding.path == allowance.path
         and finding.message == allowance.message
-        and allowance.excerpt_pattern.search(finding.excerpt)
+        and finding.excerpt == allowance.exact_excerpt
         for allowance in FINDING_ALLOWANCES
     )
 

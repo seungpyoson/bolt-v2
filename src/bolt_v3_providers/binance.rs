@@ -12,9 +12,11 @@
 //! This module also owns the per-venue startup-validation policy for
 //! Binance venues: the no-execution rule for the current bolt-v3
 //! scope, typed deserialization of each present block, cross-block
-//! presence rules ([data] requires [secrets]; [secrets] is only
-//! allowed alongside [data]), Binance data bounds, and Binance
-//! secret-path ownership. Core startup validation in
+//! presence rule ([secrets] is only allowed alongside [data]),
+//! Binance data bounds, and Binance secret-path ownership. The
+//! cross-provider rule that [data] requires [secrets] is declared by
+//! [`REQUIRED_SECRET_BLOCKS`] and enforced centrally in
+//! `bolt_v3_providers::validate_venue_block`. Core startup validation in
 //! `crate::bolt_v3_validate` dispatches into
 //! `bolt_v3_providers::validate_venue_block`, which routes Binance
 //! venues here. The neutral SSM-path utility
@@ -39,8 +41,9 @@ use crate::{
     },
     bolt_v3_config::VenueBlock,
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderResolvedSecrets, ProviderSecretResolveContext,
-        ResolvedVenueSecrets, SsmSecretResolver,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
+        SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     secrets::validate_binance_api_secret_shape,
@@ -48,6 +51,10 @@ use crate::{
 
 pub const KEY: &str = "binance";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
+pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
+    block: ProviderCredentialedBlock::Data,
+    consumer: "Binance reference-data venue",
+}];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "BINANCE_ED25519_API_KEY",
@@ -138,18 +145,6 @@ pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
         match data.clone().try_into::<BinanceDataConfig>() {
             Ok(parsed) => errors.extend(validate_data_bounds(key, &parsed)),
             Err(message) => errors.push(format!("venues.{key}.data: {message}")),
-        }
-        // Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3
-        // and docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 5, every
-        // Binance reference-data venue must resolve credentials through SSM.
-        // Mirror the Polymarket-execution rule in the polymarket binding:
-        // the secret-block requirement is the gate that makes the env-var
-        // blocklist effective.
-        if venue.secrets.is_none() {
-            errors.push(format!(
-                "venues.{key} (kind=binance) declares [data] but is missing the required [secrets] block; \
-                 the bolt-v3 secret contract requires SSM credential resolution for every Binance reference-data venue"
-            ));
         }
     }
     if let Some(secrets) = &venue.secrets {

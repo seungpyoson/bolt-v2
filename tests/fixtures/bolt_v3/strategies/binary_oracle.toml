@@ -1,0 +1,39 @@
+schema_version = 1
+strategy_instance_id = "bitcoin_updown_main"
+strategy_archetype = "binary_oracle_edge_taker"
+order_id_tag = "001"
+oms_type = "netting"
+venue = "polymarket_main"
+
+[target]
+configured_target_id = "btc_updown_5m"
+kind = "rotating_market"
+rotating_market_family = "updown"
+underlying_asset = "BTC"
+cadence_seconds = 300
+market_selection_rule = "active_or_next"
+retry_interval_seconds = 5
+blocked_after_seconds = 60
+
+[reference_data.primary]
+venue = "binance_reference"
+instrument_id = "BTCUSDT.BINANCE"
+
+[parameters.entry_order]
+order_type = "limit"
+time_in_force = "fok"
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
+
+[parameters.exit_order]
+order_type = "market"
+time_in_force = "ioc"
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
+
+[parameters]
+edge_threshold_basis_points = 100
+order_notional_target = "5.00"
+maximum_position_notional = "10.00"

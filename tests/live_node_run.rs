@@ -276,3 +276,104 @@ fn sandbox_startup_rejects_position_check_interval() {
             .contains("position_check_interval_secs is unsupported in Sandbox startup mode")
     );
 }
+
+#[test]
+fn builds_bolt_v3_livenode_without_running_event_loop() {
+    use bolt_v2::{
+        bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+        bolt_v3_live_node::build_bolt_v3_live_node_with,
+    };
+    use nautilus_common::enums::Environment;
+    use nautilus_live::node::NodeState;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded: LoadedBoltV3Config =
+        load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    // No forbidden env vars are set in the test predicate, and the fake
+    // resolver supplies all configured SSM paths, so the build proceeds.
+    let node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("v3 LiveNode should build without entering the event loop");
+
+    assert_eq!(node.environment(), Environment::Live);
+    // node.run() is intentionally never called in this slice.
+    assert_eq!(node.state(), NodeState::Idle);
+}
+
+#[test]
+fn wires_runtime_capture_from_bolt_v3_persistence_config() {
+    use bolt_v2::{
+        bolt_v3_config::{
+            BoltV3RootConfig, LoadedBoltV3Config, PersistenceBlock, StreamingBlock,
+            load_bolt_v3_config,
+        },
+        bolt_v3_live_node::{build_bolt_v3_live_node_with, wire_bolt_v3_runtime_capture},
+    };
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    runtime.block_on(local.run_until(async {
+        let dir = tempdir().expect("tempdir for catalog should be created");
+        let catalog_root = dir.path().join("catalog");
+        std::fs::create_dir_all(&catalog_root).expect("catalog dir should be created");
+
+        let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+        let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+        // Replace the production catalog_directory with the tempdir so the
+        // wiring test can observe start/stop without touching /var/lib/bolt.
+        let original_root = loaded.root.clone();
+        let routed_root = BoltV3RootConfig {
+            persistence: PersistenceBlock {
+                catalog_directory: catalog_root.to_string_lossy().to_string(),
+                streaming: StreamingBlock {
+                    catalog_fs_protocol: original_root.persistence.streaming.catalog_fs_protocol,
+                    flush_interval_milliseconds: original_root
+                        .persistence
+                        .streaming
+                        .flush_interval_milliseconds,
+                    replace_existing: original_root.persistence.streaming.replace_existing,
+                    rotation_kind: original_root.persistence.streaming.rotation_kind,
+                },
+            },
+            ..original_root
+        };
+        let routed_loaded = LoadedBoltV3Config {
+            root_path: loaded.root_path.clone(),
+            root: routed_root,
+            strategies: loaded.strategies.clone(),
+        };
+
+        let node =
+            build_bolt_v3_live_node_with(&routed_loaded, |_| false, support::fake_bolt_v3_resolver)
+                .expect("v3 LiveNode should build for runtime-capture wiring");
+        let handle = node.handle();
+        let guards = wire_bolt_v3_runtime_capture(&node, handle.clone(), &routed_loaded)
+            .expect("runtime capture should wire from v3 persistence config");
+
+        // Give the spawned worker a chance to spin up, then shut it down. We
+        // never invoke node.run(), so the worker stays in its startup-buffer
+        // state and shutdown_all unsubscribes cleanly.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        guards
+            .shutdown()
+            .await
+            .expect("runtime capture should shut down cleanly");
+
+        let instance_root = catalog_root
+            .join("live")
+            .join(node.instance_id().to_string());
+        assert!(
+            instance_root.exists(),
+            "wire should create the per-instance spool root at {}",
+            instance_root.display()
+        );
+    }));
+}

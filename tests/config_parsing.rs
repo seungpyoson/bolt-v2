@@ -684,3 +684,1087 @@ disable_after_ms = 5000"#,
 
     assert!(error.contains("selector_poll_intrvl_ms"));
 }
+
+#[test]
+fn parses_minimal_bolt_v3_root_and_strategy_config() {
+    use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
+        ArchetypeOrderType, ArchetypeTimeInForce, ParametersBlock,
+    };
+    use bolt_v2::bolt_v3_config::{RuntimeMode, load_bolt_v3_config};
+    use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
+
+    assert_eq!(loaded.root.schema_version, 1);
+    assert_eq!(loaded.root.trader_id, "BOLT-001");
+    assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
+    assert_eq!(
+        loaded.root.venues["polymarket_main"].kind.as_str(),
+        "polymarket"
+    );
+    assert_eq!(
+        loaded.root.venues["binance_reference"].kind.as_str(),
+        "binance"
+    );
+    assert!(loaded.root.venues["polymarket_main"].execution.is_some());
+    assert!(loaded.root.venues["binance_reference"].execution.is_none());
+
+    assert_eq!(loaded.strategies.len(), 1);
+    let strategy = &loaded.strategies[0].config;
+    assert_eq!(
+        strategy.strategy_archetype.as_str(),
+        "binary_oracle_edge_taker"
+    );
+    let target: TargetBlock = strategy
+        .target
+        .clone()
+        .try_into()
+        .expect("fixture target block should deserialize as updown TargetBlock");
+    assert_eq!(target.kind, TargetKind::RotatingMarket);
+    assert_eq!(target.cadence_seconds, 300);
+    let parameters: ParametersBlock = strategy
+        .parameters
+        .clone()
+        .try_into()
+        .expect("fixture parameters block should deserialize as binary_oracle_edge_taker");
+    assert_eq!(parameters.entry_order.order_type, ArchetypeOrderType::Limit);
+    assert_eq!(
+        parameters.entry_order.time_in_force,
+        ArchetypeTimeInForce::Fok
+    );
+    assert_eq!(parameters.exit_order.order_type, ArchetypeOrderType::Market);
+    assert_eq!(
+        parameters.exit_order.time_in_force,
+        ArchetypeTimeInForce::Ioc
+    );
+    assert!(strategy.reference_data.contains_key("primary"));
+    assert_eq!(
+        strategy.reference_data["primary"].venue,
+        "binance_reference"
+    );
+}
+
+#[test]
+fn rejects_unknown_bolt_v3_config_fields() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mutated = fixture.replace(
+        "schema_version = 1",
+        "schema_version = 1\nunexpected_root_field = \"nope\"",
+    );
+
+    let error = toml::from_str::<BoltV3RootConfig>(&mutated)
+        .expect_err("unknown root field should fail to parse")
+        .to_string();
+    assert!(
+        error.contains("unexpected_root_field"),
+        "error should name the unknown field, got: {error}"
+    );
+
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "[parameters]\nedge_threshold_basis_points = 100",
+        "[parameters]\nedge_threshold_basis_points = 100\nbogus_parameter = 7",
+    );
+
+    // The strategy envelope's `parameters` field is now archetype-
+    // neutral raw TOML (`toml::Value`); unknown-field rejection inside
+    // `[parameters]` moves from envelope-parse time to archetype typed
+    // deserialization time. The first parse therefore succeeds, but
+    // `try_into::<ParametersBlock>` (the per-archetype deserializer)
+    // still rejects the unknown field by name.
+    let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
+        .expect(
+            "strategy envelope parse should succeed when parameters is archetype-neutral raw TOML",
+        );
+    let parameters_error = strategy
+        .parameters
+        .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>()
+        .expect_err("unknown field inside [parameters] should fail archetype typed deserialization")
+        .to_string();
+    assert!(
+        parameters_error.contains("bogus_parameter"),
+        "archetype deserialization error should name the unknown strategy field, got: {parameters_error}"
+    );
+}
+
+#[test]
+fn rejects_forbidden_polymarket_env_vars_before_client_build() {
+    use bolt_v2::{
+        bolt_v3_config::load_bolt_v3_config,
+        bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
+    };
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    for forbidden in [
+        "POLYMARKET_PK",
+        "POLYMARKET_FUNDER",
+        "POLYMARKET_API_KEY",
+        "POLYMARKET_API_SECRET",
+        "POLYMARKET_PASSPHRASE",
+    ] {
+        let result = build_bolt_v3_live_node_with(
+            &loaded,
+            |var| var == forbidden,
+            support::fake_bolt_v3_resolver,
+        );
+        let error = result.expect_err("forbidden env var must block LiveNode build");
+        match error {
+            BoltV3LiveNodeError::ForbiddenEnv(report) => {
+                assert_eq!(report.findings.len(), 1, "{report}");
+                assert_eq!(report.findings[0].venue_key, "polymarket_main");
+                assert_eq!(report.findings[0].env_var, forbidden);
+            }
+            other => panic!("expected ForbiddenEnv error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn rejects_polymarket_execution_venue_missing_secrets_block() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let toml_text = r#"
+schema_version = 1
+trader_id = "BOLT-001"
+strategy_files = ["strategies/binary_oracle.toml"]
+
+[runtime]
+mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+timeout_connection_seconds = 30
+timeout_reconciliation_seconds = 60
+timeout_portfolio_seconds = 10
+timeout_disconnection_seconds = 10
+delay_post_stop_seconds = 5
+timeout_shutdown_seconds = 10
+
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
+
+[risk]
+default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
+
+[logging]
+standard_output_level = "INFO"
+file_level = "INFO"
+
+[persistence]
+catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_milliseconds = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-1"
+
+[venues.polymarket_main]
+kind = "polymarket"
+
+[venues.polymarket_main.execution]
+account_id = "POLYMARKET-001"
+signature_type = "poly_proxy"
+funder_address = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 60
+max_retries = 3
+retry_delay_initial_milliseconds = 250
+retry_delay_max_milliseconds = 2000
+ack_timeout_seconds = 5
+"#;
+
+    let root: BoltV3RootConfig =
+        toml::from_str(toml_text).expect("polymarket-execution-only TOML should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("[execution]")
+            && m.contains("required [secrets] block")),
+        "expected missing-secrets failure for polymarket execution venue, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_reference_data_venue_missing_secrets_block() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let toml_text = r#"
+schema_version = 1
+trader_id = "BOLT-001"
+strategy_files = ["strategies/binary_oracle.toml"]
+
+[runtime]
+mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+timeout_connection_seconds = 30
+timeout_reconciliation_seconds = 60
+timeout_portfolio_seconds = 10
+timeout_disconnection_seconds = 10
+delay_post_stop_seconds = 5
+timeout_shutdown_seconds = 10
+
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
+
+[risk]
+default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
+
+[logging]
+standard_output_level = "INFO"
+file_level = "INFO"
+
+[persistence]
+catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_milliseconds = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-1"
+
+[venues.binance_reference]
+kind = "binance"
+
+[venues.binance_reference.data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://binance.test.invalid/http"
+base_url_ws = "wss://binance.test.invalid/ws"
+instrument_status_poll_seconds = 3600
+"#;
+
+    let root: BoltV3RootConfig =
+        toml::from_str(toml_text).expect("binance-data-only TOML should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("[data]")
+            && m.contains("required [secrets] block")),
+        "expected missing-secrets failure for binance reference-data venue, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_venue_numeric_fields_at_zero() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let toml_text = r#"
+schema_version = 1
+trader_id = "BOLT-001"
+strategy_files = ["strategies/binary_oracle.toml"]
+
+[runtime]
+mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+timeout_connection_seconds = 30
+timeout_reconciliation_seconds = 60
+timeout_portfolio_seconds = 10
+timeout_disconnection_seconds = 10
+delay_post_stop_seconds = 5
+timeout_shutdown_seconds = 10
+
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_seconds = 0
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_interval_seconds = 0
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_seconds = 0
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
+
+[risk]
+default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
+
+[logging]
+standard_output_level = "INFO"
+file_level = "INFO"
+
+[persistence]
+catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_milliseconds = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-1"
+
+[venues.polymarket_main]
+kind = "polymarket"
+
+[venues.polymarket_main.data]
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_gamma = "https://gamma-api.polymarket.com"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 0
+ws_timeout_seconds = 0
+subscribe_new_markets = false
+update_instruments_interval_minutes = 0
+websocket_max_subscriptions_per_connection = 0
+
+[venues.polymarket_main.execution]
+account_id = "POLYMARKET-001"
+signature_type = "poly_proxy"
+funder_address = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 0
+max_retries = 0
+retry_delay_initial_milliseconds = 0
+retry_delay_max_milliseconds = 0
+ack_timeout_seconds = 0
+
+[venues.polymarket_main.secrets]
+private_key_ssm_path = "/bolt/polymarket_main/private_key"
+api_key_ssm_path = "/bolt/polymarket_main/api_key"
+api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
+passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+"#;
+
+    let root: BoltV3RootConfig =
+        toml::from_str(toml_text).expect("polymarket bounds TOML should parse");
+    let messages = validate_root_only(&root);
+    let expected = [
+        "venues.polymarket_main.data.http_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.data.ws_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
+        "venues.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
+        "venues.polymarket_main.execution.http_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.execution.max_retries must be a positive integer",
+        "venues.polymarket_main.execution.retry_delay_initial_milliseconds must be a positive integer",
+        "venues.polymarket_main.execution.retry_delay_max_milliseconds must be a positive integer",
+        "venues.polymarket_main.execution.ack_timeout_seconds must be a positive integer",
+    ];
+    for needle in expected {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_unsupported_root_and_strategy_schema_versions() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::{validate_root_only, validate_strategies},
+    };
+
+    let mutated_root =
+        std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable")
+            .replace("schema_version = 1", "schema_version = 2");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated_root).expect("mutated root should parse with raw u32");
+    let root_messages = validate_root_only(&root);
+    assert!(
+        root_messages
+            .iter()
+            .any(|m| m.contains("root schema_version=2 is unsupported")),
+        "expected unsupported root schema version, got: {root_messages:#?}"
+    );
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace("schema_version = 1", "schema_version = 7");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&mutated_strategy).expect("mutated strategy should parse with raw u32");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let strategy_messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        strategy_messages
+            .iter()
+            .any(|m| m.contains("schema_version=7 is unsupported")),
+        "expected unsupported strategy schema version, got: {strategy_messages:#?}"
+    );
+}
+
+fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    assert!(
+        fixture.contains(needle),
+        "fixture must contain `{needle}` for this validation test to mutate"
+    );
+    fixture.replace(needle, replacement)
+}
+
+#[test]
+fn rejects_zero_explicit_nt_exec_runtime_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "inflight_check_threshold_milliseconds = 5000\ninflight_check_retries = 5",
+        "inflight_check_threshold_milliseconds = 0\ninflight_check_retries = 5",
+    )
+    .replace(
+        "open_check_threshold_milliseconds = 5000\nopen_check_missing_retries = 5",
+        "open_check_threshold_milliseconds = 0\nopen_check_missing_retries = 5",
+    )
+    .replace(
+        "max_single_order_queries_per_cycle = 10\nsingle_order_query_delay_milliseconds = 100",
+        "max_single_order_queries_per_cycle = 0\nsingle_order_query_delay_milliseconds = 100",
+    )
+    .replace(
+        "position_check_threshold_milliseconds = 5000\nposition_check_retries = 3",
+        "position_check_threshold_milliseconds = 0\nposition_check_retries = 3",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero NT exec defaults fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.exec_engine.inflight_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.open_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.max_single_order_queries_per_cycle must be a positive integer",
+        "nautilus.exec_engine.position_check_threshold_milliseconds must be a positive integer",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_nt_data_engine_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "time_bars_interval_type = \"LEFT_OPEN\"",
+        "time_bars_interval_type = \"SIDEWAYS\"",
+    )
+    .replace("time_bars_origins = {}", "time_bars_origins = { INVALID = 1 }")
+    .replace(
+        "emit_quotes_from_book_depths = false\nexternal_client_ids = []\ndebug = false",
+        "emit_quotes_from_book_depths = false\nexternal_client_ids = [\"\"]\ndebug = false",
+    )
+    .replace(
+        "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000\n\n[nautilus.exec_engine]",
+        "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000\n\n[nautilus.exec_engine]",
+    );
+    assert!(
+        mutated.contains("time_bars_interval_type = \"SIDEWAYS\"")
+            && mutated.contains("time_bars_origins = { INVALID = 1 }")
+            && mutated.contains("external_client_ids = [\"\"]")
+            && mutated.contains("graceful_shutdown_on_error = true")
+            && mutated.contains("qsize = 1000"),
+        "test fixture mutation must exercise every invalid data-engine branch"
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid NT data-engine fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.data_engine.time_bars_interval_type is not valid",
+        "nautilus.data_engine.time_bars_origins key `INVALID` is not a valid Nautilus bar aggregation",
+        "nautilus.data_engine.external_client_ids contains invalid client ID",
+        "nautilus.data_engine.graceful_shutdown_on_error must be false",
+        "nautilus.data_engine.qsize must match NT default",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("snapshot_orders = false", "snapshot_orders = true")
+        .replace("snapshot_positions = false", "snapshot_positions = true")
+        .replace("purge_from_database = false", "purge_from_database = true")
+        .replace(
+            "graceful_shutdown_on_error = false",
+            "graceful_shutdown_on_error = true",
+        )
+        .replace("qsize = 100000", "qsize = 1000");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unsupported NT exec values fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.exec_engine.snapshot_orders must be false",
+        "nautilus.exec_engine.snapshot_positions must be false",
+        "nautilus.exec_engine.purge_from_database must be false",
+        "nautilus.exec_engine.graceful_shutdown_on_error must be false",
+        "nautilus.exec_engine.qsize must match NT default",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_nt_exec_filter_identifiers() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated =
+        replace_in_fixture_root("external_client_ids = []", "external_client_ids = [\"\"]")
+            .replace(
+                "reconciliation_instrument_ids = []",
+                "reconciliation_instrument_ids = [\"INVALID\"]",
+            )
+            .replace(
+                "filtered_client_order_ids = []",
+                "filtered_client_order_ids = [\"\"]",
+            );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid NT exec filter identifiers fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "nautilus.exec_engine.external_client_ids contains invalid client ID",
+        "nautilus.exec_engine.reconciliation_instrument_ids contains invalid instrument ID",
+        "nautilus.exec_engine.filtered_client_order_ids contains invalid client order ID",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_nt_risk_bypass_true() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("nt_bypass = false", "nt_bypass = true");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("nt_bypass=true fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("risk.nt_bypass must be false")),
+        "expected nt_bypass=false validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "nt_graceful_shutdown_on_error = false",
+        "nt_graceful_shutdown_on_error = true",
+    )
+    .replace("nt_qsize = 100000", "nt_qsize = 1000");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unsupported NT risk values fixture should parse");
+    let messages = validate_root_only(&root);
+    for needle in [
+        "risk.nt_graceful_shutdown_on_error must be false",
+        "risk.nt_qsize must match NT default",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_nt_risk_rate_limit_strings() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (submit_rate, modify_rate) in [
+        ("0/00:00:01", "100/00:00:00"),
+        ("100", "100/00:00:01"),
+        ("abc/00:00:01", "100/00:00:01"),
+        ("100/00:01", "100/00:00:01"),
+        ("100/00:00:01:00", "100/00:00:01"),
+        ("100/00:60:00", "100/00:00:01"),
+        ("100/00:00:60", "100/00:00:01"),
+    ] {
+        let mutated = replace_in_fixture_root(
+            "nt_max_order_submit_rate = \"100/00:00:01\"\nnt_max_order_modify_rate = \"100/00:00:01\"",
+            &format!(
+                "nt_max_order_submit_rate = \"{submit_rate}\"\nnt_max_order_modify_rate = \"{modify_rate}\""
+            ),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("invalid NT rate limit fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m
+                    .contains("risk.nt_max_order_submit_rate is not a valid Nautilus rate limit")),
+            "expected submit-rate validation message for `{submit_rate}`, got: {messages:#?}"
+        );
+        // Only the first case mutates modify_rate; the remaining cases keep it
+        // valid so submit-rate parsing branches are isolated.
+        if modify_rate == "100/00:00:00" {
+            assert!(
+                messages.iter().any(|m| m
+                    .contains("risk.nt_max_order_modify_rate is not a valid Nautilus rate limit")),
+                "expected modify-rate validation message for `{modify_rate}`, got: {messages:#?}"
+            );
+        } else {
+            assert!(
+                !messages.iter().any(|m| m
+                    .contains("risk.nt_max_order_modify_rate is not a valid Nautilus rate limit")),
+                "valid modify_rate `{modify_rate}` must not produce a modify-rate error: {messages:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_invalid_nt_risk_max_notional_map_entries() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "nt_max_notional_per_order = {}",
+        "nt_max_notional_per_order = { \"BAD\" = \"not-a-decimal\" }",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid NT max-notional map fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains(
+            "risk.nt_max_notional_per_order key `BAD` is not a valid Nautilus instrument ID"
+        )),
+        "expected invalid instrument-id validation error, got: {messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m
+                .contains("risk.nt_max_notional_per_order[`BAD`] is not a valid decimal string")),
+        "expected invalid notional validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_non_positive_nt_risk_max_notional_map_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for notional in ["0", "-1.00"] {
+        let mutated = replace_in_fixture_root(
+            "nt_max_notional_per_order = {}",
+            &format!("nt_max_notional_per_order = {{ \"ETHUSDT.BINANCE\" = \"{notional}\" }}"),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("non-positive NT max-notional fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| m.contains(
+                "risk.nt_max_notional_per_order[`ETHUSDT.BINANCE`] must be a positive decimal string"
+            )),
+            "expected positive notional validation error for `{notional}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_orphan_secrets_block_without_data_or_execution() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "[venues.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
+        "",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("orphan-secrets fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("[secrets]")
+            && m.contains("no [data] block is configured")),
+        "expected orphan-secrets validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_ssm_paths_missing_leading_slash() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "api_key_ssm_path = \"/bolt/binance_reference/api_key\"",
+        "api_key_ssm_path = \"bolt/binance_reference/api_key\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&mutated).expect("ssm-path mutation should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("api_key_ssm_path")
+            && m.contains("absolute-style SSM parameter path starting with `/`")),
+        "expected SSM-path leading-slash validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_funder_address_with_invalid_evm_syntax() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"",
+        "funder_address = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder_address")
+            && m.contains("not a valid EVM public address")),
+        "expected EVM-syntax validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_funder_address_zero_address() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"",
+        "funder_address = \"0x0000000000000000000000000000000000000000\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder_address")
+            && m.contains("zero address")),
+        "expected zero-address validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_missing_funder_address_for_poly_proxy_signature_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"\n",
+        "",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder_address")
+            && m.contains("required when signature_type is `poly_proxy` or `poly_gnosis_safe`")),
+        "expected required-funder validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn allows_missing_funder_address_for_eoa_signature_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let without_funder = replace_in_fixture_root(
+        "funder_address = \"0x1111111111111111111111111111111111111111\"\n",
+        "",
+    );
+    let with_eoa = without_funder.replace(
+        "signature_type = \"poly_proxy\"",
+        "signature_type = \"eoa\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&with_eoa).expect("eoa-without-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        !messages.iter().any(|m| m.contains("funder_address")),
+        "EOA signature must allow absent funder_address, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_data_zero_instrument_status_poll_seconds() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
+        "instrument_status_poll_seconds = 0 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero-poll-interval fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("instrument_status_poll_seconds")
+            && m.contains("must be a positive integer")),
+        "expected positive-integer poll-interval validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_data_only_venue_with_secrets_block() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let execution_block = "[venues.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
+    let mutated = replace_in_fixture_root(execution_block, "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("[secrets]")
+            && m.contains("[execution]")),
+        "expected Polymarket data-only secrets validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "subscribe_new_markets = false",
+        "subscribe_new_markets = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("subscribe_new_markets=true fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("subscribe_new_markets")
+            && m.contains("must be false")),
+        "expected subscribe_new_markets=true validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_more_than_one_polymarket_venue_in_current_slice() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let extra_venue = "\n\n[venues.polymarket_secondary]\nkind = \"polymarket\"\n\n[venues.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[venues.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mutated = format!("{fixture}{extra_venue}");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("two-polymarket-venues fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("at most one [venues.<id>] block per kind")
+                && m.contains("polymarket")),
+        "expected one-venue-per-kind validation error, got: {messages:#?}"
+    );
+}

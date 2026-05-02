@@ -3,12 +3,12 @@ use std::error::Error;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_data::DataClientAdapter;
 use nautilus_execution::engine::ExecutionEngine;
 use nautilus_live::{config::LiveNodeConfig, node::LiveNode};
 use nautilus_model::identifiers::TraderId;
-use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 use crate::{clients::polymarket, config::Config, strategies::registry::StrategyBuildContext};
 

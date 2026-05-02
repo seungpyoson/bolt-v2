@@ -9,12 +9,14 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
+use nautilus_common::messages::system::TradingStateChanged;
 use nautilus_common::msgbus::{
-    MStr, ShareableMessageHandler, TypedHandler, subscribe_any, subscribe_bars,
-    subscribe_book_deltas, subscribe_book_depth10, subscribe_index_prices,
-    subscribe_instrument_close, subscribe_instruments, subscribe_mark_prices,
-    subscribe_order_events, subscribe_position_events, subscribe_quotes, subscribe_trades,
-    unsubscribe_any, unsubscribe_bars, unsubscribe_book_deltas, unsubscribe_book_depth10,
+    MStr, ShareableMessageHandler, TypedHandler, subscribe_account_state, subscribe_any,
+    subscribe_bars, subscribe_book_deltas, subscribe_book_depth10, subscribe_funding_rates,
+    subscribe_index_prices, subscribe_instrument_close, subscribe_instruments,
+    subscribe_mark_prices, subscribe_order_events, subscribe_position_events, subscribe_quotes,
+    subscribe_trades, unsubscribe_account_state, unsubscribe_any, unsubscribe_bars,
+    unsubscribe_book_deltas, unsubscribe_book_depth10, unsubscribe_funding_rates,
     unsubscribe_index_prices, unsubscribe_instrument_close, unsubscribe_instruments,
     unsubscribe_mark_prices, unsubscribe_order_events, unsubscribe_position_events,
     unsubscribe_quotes, unsubscribe_trades,
@@ -22,11 +24,10 @@ use nautilus_common::msgbus::{
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{
-        Bar, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate, OrderBookDeltas,
-        OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
+        Bar, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
+        OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
     },
-    enums::MarketStatusAction,
-    events::{OrderEventAny, PositionEvent},
+    events::{AccountState, OrderEventAny, PositionEvent},
     instruments::InstrumentAny,
 };
 use nautilus_persistence::{
@@ -49,37 +50,46 @@ struct TypedHandlers {
     book_depth10: TypedHandler<OrderBookDepth10>,
     mark_prices: TypedHandler<MarkPriceUpdate>,
     index_prices: TypedHandler<IndexPriceUpdate>,
+    funding_rates: TypedHandler<FundingRateUpdate>,
     order_events: TypedHandler<OrderEventAny>,
     position_events: TypedHandler<PositionEvent>,
+    account_states: TypedHandler<AccountState>,
 }
 
 struct AnyHandlers {
     instruments: ShareableMessageHandler,
     instrument_closes: ShareableMessageHandler,
     instrument_statuses: ShareableMessageHandler,
+    trading_state_changed: ShareableMessageHandler,
 }
 
-struct SidecarPaths {
+struct JsonlCapturePaths {
     status: PathBuf,
+    account_states: PathBuf,
+    funding_rates: PathBuf,
     order_events: PathBuf,
     position_events: PathBuf,
+    trading_state_changed: PathBuf,
 }
 
-struct SidecarWriters {
+struct JsonlCaptureWriters {
     status: JsonlAppender,
+    account_states: JsonlAppender,
+    funding_rates: JsonlAppender,
     order_events: JsonlAppender,
     position_events: JsonlAppender,
+    trading_state_changed: JsonlAppender,
 }
 
 #[derive(Clone)]
-struct SinkFailureState {
+struct CaptureFailureState {
     unhealthy: Arc<AtomicBool>,
     first_error: Arc<Mutex<Option<String>>>,
     notifier: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     stop_handle: LiveNodeHandle,
 }
 
-impl SinkFailureState {
+impl CaptureFailureState {
     fn new(stop_handle: LiveNodeHandle) -> (Self, oneshot::Receiver<()>) {
         let (notifier, receiver) = oneshot::channel();
         (
@@ -133,7 +143,7 @@ impl SinkFailureState {
     }
 }
 
-enum SinkMessage {
+enum CaptureMessage {
     Quote(QuoteTick),
     Trade(TradeTick),
     Bar(Bar),
@@ -141,30 +151,33 @@ enum SinkMessage {
     Depth10(Box<OrderBookDepth10>),
     MarkPrice(MarkPriceUpdate),
     IndexPrice(IndexPriceUpdate),
+    FundingRate(FundingRateUpdate),
     Instrument(Box<InstrumentAny>),
     InstrumentClose(InstrumentClose),
     InstrumentStatus(InstrumentStatus),
     OrderEvent(Box<OrderEventAny>),
     PositionEvent(Box<PositionEvent>),
+    AccountState(Box<AccountState>),
+    TradingStateChanged(Box<TradingStateChanged>),
 }
 
-pub struct NormalizedSinkGuards {
-    sender: Option<UnboundedSender<SinkMessage>>,
+pub struct NtRuntimeCaptureGuards {
+    sender: Option<UnboundedSender<CaptureMessage>>,
     supervisor_handle: Option<JoinHandle<Result<()>>>,
     typed_handlers: Option<TypedHandlers>,
     any_handlers: Option<AnyHandlers>,
-    failure_state: SinkFailureState,
+    failure_state: CaptureFailureState,
     failure_receiver: Option<oneshot::Receiver<()>>,
 }
 
-impl Drop for NormalizedSinkGuards {
+impl Drop for NtRuntimeCaptureGuards {
     fn drop(&mut self) {
         self.unsubscribe_all();
         self.sender.take();
     }
 }
 
-impl NormalizedSinkGuards {
+impl NtRuntimeCaptureGuards {
     pub fn take_failure_receiver(&mut self) -> Option<oneshot::Receiver<()>> {
         self.failure_receiver.take()
     }
@@ -180,14 +193,14 @@ impl NormalizedSinkGuards {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => join_error = Some(error),
                 Err(error) => {
-                    join_error = Some(anyhow!("normalized sink worker join failed: {error}"))
+                    join_error = Some(anyhow!("NT runtime capture worker join failed: {error}"))
                 }
             }
         }
 
         match (self.failure_state.error_message(), join_error) {
             (Some(primary), Some(secondary)) => {
-                log::error!("Normalized sink secondary error: {secondary}");
+                log::error!("NT runtime capture secondary error: {secondary}");
                 Err(anyhow!(primary))
             }
             (Some(primary), None) => Err(anyhow!(primary)),
@@ -205,14 +218,20 @@ impl NormalizedSinkGuards {
             unsubscribe_book_depth10(book_depth10_pattern(), &typed.book_depth10);
             unsubscribe_mark_prices(mark_prices_pattern(), &typed.mark_prices);
             unsubscribe_index_prices(index_prices_pattern(), &typed.index_prices);
+            unsubscribe_funding_rates(funding_rates_pattern(), &typed.funding_rates);
             unsubscribe_order_events(order_events_pattern(), &typed.order_events);
             unsubscribe_position_events(position_events_pattern(), &typed.position_events);
+            unsubscribe_account_state(account_states_pattern(), &typed.account_states);
         }
 
         if let Some(any) = self.any_handlers.take() {
             unsubscribe_instruments(instruments_pattern(), &any.instruments);
             unsubscribe_instrument_close(instrument_closes_pattern(), &any.instrument_closes);
             unsubscribe_any(instrument_statuses_pattern(), &any.instrument_statuses);
+            unsubscribe_any(
+                trading_state_changed_events_pattern(),
+                &any.trading_state_changed,
+            );
         }
     }
 }
@@ -249,6 +268,10 @@ fn index_prices_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("data.index_prices.*.*")
 }
 
+fn funding_rates_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    MStr::pattern("data.funding_rates.*.*")
+}
+
 fn instruments_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("data.instrument.*.*")
 }
@@ -267,6 +290,16 @@ fn order_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
 
 fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern("events.position.*")
+}
+
+fn account_states_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    MStr::pattern("events.account.*")
+}
+
+fn trading_state_changed_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    // The risk engine publishes the literal topic `events.risk` (not a wildcard subtopic),
+    // so subscribe with the same literal pattern.
+    MStr::pattern("events.risk")
 }
 
 fn per_instrument_stream_types() -> HashSet<String> {
@@ -290,7 +323,7 @@ fn per_instrument_stream_types() -> HashSet<String> {
 fn ensure_local_catalog_path(catalog_path: &str) -> Result<()> {
     if catalog_path.contains("://") {
         bail!(
-            "Task 3 normalized sink currently supports only local catalog paths, got `{catalog_path}`"
+            "Task 3 NT runtime capture currently supports only local catalog paths, got `{catalog_path}`"
         );
     }
 
@@ -352,11 +385,11 @@ fn format_contract_startup_log(contract: &crate::venue_contract::VenueContract) 
     )
 }
 
-fn send_sink_message(
-    sender: &UnboundedSender<SinkMessage>,
-    message: SinkMessage,
+fn send_capture_message(
+    sender: &UnboundedSender<CaptureMessage>,
+    message: CaptureMessage,
     label: &str,
-    failure_state: &SinkFailureState,
+    failure_state: &CaptureFailureState,
 ) {
     if failure_state.is_unhealthy() {
         return;
@@ -364,17 +397,17 @@ fn send_sink_message(
 
     if let Err(error) = sender.send(message) {
         failure_state.record_failure(format!(
-            "Normalized sink channel closed while enqueueing {label}: {error}"
+            "NT runtime capture channel closed while enqueueing {label}: {error}"
         ));
     }
 }
 
-async fn run_sink_worker(
-    mut receiver: UnboundedReceiver<SinkMessage>,
+async fn run_capture_worker(
+    mut receiver: UnboundedReceiver<CaptureMessage>,
     mut writer: FeatherWriter,
-    mut sidecar_writers: SidecarWriters,
-    sidecar_paths: SidecarPaths,
-    failure_state: SinkFailureState,
+    mut jsonl_writers: JsonlCaptureWriters,
+    jsonl_paths: JsonlCapturePaths,
+    failure_state: CaptureFailureState,
 ) -> Result<()> {
     let mut primary_error: Option<anyhow::Error> = None;
     let mut startup_buffer = VecDeque::new();
@@ -420,7 +453,7 @@ async fn run_sink_worker(
         }
 
         if let Err(error) =
-            write_sink_message(&mut writer, &mut sidecar_writers, &sidecar_paths, message).await
+            write_capture_message(&mut writer, &mut jsonl_writers, &jsonl_paths, message).await
         {
             failure_state.record_failure(error.to_string());
             primary_error = Some(error);
@@ -438,7 +471,7 @@ async fn run_sink_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.status.close() {
+    if let Err(error) = jsonl_writers.status.close() {
         let close_error = anyhow!("Failed to close instrument status JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
@@ -448,7 +481,27 @@ async fn run_sink_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.order_events.close() {
+    if let Err(error) = jsonl_writers.account_states.close() {
+        let close_error = anyhow!("Failed to close account state JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = jsonl_writers.funding_rates.close() {
+        let close_error = anyhow!("Failed to close funding rates JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = jsonl_writers.order_events.close() {
         let close_error = anyhow!("Failed to close order event JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
@@ -458,8 +511,18 @@ async fn run_sink_worker(
         }
     }
 
-    if let Err(error) = sidecar_writers.position_events.close() {
+    if let Err(error) = jsonl_writers.position_events.close() {
         let close_error = anyhow!("Failed to close position event JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
+    if let Err(error) = jsonl_writers.trading_state_changed.close() {
+        let close_error = anyhow!("Failed to close TradingStateChanged JSONL writer: {error}");
         if primary_error.is_none() {
             failure_state.record_failure(close_error.to_string());
             primary_error = Some(close_error);
@@ -475,26 +538,26 @@ async fn run_sink_worker(
     }
 }
 
-async fn write_sink_message(
+async fn write_capture_message(
     writer: &mut FeatherWriter,
-    sidecar_writers: &mut SidecarWriters,
-    sidecar_paths: &SidecarPaths,
-    message: SinkMessage,
+    jsonl_writers: &mut JsonlCaptureWriters,
+    jsonl_paths: &JsonlCapturePaths,
+    message: CaptureMessage,
 ) -> Result<()> {
     match message {
-        SinkMessage::Quote(quote) => writer
+        CaptureMessage::Quote(quote) => writer
             .write(quote)
             .await
             .map_err(|e| anyhow!("QuoteTick write failed: {e}")),
-        SinkMessage::Trade(trade) => writer
+        CaptureMessage::Trade(trade) => writer
             .write(trade)
             .await
             .map_err(|e| anyhow!("TradeTick write failed: {e}")),
-        SinkMessage::Bar(bar) => writer
+        CaptureMessage::Bar(bar) => writer
             .write(bar)
             .await
             .map_err(|e| anyhow!("Bar write failed: {e}")),
-        SinkMessage::Deltas(deltas) => {
+        CaptureMessage::Deltas(deltas) => {
             for delta in deltas.deltas {
                 writer
                     .write(delta)
@@ -503,56 +566,68 @@ async fn write_sink_message(
             }
             Ok(())
         }
-        SinkMessage::Depth10(depth) => writer
+        CaptureMessage::Depth10(depth) => writer
             .write(*depth)
             .await
             .map_err(|e| anyhow!("OrderBookDepth10 write failed: {e}")),
-        SinkMessage::MarkPrice(price) => writer
+        CaptureMessage::MarkPrice(price) => writer
             .write(price)
             .await
             .map_err(|e| anyhow!("MarkPriceUpdate write failed: {e}")),
-        SinkMessage::IndexPrice(price) => writer
+        CaptureMessage::IndexPrice(price) => writer
             .write(price)
             .await
             .map_err(|e| anyhow!("IndexPriceUpdate write failed: {e}")),
-        SinkMessage::Instrument(instrument) => writer
+        CaptureMessage::FundingRate(funding_rate) => jsonl_writers
+            .funding_rates
+            .append(&jsonl_paths.funding_rates, &funding_rate)
+            .map_err(|e| anyhow!("FundingRateUpdate JSONL write failed: {e}")),
+        CaptureMessage::Instrument(instrument) => writer
             .write_instrument(*instrument)
             .await
             .map_err(|e| anyhow!("InstrumentAny write failed: {e}")),
-        SinkMessage::InstrumentClose(close) => writer
+        CaptureMessage::InstrumentClose(close) => writer
             .write(close)
             .await
             .map_err(|e| anyhow!("InstrumentClose write failed: {e}")),
-        SinkMessage::InstrumentStatus(status) => sidecar_writers
+        CaptureMessage::InstrumentStatus(status) => jsonl_writers
             .status
-            .append(&sidecar_paths.status, &status)
+            .append(&jsonl_paths.status, &status)
             .map_err(|e| anyhow!("InstrumentStatus JSONL write failed: {e}")),
-        SinkMessage::OrderEvent(event) => {
+        CaptureMessage::OrderEvent(event) => {
             let row = execution_state::order_event_row(&event)
                 .map_err(|e| anyhow!("OrderEvent summary failed: {e}"))?;
-            sidecar_writers
+            jsonl_writers
                 .order_events
-                .append(&sidecar_paths.order_events, &row)
+                .append(&jsonl_paths.order_events, &row)
                 .map_err(|e| anyhow!("OrderEvent JSONL write failed: {e}"))
         }
-        SinkMessage::PositionEvent(event) => {
+        CaptureMessage::PositionEvent(event) => {
             let row = execution_state::position_event_row(&event)
                 .map_err(|e| anyhow!("PositionEvent summary failed: {e}"))?;
-            sidecar_writers
+            jsonl_writers
                 .position_events
-                .append(&sidecar_paths.position_events, &row)
+                .append(&jsonl_paths.position_events, &row)
                 .map_err(|e| anyhow!("PositionEvent JSONL write failed: {e}"))
         }
+        CaptureMessage::AccountState(state) => jsonl_writers
+            .account_states
+            .append(&jsonl_paths.account_states, &state)
+            .map_err(|e| anyhow!("AccountState JSONL write failed: {e}")),
+        CaptureMessage::TradingStateChanged(event) => jsonl_writers
+            .trading_state_changed
+            .append(&jsonl_paths.trading_state_changed, &event)
+            .map_err(|e| anyhow!("TradingStateChanged JSONL write failed: {e}")),
     }
 }
 
-pub fn wire_normalized_sinks(
+pub fn wire_nt_runtime_capture(
     node: &LiveNode,
     stop_handle: LiveNodeHandle,
     catalog_path: &str,
     flush_interval_ms: u64,
     contract_path: Option<&str>,
-) -> Result<NormalizedSinkGuards> {
+) -> Result<NtRuntimeCaptureGuards> {
     ensure_local_catalog_path(catalog_path)?;
 
     if let Some(path) = contract_path {
@@ -568,12 +643,17 @@ pub fn wire_normalized_sinks(
     fs::create_dir_all(&spool_root)?;
     let (object_store, base_path, _uri) = create_object_store_from_path(&spool_root, None)?;
     let spool_root_path = PathBuf::from(&spool_root);
-    let sidecar_paths = SidecarPaths {
+    let jsonl_paths = JsonlCapturePaths {
         status: spool_root_path
             .join("status")
             .join("instrument_status.jsonl"),
+        account_states: spool_root_path.join("accounts").join("account_state.jsonl"),
+        funding_rates: spool_root_path.join("funding_rates").join("updates.jsonl"),
         order_events: execution_state::order_events_path(&spool_root_path),
         position_events: execution_state::position_events_path(&spool_root_path),
+        trading_state_changed: spool_root_path
+            .join("risk")
+            .join("trading_state_changed.jsonl"),
     };
 
     let writer = FeatherWriter::new(
@@ -586,20 +666,23 @@ pub fn wire_normalized_sinks(
         Some(flush_interval_ms),
     );
 
-    // Unbounded is intentional: sink handlers must never block the NT message bus.
-    // If the sink falls behind, memory can grow until the process is stopped.
+    // Unbounded is intentional: capture handlers must never block the NT message bus.
+    // If capture falls behind, memory can grow until the process is stopped.
     // This is an accepted Task 3 tradeoff for current local-first Polymarket capture.
     let (sender, receiver) = unbounded_channel();
-    let (failure_state, failure_receiver) = SinkFailureState::new(stop_handle);
-    let worker_handle = spawn_local(run_sink_worker(
+    let (failure_state, failure_receiver) = CaptureFailureState::new(stop_handle);
+    let worker_handle = spawn_local(run_capture_worker(
         receiver,
         writer,
-        SidecarWriters {
+        JsonlCaptureWriters {
             status: JsonlAppender::new(),
+            account_states: JsonlAppender::new(),
+            funding_rates: JsonlAppender::new(),
             order_events: JsonlAppender::new(),
             position_events: JsonlAppender::new(),
+            trading_state_changed: JsonlAppender::new(),
         },
-        sidecar_paths,
+        jsonl_paths,
         failure_state.clone(),
     ));
     let supervisor_failure_state = failure_state.clone();
@@ -611,7 +694,7 @@ pub fn wire_normalized_sinks(
                 Err(error)
             }
             Err(error) => {
-                let join_error = anyhow!("normalized sink worker join failed: {error}");
+                let join_error = anyhow!("NT runtime capture worker join failed: {error}");
                 supervisor_failure_state.record_failure(join_error.to_string());
                 Err(join_error)
             }
@@ -621,9 +704,9 @@ pub fn wire_normalized_sinks(
     let quotes_sender = sender.clone();
     let quotes_failure_state = failure_state.clone();
     let quotes = TypedHandler::from(move |quote: &QuoteTick| {
-        send_sink_message(
+        send_capture_message(
             &quotes_sender,
-            SinkMessage::Quote(*quote),
+            CaptureMessage::Quote(*quote),
             "QuoteTick",
             &quotes_failure_state,
         );
@@ -633,9 +716,9 @@ pub fn wire_normalized_sinks(
     let trades_sender = sender.clone();
     let trades_failure_state = failure_state.clone();
     let trades = TypedHandler::from(move |trade: &TradeTick| {
-        send_sink_message(
+        send_capture_message(
             &trades_sender,
-            SinkMessage::Trade(*trade),
+            CaptureMessage::Trade(*trade),
             "TradeTick",
             &trades_failure_state,
         );
@@ -645,9 +728,9 @@ pub fn wire_normalized_sinks(
     let bars_sender = sender.clone();
     let bars_failure_state = failure_state.clone();
     let bars = TypedHandler::from(move |bar: &Bar| {
-        send_sink_message(
+        send_capture_message(
             &bars_sender,
-            SinkMessage::Bar(*bar),
+            CaptureMessage::Bar(*bar),
             "Bar",
             &bars_failure_state,
         );
@@ -657,9 +740,9 @@ pub fn wire_normalized_sinks(
     let deltas_sender = sender.clone();
     let deltas_failure_state = failure_state.clone();
     let book_deltas = TypedHandler::from(move |deltas: &OrderBookDeltas| {
-        send_sink_message(
+        send_capture_message(
             &deltas_sender,
-            SinkMessage::Deltas(deltas.clone()),
+            CaptureMessage::Deltas(deltas.clone()),
             "OrderBookDeltas",
             &deltas_failure_state,
         );
@@ -669,9 +752,9 @@ pub fn wire_normalized_sinks(
     let depth_sender = sender.clone();
     let depth_failure_state = failure_state.clone();
     let book_depth10 = TypedHandler::from(move |depth: &OrderBookDepth10| {
-        send_sink_message(
+        send_capture_message(
             &depth_sender,
-            SinkMessage::Depth10(Box::new(*depth)),
+            CaptureMessage::Depth10(Box::new(*depth)),
             "OrderBookDepth10",
             &depth_failure_state,
         );
@@ -681,9 +764,9 @@ pub fn wire_normalized_sinks(
     let mark_sender = sender.clone();
     let mark_failure_state = failure_state.clone();
     let mark_prices = TypedHandler::from(move |price: &MarkPriceUpdate| {
-        send_sink_message(
+        send_capture_message(
             &mark_sender,
-            SinkMessage::MarkPrice(*price),
+            CaptureMessage::MarkPrice(*price),
             "MarkPriceUpdate",
             &mark_failure_state,
         );
@@ -693,21 +776,33 @@ pub fn wire_normalized_sinks(
     let index_sender = sender.clone();
     let index_failure_state = failure_state.clone();
     let index_prices = TypedHandler::from(move |price: &IndexPriceUpdate| {
-        send_sink_message(
+        send_capture_message(
             &index_sender,
-            SinkMessage::IndexPrice(*price),
+            CaptureMessage::IndexPrice(*price),
             "IndexPriceUpdate",
             &index_failure_state,
         );
     });
     subscribe_index_prices(index_prices_pattern(), index_prices.clone(), None);
 
+    let funding_sender = sender.clone();
+    let funding_failure_state = failure_state.clone();
+    let funding_rates = TypedHandler::from(move |funding_rate: &FundingRateUpdate| {
+        send_capture_message(
+            &funding_sender,
+            CaptureMessage::FundingRate(*funding_rate),
+            "FundingRateUpdate",
+            &funding_failure_state,
+        );
+    });
+    subscribe_funding_rates(funding_rates_pattern(), funding_rates.clone(), None);
+
     let order_events_sender = sender.clone();
     let order_events_failure_state = failure_state.clone();
     let order_events = TypedHandler::from(move |event: &OrderEventAny| {
-        send_sink_message(
+        send_capture_message(
             &order_events_sender,
-            SinkMessage::OrderEvent(Box::new(event.clone())),
+            CaptureMessage::OrderEvent(Box::new(event.clone())),
             "OrderEventAny",
             &order_events_failure_state,
         );
@@ -717,22 +812,34 @@ pub fn wire_normalized_sinks(
     let position_events_sender = sender.clone();
     let position_events_failure_state = failure_state.clone();
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
-        send_sink_message(
+        send_capture_message(
             &position_events_sender,
-            SinkMessage::PositionEvent(Box::new(event.clone())),
+            CaptureMessage::PositionEvent(Box::new(event.clone())),
             "PositionEvent",
             &position_events_failure_state,
         );
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
 
+    let account_sender = sender.clone();
+    let account_failure_state = failure_state.clone();
+    let account_states = TypedHandler::from(move |state: &AccountState| {
+        send_capture_message(
+            &account_sender,
+            CaptureMessage::AccountState(Box::new(state.clone())),
+            "AccountState",
+            &account_failure_state,
+        );
+    });
+    subscribe_account_state(account_states_pattern(), account_states.clone(), None);
+
     let instrument_sender = sender.clone();
     let instrument_failure_state = failure_state.clone();
     let instruments = ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
         if let Some(instrument) = message.downcast_ref::<InstrumentAny>() {
-            send_sink_message(
+            send_capture_message(
                 &instrument_sender,
-                SinkMessage::Instrument(Box::new(instrument.clone())),
+                CaptureMessage::Instrument(Box::new(instrument.clone())),
                 "InstrumentAny",
                 &instrument_failure_state,
             );
@@ -745,9 +852,9 @@ pub fn wire_normalized_sinks(
     let instrument_closes =
         ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
             if let Some(close) = message.downcast_ref::<InstrumentClose>() {
-                send_sink_message(
+                send_capture_message(
                     &close_sender,
-                    SinkMessage::InstrumentClose(*close),
+                    CaptureMessage::InstrumentClose(*close),
                     "InstrumentClose",
                     &close_failure_state,
                 );
@@ -760,13 +867,9 @@ pub fn wire_normalized_sinks(
     let instrument_statuses =
         ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
             if let Some(status) = message.downcast_ref::<InstrumentStatus>() {
-                if status.action != MarketStatusAction::Close {
-                    return;
-                }
-
-                send_sink_message(
+                send_capture_message(
                     &status_sender,
-                    SinkMessage::InstrumentStatus(*status),
+                    CaptureMessage::InstrumentStatus(*status),
                     "InstrumentStatus",
                     &status_failure_state,
                 );
@@ -778,7 +881,26 @@ pub fn wire_normalized_sinks(
         None,
     );
 
-    Ok(NormalizedSinkGuards {
+    let trading_state_changed_sender = sender.clone();
+    let trading_state_changed_failure_state = failure_state.clone();
+    let trading_state_changed =
+        ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
+            if let Some(event) = message.downcast_ref::<TradingStateChanged>() {
+                send_capture_message(
+                    &trading_state_changed_sender,
+                    CaptureMessage::TradingStateChanged(Box::new(event.clone())),
+                    "TradingStateChanged",
+                    &trading_state_changed_failure_state,
+                );
+            }
+        });
+    subscribe_any(
+        trading_state_changed_events_pattern(),
+        trading_state_changed.clone(),
+        None,
+    );
+
+    Ok(NtRuntimeCaptureGuards {
         sender: Some(sender),
         supervisor_handle: Some(supervisor_handle),
         typed_handlers: Some(TypedHandlers {
@@ -789,13 +911,16 @@ pub fn wire_normalized_sinks(
             book_depth10,
             mark_prices,
             index_prices,
+            funding_rates,
             order_events,
             position_events,
+            account_states,
         }),
         any_handlers: Some(AnyHandlers {
             instruments,
             instrument_closes,
             instrument_statuses,
+            trading_state_changed,
         }),
         failure_state,
         failure_receiver: Some(failure_receiver),
@@ -815,7 +940,7 @@ mod tests {
     #[test]
     fn failure_state_latches_first_error_and_sets_stop_flag() {
         let handle = LiveNodeHandle::new();
-        let (state, _receiver) = SinkFailureState::new(handle.clone());
+        let (state, _receiver) = CaptureFailureState::new(handle.clone());
 
         state.record_failure("first failure");
         state.record_failure("second failure");
@@ -826,9 +951,9 @@ mod tests {
     }
 
     #[test]
-    fn send_failure_marks_sink_unhealthy() {
+    fn send_failure_marks_capture_unhealthy() {
         let handle = LiveNodeHandle::new();
-        let (state, _receiver) = SinkFailureState::new(handle.clone());
+        let (state, _receiver) = CaptureFailureState::new(handle.clone());
         let (sender, receiver) = unbounded_channel();
         drop(receiver);
 
@@ -842,7 +967,7 @@ mod tests {
             1.into(),
         );
 
-        send_sink_message(&sender, SinkMessage::Quote(quote), "QuoteTick", &state);
+        send_capture_message(&sender, CaptureMessage::Quote(quote), "QuoteTick", &state);
 
         assert!(state.is_unhealthy());
         assert!(handle.should_stop());
@@ -850,14 +975,14 @@ mod tests {
             state
                 .error_message()
                 .unwrap()
-                .contains("Normalized sink channel closed while enqueueing QuoteTick")
+                .contains("NT runtime capture channel closed while enqueueing QuoteTick")
         );
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn record_failure_notifies_receiver() {
         let handle = LiveNodeHandle::new();
-        let (state, receiver) = SinkFailureState::new(handle);
+        let (state, receiver) = CaptureFailureState::new(handle);
 
         state.record_failure("failure");
 

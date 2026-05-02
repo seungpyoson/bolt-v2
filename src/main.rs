@@ -5,7 +5,7 @@ use std::{collections::HashSet, path::PathBuf, rc::Rc};
 use bolt_v2::{
     clients::polymarket,
     config::{Config, ReferenceVenueKind, ensure_runtime_has_active_path},
-    normalized_sink,
+    nt_runtime_capture,
     platform::runtime::{
         build_reference_data_client, reference_client_name_for_kind,
         registry_runtime_strategy_factory, wire_platform_runtime,
@@ -76,6 +76,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &cfg,
                 polymarket_ruleset_setup.resolved_prefix_event_slugs(),
             )?;
+            // One SSM resolver session amortizes AWS SDK config + SsmClient
+            // construction across every secret resolution in this Run boundary.
+            let ssm_resolver_session = secrets::SsmResolverSession::new()?;
             let mut polymarket_selector_refresh_raw = None;
             let mut builder = LiveNode::builder(trader_id, environment)?
                 .with_name(cfg.node.name.clone())
@@ -112,8 +115,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match venue.kind {
                         ReferenceVenueKind::Polymarket => {}
                         _ => {
-                            let (factory, config) =
-                                build_reference_data_client(&cfg.reference, venue)?;
+                            let (factory, config) = build_reference_data_client(
+                                &ssm_resolver_session,
+                                &cfg.reference,
+                                venue,
+                            )?;
                             builder = builder.add_data_client(
                                 Some(reference_client_name_for_kind(&cfg, &venue.kind)?),
                                 factory,
@@ -128,7 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        let resolved = secrets::resolve_polymarket(&client.secrets)?;
+                        let resolved =
+                            secrets::resolve_polymarket(&ssm_resolver_session, &client.secrets)?;
                         if strategy_build_context.is_none() {
                             strategy_build_context = Some(StrategyBuildContext {
                                 fee_provider: polymarket::build_fee_provider(
@@ -175,10 +182,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .transpose()?
                     .flatten();
-                let normalized_sink_guards = if cfg.streaming.catalog_path.trim().is_empty() {
+                let nt_runtime_capture_guards = if cfg.streaming.catalog_path.trim().is_empty() {
                     None
                 } else {
-                    Some(normalized_sink::wire_normalized_sinks(
+                    Some(nt_runtime_capture::wire_nt_runtime_capture(
                         &node,
                         node_handle,
                         &cfg.streaming.catalog_path,
@@ -186,8 +193,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cfg.streaming.contract_path.as_deref(),
                     )?)
                 };
-                let mut normalized_sink_guards = normalized_sink_guards;
-                let mut sink_failure_receiver = normalized_sink_guards
+                let mut nt_runtime_capture_guards = nt_runtime_capture_guards;
+                let mut capture_failure_receiver = nt_runtime_capture_guards
                     .as_mut()
                     .and_then(|guards| guards.take_failure_receiver());
 
@@ -234,11 +241,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let run_future = node.run();
                     tokio::pin!(run_future);
 
-                    if let Some(receiver) = sink_failure_receiver.as_mut() {
+                    if let Some(receiver) = capture_failure_receiver.as_mut() {
                         tokio::select! {
                             result = &mut run_future => result,
                             _ = receiver => {
-                                log::error!("Normalized sink failure detected, awaiting LiveNode shutdown");
+                                log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");
                                 run_future.await
                             }
                         }
@@ -256,7 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     Ok(())
                 };
-                let shutdown_result = if let Some(guards) = normalized_sink_guards {
+                let shutdown_result = if let Some(guards) = nt_runtime_capture_guards {
                     guards.shutdown().await.map_err(|e| {
                         Box::new(std::io::Error::other(e.to_string())) as Box<dyn std::error::Error>
                     })
@@ -276,20 +283,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ))) as Box<dyn std::error::Error>)
                     }
                     (Err(run_error), Ok(()), Err(shutdown_error)) => {
-                        log::error!("Live node run error during sink shutdown: {run_error}");
+                        log::error!(
+                            "Live node run error during NT runtime capture shutdown: {run_error}"
+                        );
                         Err(Box::new(std::io::Error::other(format!(
-                            "normalized sink shutdown error: {shutdown_error}; node run error: {run_error}"
+                            "NT runtime capture shutdown error: {shutdown_error}; node run error: {run_error}"
                         ))) as Box<dyn std::error::Error>)
                     }
                     (Ok(()), Err(platform_error), Err(shutdown_error)) => {
                         log::error!(
-                            "Normalized sink secondary error during platform shutdown: {shutdown_error}"
+                            "NT runtime capture secondary error during platform shutdown: {shutdown_error}"
                         );
                         Err(platform_error)
                     }
                     (Err(run_error), Err(platform_error), Err(shutdown_error)) => {
                         log::error!(
-                            "Normalized sink secondary error during platform shutdown: {shutdown_error}"
+                            "NT runtime capture secondary error during platform shutdown: {shutdown_error}"
                         );
                         log::error!("Live node run error during platform shutdown: {run_error}");
                         Err(Box::new(std::io::Error::other(format!(
@@ -376,13 +385,24 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             let cfg = Config::load(&config)?;
             ensure_runtime_has_active_path(&cfg)?;
 
+            // One SSM resolver session amortizes AWS SDK config + SsmClient
+            // construction across every secret resolution in this Resolve
+            // subcommand boundary.
+            let ssm_resolver_session = secrets::SsmResolverSession::new()?;
+
             if let Some(binance) = cfg.reference.binance.as_ref() {
-                secrets::resolve_binance(&binance.region, &binance.api_key, &binance.api_secret)?;
+                secrets::resolve_binance(
+                    &ssm_resolver_session,
+                    &binance.region,
+                    &binance.api_key,
+                    &binance.api_secret,
+                )?;
                 println!("reference.binance: secrets resolved successfully");
             }
 
             if let Some(chainlink) = cfg.reference.chainlink.as_ref() {
                 secrets::resolve_chainlink(
+                    &ssm_resolver_session,
                     &chainlink.region,
                     &chainlink.api_key,
                     &chainlink.api_secret,
@@ -393,7 +413,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             for client in &cfg.exec_clients {
                 match client.kind.as_str() {
                     "polymarket" => {
-                        secrets::resolve_polymarket(&client.secrets)?;
+                        secrets::resolve_polymarket(&ssm_resolver_session, &client.secrets)?;
                         println!("{}: secrets resolved successfully", client.name);
                     }
                     other => return Err(format!("Unsupported exec client type: {other}").into()),

@@ -448,6 +448,7 @@ pub(crate) fn build_data_client(
         ws_max_subscriptions,
         filters,
         new_market_filter: None,
+        auto_load_missing_instruments: false,
         ..Default::default()
     };
 
@@ -2178,6 +2179,7 @@ mod tests {
             neg_risk: None,
             neg_risk_market_id: None,
             featured: None,
+            game_id: None,
         };
 
         assert!(
@@ -2211,6 +2213,7 @@ mod tests {
             neg_risk: None,
             neg_risk_market_id: None,
             featured: None,
+            game_id: None,
         };
 
         assert!(
@@ -2868,6 +2871,7 @@ mod tests {
         let (_, config) = result.expect("legacy event_slugs config must build a data client");
 
         assert!(!config.subscribe_new_markets);
+        assert!(!config.auto_load_missing_instruments);
         assert_eq!(config.filters.len(), 1);
         let debug = format!("{:?}", config.filters);
         assert!(debug.contains("EventSlugFilter"), "{debug}");

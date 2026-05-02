@@ -12,10 +12,11 @@ use std::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
     cache::Cache,
     clients::{DataClient, ExecutionClient},
@@ -29,7 +30,6 @@ use nautilus_model::{
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
     types::{AccountBalance, MarginBalance},
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -255,6 +255,10 @@ impl Drop for TempCaseDir {
 pub struct MockDataClientConfig {
     client_id: String,
     venue: String,
+    connect_delay: Duration,
+    connect_failure: Option<String>,
+    disconnect_delay: Duration,
+    disconnect_failure: Option<String>,
 }
 
 impl MockDataClientConfig {
@@ -262,7 +266,45 @@ impl MockDataClientConfig {
         Self {
             client_id: client_id.to_string(),
             venue: venue.to_string(),
+            connect_delay: Duration::ZERO,
+            connect_failure: None,
+            disconnect_delay: Duration::ZERO,
+            disconnect_failure: None,
         }
+    }
+
+    pub fn with_connect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+        self.connect_delay = Duration::from_millis(milliseconds);
+        self
+    }
+
+    /// Configures the mock to surface an `Err(...)` from its
+    /// `DataClient::connect` implementation. The pinned NT
+    /// `DataEngine::connect` swallows the error and logs it, so the
+    /// client's `is_connected()` flag stays false; controlled-connect
+    /// callers see this through `kernel.check_engines_connected()`
+    /// returning false after dispatch returns.
+    pub fn with_connect_failure(mut self, message: &str) -> Self {
+        self.connect_failure = Some(message.to_string());
+        self
+    }
+
+    /// Configures the mock to sleep for the given number of
+    /// milliseconds inside `DataClient::disconnect` before flipping
+    /// its `connected` flag. Used to drive the bolt-v3
+    /// controlled-disconnect timeout path without touching real I/O.
+    pub fn with_disconnect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+        self.disconnect_delay = Duration::from_millis(milliseconds);
+        self
+    }
+
+    /// Configures the mock to surface an `Err(...)` from its
+    /// `DataClient::disconnect` implementation. The bolt-v3
+    /// controlled-disconnect boundary must propagate this as
+    /// `DisconnectFailed` rather than silently swallowing it.
+    pub fn with_disconnect_failure(mut self, message: &str) -> Self {
+        self.disconnect_failure = Some(message.to_string());
+        self
     }
 }
 
@@ -314,6 +356,10 @@ impl DataClientFactory for MockDataClientFactory {
         Ok(Box::new(MockDataClient::new(
             ClientId::from(cfg.client_id.as_str()),
             Venue::from(cfg.venue.as_str()),
+            cfg.connect_delay,
+            cfg.connect_failure.clone(),
+            cfg.disconnect_delay,
+            cfg.disconnect_failure.clone(),
         )))
     }
 
@@ -365,14 +411,29 @@ struct MockDataClient {
     client_id: ClientId,
     venue: Venue,
     connected: bool,
+    connect_delay: Duration,
+    connect_failure: Option<String>,
+    disconnect_delay: Duration,
+    disconnect_failure: Option<String>,
 }
 
 impl MockDataClient {
-    fn new(client_id: ClientId, venue: Venue) -> Self {
+    fn new(
+        client_id: ClientId,
+        venue: Venue,
+        connect_delay: Duration,
+        connect_failure: Option<String>,
+        disconnect_delay: Duration,
+        disconnect_failure: Option<String>,
+    ) -> Self {
         Self {
             client_id,
             venue,
             connected: false,
+            connect_delay,
+            connect_failure,
+            disconnect_delay,
+            disconnect_failure,
         }
     }
 }
@@ -437,16 +498,28 @@ impl DataClient for MockDataClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
+        if !self.connect_delay.is_zero() {
+            tokio::time::sleep(self.connect_delay).await;
+        }
+        if let Some(message) = &self.connect_failure {
+            return Err(anyhow::anyhow!(message.clone()));
+        }
         self.connected = true;
         Ok(())
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
+        if !self.disconnect_delay.is_zero() {
+            tokio::time::sleep(self.disconnect_delay).await;
+        }
+        if let Some(message) = &self.disconnect_failure {
+            return Err(anyhow::anyhow!(message.clone()));
+        }
         self.connected = false;
         Ok(())
     }
 
-    fn subscribe_instrument(&mut self, cmd: &SubscribeInstrument) -> anyhow::Result<()> {
+    fn subscribe_instrument(&mut self, cmd: SubscribeInstrument) -> anyhow::Result<()> {
         mock_data_subscriptions()
             .lock()
             .unwrap()
@@ -454,7 +527,7 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn subscribe_quotes(&mut self, cmd: &SubscribeQuotes) -> anyhow::Result<()> {
+    fn subscribe_quotes(&mut self, cmd: SubscribeQuotes) -> anyhow::Result<()> {
         mock_data_subscriptions()
             .lock()
             .unwrap()
@@ -462,7 +535,7 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
-    fn subscribe_trades(&mut self, cmd: &SubscribeTrades) -> anyhow::Result<()> {
+    fn subscribe_trades(&mut self, cmd: SubscribeTrades) -> anyhow::Result<()> {
         mock_data_subscriptions()
             .lock()
             .unwrap()
@@ -527,7 +600,7 @@ impl ExecutionClient for MockExecutionClient {
         Ok(())
     }
 
-    fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
+    fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
         mock_exec_submissions()
             .lock()
             .unwrap()
@@ -538,5 +611,43 @@ impl ExecutionClient for MockExecutionClient {
                 client_order_id: cmd.client_order_id,
             });
         Ok(())
+    }
+}
+
+/// PKCS8-wrapped Ed25519 private key, base64-encoded. The bolt-v3 binance
+/// shape validator (`crate::secrets::validate_binance_api_secret_shape`)
+/// requires that the resolved api_secret decode as a valid PKCS8 Ed25519
+/// key, so the fake resolver must hand back a value that satisfies it.
+const FAKE_BOLT_V3_BINANCE_API_SECRET: &str =
+    "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
+
+/// 32-byte secp256k1 private key in hex (with the `0x` prefix the NT
+/// Polymarket adapter accepts). The NT `PolymarketExecutionClient::new`
+/// constructor parses this into an EVM signer at registration time, so
+/// the fake resolver must hand back a value that decodes to a valid
+/// secp256k1 scalar; the all-`0x42` byte sequence is well within the
+/// curve order and is shared across bolt-v3 build-path tests.
+const FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY: &str =
+    "0x4242424242424242424242424242424242424242424242424242424242424242";
+
+/// Synthetic SSM resolver for bolt-v3 LiveNode build tests. Returns
+/// per-path placeholder values that satisfy the polymarket and binance
+/// secret schemas declared in `tests/fixtures/bolt_v3/root.toml` so the
+/// build path can run all the way through `LiveNodeBuilder::build`
+/// (which invokes the real NT `factory.create` for every registered
+/// client) without reaching the network. The polymarket private key
+/// must be a valid 32-byte secp256k1 hex value because NT's
+/// `PolymarketExecutionClient::new` parses it into a signer; the
+/// polymarket api_secret must be valid base64 because NT's
+/// `Credential::new` decodes it into HMAC key material.
+pub fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
+    match path {
+        "/bolt/polymarket_main/private_key" => Ok(FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY.to_string()),
+        "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
+        "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
+        "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
+        "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
+        "/bolt/binance_reference/api_secret" => Ok(FAKE_BOLT_V3_BINANCE_API_SECRET.to_string()),
+        _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
     }
 }

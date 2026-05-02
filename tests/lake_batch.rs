@@ -6,7 +6,7 @@ use std::os::unix::fs::symlink;
 use arrow::array::{Array, StringArray};
 use bolt_v2::{
     lake_batch::{convert_live_spool_to_parquet, supported_stream_classes},
-    normalized_sink,
+    nt_runtime_capture,
 };
 use nautilus_common::{
     enums::Environment,
@@ -125,7 +125,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
             .unwrap();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -317,7 +317,7 @@ fn converts_legacy_flat_spool_layout() {
             .unwrap();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -420,7 +420,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
         // flush_interval_ms=1 forces FeatherWriter to flush after each write
         // when wall-clock time between publishes exceeds 1ms, creating
         // multiple IPC batches per feather file.
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),
@@ -671,7 +671,7 @@ fn allows_preexisting_empty_output_root() {
             .unwrap();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
-        let guards = normalized_sink::wire_normalized_sinks(
+        let guards = nt_runtime_capture::wire_nt_runtime_capture(
             &node,
             handle.clone(),
             catalog_root.to_str().unwrap(),

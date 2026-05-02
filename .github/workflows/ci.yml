@@ -172,13 +172,17 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: nextest
+          key: nextest-v2
 
       - name: Install cargo-nextest
         run: |
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
 
       - name: test
+        env:
+          # Keep CI test binaries small enough for ubuntu-latest link/disk limits.
+          # This disables test debuginfo only; assertions and test logic still run.
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: just test
 
   build:

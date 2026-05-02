@@ -54,7 +54,9 @@ pub fn gamma_events_params(event_slug: &str) -> GetGammaEventsParams {
 pub fn market_ws_config(url: String) -> WebSocketConfig {
     WebSocketConfig {
         url,
+        proxy_url: None,
         headers: vec![],
+        backend: Default::default(),
         heartbeat: Some(30),
         heartbeat_msg: None,
         reconnect_timeout_ms: Some(15_000),

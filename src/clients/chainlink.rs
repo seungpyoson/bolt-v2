@@ -15,6 +15,7 @@ use chainlink_data_streams_report::{
 };
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
+use nautilus_common::factories::{ClientConfig, DataClientFactory};
 use nautilus_common::{
     cache::Cache,
     clients::DataClient,
@@ -26,7 +27,6 @@ use nautilus_model::{
     data::{CustomData, CustomDataTrait, DataType, HasTsInit, ensure_custom_data_json_registered},
     identifiers::ClientId,
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -44,7 +44,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     clients::ReferenceDataClientParts,
     config::{ReferenceConfig, ReferenceVenueKind},
-    secrets::{ResolvedChainlinkSecrets, resolve_chainlink},
+    secrets::{ResolvedChainlinkSecrets, SsmResolverSession, resolve_chainlink},
 };
 
 const CHAINLINK_CLIENT_NAME: &str = "CHAINLINK";
@@ -191,12 +191,13 @@ impl DataClientFactory for ChainlinkReferenceDataClientFactory {
 }
 
 pub fn build_chainlink_reference_data_client(
+    session: &SsmResolverSession,
     reference: &ReferenceConfig,
 ) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
     let shared = reference.chainlink.as_ref().ok_or_else(|| {
         anyhow!("missing shared chainlink config for configured chainlink reference venues")
     })?;
-    let secrets = resolve_chainlink(&shared.region, &shared.api_key, &shared.api_secret)?;
+    let secrets = resolve_chainlink(session, &shared.region, &shared.api_key, &shared.api_secret)?;
     build_chainlink_reference_data_client_with_secrets(reference, secrets)
 }
 
@@ -424,7 +425,7 @@ impl DataClient for ChainlinkReferenceDataClient {
 
     fn subscribe(
         &mut self,
-        cmd: &nautilus_common::messages::data::SubscribeCustomData,
+        cmd: nautilus_common::messages::data::SubscribeCustomData,
     ) -> anyhow::Result<()> {
         let topic = cmd.data_type.topic().to_string();
         self.subscriptions.insert(topic, cmd.data_type.clone());
@@ -1067,9 +1068,15 @@ mod tests {
             .chainlink
             .as_ref()
             .expect("runtime config should include reference.chainlink");
-        let resolved =
-            crate::secrets::resolve_chainlink(&shared.region, &shared.api_key, &shared.api_secret)
-                .expect("chainlink secrets should resolve");
+        let session = crate::secrets::SsmResolverSession::new()
+            .expect("SsmResolverSession should build for chainlink integration smoke");
+        let resolved = crate::secrets::resolve_chainlink(
+            &session,
+            &shared.region,
+            &shared.api_key,
+            &shared.api_secret,
+        )
+        .expect("chainlink secrets should resolve");
         let (_, client_config_any) =
             build_chainlink_reference_data_client_with_secrets(&config.reference, resolved)
                 .expect("chainlink client config should build");

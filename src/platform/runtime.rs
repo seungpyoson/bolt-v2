@@ -386,16 +386,23 @@ where
 }
 
 pub fn build_reference_data_client(
+    session: &crate::secrets::SsmResolverSession,
     reference: &ReferenceConfig,
     venue: &ReferenceVenueEntry,
 ) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
-    build_reference_data_client_with_resolver(reference, venue, &|shared| {
-        crate::secrets::resolve_binance(&shared.region, &shared.api_key, &shared.api_secret)
-            .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
+    build_reference_data_client_with_resolver(session, reference, venue, &|session, shared| {
+        crate::secrets::resolve_binance(
+            session,
+            &shared.region,
+            &shared.api_key,
+            &shared.api_secret,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
     })
 }
 
 fn build_reference_data_client_with_resolver<BinanceResolver>(
+    session: &crate::secrets::SsmResolverSession,
     reference: &ReferenceConfig,
     venue: &ReferenceVenueEntry,
     resolve_binance: &BinanceResolver,
@@ -403,6 +410,7 @@ fn build_reference_data_client_with_resolver<BinanceResolver>(
 where
     BinanceResolver:
         Fn(
+            &crate::secrets::SsmResolverSession,
             &crate::config::BinanceSharedConfig,
         ) -> Result<crate::secrets::ResolvedBinanceSecrets, Box<dyn std::error::Error>>,
 {
@@ -415,12 +423,12 @@ where
                     "missing shared binance config for configured binance reference venues",
                 )
             })?;
-            let secrets = resolve_binance(shared)?;
+            let secrets = resolve_binance(session, shared)?;
             Ok(clients::binance::build_reference_data_client_with_secrets(
                 shared, secrets,
             ))
         },
-        clients::chainlink::build_chainlink_reference_data_client,
+        |reference| clients::chainlink::build_chainlink_reference_data_client(session, reference),
     )
 }
 
@@ -1127,13 +1135,13 @@ mod tests {
     use crate::secrets::ResolvedBinanceSecrets;
     use nautilus_binance::common::enums::{BinanceEnvironment, BinanceProductType};
     use nautilus_binance::config::BinanceDataClientConfig;
+    use nautilus_common::factories::DataClientFactory;
     use nautilus_common::{
         cache::Cache, clients::DataClient, clock::Clock, enums::Environment,
         logging::logger::LoggerConfig,
     };
     use nautilus_live::node::LiveNode;
     use nautilus_model::identifiers::{ClientId, TraderId};
-    use nautilus_system::factories::DataClientFactory;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -1215,7 +1223,7 @@ mod tests {
         fn create(
             &self,
             name: &str,
-            config: &dyn nautilus_system::factories::ClientConfig,
+            config: &dyn nautilus_common::factories::ClientConfig,
             cache: Rc<RefCell<Cache>>,
             clock: Rc<RefCell<dyn Clock>>,
         ) -> anyhow::Result<Box<dyn DataClient>> {
@@ -1240,10 +1248,13 @@ mod tests {
         }
     }
 
-    fn synthetic_ed25519_seed_base64() -> String {
+    fn synthetic_ed25519_pkcs8_base64() -> String {
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
-        BASE64_STANDARD.encode((0_u8..32).collect::<Vec<_>>())
+        let mut der = vec![0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03];
+        der.extend_from_slice(&[0x2B, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+        der.extend(0_u8..32);
+        BASE64_STANDARD.encode(der)
     }
 
     fn binance_reference_config(
@@ -1354,14 +1365,17 @@ mod tests {
             Some("http://127.0.0.1:19999"),
             Some("wss://stream.binance.com/ws"),
         );
-        let secret = synthetic_ed25519_seed_base64();
+        let secret = synthetic_ed25519_pkcs8_base64();
+        let session = crate::secrets::SsmResolverSession::new()
+            .expect("SsmResolverSession should build for reference-builder test");
         let (factory, config) = build_reference_data_client_with_resolver(
+            &session,
             &reference,
             reference
                 .venues
                 .first()
                 .expect("binance venue should exist"),
-            &|_shared| {
+            &|_session, _shared| {
                 Ok::<ResolvedBinanceSecrets, Box<dyn std::error::Error>>(resolved_binance_secrets(
                     &secret,
                 ))
@@ -1393,14 +1407,17 @@ mod tests {
             Some("https://api.binance.com"),
             Some("wss://stream.binance.com/ws"),
         );
-        let secret = synthetic_ed25519_seed_base64();
+        let secret = synthetic_ed25519_pkcs8_base64();
+        let session = crate::secrets::SsmResolverSession::new()
+            .expect("SsmResolverSession should build for reference-builder test");
         let (factory, config) = build_reference_data_client_with_resolver(
+            &session,
             &reference,
             reference
                 .venues
                 .first()
                 .expect("binance venue should exist"),
-            &|_shared| {
+            &|_session, _shared| {
                 Ok::<ResolvedBinanceSecrets, Box<dyn std::error::Error>>(resolved_binance_secrets(
                     &secret,
                 ))

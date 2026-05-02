@@ -37,6 +37,7 @@ use bolt_v2::{
     },
     strategies::registry::StrategyBuilder,
 };
+use nautilus_common::factories::{ClientConfig, DataClientFactory};
 use nautilus_common::{
     cache::Cache,
     clients::DataClient,
@@ -59,7 +60,6 @@ use nautilus_model::{
     position::Position,
     types::{Currency, Money, Price, Quantity},
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory};
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     stub_runtime_strategy::{StubRuntimeStrategy, StubRuntimeStrategyBuilder},

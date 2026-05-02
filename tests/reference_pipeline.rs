@@ -7,14 +7,14 @@ use bolt_v2::{
         reference::{ReferenceObservation, VenueHealth, fuse_reference_snapshot},
         runtime::build_reference_data_client,
     },
-    secrets::ResolvedChainlinkSecrets,
+    secrets::{ResolvedChainlinkSecrets, SsmResolverSession},
 };
 use nautilus_bybit::config::BybitDataClientConfig;
+use nautilus_common::factories::ClientConfig;
 use nautilus_deribit::config::DeribitDataClientConfig;
 use nautilus_hyperliquid::config::HyperliquidDataClientConfig;
 use nautilus_kraken::config::KrakenDataClientConfig;
 use nautilus_okx::config::OKXDataClientConfig;
-use nautilus_system::factories::ClientConfig;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -39,8 +39,11 @@ fn assert_wrapper<C: ClientConfig + 'static>(
     expected_factory_name: &str,
     expected_config_type: &str,
 ) {
-    let (factory, config) = build_reference_data_client(&ReferenceConfig::default(), &venue(kind))
-        .expect("wrapper should build successfully");
+    let session = SsmResolverSession::new()
+        .expect("SsmResolverSession should build for reference-pipeline test");
+    let (factory, config) =
+        build_reference_data_client(&session, &ReferenceConfig::default(), &venue(kind))
+            .expect("wrapper should build successfully");
 
     assert_eq!(factory.name(), expected_factory_name);
     assert_eq!(factory.config_type(), expected_config_type);
@@ -77,7 +80,10 @@ fn builds_reference_data_client_wrappers_for_supported_public_kinds() {
 
 #[test]
 fn binance_reference_wrapper_requires_shared_binance_config() {
+    let session = SsmResolverSession::new()
+        .expect("SsmResolverSession should build for reference-pipeline test");
     let error = build_reference_data_client(
+        &session,
         &ReferenceConfig::default(),
         &venue(ReferenceVenueKind::Binance),
     )

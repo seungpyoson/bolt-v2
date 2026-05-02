@@ -23,7 +23,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 3. **NO DEBTS** — no TODO, no "fix later", no unpinned dependencies, no uncommitted work.
 4. **NO CREDENTIAL DISPLAY** — never cat/print/log API keys, private keys, secrets.
 5. **PURE RUST BINARY** — no Python layer. The binary is a standalone Rust `LiveNode` using NT's Rust API directly. No PyO3, no maturin, no pip.
-6. **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve via `aws ssm get-parameter --with-decryption`. No 1Password CLI, no environment variable fallbacks, no other secret backends.
+6. **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve from AWS SSM via the Rust AWS SDK (`aws-sdk-ssm`). No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends.
 7. **GROUP BY CHANGE** — if swapping a wallet, credential set, or venue requires editing more than one config section, the config is wrong. All values that share a lifecycle belong in one section. Test: "if I change X, how many places do I touch?" The answer must be one.
 8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
 

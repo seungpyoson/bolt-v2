@@ -1,0 +1,117 @@
+# Bolt-v3 NT-owned naming audit
+#
+# Purpose:
+#   Keep raw NautilusTrader facts named like the pinned NT Rust API, while
+#   allowing Bolt-derived and venue/product-owned facts to keep explicit
+#   Bolt/venue/product names.
+#
+# Scope:
+#   Canonical docs under docs/bolt-v3/2026-04-25-bolt-v3-*.md plus
+#   implementation files scanned by scripts/verify_bolt_v3_naming.py.
+
+schema_version: 1
+nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e"
+
+rules:
+  - id: nt_owned_name_wins
+    text: "If a field represents an NT-owned fact, use the pinned NT Rust field/type/method name."
+  - id: derived_fields_must_be_traceable
+    text: "If a field is Bolt-derived, keep a Bolt name but cite enough NT keys to find the raw NT fact."
+  - id: venue_product_fields_stay_explicit
+    text: "If a field is venue/product-owned, keep the venue/product prefix instead of pretending NT owns it."
+
+renamed_in_current_audit:
+  - from: trader_identifier
+    to: trader_id
+    owner: nt_owned
+    nt_evidence: "nautilus_model::identifiers::TraderId; NT event/report fields use trader_id"
+  - from: event_timestamp_milliseconds
+    to: ts_event
+    owner: nt_owned
+    nt_evidence: "NautilusTrader custom-data and data/events use ts_event"
+  - from: nautilus_up_instrument_id
+    to: up_instrument_id
+    owner: nt_owned_with_product_role
+    nt_evidence: "nautilus_model::identifiers::InstrumentId; up is the product role"
+  - from: nautilus_down_instrument_id
+    to: down_instrument_id
+    owner: nt_owned_with_product_role
+    nt_evidence: "nautilus_model::identifiers::InstrumentId; down is the product role"
+  - from: post_only
+    to: is_post_only
+    owner: nt_owned
+    nt_evidence: "NT order construction uses is_post_only"
+  - from: reduce_only
+    to: is_reduce_only
+    owner: nt_owned
+    nt_evidence: "NT order construction uses is_reduce_only"
+  - from: quote_quantity
+    to: is_quote_quantity
+    owner: nt_owned
+    nt_evidence: "NT OrderCore field and Order trait method use is_quote_quantity"
+  - from: strategy_instance_identifier
+    to: strategy_instance_id
+    owner: bolt_derived
+    nt_evidence: "Not an NT StrategyId; operator-facing Bolt strategy instance identity"
+  - from: release_identifier
+    to: release_id
+    owner: bolt_derived
+    nt_evidence: "Not an NT field; Bolt release-manifest identity"
+
+defensive_forbidden:
+  - from: instrument_identifier
+    to: instrument_id
+    reason: "Common stale alias for nautilus_model::identifiers::InstrumentId"
+  - from: venue_order_identifier
+    to: venue_order_id
+    reason: "Common stale alias for nautilus_model::identifiers::VenueOrderId"
+
+path_scoped_forbidden:
+  - from: venue_name
+    to: venue_kind
+    include_globs:
+      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - docs/bolt-v3/research/runtime-capture/*.yaml
+      - config/**/*.toml
+      - contracts/**/*.toml
+      - tests/**/*.toml
+      - tests/fixtures/**/*.toml
+    reason: "Bolt-v3 uses venue_kind for the TOML adapter family; venue_name remains valid in older non-v3 source surfaces"
+
+accepted_non_nt_names:
+  - name: venue_kind
+    owner: bolt_derived
+    nt_evidence: "nautilus_model::identifiers::Venue is the NT venue identity; Bolt `venue_kind` is the TOML adapter-family key and is intentionally not named like NT Venue"
+    reason: "Configured venue adapter family from TOML kind, not NT Venue identity"
+  - name: decision_trace_id
+    owner: bolt_derived
+    reason: "Bolt lifecycle correlation key, not an NT UUID field"
+  - name: configured_target_id
+    owner: bolt_derived
+    reason: "Bolt strategy target identity, not an NT instrument/order/position id"
+  - name: market_selection_timestamp_milliseconds
+    owner: bolt_derived
+    reason: "Bolt market-selection attempt timestamp derived from NT node clock"
+  - name: selected_market_observed_timestamp
+    owner: bolt_derived
+    reason: "Bolt observation timestamp for selected-market facts"
+  - name: price_to_beat_observed_timestamp
+    owner: venue_product_owned
+    reason: "Timestamp for the Polymarket Gamma supplement, not an NT ts_event"
+  - name: polymarket_market_start_timestamp_milliseconds
+    owner: bolt_derived_from_nt_instrument
+    nt_evidence: "Sourced from NT BinaryOption.activation_ns; converted to Unix milliseconds for the market-selection contract"
+    reason: "Polymarket lifecycle field keeps the venue/product prefix because the emitted value is a unit-converted contract timestamp, not raw NT activation_ns"
+  - name: polymarket_market_end_timestamp_milliseconds
+    owner: bolt_derived_from_nt_instrument
+    nt_evidence: "Sourced from NT BinaryOption.expiration_ns; converted to Unix milliseconds for the market-selection contract"
+    reason: "Polymarket lifecycle field keeps the venue/product prefix because the emitted value is a unit-converted contract timestamp, not raw NT expiration_ns"
+  - name: polymarket_condition_id
+    owner: venue_product_owned
+    reason: "Polymarket market identity"
+  - name: polymarket_market_slug
+    owner: venue_product_owned
+    reason: "Polymarket CLOB market slug"
+  - name: polymarket_question_id
+    owner: venue_product_owned
+    reason: "Polymarket market identity"

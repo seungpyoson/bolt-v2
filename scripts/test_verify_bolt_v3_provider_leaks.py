@@ -444,6 +444,75 @@ def test_cfg_not_not_test_is_stripped_as_test_only() -> None:
         assert findings == []
 
 
+def test_inner_cfg_test_attr_strips_file_contents() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #![cfg(test)]
+
+                    pub fn fixture(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings == []
+
+
+def test_multiline_cfg_test_attr_strips_test_item() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(
+                        all(test, feature = "fixture-only")
+                    )]
+                    pub fn fixture(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings == []
+
+
+def test_whitespace_cfg_test_attr_strips_test_item() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[ cfg ( test ) ]
+                    pub fn fixture(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings == []
+
+
 def test_inline_cfg_test_item_does_not_hide_next_production_line() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -488,6 +557,34 @@ def test_inline_cfg_test_semicolon_item_does_not_hide_next_production_line() -> 
         messages = "\n".join(finding.message for finding in findings)
 
         assert "provider-key string literal in core production code" in messages
+
+
+def test_cfg_test_comma_item_does_not_hide_next_production_line() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    pub enum Fixture {
+                        #[cfg(test)]
+                        Polymarket,
+                    }
+
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+        assert "concrete provider type name in core production code" not in messages
 
 
 def test_raw_strings_do_not_create_fake_comments() -> None:
@@ -567,6 +664,34 @@ def test_byte_and_multi_hash_raw_strings_do_not_create_fake_comments() -> None:
         messages = "\n".join(finding.message for finding in findings)
 
         assert "provider-key string literal in core production code" in messages
+
+
+def test_cfg_test_multiline_raw_string_item_does_not_hide_next_production() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": r'''
+                    #[cfg(test)] static FIXTURE: &str = r#"
+                        ;
+                        polymarket
+                    "#;
+
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                ''',
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+        assert "polymarket" not in "\n".join(finding.excerpt for finding in findings)
 
 
 def test_multiline_raw_string_braces_do_not_keep_cfg_test_open() -> None:
@@ -672,11 +797,16 @@ def main() -> int:
         test_cfg_any_test_feature_is_scanned_as_production,
         test_cfg_all_test_feature_is_stripped_as_test_only,
         test_cfg_not_not_test_is_stripped_as_test_only,
+        test_inner_cfg_test_attr_strips_file_contents,
+        test_multiline_cfg_test_attr_strips_test_item,
+        test_whitespace_cfg_test_attr_strips_test_item,
         test_inline_cfg_test_item_does_not_hide_next_production_line,
         test_inline_cfg_test_semicolon_item_does_not_hide_next_production_line,
+        test_cfg_test_comma_item_does_not_hide_next_production_line,
         test_raw_strings_do_not_create_fake_comments,
         test_raw_string_cfg_text_does_not_hide_following_production,
         test_byte_and_multi_hash_raw_strings_do_not_create_fake_comments,
+        test_cfg_test_multiline_raw_string_item_does_not_hide_next_production,
         test_multiline_raw_string_braces_do_not_keep_cfg_test_open,
         test_char_literal_parser_accepts_rust_escape_lengths,
         test_char_literal_braces_do_not_keep_cfg_test_open,

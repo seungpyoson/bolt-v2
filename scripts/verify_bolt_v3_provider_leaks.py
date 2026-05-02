@@ -13,7 +13,7 @@ import argparse
 import re
 import string
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -265,27 +265,66 @@ def excerpt_for(text: str, pos: int) -> str:
 
 
 def is_cfg_test_attr(stripped: str) -> bool:
-    if not stripped.startswith("#[cfg("):
+    bounds = cfg_attr_bounds(stripped)
+    if bounds is None:
         return False
 
-    attr_end = cfg_attr_end_index(stripped)
-    if attr_end is None:
-        return False
-
-    expression = stripped[len("#[cfg(") : attr_end - 2]
-
+    expression_start, expression_end, _ = bounds
+    expression = stripped[expression_start:expression_end]
     can_be_true_without_test, _ = cfg_truth_without_test(expression)
     return not can_be_true_without_test
 
 
-def cfg_attr_end_index(stripped: str) -> int | None:
-    if not stripped.startswith("#[cfg("):
+def cfg_attr_is_inner(stripped: str) -> bool:
+    if not stripped.startswith("#"):
+        return False
+    i = 1
+    while i < len(stripped) and stripped[i].isspace():
+        i += 1
+    return i < len(stripped) and stripped[i] == "!"
+
+
+def cfg_attr_expression_start(stripped: str) -> int | None:
+    if not stripped.startswith("#"):
+        return None
+
+    i = 1
+    while i < len(stripped) and stripped[i].isspace():
+        i += 1
+    if i < len(stripped) and stripped[i] == "!":
+        i += 1
+        while i < len(stripped) and stripped[i].isspace():
+            i += 1
+    if i >= len(stripped) or stripped[i] != "[":
+        return None
+
+    i += 1
+    while i < len(stripped) and stripped[i].isspace():
+        i += 1
+    if not stripped.startswith("cfg", i):
+        return None
+
+    i += len("cfg")
+    if i < len(stripped) and (stripped[i].isalnum() or stripped[i] == "_"):
+        return None
+    while i < len(stripped) and stripped[i].isspace():
+        i += 1
+    if i >= len(stripped) or stripped[i] != "(":
+        return None
+    return i + 1
+
+
+def cfg_attr_bounds(stripped: str) -> tuple[int, int, int] | None:
+    expression_start = cfg_attr_expression_start(stripped)
+    if expression_start is None:
         return None
 
     quote: str | None = None
     escaped = False
-    depth = 0
-    for i, char in enumerate(stripped):
+    depth = 1
+    i = expression_start
+    while i < len(stripped):
+        char = stripped[i]
         if quote is not None:
             if escaped:
                 escaped = False
@@ -293,18 +332,33 @@ def cfg_attr_end_index(stripped: str) -> int | None:
                 escaped = True
             elif char == quote:
                 quote = None
+            i += 1
             continue
 
         if char == '"':
             quote = char
-            continue
-        if char == "[":
+        elif char == "(":
             depth += 1
-        elif char == "]":
+        elif char == ")":
             depth -= 1
             if depth == 0:
-                return i + 1
+                expression_end = i
+                i += 1
+                while i < len(stripped) and stripped[i].isspace():
+                    i += 1
+                return (
+                    expression_start,
+                    expression_end,
+                    i + 1,
+                ) if i < len(stripped) and stripped[i] == "]" else None
+        i += 1
+
     return None
+
+
+def cfg_attr_end_index(stripped: str) -> int | None:
+    bounds = cfg_attr_bounds(stripped)
+    return bounds[2] if bounds is not None else None
 
 
 def split_top_level_args(expression: str) -> list[str]:
@@ -570,6 +624,15 @@ class BraceScanState:
     escaped: bool = False
 
 
+@dataclass
+class ItemScanState:
+    brace: BraceScanState = field(default_factory=BraceScanState)
+    brace_depth: int = 0
+    paren_depth: int = 0
+    bracket_depth: int = 0
+    saw_brace: bool = False
+
+
 def brace_delta(line: str, state: BraceScanState | None = None) -> int:
     if state is None:
         state = BraceScanState()
@@ -621,6 +684,70 @@ def brace_delta(line: str, state: BraceScanState | None = None) -> int:
     return delta
 
 
+def cfg_item_complete(line: str, state: ItemScanState) -> bool:
+    i = 0
+    while i < len(line):
+        char = line[i]
+        if state.brace.raw_string_closer is not None:
+            if line.startswith(state.brace.raw_string_closer, i):
+                i += len(state.brace.raw_string_closer)
+                state.brace.raw_string_closer = None
+            else:
+                i += 1
+            continue
+
+        if state.brace.quote is not None:
+            if state.brace.escaped:
+                state.brace.escaped = False
+            elif char == "\\":
+                state.brace.escaped = True
+            elif char == state.brace.quote:
+                state.brace.quote = None
+            i += 1
+            continue
+
+        raw = raw_string_closer_at(line, i)
+        if raw is not None:
+            prefix_len, state.brace.raw_string_closer = raw
+            i += prefix_len
+            continue
+
+        if char == '"':
+            state.brace.quote = char
+            i += 1
+            continue
+        if char == "'":
+            char_end = char_literal_end_at(line, i)
+            if char_end is not None:
+                i = char_end
+                continue
+        if char == "{":
+            state.saw_brace = True
+            state.brace_depth += 1
+        elif char == "}":
+            state.brace_depth -= 1
+            if state.saw_brace and state.brace_depth <= 0:
+                return True
+        elif char == "(":
+            state.paren_depth += 1
+        elif char == ")" and state.paren_depth:
+            state.paren_depth -= 1
+        elif char == "[":
+            state.bracket_depth += 1
+        elif char == "]" and state.bracket_depth:
+            state.bracket_depth -= 1
+        elif (
+            not state.saw_brace
+            and state.paren_depth == 0
+            and state.bracket_depth == 0
+            and char in (";", ",")
+        ):
+            return True
+        i += 1
+
+    return False
+
+
 def production_text(text: str) -> str:
     """Return a scan view that excludes comments and inline test modules.
 
@@ -631,70 +758,69 @@ def production_text(text: str) -> str:
 
     lines = strip_comments_preserve_lines(text).splitlines()
     output: list[str] = []
-    cfg_test_depth: int | None = None
-    cfg_brace_state = BraceScanState()
     production_state = BraceScanState()
-    pending_cfg_test = False
+    pending_cfg_item: ItemScanState | None = None
 
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.lstrip()
-        if cfg_test_depth is not None:
+        if pending_cfg_item is not None:
             output.append("")
-            cfg_test_depth += brace_delta(line, cfg_brace_state)
-            if cfg_test_depth <= 0:
-                cfg_test_depth = None
-                cfg_brace_state = BraceScanState()
+            if cfg_item_complete(line, pending_cfg_item):
+                pending_cfg_item = None
+            i += 1
             continue
 
         if (
             production_state.quote is None
             and production_state.raw_string_closer is None
-            and is_cfg_test_attr(stripped)
+            and cfg_attr_expression_start(stripped) is not None
         ):
-            attr_end = cfg_attr_end_index(stripped)
-            gated_item = stripped[attr_end:].strip() if attr_end is not None else ""
-            pending_cfg_test = bool(gated_item)
-            output.append("")
-            if gated_item:
-                if ";" in gated_item and "{" not in gated_item:
-                    pending_cfg_test = False
-                elif "{" in gated_item:
-                    cfg_brace_state = BraceScanState()
-                    cfg_test_depth = brace_delta(gated_item, cfg_brace_state)
-                    pending_cfg_test = False
-                    if cfg_test_depth <= 0:
-                        cfg_test_depth = None
-                        cfg_brace_state = BraceScanState()
-            else:
-                pending_cfg_test = True
+            attr_lines = [line]
+            attr_text = stripped
+            j = i
+            bounds = cfg_attr_bounds(attr_text)
+            while bounds is None and j + 1 < len(lines):
+                j += 1
+                attr_lines.append(lines[j])
+                attr_text += "\n" + lines[j].lstrip()
+                bounds = cfg_attr_bounds(attr_text)
+
+            if bounds is not None:
+                expression_start, expression_end, attr_end = bounds
+                expression = attr_text[expression_start:expression_end]
+                can_be_true_without_test, _ = cfg_truth_without_test(expression)
+                if not can_be_true_without_test:
+                    output.extend("" for _ in attr_lines)
+                    if cfg_attr_is_inner(stripped):
+                        output.extend("" for _ in lines[j + 1 :])
+                        break
+
+                    gated_item = attr_text[attr_end:].strip()
+                    if gated_item:
+                        item_state = ItemScanState()
+                        if not cfg_item_complete(gated_item, item_state):
+                            pending_cfg_item = item_state
+                    else:
+                        pending_cfg_item = ItemScanState()
+                    i = j + 1
+                    continue
+
+                for attr_line in attr_lines:
+                    output.append(attr_line)
+                    brace_delta(attr_line, production_state)
+                i = j + 1
+                continue
+
+        if not stripped:
+            output.append(line)
+            i += 1
             continue
 
-        if pending_cfg_test and not stripped:
-            output.append("")
-            continue
-
-        if pending_cfg_test and ";" in stripped and "{" not in stripped:
-            pending_cfg_test = False
-            output.append("")
-            continue
-
-        if pending_cfg_test and "{" in stripped:
-            cfg_brace_state = BraceScanState()
-            cfg_test_depth = brace_delta(line, cfg_brace_state)
-            pending_cfg_test = False
-            if cfg_test_depth <= 0:
-                cfg_test_depth = None
-                cfg_brace_state = BraceScanState()
-            output.append("")
-            continue
-
-        if pending_cfg_test:
-            output.append("")
-            continue
-
-        pending_cfg_test = False
         output.append(line)
         brace_delta(line, production_state)
+        i += 1
 
     trailing_newline = "\n" if text.endswith("\n") else ""
     return "\n".join(output) + trailing_newline

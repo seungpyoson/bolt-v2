@@ -31,6 +31,14 @@ def write_fixture(root: Path, files: dict[str, str]) -> None:
         path.write_text(text, encoding="utf-8")
 
 
+def binding_files() -> dict[str, str]:
+    return {
+        "src/bolt_v3_providers/polymarket.rs": "pub const KEY: &str = \"polymarket\";\n",
+        "src/bolt_v3_providers/binance.rs": "pub const KEY: &str = \"binance\";\n",
+        "src/bolt_v3_market_families/updown.rs": "pub const KEY: &str = \"updown\";\n",
+    }
+
+
 def run_script(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
@@ -48,17 +56,22 @@ def test_clean_fixture_has_no_findings() -> None:
         root = Path(tmp)
         write_fixture(
             root,
-            {
+            binding_files()
+            | {
                 "src/bolt_v3_adapters.rs": """
                     /// Historical note: MarketSlugFilter used to live here.
                     pub struct ProviderOwnedAdapterConfig;
 
                     #[cfg(test)]
+
+                    // Test module comments may sit between cfg and item.
                     mod tests {
                         fn fixture() {
                             let _ = "BoltV3VenueAdapterConfig::Polymarket";
                         }
                     }
+
+                    pub struct ProductionAfterTests;
                 """,
                 "src/bolt_v3_secrets.rs": "pub struct ResolvedProviderSecrets;\n",
                 "src/bolt_v3_client_registration.rs": "pub fn register(binding: &dyn ProviderBinding) {}\n",
@@ -74,7 +87,8 @@ def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
         root = Path(tmp)
         write_fixture(
             root,
-            {
+            binding_files()
+            | {
                 "src/bolt_v3_adapters.rs": """
                     use nautilus_polymarket::filters::MarketSlugFilter;
                     pub enum BoltV3VenueAdapterConfig {
@@ -120,6 +134,14 @@ def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
                         kind == "polymarket"
                     }
                 """,
+                "src/bolt_v3_validate.rs": """
+                    use crate::bolt_v3_providers;
+                    pub fn literal(kind: &str, family: &str) -> bool {
+                        kind == "binance"
+                            || family == "updown"
+                            || bolt_v3_providers::polymarket::KEY == kind
+                    }
+                """,
             },
         )
 
@@ -132,11 +154,35 @@ def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
         assert "concrete NT provider crate in core production code" in messages
         assert "concrete provider type name in core production code" in messages
         assert "core imports or re-exports concrete provider module" in messages
+        assert "core accesses concrete provider module path" in messages
         assert "provider-key string literal in core production code" in messages
+        assert "market-family key string literal in core production code" in messages
         assert "closed resolved venue secret enum" in messages
         assert "secret resolution dispatches on concrete provider key" in messages
         assert "concrete NT provider factory import" in messages
         assert "closed registered venue summary enum" in messages
+
+
+def test_new_core_file_is_auto_scanned() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_cost_facts.rs": """
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
 
 
 def test_strict_mode_fails_on_fixture_findings() -> None:
@@ -144,7 +190,8 @@ def test_strict_mode_fails_on_fixture_findings() -> None:
         root = Path(tmp)
         write_fixture(
             root,
-            {
+            binding_files()
+            | {
                 "src/bolt_v3_client_registration.rs": """
                     use nautilus_binance::factories::BinanceDataClientFactory;
                 """,
@@ -162,6 +209,7 @@ def main() -> int:
     tests = [
         test_clean_fixture_has_no_findings,
         test_closed_provider_variants_and_factory_imports_are_findings,
+        test_new_core_file_is_auto_scanned,
         test_strict_mode_fails_on_fixture_findings,
     ]
     for test in tests:

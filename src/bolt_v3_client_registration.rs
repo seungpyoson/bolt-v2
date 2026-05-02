@@ -192,6 +192,12 @@ mod tests {
         ResolvedBoltV3Secrets { venues }
     }
 
+    fn fixture_adapters() -> BoltV3AdapterConfigs {
+        let loaded = fixture_loaded_config();
+        let resolved = fixture_resolved_secrets();
+        map_bolt_v3_adapters(&loaded, &resolved).expect("adapters should map")
+    }
+
     fn fresh_builder() -> LiveNodeBuilder {
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("Live builder should construct for unit-test fixture")
@@ -199,9 +205,7 @@ mod tests {
 
     #[test]
     fn fixture_venues_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
-        let loaded = fixture_loaded_config();
-        let resolved = fixture_resolved_secrets();
-        let adapters = map_bolt_v3_adapters(&loaded, &resolved).expect("adapters should map");
+        let adapters = fixture_adapters();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");
@@ -306,5 +310,69 @@ mod tests {
             .expect("binance venue must appear in summary");
         assert!(!registered.data, "no [data] block, so no data registration");
         assert!(!registered.execution);
+    }
+
+    #[test]
+    fn duplicate_data_client_name_returns_data_registration_error() {
+        let mut existing_adapters = fixture_adapters();
+        let data = existing_adapters
+            .venues
+            .remove("polymarket_main")
+            .expect("fixture polymarket_main should map")
+            .data
+            .expect("fixture polymarket_main should have data adapter");
+        let builder = fresh_builder()
+            .add_data_client(
+                Some("polymarket_main".to_string()),
+                data.factory,
+                data.config,
+            )
+            .expect("pre-registering fixture data client should succeed");
+
+        let error = register_bolt_v3_clients(builder, fixture_adapters())
+            .expect_err("duplicate data client name should fail registration");
+
+        match error {
+            BoltV3ClientRegistrationError::AddDataClient { venue_key, message } => {
+                assert_eq!(venue_key, "polymarket_main");
+                assert!(
+                    message.contains("already registered"),
+                    "underlying NT error should explain duplicate registration: {message}"
+                );
+            }
+            other => panic!("expected AddDataClient error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_exec_client_name_returns_exec_registration_error() {
+        let mut existing_adapters = fixture_adapters();
+        let execution = existing_adapters
+            .venues
+            .remove("polymarket_main")
+            .expect("fixture polymarket_main should map")
+            .execution
+            .expect("fixture polymarket_main should have execution adapter");
+        let builder = fresh_builder()
+            .add_exec_client(
+                Some("polymarket_main".to_string()),
+                execution.factory,
+                execution.config,
+            )
+            .expect("pre-registering fixture execution client should succeed");
+
+        let error = register_bolt_v3_clients(builder, fixture_adapters())
+            .expect_err("duplicate execution client name should fail registration");
+
+        match error {
+            BoltV3ClientRegistrationError::AddExecClient { venue_key, message } => {
+                assert_eq!(venue_key, "polymarket_main");
+                assert!(
+                    message.contains("already registered"),
+                    "underlying NT error should explain duplicate registration: {message}"
+                );
+            }
+            other => panic!("expected AddExecClient error, got {other:?}"),
+        }
     }
 }

@@ -6,6 +6,7 @@ pub mod bolt_v3_live_node;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_market_identity;
 pub mod bolt_v3_providers;
+pub mod bolt_v3_readiness;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_validate;
 pub mod clients;

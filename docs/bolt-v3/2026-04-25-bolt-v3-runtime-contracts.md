@@ -1395,6 +1395,16 @@ Controlled-disconnect boundary contract:
 
 The controlled-connect and controlled-disconnect boundaries alone do not enable live trading: order submission, strategy actors, reconciliation, and the runner loop remain blocked behind the still-absent supervised live-trading transition.
 
+### 11.7 Startup readiness check boundary
+
+The bolt-v3 startup readiness check is a library-level diagnostic surface. It reports explicit facts for the existing startup boundaries: forbidden credential environment variables, SSM secret resolution, adapter mapping, `LiveNodeBuilder` construction, NT client registration, and final `LiveNode` build. It does not return or encode an aggregate launch decision.
+
+The check composes the same production boundaries used by the build path and stops before the controlled-connect boundary. A successful report means the configured venues can pass those startup checks and a `LiveNode` can be built with registered clients. It does not prove that clients are connected, NT caches are populated, instruments are available, strategies are registered, markets have been selected, orders can be constructed, or orders can be submitted.
+
+If no venues are configured, the check still emits `Satisfied` root facts for stages that have no venue work to perform. Callers must inspect fact details and subjects instead of treating a uniform `Satisfied` status set as a venue-bearing launch decision.
+
+The built `LiveNode` is discarded after the build fact is recorded. The check must not call `connect_bolt_v3_clients`, `disconnect_bolt_v3_clients`, any user-level subscription API, any runner API, any strategy actor API, or any order API. Controlled-connect remains an explicit, separate caller action under Section 11.6.
+
 ## 12. Panic Gate: Issue `#239`
 
 ### 12.1 Required test matrix

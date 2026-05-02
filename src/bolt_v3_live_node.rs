@@ -67,6 +67,29 @@ use crate::{
 };
 
 #[derive(Debug)]
+pub enum BoltV3LiveNodeBuilderError {
+    BuilderConstruction { source: anyhow::Error },
+}
+
+impl std::fmt::Display for BoltV3LiveNodeBuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoltV3LiveNodeBuilderError::BuilderConstruction { source } => {
+                write!(f, "NT LiveNodeBuilder construction failed: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BoltV3LiveNodeBuilderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BoltV3LiveNodeBuilderError::BuilderConstruction { source } => Some(source.as_ref()),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum BoltV3LiveNodeError {
     ForbiddenEnv(ForbiddenEnvVarError),
     /// `SsmResolverSession::new()` failed before any venue secret was
@@ -79,6 +102,7 @@ pub enum BoltV3LiveNodeError {
     SecretResolverSetup(crate::secrets::SecretError),
     SecretResolution(BoltV3SecretError),
     AdapterMapping(BoltV3AdapterMappingError),
+    BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
     Build(anyhow::Error),
     /// The bolt-v3 controlled-connect boundary
@@ -146,6 +170,7 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::AdapterMapping(error) => {
                 write!(f, "bolt-v3 adapter config mapping failed: {error}")
             }
+            BoltV3LiveNodeError::BuilderConstruction(error) => write!(f, "{error}"),
             BoltV3LiveNodeError::ClientRegistration(error) => {
                 write!(f, "bolt-v3 client registration failed: {error}")
             }
@@ -183,6 +208,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::SecretResolverSetup(error) => Some(error),
             BoltV3LiveNodeError::SecretResolution(error) => Some(error),
             BoltV3LiveNodeError::AdapterMapping(error) => Some(error),
+            BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::ConnectTimeout { .. }
@@ -260,7 +286,8 @@ fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let builder = make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::Build)?;
+    let builder =
+        make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
@@ -274,9 +301,16 @@ fn build_live_node_with_clients(
 /// keep exercising.
 pub fn make_bolt_v3_live_node_builder(
     loaded: &LoadedBoltV3Config,
-) -> anyhow::Result<LiveNodeBuilder> {
+) -> Result<LiveNodeBuilder, BoltV3LiveNodeBuilderError> {
     let cfg = make_live_node_config(loaded);
+    make_bolt_v3_live_node_builder_from_config(cfg)
+}
+
+fn make_bolt_v3_live_node_builder_from_config(
+    cfg: LiveNodeConfig,
+) -> Result<LiveNodeBuilder, BoltV3LiveNodeBuilderError> {
     LiveNodeBuilder::from_config(cfg)
+        .map_err(|source| BoltV3LiveNodeBuilderError::BuilderConstruction { source })
 }
 
 pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
@@ -614,6 +648,36 @@ mod tests {
         assert_eq!(cfg.timeout_disconnection, Duration::from_secs(10));
         assert_eq!(cfg.delay_post_stop, Duration::from_secs(5));
         assert_eq!(cfg.timeout_shutdown, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn live_node_builder_rejects_backtest_environment_before_registration() {
+        let loaded = fixture_loaded_config();
+        let make_error = || {
+            let mut cfg = make_live_node_config(&loaded);
+            cfg.environment = Environment::Backtest;
+            make_bolt_v3_live_node_builder_from_config(cfg)
+                .expect_err("NT LiveNodeBuilder must reject Backtest environment")
+        };
+
+        let rendered = BoltV3LiveNodeError::BuilderConstruction(make_error()).to_string();
+        assert_eq!(
+            rendered
+                .matches("LiveNodeBuilder construction failed")
+                .count(),
+            1,
+            "builder-construction Display should not duplicate layer prefixes: {rendered}"
+        );
+        assert!(
+            rendered.contains("Backtest environment"),
+            "builder-construction failure should identify the invalid environment: {rendered}"
+        );
+
+        let BoltV3LiveNodeBuilderError::BuilderConstruction { source } = make_error();
+        assert!(
+            source.to_string().contains("Backtest environment"),
+            "builder-construction failure should identify the invalid environment: {source}"
+        );
     }
 
     #[test]

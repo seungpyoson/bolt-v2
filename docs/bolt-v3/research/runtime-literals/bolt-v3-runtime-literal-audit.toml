@@ -476,3 +476,59 @@ literal = "\"venues.{venue}.secrets.{field} (path={path}): {source}\""
 context = "\"venues.{venue}.secrets.{field} (path={path}): {source}\","
 classification = "diagnostic_template"
 reason = "This is an error-display template for a failed SSM secret resolution with a redacted path context, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_readiness.rs"
+kind = "string"
+literal = "\"no venue secrets configured\""
+context = "\"no venue secrets configured\","
+classification = "startup_readiness_diagnostic_template"
+reason = "This message renders the root-level secret-resolution fact when no venue has secrets to resolve; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_readiness.rs"
+kind = "string"
+literal = "\"no venue adapter configs mapped\""
+context = "\"no venue adapter configs mapped\","
+classification = "startup_readiness_diagnostic_template"
+reason = "This message renders the root-level adapter-mapping fact when no venues produce adapter configs; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_readiness.rs"
+kind = "string"
+literal = "\"mapped adapter configs for venue `{venue_key}`: data={} execution={}\""
+context = "\"mapped adapter configs for venue `{venue_key}`: data={} execution={}\","
+classification = "startup_readiness_diagnostic_template"
+reason = "This template renders the adapter-mapping fact with venue key and data/execution presence booleans; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_readiness.rs"
+kind = "string"
+literal = "\"created NT LiveNodeBuilder from bolt-v3 config\""
+context = "\"created NT LiveNodeBuilder from bolt-v3 config\","
+classification = "startup_readiness_diagnostic_template"
+reason = "This message renders the LiveNodeBuilder construction fact for the startup readiness report; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_readiness.rs"
+kind = "string"
+literal = "\"built NT LiveNode without connecting clients\""
+context = "\"built NT LiveNode without connecting clients\","
+classification = "startup_readiness_diagnostic_template"
+reason = "This message renders the final no-connect LiveNode build fact for the startup readiness report; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_readiness.rs"
+kind = "string"
+literal = "\"no NT clients registered because no venues are configured\""
+context = "\"no NT clients registered because no venues are configured\","
+classification = "startup_readiness_diagnostic_template"
+reason = "This message renders the root-level client-registration fact when no venues exist; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_readiness.rs"
+kind = "string"
+literal = "\"registered NT clients for venue `{venue_key}`: data={} execution={}\""
+context = "\"registered NT clients for venue `{venue_key}`: data={} execution={}\","
+classification = "startup_readiness_diagnostic_template"
+reason = "This template renders the client-registration fact with venue key and registered client presence booleans; it is diagnostic output, not an operator runtime value."

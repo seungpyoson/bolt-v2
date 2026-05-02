@@ -377,6 +377,119 @@ def test_cfg_not_any_test_is_scanned_as_production() -> None:
         assert "provider-key string literal in core production code" in messages
 
 
+def test_cfg_any_test_feature_is_scanned_as_production() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(any(test, feature = "fixture-only"))]
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_cfg_all_test_feature_is_stripped_as_test_only() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(all(test, feature = "fixture-only"))]
+                    pub fn fixture(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings == []
+
+
+def test_cfg_not_not_test_is_stripped_as_test_only() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(not(not(test)))]
+                    pub fn fixture(kind: &str) -> bool {
+                        kind == "polymarket"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings == []
+
+
+def test_inline_cfg_test_item_does_not_hide_next_production_line() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(test)] fn fixture() { let _ = "polymarket"; }
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_inline_cfg_test_semicolon_item_does_not_hide_next_production_line() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": """
+                    #[cfg(test)] use crate::bolt_v3_providers::polymarket;
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
 def test_raw_strings_do_not_create_fake_comments() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -388,6 +501,62 @@ def test_raw_strings_do_not_create_fake_comments() -> None:
                 "src/bolt_v3_readiness.rs": r'''
                     pub fn leaked(kind: &str) -> bool {
                         let _fixture = r#"raw " quote // not a comment"#;
+                        kind == "binance"
+                    }
+                ''',
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_raw_string_cfg_text_does_not_hide_following_production() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": r'''
+                    pub fn fixture_text() -> &'static str {
+                        r#"
+                    #[cfg(test)]
+                    mod fake {
+                        fn fixture() {
+                        }
+                    }
+                    "#
+                    }
+
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "binance"
+                    }
+                ''',
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "provider-key string literal in core production code" in messages
+
+
+def test_byte_and_multi_hash_raw_strings_do_not_create_fake_comments() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_readiness.rs": r'''
+                    pub fn leaked(kind: &str) -> bool {
+                        let _fixture = br##"raw " quote // not a comment"##;
+                        let _other = r##"raw /* not a block comment */ text"##;
                         kind == "binance"
                     }
                 ''',
@@ -500,7 +669,14 @@ def main() -> int:
         test_production_after_cfg_test_block_is_scanned,
         test_cfg_not_test_is_scanned_as_production,
         test_cfg_not_any_test_is_scanned_as_production,
+        test_cfg_any_test_feature_is_scanned_as_production,
+        test_cfg_all_test_feature_is_stripped_as_test_only,
+        test_cfg_not_not_test_is_stripped_as_test_only,
+        test_inline_cfg_test_item_does_not_hide_next_production_line,
+        test_inline_cfg_test_semicolon_item_does_not_hide_next_production_line,
         test_raw_strings_do_not_create_fake_comments,
+        test_raw_string_cfg_text_does_not_hide_following_production,
+        test_byte_and_multi_hash_raw_strings_do_not_create_fake_comments,
         test_multiline_raw_string_braces_do_not_keep_cfg_test_open,
         test_char_literal_parser_accepts_rust_escape_lengths,
         test_char_literal_braces_do_not_keep_cfg_test_open,

@@ -268,44 +268,162 @@ def is_cfg_test_attr(stripped: str) -> bool:
     if not stripped.startswith("#[cfg("):
         return False
 
-    expression = stripped[len("#[cfg(") :]
-    if expression.endswith(")]"):
-        expression = expression[:-2]
+    attr_end = cfg_attr_end_index(stripped)
+    if attr_end is None:
+        return False
 
-    expression = strip_negated_cfg_groups(expression)
-    return re.search(r'(?<![\w"])test(?![\w"])', expression) is not None
+    expression = stripped[len("#[cfg(") : attr_end - 2]
+
+    can_be_true_without_test, _ = cfg_truth_without_test(expression)
+    return not can_be_true_without_test
 
 
-def strip_negated_cfg_groups(expression: str) -> str:
-    output: list[str] = []
-    i = 0
-    while i < len(expression):
-        match = re.match(r"\bnot\s*\(", expression[i:])
-        if match is None:
-            output.append(expression[i])
-            i += 1
+def cfg_attr_end_index(stripped: str) -> int | None:
+    if not stripped.startswith("#[cfg("):
+        return None
+
+    quote: str | None = None
+    escaped = False
+    depth = 0
+    for i, char in enumerate(stripped):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
             continue
 
-        group_start = i + match.end() - 1
-        depth = 0
-        j = group_start
-        while j < len(expression):
-            if expression[j] == "(":
-                depth += 1
-            elif expression[j] == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-            j += 1
+        if char == '"':
+            quote = char
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return None
 
-        if depth == 0:
-            output.append(" " * (j + 1 - i))
-            i = j + 1
-        else:
-            output.append(expression[i])
-            i += 1
 
-    return "".join(output)
+def split_top_level_args(expression: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escaped = False
+
+    for i, char in enumerate(expression):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+
+        if char == '"':
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(expression[start:i].strip())
+            start = i + 1
+
+    parts.append(expression[start:].strip())
+    return [part for part in parts if part]
+
+
+def cfg_call_inner(expression: str, name: str) -> str | None:
+    match = re.match(rf"{name}\s*\(", expression)
+    if match is None:
+        return None
+
+    open_paren = match.end() - 1
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for i in range(open_paren, len(expression)):
+        char = expression[i]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+
+        if char == '"':
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                if expression[i + 1 :].strip():
+                    return None
+                return expression[open_paren + 1 : i]
+
+    return None
+
+
+def cfg_truth_without_test(expression: str) -> tuple[bool, bool]:
+    """Return whether cfg expression can be true/false when cfg(test) is false.
+
+    Unknown predicates (features, targets, custom cfgs) are treated as either
+    true or false. A cfg item is test-only only when it cannot be true in any
+    non-test configuration.
+    """
+
+    expression = expression.strip()
+    if not expression:
+        return True, True
+
+    top_level_args = split_top_level_args(expression)
+    if len(top_level_args) > 1:
+        return cfg_all_truth_without_test(top_level_args)
+
+    inner = cfg_call_inner(expression, "all")
+    if inner is not None:
+        return cfg_all_truth_without_test(split_top_level_args(inner))
+
+    inner = cfg_call_inner(expression, "any")
+    if inner is not None:
+        args = split_top_level_args(inner)
+        if not args:
+            return True, True
+        truths = [cfg_truth_without_test(arg) for arg in args]
+        can_be_true = any(can_true for can_true, _ in truths)
+        can_be_false = all(can_false for _, can_false in truths)
+        return can_be_true, can_be_false
+
+    inner = cfg_call_inner(expression, "not")
+    if inner is not None:
+        args = split_top_level_args(inner)
+        if len(args) != 1:
+            return True, True
+        can_be_true, can_be_false = cfg_truth_without_test(args[0])
+        return can_be_false, can_be_true
+
+    if expression == "test":
+        return False, True
+
+    return True, True
+
+
+def cfg_all_truth_without_test(args: list[str]) -> tuple[bool, bool]:
+    if not args:
+        return True, True
+
+    truths = [cfg_truth_without_test(arg) for arg in args]
+    can_be_true = all(can_true for can_true, _ in truths)
+    can_be_false = any(can_false for _, can_false in truths)
+    return can_be_true, can_be_false
 
 
 def raw_string_closer_at(text: str, start: int) -> tuple[int, str] | None:
@@ -514,22 +632,41 @@ def production_text(text: str) -> str:
     lines = strip_comments_preserve_lines(text).splitlines()
     output: list[str] = []
     cfg_test_depth: int | None = None
-    brace_state = BraceScanState()
+    cfg_brace_state = BraceScanState()
+    production_state = BraceScanState()
     pending_cfg_test = False
 
     for line in lines:
         stripped = line.lstrip()
         if cfg_test_depth is not None:
             output.append("")
-            cfg_test_depth += brace_delta(line, brace_state)
+            cfg_test_depth += brace_delta(line, cfg_brace_state)
             if cfg_test_depth <= 0:
                 cfg_test_depth = None
-                brace_state = BraceScanState()
+                cfg_brace_state = BraceScanState()
             continue
 
-        if is_cfg_test_attr(stripped):
-            pending_cfg_test = True
+        if (
+            production_state.quote is None
+            and production_state.raw_string_closer is None
+            and is_cfg_test_attr(stripped)
+        ):
+            attr_end = cfg_attr_end_index(stripped)
+            gated_item = stripped[attr_end:].strip() if attr_end is not None else ""
+            pending_cfg_test = bool(gated_item)
             output.append("")
+            if gated_item:
+                if ";" in gated_item and "{" not in gated_item:
+                    pending_cfg_test = False
+                elif "{" in gated_item:
+                    cfg_brace_state = BraceScanState()
+                    cfg_test_depth = brace_delta(gated_item, cfg_brace_state)
+                    pending_cfg_test = False
+                    if cfg_test_depth <= 0:
+                        cfg_test_depth = None
+                        cfg_brace_state = BraceScanState()
+            else:
+                pending_cfg_test = True
             continue
 
         if pending_cfg_test and not stripped:
@@ -542,12 +679,12 @@ def production_text(text: str) -> str:
             continue
 
         if pending_cfg_test and "{" in stripped:
-            brace_state = BraceScanState()
-            cfg_test_depth = brace_delta(line, brace_state)
+            cfg_brace_state = BraceScanState()
+            cfg_test_depth = brace_delta(line, cfg_brace_state)
             pending_cfg_test = False
             if cfg_test_depth <= 0:
                 cfg_test_depth = None
-                brace_state = BraceScanState()
+                cfg_brace_state = BraceScanState()
             output.append("")
             continue
 
@@ -557,6 +694,7 @@ def production_text(text: str) -> str:
 
         pending_cfg_test = False
         output.append(line)
+        brace_delta(line, production_state)
 
     trailing_newline = "\n" if text.endswith("\n") else ""
     return "\n".join(output) + trailing_newline

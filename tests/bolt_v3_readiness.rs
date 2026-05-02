@@ -52,10 +52,10 @@ fn assert_no_resolved_secret_values(text: &str) {
 }
 
 // This suite covers skip-chain behavior and a deterministic final `builder.build()`
-// failure. Direct `make_bolt_v3_live_node_builder` and
-// `register_bolt_v3_clients` failure fixtures are not synthesized here because
-// current public inputs do not provide stable triggers for those boundaries
-// without adding test-only production hooks.
+// failure. Direct registration failures are covered by the registration boundary's
+// unit tests. A direct readiness-stage builder-construction failure is not
+// synthesized here because current Bolt-v3 config can only produce NT's Live
+// environment; the NT Backtest rejection is covered in the live-node boundary tests.
 
 #[test]
 fn startup_check_reports_success_facts_without_connecting() {

@@ -617,6 +617,21 @@ mod tests {
     }
 
     #[test]
+    fn live_node_builder_rejects_backtest_environment_before_registration() {
+        let loaded = fixture_loaded_config();
+        let mut cfg = make_live_node_config(&loaded);
+        cfg.environment = Environment::Backtest;
+
+        let error = LiveNodeBuilder::from_config(cfg)
+            .expect_err("NT LiveNodeBuilder must reject Backtest environment");
+
+        assert!(
+            error.to_string().contains("Backtest environment"),
+            "builder-construction failure should identify the invalid environment: {error}"
+        );
+    }
+
+    #[test]
     fn live_node_config_top_level_residuals_are_disabled_or_empty() {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);

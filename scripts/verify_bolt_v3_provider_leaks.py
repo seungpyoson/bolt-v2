@@ -825,6 +825,7 @@ def production_text(text: str) -> str:
 
                 for attr_line in attr_lines:
                     output.append(attr_line)
+                    # Maintain string/raw-string context for subsequent lines.
                     brace_delta(attr_line, production_state)
                 i = j + 1
                 continue
@@ -835,6 +836,7 @@ def production_text(text: str) -> str:
             continue
 
         output.append(line)
+        # Maintain string/raw-string context for subsequent lines.
         brace_delta(line, production_state)
         i += 1
 

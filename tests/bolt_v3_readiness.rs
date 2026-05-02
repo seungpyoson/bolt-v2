@@ -275,6 +275,40 @@ fn startup_check_source_remains_no_trade() {
     );
 }
 
+#[test]
+fn source_fence_helper_does_not_treat_lifetimes_as_char_literals() {
+    let src = "fn push<'a>(value: &'a str) {}\nfn after() { connect_bolt_v3_clients(); }\n";
+    let stripped = source_without_comments_and_strings(src);
+    let tokens = identifier_tokens(&stripped);
+
+    assert!(
+        tokens
+            .iter()
+            .any(|token| token == "connect_bolt_v3_clients"),
+        "lifetime annotations must not hide later code tokens: {stripped}"
+    );
+}
+
+#[test]
+fn source_fence_helper_blanks_raw_strings_without_corrupting_later_tokens() {
+    let src = "const FIXTURE: &[u8] = br##\"runner 'static subscribe_markets\"##;\nfn after() { submit_order(); }\n";
+    let stripped = source_without_comments_and_strings(src);
+    let tokens = identifier_tokens(&stripped);
+
+    assert!(
+        !tokens.iter().any(|token| token == "runner"),
+        "raw string body must be blanked before token scanning: {stripped}"
+    );
+    assert!(
+        !tokens.iter().any(|token| token == "subscribe_markets"),
+        "raw string body must be blanked before token scanning: {stripped}"
+    );
+    assert!(
+        tokens.iter().any(|token| token == "submit_order"),
+        "raw strings must not corrupt token scanning after the literal: {stripped}"
+    );
+}
+
 fn identifier_tokens(src: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -293,77 +327,178 @@ fn identifier_tokens(src: &str) -> Vec<String> {
 
 fn source_without_comments_and_strings(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
-    let mut chars = src.chars().peekable();
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut escaped = false;
+    let mut index = 0;
 
-    while let Some(ch) = chars.next() {
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
+    while index < src.len() {
+        let rest = &src[index..];
+
+        if rest.starts_with("//") {
+            let end = rest.find('\n').map_or(src.len(), |offset| index + offset);
+            push_blanked_source(&mut out, &src[index..end]);
+            if end < src.len() {
                 out.push('\n');
+                index = end + 1;
             } else {
-                out.push(' ');
+                index = end;
             }
-            continue;
-        }
-        if in_block_comment {
-            if ch == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                in_block_comment = false;
-                out.push(' ');
-                out.push(' ');
-            } else {
-                out.push(if ch == '\n' { '\n' } else { ' ' });
-            }
-            continue;
-        }
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            out.push(if ch == '\n' { '\n' } else { ' ' });
-            continue;
-        }
-        if in_char {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '\'' {
-                in_char = false;
-            }
-            out.push(if ch == '\n' { '\n' } else { ' ' });
             continue;
         }
 
-        if ch == '/' && chars.peek() == Some(&'/') {
-            chars.next();
-            in_line_comment = true;
-            out.push(' ');
-            out.push(' ');
-        } else if ch == '/' && chars.peek() == Some(&'*') {
-            chars.next();
-            in_block_comment = true;
-            out.push(' ');
-            out.push(' ');
-        } else if ch == '"' {
-            in_string = true;
-            out.push(' ');
-        } else if ch == '\'' {
-            in_char = true;
-            out.push(' ');
-        } else {
-            out.push(ch);
+        if rest.starts_with("/*") {
+            let end = rest
+                .find("*/")
+                .map_or(src.len(), |offset| index + offset + 2);
+            push_blanked_source(&mut out, &src[index..end]);
+            index = end;
+            continue;
         }
+
+        if let Some(end) = rust_raw_string_literal_end(src, index) {
+            push_blanked_source(&mut out, &src[index..end]);
+            index = end;
+            continue;
+        }
+
+        if let Some(end) = rust_string_literal_end(src, index) {
+            push_blanked_source(&mut out, &src[index..end]);
+            index = end;
+            continue;
+        }
+
+        if let Some(end) = rust_byte_char_literal_end(src, index) {
+            push_blanked_source(&mut out, &src[index..end]);
+            index = end;
+            continue;
+        }
+
+        if let Some(end) = rust_char_literal_end(src, index) {
+            push_blanked_source(&mut out, &src[index..end]);
+            index = end;
+            continue;
+        }
+
+        let ch = rest
+            .chars()
+            .next()
+            .expect("index should be inside a valid UTF-8 source boundary");
+        out.push(ch);
+        index += ch.len_utf8();
     }
 
     out
+}
+
+fn push_blanked_source(out: &mut String, source: &str) {
+    out.extend(source.chars().map(|ch| if ch == '\n' { '\n' } else { ' ' }));
+}
+
+fn rust_raw_string_literal_end(src: &str, start: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut index = start;
+
+    if src[index..].starts_with("br") {
+        index += 2;
+    } else if src[index..].starts_with('r') {
+        index += 1;
+    } else {
+        return None;
+    }
+
+    let hash_start = index;
+    while bytes.get(index) == Some(&b'#') {
+        index += 1;
+    }
+    if bytes.get(index) != Some(&b'"') {
+        return None;
+    }
+
+    let terminator = format!("\"{}", &src[hash_start..index]);
+    index += 1;
+    Some(
+        src[index..]
+            .find(&terminator)
+            .map_or(src.len(), |offset| index + offset + terminator.len()),
+    )
+}
+
+fn rust_string_literal_end(src: &str, start: usize) -> Option<usize> {
+    let mut index = if src[start..].starts_with("b\"") {
+        start + 2
+    } else if src[start..].starts_with('"') {
+        start + 1
+    } else {
+        return None;
+    };
+    let mut escaped = false;
+
+    while index < src.len() {
+        let ch = src[index..]
+            .chars()
+            .next()
+            .expect("index should be inside a valid UTF-8 source boundary");
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(index + ch.len_utf8());
+        }
+        index += ch.len_utf8();
+    }
+
+    Some(src.len())
+}
+
+fn rust_byte_char_literal_end(src: &str, start: usize) -> Option<usize> {
+    if src[start..].starts_with("b'") {
+        rust_char_literal_end(src, start + 1)
+    } else {
+        None
+    }
+}
+
+fn rust_char_literal_end(src: &str, start: usize) -> Option<usize> {
+    if !src[start..].starts_with('\'') {
+        return None;
+    }
+
+    let mut index = start + 1;
+    let ch = src[index..].chars().next()?;
+    if matches!(ch, '\n' | '\r' | '\'') {
+        return None;
+    }
+
+    if ch == '\\' {
+        index += ch.len_utf8();
+        let escape = src[index..].chars().next()?;
+        if escape == 'u' && src[index + escape.len_utf8()..].starts_with('{') {
+            let hex_start = index + escape.len_utf8() + 1;
+            let close = src[hex_start..]
+                .find('}')
+                .map(|offset| hex_start + offset)?;
+            let hex = &src[hex_start..close];
+            if !(1..=6).contains(&hex.len()) || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                return None;
+            }
+            index = close + 1;
+        } else if escape == 'x' {
+            let hex_start = index + escape.len_utf8();
+            let hex_end = hex_start + 2;
+            let hex = src.get(hex_start..hex_end)?;
+            if !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                return None;
+            }
+            index = hex_end;
+        } else {
+            index += escape.len_utf8();
+        }
+    } else {
+        index += ch.len_utf8();
+    }
+
+    if src[index..].starts_with('\'') {
+        Some(index + 1)
+    } else {
+        None
+    }
 }

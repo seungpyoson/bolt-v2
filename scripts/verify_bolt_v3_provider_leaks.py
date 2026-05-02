@@ -631,6 +631,7 @@ class ItemScanState:
     paren_depth: int = 0
     bracket_depth: int = 0
     saw_brace: bool = False
+    saw_where: bool = False
 
 
 def brace_delta(line: str, state: BraceScanState | None = None) -> int:
@@ -726,8 +727,22 @@ def cfg_item_complete(line: str, state: ItemScanState) -> bool:
             state.brace_depth += 1
         elif char == "}":
             state.brace_depth -= 1
+            if state.brace_depth < 0:
+                return True
             if state.saw_brace and state.brace_depth <= 0:
                 return True
+        elif char.isalpha() or char == "_":
+            start = i
+            while i < len(line) and (line[i].isalnum() or line[i] == "_"):
+                i += 1
+            if (
+                state.paren_depth == 0
+                and state.bracket_depth == 0
+                and state.brace_depth == 0
+                and line[start:i] == "where"
+            ):
+                state.saw_where = True
+            continue
         elif char == "(":
             state.paren_depth += 1
         elif char == ")" and state.paren_depth:
@@ -738,6 +753,7 @@ def cfg_item_complete(line: str, state: ItemScanState) -> bool:
             state.bracket_depth -= 1
         elif (
             not state.saw_brace
+            and not state.saw_where
             and state.paren_depth == 0
             and state.bracket_depth == 0
             and char in (";", ",")

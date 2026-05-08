@@ -20,3 +20,8 @@
 - Do not let a broad issue silently collapse into a narrower PR without saying so.
 - Do not claim a PR closes a broader issue unless the diff actually satisfies that broader issue.
 - If a stale branch still exists after a merge, use it only for forensics. Never continue implementation from it unless you first prove the accepted scope is absent from `main`.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->

@@ -40,3 +40,8 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Prefer short direct answers over broad explanations.
 - Do not write long multi-paragraph replies unless the user explicitly asks for depth.
 - If one short paragraph or a few flat bullets is enough, use that.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->

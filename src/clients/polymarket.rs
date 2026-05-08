@@ -1423,6 +1423,70 @@ mod tests {
         (addr, requests)
     }
 
+    async fn spawn_transitive_overlap_partition_test_server()
+    -> (SocketAddr, Arc<Mutex<Vec<HashMap<String, String>>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let server_requests = Arc::clone(&server_requests);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let (path, params) = parse_request_target(&request);
+                    server_requests.lock().unwrap().push(params.clone());
+
+                    let body = if path == "/events"
+                        && params.get("tag_slug").map(String::as_str) == Some("bitcoin")
+                    {
+                        let canonical_min = DateTime::parse_from_rfc3339(&decode_query_param(
+                            params
+                                .get("end_date_min")
+                                .expect("transitive overlap fetch should send end_date_min"),
+                        ))
+                        .unwrap()
+                        .with_timezone(&Utc);
+
+                        json!([
+                            {
+                                "id":"1",
+                                "slug":"bitcoin-5m-alpha",
+                                "endDate": (canonical_min + ChronoDuration::seconds(70)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"2",
+                                "slug":"bitcoin-15m-beta",
+                                "endDate": (canonical_min + ChronoDuration::seconds(220)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            },
+                            {
+                                "id":"3",
+                                "slug":"bitcoin-30m-gamma",
+                                "endDate": (canonical_min + ChronoDuration::seconds(470)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                "markets":[]
+                            }
+                        ])
+                        .to_string()
+                    } else {
+                        "[]".to_string()
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        (addr, requests)
+    }
+
     async fn spawn_out_of_window_test_server() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1754,6 +1818,60 @@ mod tests {
             (end_date_max - end_date_min).num_seconds(),
             570,
             "merged overlap query should widen from [30,300] and [60,600] to [30,600]"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_event_slugs_coalesces_transitive_overlapping_discoveries() {
+        let (addr, requests) = spawn_transitive_overlap_partition_test_server().await;
+        let client = PolymarketGammaRawHttpClient::new(Some(format!("http://{addr}")), 5).unwrap();
+        let discovery_5m = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let discovery_15m = prefix_discovery("bitcoin", "bitcoin-15m", 200, 500);
+        let discovery_30m = prefix_discovery("bitcoin", "bitcoin-30m", 450, 700);
+
+        let event_slugs = resolve_event_slugs_for_prefix_discoveries_with_gamma_client_strict(
+            &[
+                discovery_5m.clone(),
+                discovery_15m.clone(),
+                discovery_30m.clone(),
+            ],
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            event_slugs,
+            BTreeMap::from([
+                (discovery_5m.clone(), vec!["bitcoin-5m-alpha".to_string()]),
+                (discovery_15m.clone(), vec!["bitcoin-15m-beta".to_string()]),
+                (discovery_30m.clone(), vec!["bitcoin-30m-gamma".to_string()]),
+            ])
+        );
+
+        let recorded_requests = requests.lock().unwrap();
+        assert_eq!(
+            recorded_requests.len(),
+            1,
+            "transitively overlapping windows should coalesce into one canonical Gamma fetch"
+        );
+        let params = &recorded_requests[0];
+        let end_date_min = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_min")
+                .expect("transitive overlap fetch should send end_date_min"),
+        ))
+        .unwrap();
+        let end_date_max = DateTime::parse_from_rfc3339(&decode_query_param(
+            params
+                .get("end_date_max")
+                .expect("transitive overlap fetch should send end_date_max"),
+        ))
+        .unwrap();
+        assert_eq!(
+            (end_date_max - end_date_min).num_seconds(),
+            670,
+            "transitive merge should widen from [30,300], [200,500], [450,700] to [30,700]"
         );
     }
 
@@ -2189,6 +2307,21 @@ mod tests {
     }
 
     #[test]
+    fn gamma_event_params_for_prefix_discovery_rejects_overflowing_expiry_offsets() {
+        let now = DateTime::parse_from_rfc3339("2026-04-19T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", u64::MAX, u64::MAX);
+
+        let err = gamma_event_params_for_prefix_discovery(&discovery, now)
+            .expect_err("overflowing expiry offsets must fail before query construction");
+        assert!(
+            err.to_string().contains("exceeds i64::MAX"),
+            "overflowing query construction should report the checked-conversion failure"
+        );
+    }
+
+    #[test]
     fn matches_time_bounds_accepts_exact_boundary_with_subsecond_now() {
         let now = DateTime::parse_from_rfc3339("2026-04-19T00:00:00.500Z")
             .unwrap()
@@ -2437,6 +2570,12 @@ mod tests {
                 .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(299)),
             vec!["bitcoin-5m-alpha".to_string()]
         );
+        assert_eq!(
+            selector_state
+                .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(300)),
+            vec!["bitcoin-5m-alpha".to_string()],
+            "selector snapshots must remain live at the exact expiry boundary"
+        );
         assert!(
             selector_state
                 .event_slugs_for_discovery_at(&discovery, seeded_at + ChronoDuration::seconds(301))
@@ -2559,6 +2698,65 @@ mod tests {
         let err = setup
             .build_data_client(&raw)
             .expect_err("zero refresh interval should be rejected explicitly");
+        assert!(
+            err.to_string()
+                .contains("gamma_refresh_interval_secs must be > 0")
+        );
+    }
+
+    #[test]
+    fn spawn_selector_refresh_task_rejects_refresh_interval_equal_to_smallest_prefix_expiry_window()
+    {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let setup = PolymarketRulesetSetup {
+            selectors: vec![discovery.selector.clone()],
+            prefix_discoveries: vec![discovery.clone()],
+            selector_state: Some(PolymarketSelectorState::new(vec![(
+                discovery.clone(),
+                vec!["bitcoin-5m-alpha".to_string()],
+            )])),
+        };
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 300
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let err = setup
+            .spawn_selector_refresh_task_if_configured(&raw, 5)
+            .expect_err(
+                "refresh task guard must reject intervals equal to the smallest expiry window",
+            );
+        assert!(
+            err.to_string()
+                .contains("gamma_refresh_interval_secs (300) must be <")
+        );
+    }
+
+    #[test]
+    fn spawn_selector_refresh_task_rejects_zero_refresh_interval() {
+        let discovery = prefix_discovery("bitcoin", "bitcoin-5m", 30, 300);
+        let setup = PolymarketRulesetSetup {
+            selectors: vec![discovery.selector.clone()],
+            prefix_discoveries: vec![discovery.clone()],
+            selector_state: Some(PolymarketSelectorState::new(vec![(
+                discovery.clone(),
+                vec!["bitcoin-5m-alpha".to_string()],
+            )])),
+        };
+        let raw = toml::toml! {
+            subscribe_new_markets = false
+            update_instruments_interval_mins = 60
+            gamma_refresh_interval_secs = 0
+            ws_max_subscriptions = 200
+        }
+        .into();
+
+        let err = setup
+            .spawn_selector_refresh_task_if_configured(&raw, 5)
+            .expect_err("refresh task guard must reject zero refresh intervals");
         assert!(
             err.to_string()
                 .contains("gamma_refresh_interval_secs must be > 0")

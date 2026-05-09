@@ -62,6 +62,7 @@ use nautilus_model::{
 };
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
+    lock_live_node_build,
     stub_runtime_strategy::{StubRuntimeStrategy, StubRuntimeStrategyBuilder},
 };
 use toml::Value;
@@ -252,6 +253,8 @@ fn test_config(audit_dir: &Path) -> Config {
 }
 
 fn build_node() -> LiveNode {
+    let _guard = lock_live_node_build();
+
     LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
         .unwrap()
         .with_name("TEST-NODE")
@@ -306,6 +309,8 @@ fn stub_runtime_lifecycle_config(audit_dir: &Path) -> Config {
 }
 
 fn build_lifecycle_node() -> LiveNode {
+    let _guard = lock_live_node_build();
+
     LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
         .unwrap()
         .with_name("TEST-NODE")
@@ -456,6 +461,8 @@ impl DataClient for DelayedDataClient {
 }
 
 fn build_delayed_start_node(release: Arc<Notify>) -> LiveNode {
+    let _guard = lock_live_node_build();
+
     LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
         .unwrap()
         .with_name("TEST-NODE")

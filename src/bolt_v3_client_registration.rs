@@ -147,6 +147,7 @@ mod tests {
             binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
         },
         bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
+        test_support::lock_live_node_build,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -199,6 +200,8 @@ mod tests {
     }
 
     fn fresh_builder() -> LiveNodeBuilder {
+        let _guard = lock_live_node_build();
+
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("Live builder should construct for unit-test fixture")
     }

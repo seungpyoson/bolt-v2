@@ -95,11 +95,15 @@ impl TempCaseDir {
 
 static LIVE_NODE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-pub fn build_test_live_node() -> LiveNode {
-    let _guard = LIVE_NODE_BUILD_LOCK
+pub fn lock_live_node_build() -> std::sync::MutexGuard<'static, ()> {
+    LIVE_NODE_BUILD_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap();
+        .unwrap()
+}
+
+pub fn build_test_live_node() -> LiveNode {
+    let _guard = lock_live_node_build();
 
     LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
         .unwrap()

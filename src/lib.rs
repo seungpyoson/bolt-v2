@@ -23,6 +23,8 @@ pub mod raw_types;
 pub mod secrets;
 pub mod startup_validation;
 pub mod strategies;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod validate;
 pub mod venue_contract;
 

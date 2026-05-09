@@ -1133,6 +1133,7 @@ mod tests {
         ReferenceVenueKind, RulesetConfig, RulesetVenueKind, StrategyEntry, StreamingCaptureConfig,
     };
     use crate::secrets::ResolvedBinanceSecrets;
+    use crate::test_support::lock_live_node_build;
     use nautilus_binance::common::enums::{BinanceEnvironment, BinanceProductType};
     use nautilus_binance::config::BinanceDataClientConfig;
     use nautilus_common::factories::DataClientFactory;
@@ -1430,6 +1431,7 @@ mod tests {
             captured: Arc::clone(&captured),
         };
 
+        let _guard = lock_live_node_build();
         let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
             .expect("builder should construct")
             .with_name("TEST-NODE")
@@ -1540,6 +1542,8 @@ mod tests {
     }
 
     fn build_empty_node() -> LiveNode {
+        let _guard = lock_live_node_build();
+
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("builder should construct")
             .with_name("TEST-NODE")

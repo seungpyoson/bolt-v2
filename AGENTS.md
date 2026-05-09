@@ -42,6 +42,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - If one short paragraph or a few flat bullets is enough, use that.
 
 <!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
+For the current Bolt-v3 nucleus admission slice, read:
+
+- `specs/001-v3-nucleus-admission/plan.md`
 <!-- SPECKIT END -->

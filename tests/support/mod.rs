@@ -15,6 +15,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use nautilus_common::enums::Environment;
+use nautilus_live::node::LiveNode;
+use nautilus_model::identifiers::TraderId;
+
 use async_trait::async_trait;
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
@@ -87,6 +91,20 @@ impl TempCaseDir {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+static LIVE_NODE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+pub fn build_test_live_node() -> LiveNode {
+    let _guard = LIVE_NODE_BUILD_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap();
+
+    LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+        .unwrap()
+        .build()
+        .unwrap()
 }
 
 pub fn repo_path(relative: &str) -> PathBuf {

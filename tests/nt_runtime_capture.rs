@@ -1,4 +1,4 @@
-use std::{io::Cursor, sync::OnceLock};
+use std::io::Cursor;
 
 use arrow::array::{
     Array, FixedSizeBinaryArray, RecordBatch, StringArray, UInt8Array, UInt32Array, UInt64Array,
@@ -10,7 +10,6 @@ use bolt_v2::{
 };
 mod support;
 use nautilus_common::{
-    enums::Environment,
     messages::system::TradingStateChanged,
     msgbus::{
         publish_account_state, publish_any, publish_bar, publish_deltas, publish_depth10,
@@ -19,7 +18,6 @@ use nautilus_common::{
     },
 };
 use nautilus_core::UUID4;
-use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::{
         Bar, BookOrder, FundingRateUpdate, IndexPriceUpdate, InstrumentClose, InstrumentStatus,
@@ -42,23 +40,9 @@ use nautilus_model::{
     instruments::{InstrumentAny, binary_option::BinaryOption},
     types::{Currency, Money, Price, Quantity},
 };
-use support::repo_path;
+use support::{build_test_live_node, repo_path};
 use tempfile::tempdir;
 use tokio::task::LocalSet;
-
-static LIVE_NODE_BUILD_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-
-fn build_test_live_node() -> LiveNode {
-    let _guard = LIVE_NODE_BUILD_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap();
-
-    LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-        .unwrap()
-        .build()
-        .unwrap()
-}
 
 fn collect_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();

@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path, sync::OnceLock};
+use std::{fs::File, path::Path};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -8,14 +8,12 @@ use bolt_v2::{
     lake_batch::{convert_live_spool_to_parquet, supported_stream_classes},
     nt_runtime_capture,
 };
-use nautilus_common::{
-    enums::Environment,
-    msgbus::{
-        publish_any, publish_deltas, publish_depth10, publish_index_price, publish_mark_price,
-        publish_quote, publish_trade, switchboard,
-    },
+mod support;
+use support::build_test_live_node;
+use nautilus_common::msgbus::{
+    publish_any, publish_deltas, publish_depth10, publish_index_price, publish_mark_price,
+    publish_quote, publish_trade, switchboard,
 };
-use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::BookOrder,
     data::{
@@ -23,27 +21,13 @@ use nautilus_model::{
         OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
     },
     enums::{AggressorSide, BookAction, InstrumentCloseType, OrderSide},
-    identifiers::{InstrumentId, TradeId, TraderId},
+    identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
-
-static LIVE_NODE_BUILD_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-
-fn build_test_live_node() -> LiveNode {
-    let _guard = LIVE_NODE_BUILD_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap();
-
-    LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-        .unwrap()
-        .build()
-        .unwrap()
-}
 
 fn collect_paths(root: &Path) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();

@@ -537,6 +537,8 @@ def test_unfenced_fixture_values_do_not_match_concrete_token_substrings() -> Non
                     venue = "polymarketing"
                     feed = "ChainlinkProtocol"
                     symbol = "BTCMARKETS"
+                    column = "not_btc_value"
+                    archetype = "not_binary_oracle_edge_taker_value"
                 """,
             },
         )

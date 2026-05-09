@@ -471,7 +471,7 @@ def detect_unfenced_fixture_values(root: Path, universe: ScanUniverse) -> list[A
 
 def concrete_token_pattern() -> re.Pattern[str]:
     return re.compile(
-        "|".join(rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])" for token in CONCRETE_TOKENS),
+        "|".join(rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])" for token in CONCRETE_TOKENS),
         re.IGNORECASE,
     )
 

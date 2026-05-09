@@ -90,7 +90,9 @@ impl TempCaseDir {
 }
 
 pub fn repo_path(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+    std::env::current_dir()
+        .expect("cargo should run tests from the package root")
+        .join(relative)
 }
 
 pub fn runtime_toml_with_reference_venue(

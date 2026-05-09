@@ -285,6 +285,9 @@ def discover_scan_universe(root: Path) -> ScanUniverse:
         except UnicodeDecodeError:
             skipped.append(f"{rel(path, root)}: non-UTF-8")
             continue
+        except OSError as exc:
+            skipped.append(f"{rel(path, root)}: {exc}")
+            continue
         readable.append(path)
 
     v3_source_files = tuple(

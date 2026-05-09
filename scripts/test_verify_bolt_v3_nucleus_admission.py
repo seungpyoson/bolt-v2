@@ -365,6 +365,7 @@ def test_unowned_default_and_provider_leak_allowlist_are_blockers() -> None:
                     'FINDING_ALLOWANCES = (\n'
                     '    "bolt_v3_market_families::updown::MarketIdentityPlan,",\n'
                     '    "pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;",\n'
+                    '    "key: updown::KEY,",\n'
                     ")\n"
                 ),
             },
@@ -375,6 +376,7 @@ def test_unowned_default_and_provider_leak_allowlist_are_blockers() -> None:
 
         assert "unowned-runtime-default" in blocker_classes(run)
         assert "narrow-verifier-bypass" in blocker_classes(run)
+        assert "updown::KEY" in run.render()
 
 
 def test_unowned_default_inside_contains_or_concat_is_still_a_blocker() -> None:

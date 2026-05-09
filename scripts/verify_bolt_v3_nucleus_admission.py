@@ -41,6 +41,16 @@ CONCRETE_TOKENS = (
     "binary_oracle_edge_taker",
 )
 
+GENERIC_CONTRACT_LEAK_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\bMarketIdentityPlan\b",
+        r"\bBoltV3UpdownNowFn\b",
+        r"\bbinary_oracle_edge_taker::KEY\b",
+        r"\bupdown::KEY\b",
+    )
+)
+
 _PROVIDER_LEAKS_MODULES: dict[Path, object | None] = {}
 _PROVIDER_LEAKS_LOAD_ERRORS: dict[Path, str] = {}
 
@@ -326,13 +336,6 @@ def evidence_for_match(root: Path, path: Path, text: str, pos: int) -> EvidenceR
 
 
 def detect_generic_contract_leaks(root: Path, universe: ScanUniverse) -> list[AdmissionBlocker]:
-    patterns = (
-        re.compile(r"\bbolt_v3_market_families::updown::MarketIdentityPlan\b"),
-        re.compile(r"\bMarketIdentityPlan\b"),
-        re.compile(r"\bBoltV3UpdownNowFn\b"),
-        re.compile(r"\bbinary_oracle_edge_taker::KEY\b"),
-        re.compile(r"\bupdown::KEY\b"),
-    )
     evidence: list[EvidenceRecord] = []
     for path in universe.files:
         relative_path = rel(path, root)
@@ -340,7 +343,7 @@ def detect_generic_contract_leaks(root: Path, universe: ScanUniverse) -> list[Ad
             continue
         raw = path.read_text(encoding="utf-8")
         text = production_text(root, path, raw)
-        for pattern in patterns:
+        for pattern in GENERIC_CONTRACT_LEAK_PATTERNS:
             for match in pattern.finditer(text):
                 evidence.append(evidence_for_match(root, path, text, match.start()))
 
@@ -486,7 +489,8 @@ def detect_narrow_verifier_bypass(root: Path, universe: ScanUniverse) -> list[Ad
     segment_text, start_line = segment
     evidence = [
         evidence_for_segment_match(root, path, segment_text, start_line, match.start())
-        for match in re.finditer(r"MarketIdentityPlan|BoltV3UpdownNowFn", segment_text)
+        for pattern in GENERIC_CONTRACT_LEAK_PATTERNS
+        for match in pattern.finditer(segment_text)
     ]
     if not evidence:
         return []

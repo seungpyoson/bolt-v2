@@ -9,6 +9,16 @@ just verify-bolt-v3-nucleus-admission
 Expected on current `main`: command exits successfully and reports Bolt-v3 as
 blocked with evidence.
 
+## Verification Lane
+
+```bash
+just fmt-check
+```
+
+Expected on current `main`: the admission audit appears in report-only mode as
+part of the existing formatting/verification lane. Reported blockers are printed
+for operator visibility but do not change the lane's pass/fail status.
+
 ## Strict run
 
 ```bash

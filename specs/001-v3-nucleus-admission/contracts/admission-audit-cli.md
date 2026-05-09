@@ -51,4 +51,8 @@ The output must not print secrets or full credential values.
 - No provider client construction.
 - No AWS or SSM reads.
 - No mutation of repository files.
-- No required CI wiring in this feature.
+- No strict-mode required CI gate in this feature.
+
+Report-only audit output may run through existing developer and CI verification
+lanes, including `fmt-check`, but blockers must not affect pass/fail status
+until a separate strict-mode promotion change is approved.

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+//! Shared integration-test helpers.
+
 pub(crate) mod stub_runtime_strategy;
 
 use std::{
@@ -95,6 +97,7 @@ impl TempCaseDir {
 
 static LIVE_NODE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Serializes LiveNode construction inside an integration-test binary.
 pub fn lock_live_node_build() -> std::sync::MutexGuard<'static, ()> {
     LIVE_NODE_BUILD_LOCK
         .get_or_init(|| Mutex::new(()))
@@ -102,6 +105,7 @@ pub fn lock_live_node_build() -> std::sync::MutexGuard<'static, ()> {
         .unwrap()
 }
 
+/// Builds a minimal test LiveNode while holding the shared construction lock.
 pub fn build_test_live_node() -> LiveNode {
     let _guard = lock_live_node_build();
 

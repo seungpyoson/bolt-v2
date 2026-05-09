@@ -5,9 +5,9 @@
 
 commands:
   # Standard Rust toolchain. cargo, clippy, and rustfmt all ship with rustup.
-  test: "cargo test"
+  test: "cargo test --locked"
   # Treat clippy warnings as errors so the gate fails on any new warning.
-  lint: "cargo clippy --all-targets -- -D warnings"
+  lint: "cargo clippy --locked --all-targets -- -D warnings"
   # rustfmt --check returns non-zero exit if any file needs formatting.
   # AI auto-fixes will be normalized via cargo fmt before commit.
   format: "cargo fmt --check"

@@ -1,0 +1,13 @@
+# no-mistakes per-repo configuration
+# https://kunchenguid.github.io/no-mistakes/reference/repo-config/
+#
+# `agent:` omitted — inherits each developer's global ~/.no-mistakes/config.yaml.
+
+commands:
+  # Standard Rust toolchain. cargo, clippy, and rustfmt all ship with rustup.
+  test: "cargo test"
+  # Treat clippy warnings as errors so the gate fails on any new warning.
+  lint: "cargo clippy --all-targets -- -D warnings"
+  # rustfmt --check returns non-zero exit if any file needs formatting.
+  # AI auto-fixes will be normalized via cargo fmt before commit.
+  format: "cargo fmt --check"

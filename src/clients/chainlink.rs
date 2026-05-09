@@ -1060,9 +1060,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires config/live.toml with resolvable Chainlink testnet credentials"]
     async fn live_chainlink_stream_smoke_works_with_generated_runtime_config() {
-        let config_path = std::env::current_dir()
-            .expect("cargo should run tests from the package root")
-            .join("config/live.toml");
+        let config_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/live.toml");
         let config = crate::config::Config::load(&config_path).expect("runtime config should load");
         let shared = config
             .reference

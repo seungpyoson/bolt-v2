@@ -62,7 +62,7 @@ verify-bolt-v3-nucleus-admission: check-workspace
     python3 scripts/test_verify_bolt_v3_nucleus_admission.py
     python3 scripts/verify_bolt_v3_nucleus_admission.py
 
-fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
+fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks verify-bolt-v3-nucleus-admission
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
 fmt: check-workspace require-rust-verification-owner

@@ -243,7 +243,7 @@ def discover_scan_universe(root: Path) -> ScanUniverse:
     src = root / "src"
     if src.exists():
         candidates.update(src.glob("bolt_v3*.rs"))
-        for directory in src.glob("bolt_v3_*"):
+        for directory in src.glob("bolt_v3*"):
             if directory.is_dir():
                 candidates.update(directory.rglob("*.rs"))
 

@@ -692,36 +692,13 @@ def test_secret_like_excerpts_are_redacted() -> None:
 
 def main() -> int:
     tests = [
-        test_current_repo_report_mode_reports_known_blockers_and_exits_zero,
-        test_current_repo_strict_mode_reports_known_blockers_and_exits_nonzero,
-        test_admitted_fixture_has_no_blockers_and_strict_mode_exits_zero,
-        test_scan_universe_failure_blocks_admission,
-        test_scan_universe_includes_required_path_groups,
-        test_generic_updown_plan_and_clock_in_core_are_blockers,
-        test_missing_decision_conformance_and_backtest_surfaces_are_blockers,
-        test_missing_contract_surfaces_ignore_comments_and_cfg_test_only_mentions,
-        test_missing_contract_surfaces_do_not_accept_identifier_substrings,
-        test_missing_contract_surfaces_require_each_decision_event_term,
-        test_missing_contract_surfaces_ignore_test_only_contract_names,
-        test_unowned_default_and_provider_leak_allowlist_are_blockers,
-        test_unowned_default_inside_contains_or_concat_is_still_a_blocker,
-        test_narrow_verifier_bypass_scans_only_finding_allowances,
-        test_narrow_verifier_bypass_scans_annotated_finding_allowances,
-        test_fenced_fixtures_and_provider_owned_bindings_are_allowed_contexts,
-        test_unfenced_fixture_values_are_blockers,
-        test_unfenced_fixture_values_are_case_insensitive,
-        test_unfenced_fixture_values_do_not_match_concrete_token_substrings,
-        test_invalid_waivers_are_blockers,
-        test_waiver_removes_only_matching_evidence_record,
-        test_provider_leaks_import_failure_blocks_and_strips_comments,
-        test_provider_leaks_dependency_is_probed_even_without_rust_scan,
-        test_degraded_rust_scan_is_blank_when_provider_helper_fails,
-        test_fixture_path_detection_uses_directory_segments,
-        test_secret_like_excerpts_are_redacted,
+        value
+        for name, value in globals().items()
+        if name.startswith("test_") and callable(value)
     ]
     for test in tests:
         test()
-    print("OK: Bolt-v3 nucleus admission audit self-tests passed.")
+    print(f"OK: {len(tests)} Bolt-v3 nucleus admission audit self-tests passed.")
     return 0
 
 

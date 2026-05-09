@@ -112,9 +112,7 @@ pub fn build_test_live_node() -> LiveNode {
 }
 
 pub fn repo_path(relative: &str) -> PathBuf {
-    std::env::current_dir()
-        .expect("cargo should run tests from the package root")
-        .join(relative)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
 pub fn runtime_toml_with_reference_venue(

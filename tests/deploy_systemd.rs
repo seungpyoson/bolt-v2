@@ -2,9 +2,8 @@ use std::fs;
 
 #[test]
 fn systemd_unit_sets_srv_working_directory() {
-    let unit_path = std::env::current_dir()
-        .expect("cargo should run tests from the package root")
-        .join("deploy/systemd/bolt-v2.service");
+    let unit_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
     let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
 
     assert!(
@@ -15,9 +14,8 @@ fn systemd_unit_sets_srv_working_directory() {
 
 #[test]
 fn systemd_unit_requires_srv_mountpoint() {
-    let unit_path = std::env::current_dir()
-        .expect("cargo should run tests from the package root")
-        .join("deploy/systemd/bolt-v2.service");
+    let unit_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
     let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
 
     assert!(

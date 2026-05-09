@@ -37,6 +37,15 @@ use nautilus_model::{
     types::{AccountBalance, MarginBalance},
 };
 
+mod live_node_build_lock {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/test_support/live_node_build_lock.rs"
+    ));
+}
+
+pub(crate) use live_node_build_lock::lock_live_node_build;
+
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static MOCK_EXEC_SUBMISSIONS: OnceLock<Mutex<Vec<RecordedSubmitOrder>>> = OnceLock::new();
@@ -93,16 +102,6 @@ impl TempCaseDir {
     pub fn path(&self) -> &Path {
         &self.path
     }
-}
-
-static LIVE_NODE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-/// Serializes LiveNode construction inside an integration-test binary.
-pub fn lock_live_node_build() -> std::sync::MutexGuard<'static, ()> {
-    LIVE_NODE_BUILD_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap()
 }
 
 /// Builds a minimal test LiveNode while holding the shared construction lock.

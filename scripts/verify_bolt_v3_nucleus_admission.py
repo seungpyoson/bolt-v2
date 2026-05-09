@@ -214,7 +214,6 @@ def provider_leaks_module(root: Path):
         _PROVIDER_LEAKS_MODULES[root] = None
         _PROVIDER_LEAKS_LOAD_ERRORS[root] = f"{rel(provider_leaks, root)} has no production_text()"
         return None
-    sys.modules.pop(spec.name, None)
     _PROVIDER_LEAKS_MODULES[root] = module
     return module
 

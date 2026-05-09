@@ -39,6 +39,7 @@ do not affect default or strict admission unless promoted by a blocker rule.
 - `unowned-runtime-default`
 - `unfenced-concrete-fixture`
 - `narrow-verifier-bypass`
+- `invalid-waiver`
 - `scan-universe-unproven`
 
 ## Ordering

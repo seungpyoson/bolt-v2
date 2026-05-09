@@ -7,3 +7,5 @@ var/logs/
 .omx/
 .claude/findings/
 .DS_Store
+__pycache__/
+*.pyc

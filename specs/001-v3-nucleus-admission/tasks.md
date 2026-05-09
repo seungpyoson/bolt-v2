@@ -8,8 +8,8 @@
 
 **Purpose**: Establish the audit files without touching production runtime code.
 
-- [ ] T001 Create `scripts/test_verify_bolt_v3_nucleus_admission.py` with a minimal subprocess/import harness for the future verifier.
-- [ ] T002 Create `scripts/verify_bolt_v3_nucleus_admission.py` with CLI argument parsing for default mode, `--strict`, and `--repo-root`.
+- [X] T001 Create `scripts/test_verify_bolt_v3_nucleus_admission.py` with a minimal subprocess/import harness for the future verifier.
+- [X] T002 Create `scripts/verify_bolt_v3_nucleus_admission.py` with CLI argument parsing for default mode, `--strict`, and `--repo-root`.
 
 ---
 
@@ -17,10 +17,10 @@
 
 **Purpose**: Define the audit model and scan universe before blocker logic.
 
-- [ ] T003 Add tests for `AdmissionAuditRun`, `AdmissionBlocker`, `EvidenceRecord`, and `Waiver` validation in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T004 Add tests proving the scan universe includes V3 source, V3 tests, V3 fixtures, V3 docs when present, verifier scripts, `justfile`, and CI workflow files in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T005 Implement audit data classes, deterministic ordering, waiver validation, and secret-safe evidence excerpts in `scripts/verify_bolt_v3_nucleus_admission.py`.
-- [ ] T006 Implement scan-universe discovery and UTF-8 skip reporting in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T003 Add tests for `AdmissionAuditRun`, `AdmissionBlocker`, `EvidenceRecord`, and `Waiver` validation in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T004 Add tests proving the scan universe includes V3 source, V3 tests, V3 fixtures, V3 docs when present, verifier scripts, `justfile`, and CI workflow files in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T005 Implement audit data classes, deterministic ordering, waiver validation, and secret-safe evidence excerpts in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T006 Implement scan-universe discovery and UTF-8 skip reporting in `scripts/verify_bolt_v3_nucleus_admission.py`.
 
 **Checkpoint**: The verifier can scan the repository and produce an empty deterministic report model.
 
@@ -34,17 +34,17 @@
 
 ### Tests for User Story 1
 
-- [ ] T007 Add tests for `generic-contract-leak` detection using current updown plan and clock evidence in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T008 Add tests for `missing-contract-surface` detection for decision-event, conformance, and BacktestEngine/live parity surfaces in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T009 Add tests for `unowned-runtime-default`, `narrow-verifier-bypass`, and fixture-fencing blocker reporting in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T010 Add tests that default mode exits successfully while reporting blockers in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T007 Add tests for `generic-contract-leak` detection using current updown plan and clock evidence in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T008 Add tests for `missing-contract-surface` detection for decision-event, conformance, and BacktestEngine/live parity surfaces in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T009 Add tests for `unowned-runtime-default`, `narrow-verifier-bypass`, and fixture-fencing blocker reporting in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T010 Add tests that default mode exits successfully while reporting blockers in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
 
 ### Implementation for User Story 1
 
-- [ ] T011 Implement `generic-contract-leak` detection in `scripts/verify_bolt_v3_nucleus_admission.py`.
-- [ ] T012 Implement `missing-contract-surface` absence checks in `scripts/verify_bolt_v3_nucleus_admission.py`.
-- [ ] T013 Implement `unowned-runtime-default`, `narrow-verifier-bypass`, and `unfenced-concrete-fixture` detection in `scripts/verify_bolt_v3_nucleus_admission.py`.
-- [ ] T014 Implement deterministic text report output matching `specs/001-v3-nucleus-admission/contracts/admission-report.md` in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T011 Implement `generic-contract-leak` detection in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T012 Implement `missing-contract-surface` absence checks in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T013 Implement `unowned-runtime-default`, `narrow-verifier-bypass`, and `unfenced-concrete-fixture` detection in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T014 Implement deterministic text report output matching `specs/001-v3-nucleus-admission/contracts/admission-report.md` in `scripts/verify_bolt_v3_nucleus_admission.py`.
 
 **Checkpoint**: User Story 1 is complete when the audit reports the current V3 admission blockers and exits 0 by default.
 
@@ -58,15 +58,15 @@
 
 ### Tests for User Story 2
 
-- [ ] T015 Add tests that strict mode exits nonzero when blockers exist in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T016 Add tests that strict mode exits nonzero when the scan universe is unproven in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T017 Add tests that strict mode exits zero against a temporary admitted fixture repository in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T015 Add tests that strict mode exits nonzero when blockers exist in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T016 Add tests that strict mode exits nonzero when the scan universe is unproven in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T017 Add tests that strict mode exits zero against a temporary admitted fixture repository in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
 
 ### Implementation for User Story 2
 
-- [ ] T018 Implement strict-mode exit status handling in `scripts/verify_bolt_v3_nucleus_admission.py`.
-- [ ] T019 Add `verify-bolt-v3-nucleus-admission` recipe to `justfile` in report-only mode only.
-- [ ] T020 Document strict CI promotion as a follow-up in `specs/001-v3-nucleus-admission/quickstart.md` without wiring strict mode into `fmt-check`.
+- [X] T018 Implement strict-mode exit status handling in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T019 Add `verify-bolt-v3-nucleus-admission` recipe to `justfile` in report-only mode only.
+- [X] T020 Document strict CI promotion as a follow-up in `specs/001-v3-nucleus-admission/quickstart.md` without wiring strict mode into `fmt-check`.
 
 **Checkpoint**: User Story 2 is complete when report-only and strict modes differ only by exit status policy.
 
@@ -80,16 +80,16 @@
 
 ### Tests for User Story 3
 
-- [ ] T021 Add positive failing fixture tests for each blocker class in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T022 Add allowed-context fixture tests for provider-owned bindings, fenced fixtures, and documentation evidence in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T023 Add invalid-waiver tests for missing path, excerpt, blocker id, rationale, and retirement issue in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T024 Add a test proving existing provider-leak allowlists cannot suppress nucleus admission blockers in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T021 Add positive failing fixture tests for each blocker class in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T022 Add allowed-context fixture tests for provider-owned bindings, fenced fixtures, and documentation evidence in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T023 Add invalid-waiver tests for missing path, excerpt, blocker id, rationale, and retirement issue in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T024 Add a test proving existing provider-leak allowlists cannot suppress nucleus admission blockers in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
 
 ### Implementation for User Story 3
 
-- [ ] T025 Implement fixture classification and allowed-context policy in `scripts/verify_bolt_v3_nucleus_admission.py`.
-- [ ] T026 Implement waiver parsing and validation in `scripts/verify_bolt_v3_nucleus_admission.py`.
-- [ ] T027 Implement self-test fixture helpers without creating persistent repository artifacts outside test temp directories in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T025 Implement fixture classification and allowed-context policy in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T026 Implement waiver parsing and validation in `scripts/verify_bolt_v3_nucleus_admission.py`.
+- [X] T027 Implement self-test fixture helpers without creating persistent repository artifacts outside test temp directories in `scripts/test_verify_bolt_v3_nucleus_admission.py`.
 
 **Checkpoint**: User Story 3 is complete when the verifier has positive and negative tests for every blocker class.
 
@@ -99,13 +99,13 @@
 
 **Purpose**: Validate the slice and prepare review.
 
-- [ ] T028 Run `python3 scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T029 Run `python3 scripts/verify_bolt_v3_nucleus_admission.py` and capture the report-only blocker summary.
-- [ ] T030 Run `python3 scripts/verify_bolt_v3_nucleus_admission.py --strict` and confirm it exits nonzero on current blockers.
-- [ ] T031 Run `just verify-bolt-v3-nucleus-admission`.
-- [ ] T032 Run a placeholder/debt scan over `specs/001-v3-nucleus-admission/`, `.specify/memory/constitution.md`, `scripts/verify_bolt_v3_nucleus_admission.py`, and `scripts/test_verify_bolt_v3_nucleus_admission.py`.
-- [ ] T033 Run the existing Bolt-v3 verifier lane with `just verify-bolt-v3-runtime-literals` and `just verify-bolt-v3-provider-leaks`.
-- [ ] T034 Confirm the final diff does not modify production Rust runtime files under `src/`.
+- [X] T028 Run `python3 scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T029 Run `python3 scripts/verify_bolt_v3_nucleus_admission.py` and capture the report-only blocker summary.
+- [X] T030 Run `python3 scripts/verify_bolt_v3_nucleus_admission.py --strict` and confirm it exits nonzero on current blockers.
+- [X] T031 Run `just verify-bolt-v3-nucleus-admission`.
+- [X] T032 Run a placeholder/debt scan over `specs/001-v3-nucleus-admission/`, `.specify/memory/constitution.md`, `scripts/verify_bolt_v3_nucleus_admission.py`, and `scripts/test_verify_bolt_v3_nucleus_admission.py`.
+- [X] T033 Run the existing Bolt-v3 verifier lane with `just verify-bolt-v3-runtime-literals` and `just verify-bolt-v3-provider-leaks`.
+- [X] T034 Confirm the final diff does not modify production Rust runtime files under `src/`.
 
 ---
 

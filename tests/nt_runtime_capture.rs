@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{io::Cursor, sync::OnceLock};
 
 use arrow::array::{
     Array, FixedSizeBinaryArray, RecordBatch, StringArray, UInt8Array, UInt32Array, UInt64Array,
@@ -45,6 +45,20 @@ use nautilus_model::{
 use support::repo_path;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
+
+static LIVE_NODE_BUILD_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+fn build_test_live_node() -> LiveNode {
+    let _guard = LIVE_NODE_BUILD_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+
+    LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+        .unwrap()
+        .build()
+        .unwrap()
+}
 
 fn collect_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
@@ -187,10 +201,7 @@ async fn rejects_non_local_catalog_paths() {
 
     local
         .run_until(async {
-            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let node = build_test_live_node();
 
             let result = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
@@ -213,10 +224,7 @@ async fn accepts_valid_contract_path_on_capture_startup() {
         .run_until(async {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
-            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let node = build_test_live_node();
 
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
@@ -240,10 +248,7 @@ async fn rejects_missing_contract_path_on_capture_startup() {
         .run_until(async {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
-            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let node = build_test_live_node();
             let missing = dir.path().join("missing-contract.toml");
 
             let err = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -269,10 +274,7 @@ async fn rejects_invalid_contract_path_on_capture_startup() {
         .run_until(async {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
-            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let node = build_test_live_node();
             let invalid = dir.path().join("invalid-contract.toml");
             std::fs::write(&invalid, "not [valid toml").unwrap();
 
@@ -303,10 +305,7 @@ async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -416,10 +415,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -503,10 +499,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -662,10 +655,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -781,10 +771,7 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -902,10 +889,7 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let node = build_test_live_node();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
                 &node,
@@ -969,10 +953,7 @@ async fn captures_trading_state_changed_to_risk_jsonl_record() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -1031,10 +1012,7 @@ async fn captures_trade_tick_to_per_instrument_feather_spool() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -1107,10 +1085,7 @@ async fn captures_order_book_deltas_to_per_instrument_feather_spool() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -1230,10 +1205,7 @@ async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -1371,10 +1343,7 @@ async fn captures_mark_price_update_to_per_instrument_feather_spool() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -1437,10 +1406,7 @@ async fn captures_index_price_update_to_per_instrument_feather_spool() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -1503,10 +1469,7 @@ async fn captures_instrument_any_to_per_instrument_feather_spool() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(
@@ -1603,10 +1566,7 @@ async fn captures_instrument_close_to_per_instrument_feather_spool() {
             let dir = tempdir().unwrap();
             let catalog_root = dir.path().join("catalog");
 
-            let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-                .unwrap()
-                .build()
-                .unwrap();
+            let mut node = build_test_live_node();
             let handle = node.handle();
             let instance_id = node.instance_id().to_string();
             let guards = bolt_v2::nt_runtime_capture::wire_nt_runtime_capture(

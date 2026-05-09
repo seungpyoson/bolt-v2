@@ -415,7 +415,7 @@ def detect_missing_contract_surfaces(root: Path, universe: ScanUniverse) -> list
 
 
 def contains_identifier(text: str, identifier: str) -> bool:
-    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])", text) is not None
 
 
 def detect_unowned_runtime_defaults(root: Path, universe: ScanUniverse) -> list[AdmissionBlocker]:

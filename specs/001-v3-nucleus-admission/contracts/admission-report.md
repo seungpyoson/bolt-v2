@@ -29,8 +29,8 @@ evidence:
 
 ## Warning Record
 
-Warnings use the same shape as blockers, but `severity` is `warning` and they
-do not affect default or strict admission unless promoted by a blocker rule.
+Warnings are rendered as plain strings under a `warnings:` heading. They do not
+affect default or strict admission unless promoted by a blocker rule.
 
 ## Required Blocker Classes
 

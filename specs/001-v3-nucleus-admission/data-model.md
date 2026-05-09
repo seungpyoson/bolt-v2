@@ -8,20 +8,19 @@ Fields:
 
 - `mode`: `report` or `strict`.
 - `repo_root`: repository root inspected.
-- `scan_universe`: collection of scanned path groups.
-- `files_scanned`: count of UTF-8 files inspected.
-- `files_skipped`: files skipped with reasons.
+- `scan_universe`: `ScanUniverse` proof for decoded files, skipped files, and
+  V3 source files.
 - `blockers`: ordered list of `AdmissionBlocker`.
-- `warnings`: non-blocking observations.
-- `exit_status`: expected process status for the selected mode.
+- `warnings`: non-blocking observations rendered as plain strings.
 
 Validation rules:
 
 - `mode` must be explicit.
 - `scan_universe` must include source, tests, fixtures, scripts, and V3 docs
   where present.
-- Strict mode exits nonzero if any blocker exists or if scan universe proof
-  fails.
+- Strict mode exits nonzero from the CLI when any blocker exists or scan
+  universe proof fails; exit status is derived during command execution, not
+  stored on the run object.
 
 ## ScanUniverse
 
@@ -29,11 +28,9 @@ Represents the files the audit claims to inspect.
 
 Fields:
 
-- `roots`: configured root paths.
-- `include_patterns`: file or path patterns included.
-- `exclude_patterns`: generated/vendor/cache paths excluded.
-- `matched_files`: concrete file list after filtering.
-- `utf8_file_count`: files decoded and inspected.
+- `files`: repository files decoded and inspected.
+- `skipped`: skipped files with reasons.
+- `v3_source_files`: V3 Rust source files in the scan universe.
 
 Validation rules:
 

@@ -14,7 +14,6 @@ import hashlib
 import importlib.util
 import re
 import sys
-import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -509,7 +508,7 @@ def detect_narrow_verifier_bypass(root: Path, universe: ScanUniverse) -> list[Ad
 
 def assignment_source_segment(text: str, name: str) -> tuple[str, int] | None:
     try:
-        tree = ast.parse(textwrap.dedent(text))
+        tree = ast.parse(text)
     except SyntaxError:
         return None
 

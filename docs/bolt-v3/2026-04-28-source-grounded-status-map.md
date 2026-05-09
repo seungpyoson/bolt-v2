@@ -56,6 +56,16 @@ reference only. Prior AI responses and temporary audit packets are not
 implementation inputs unless their conclusions have been source-checked and
 folded into one of the active docs above.
 
+A higher-level admission audit lives in
+`scripts/verify_bolt_v3_nucleus_admission.py` (run via
+`just verify-bolt-v3-nucleus-admission`; spec under
+`specs/001-v3-nucleus-admission/`). It cross-cuts several rows below by
+reporting blockers for missing decision-event/local-evidence catalogs (rows 21,
+22, 32), strategy construction (row 30), narrow-verifier bypass and provider
+leak coverage (rows 5, 49), and unfenced concrete fixtures. The audit is
+report-only today; promotion to a strict-mode CI gate is a tracked follow-up
+and is not a row-level completion claim on its own.
+
 ## Roadmap State
 
 | # | Area | Status | Source Evidence | Test / Verifier Evidence | Gap / Next Decision |

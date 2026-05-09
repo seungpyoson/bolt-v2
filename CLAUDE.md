@@ -22,6 +22,7 @@
 - If a stale branch still exists after a merge, use it only for forensics. Never continue implementation from it unless you first prove the accepted scope is absent from `main`.
 
 <!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
+For the current Bolt-v3 nucleus admission slice, read:
+
+- `specs/001-v3-nucleus-admission/plan.md`
 <!-- SPECKIT END -->

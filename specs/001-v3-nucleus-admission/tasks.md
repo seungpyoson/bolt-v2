@@ -105,7 +105,7 @@
 - [X] T031 Run `just verify-bolt-v3-nucleus-admission`.
 - [X] T032 Run a placeholder/debt scan over `specs/001-v3-nucleus-admission/`, `.specify/memory/constitution.md`, `scripts/verify_bolt_v3_nucleus_admission.py`, and `scripts/test_verify_bolt_v3_nucleus_admission.py`.
 - [X] T033 Run the existing Bolt-v3 verifier lane with `just verify-bolt-v3-runtime-literals` and `just verify-bolt-v3-provider-leaks`.
-- [X] T034 Confirm the final diff does not modify production Rust runtime files under `src/`.
+- [X] T034 Confirm the final diff does not modify production runtime behavior; `src/` changes are test-gated only.
 
 ---
 

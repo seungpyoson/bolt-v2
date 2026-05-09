@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path};
+use std::{fs::File, path::Path, sync::OnceLock};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -30,6 +30,20 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
+
+static LIVE_NODE_BUILD_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+fn build_test_live_node() -> LiveNode {
+    let _guard = LIVE_NODE_BUILD_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+
+    LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+        .unwrap()
+        .build()
+        .unwrap()
+}
 
 fn collect_paths(root: &Path) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
@@ -119,10 +133,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = build_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         let guards = nt_runtime_capture::wire_nt_runtime_capture(
@@ -311,10 +322,7 @@ fn converts_legacy_flat_spool_layout() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = build_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         let guards = nt_runtime_capture::wire_nt_runtime_capture(
@@ -411,10 +419,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = build_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         // flush_interval_ms=1 forces FeatherWriter to flush after each write
@@ -665,10 +670,7 @@ fn allows_preexisting_empty_output_root() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = build_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         let guards = nt_runtime_capture::wire_nt_runtime_capture(

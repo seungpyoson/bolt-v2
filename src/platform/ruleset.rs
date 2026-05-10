@@ -7,12 +7,17 @@ use std::cmp::Ordering;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateMarket {
     pub market_id: String,
+    pub market_slug: String,
+    pub question_id: String,
     pub instrument_id: String,
     pub condition_id: String,
     pub up_token_id: String,
     pub down_token_id: String,
     pub price_to_beat: Option<f64>,
+    pub price_to_beat_source: Option<String>,
+    pub price_to_beat_observed_ts_ms: Option<u64>,
     pub start_ts_ms: u64,
+    pub end_ts_ms: u64,
     pub declared_resolution_basis: ResolutionBasis,
     pub accepting_orders: bool,
     pub liquidity_num: f64,

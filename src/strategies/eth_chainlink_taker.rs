@@ -5245,12 +5245,17 @@ mod tests {
         let down_token_id = format!("{market_id}-DOWN");
         CandidateMarket {
             market_id: market_id.to_string(),
+            market_slug: market_id.to_string(),
+            question_id: format!("question-{market_id}"),
             instrument_id: polymarket_instrument_id(&condition_id, &up_token_id).to_string(),
             condition_id,
             up_token_id,
             down_token_id,
             price_to_beat: None,
+            price_to_beat_source: None,
+            price_to_beat_observed_ts_ms: None,
             start_ts_ms: interval_start_ms,
+            end_ts_ms: interval_start_ms + 300_000,
             declared_resolution_basis: parse_ruleset_resolution_basis("chainlink_ethusd")
                 .expect("test resolution basis should parse"),
             accepting_orders: true,

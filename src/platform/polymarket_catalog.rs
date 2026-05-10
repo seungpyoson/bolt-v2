@@ -364,6 +364,12 @@ fn translate_market_result(
                 "unsupported outcome labels or malformed token ids".to_string(),
             )
         })?;
+    let market_slug = market
+        .market_slug
+        .ok_or_else(|| (market_id.clone(), "missing slug".to_string()))?;
+    let question_id = market
+        .question_id
+        .ok_or_else(|| (market_id.clone(), "missing questionID".to_string()))?;
     let start_date = market
         .start_date
         .as_deref()
@@ -385,17 +391,24 @@ fn translate_market_result(
         .end_date
         .as_deref()
         .ok_or_else(|| (market_id.clone(), "missing endDate".to_string()))?;
+    let end_ts_ms = parse_timestamp_ms(end_date)
+        .ok_or_else(|| (market_id.clone(), format!("invalid endDate {:?}", end_date)))?;
     let seconds_to_end = seconds_to_end(now, end_date)
         .ok_or_else(|| (market_id.clone(), format!("invalid endDate {:?}", end_date)))?;
 
     Ok(CandidateMarket {
         market_id: market.id,
+        market_slug,
+        question_id,
         instrument_id,
         condition_id: market.condition_id,
         up_token_id,
         down_token_id,
         price_to_beat,
+        price_to_beat_source: price_to_beat.map(|_| "polymarket_gamma_market_anchor".to_string()),
+        price_to_beat_observed_ts_ms: price_to_beat.map(|_| now.timestamp_millis().max(0) as u64),
         start_ts_ms,
+        end_ts_ms,
         declared_resolution_basis,
         accepting_orders,
         liquidity_num,
@@ -609,11 +622,28 @@ mod tests {
 
     #[test]
     fn translate_market_result_accepts_valid_market() {
-        let candidate =
-            translate_market_result(parse_market(valid_market_json()), None, Utc::now())
-                .expect("valid market should translate");
+        let now = DateTime::parse_from_rfc3339("2026-05-10T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut market = valid_market_json();
+        market["startDate"] = json!("2026-05-10T19:55:00Z");
+        market["endDate"] = json!("2026-05-10T20:20:00Z");
+        let candidate = translate_market_result(parse_market(market), Some(3100.0), now)
+            .expect("valid market should translate");
         assert_eq!(candidate.market_id, "market-good");
+        assert_eq!(candidate.market_slug, "market-good");
+        assert_eq!(candidate.question_id, "0xquestion1");
         assert_eq!(candidate.instrument_id, "0xcondition1-111.POLYMARKET");
+        assert_eq!(candidate.end_ts_ms, 1_778_444_400_000);
+        assert_eq!(candidate.price_to_beat, Some(3100.0));
+        assert_eq!(
+            candidate.price_to_beat_source.as_deref(),
+            Some("polymarket_gamma_market_anchor")
+        );
+        assert_eq!(
+            candidate.price_to_beat_observed_ts_ms,
+            Some(1_778_443_200_000)
+        );
     }
 
     #[test]
@@ -644,6 +674,26 @@ mod tests {
             .expect_err("missing startDate should produce a drop reason")
             .1;
         assert!(reason.contains("missing startDate"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_missing_slug() {
+        let mut market = valid_market_json();
+        market.as_object_mut().unwrap().remove("slug");
+        let reason = translate_market_result(parse_market(market), None, Utc::now())
+            .expect_err("missing slug should produce a drop reason")
+            .1;
+        assert!(reason.contains("missing slug"), "{reason}");
+    }
+
+    #[test]
+    fn translate_market_reports_missing_question_id() {
+        let mut market = valid_market_json();
+        market.as_object_mut().unwrap().remove("questionID");
+        let reason = translate_market_result(parse_market(market), None, Utc::now())
+            .expect_err("missing questionID should produce a drop reason")
+            .1;
+        assert!(reason.contains("missing questionID"), "{reason}");
     }
 
     #[test]

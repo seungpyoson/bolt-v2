@@ -344,12 +344,17 @@ fn candidate_market_with_tokens(
 ) -> CandidateMarket {
     CandidateMarket {
         market_id: market_id.to_string(),
+        market_slug: market_id.to_string(),
+        question_id: format!("question-{market_id}"),
         instrument_id: format!("{condition_id}-{up_token_id}.POLYMARKET"),
         condition_id: condition_id.to_string(),
         up_token_id: up_token_id.to_string(),
         down_token_id: down_token_id.to_string(),
         price_to_beat: None,
+        price_to_beat_source: None,
+        price_to_beat_observed_ts_ms: None,
         start_ts_ms,
+        end_ts_ms: start_ts_ms + 300_000,
         declared_resolution_basis:
             bolt_v2::platform::resolution_basis::parse_ruleset_resolution_basis("chainlink_ethusd")
                 .unwrap(),

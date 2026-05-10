@@ -449,10 +449,10 @@ Definitions:
 
 - `selected_market` = the `selected_market` shape from Section 6.2
 - `selected_market_observed_timestamp` = the timestamp when the selected market facts were observed
-- `price_to_beat_value` = decoded Chainlink Data Streams benchmark price from `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>`
+- `price_to_beat_value` = decoded Polymarket Gamma anchor price from the selected market's raw anchor fields
 - `price_to_beat_observed_timestamp` = the timestamp when `price_to_beat_value` was observed
 - `price_to_beat_source` current launch-scope value:
-  - `chainlink_data_streams.report_at_boundary`
+  - `polymarket_gamma_market_anchor`
 
 Boundary:
 
@@ -997,7 +997,7 @@ When `entry_decision` is `no_action`, values available at evaluation time must b
 
 Allowed `price_to_beat_source` values:
 
-- `chainlink_data_streams.report_at_boundary`
+- `polymarket_gamma_market_anchor`
 
 #### `entry_order_submission`
 

@@ -3189,18 +3189,11 @@ impl EthChainlinkTaker {
         &self,
         decision: &ExitSubmissionDecision,
     ) -> Result<Option<BoltV3ExitEvaluationFacts>> {
-        if decision.blocked_reason.is_some() {
+        let mechanical_rejection_reason =
+            exit_order_mechanical_rejection_reason(decision.blocked_reason);
+        if decision.blocked_reason.is_some() && mechanical_rejection_reason.is_none() {
             return Ok(None);
         }
-
-        let Some(exit_decision) = decision.evaluation.exit_decision else {
-            return Ok(None);
-        };
-        let Some(exit_decision_reason) =
-            exit_decision_reason_as_decision_fact(exit_decision, &decision.forced_flat_reasons)
-        else {
-            return Ok(None);
-        };
 
         let position_quantity = decision.authoritative_position_quantity.ok_or_else(|| {
             anyhow::anyhow!("exit evaluation event requires authoritative position quantity")
@@ -3216,6 +3209,35 @@ impl EthChainlinkTaker {
             decision.uncovered_position_quantity.ok_or_else(|| {
                 anyhow::anyhow!("exit evaluation event requires uncovered position quantity")
             })?;
+
+        if let Some(mechanical_rejection_reason) = mechanical_rejection_reason {
+            return Ok(Some(BoltV3ExitEvaluationFacts {
+                authoritative_position_quantity: Some(position_quantity),
+                authoritative_sellable_quantity: Some(authoritative_sellable_quantity),
+                open_exit_order_quantity: Some(open_exit_order_quantity),
+                uncovered_position_quantity: Some(uncovered_position_quantity),
+                exit_order_mechanical_outcome: "rejected".to_string(),
+                exit_order_mechanical_rejection_reason: Some(
+                    mechanical_rejection_reason.to_string(),
+                ),
+                exit_decision: "hold".to_string(),
+                exit_decision_reason: "exit_order_mechanical_rejection".to_string(),
+                archetype_metrics: json!({
+                    "hold_ev_bps": decision.evaluation.hold_ev_bps,
+                    "exit_ev_bps": decision.evaluation.exit_ev_bps,
+                    "forced_flat_reasons": forced_flat_reasons_as_decision_facts(&decision.forced_flat_reasons),
+                }),
+            }));
+        }
+
+        let Some(exit_decision) = decision.evaluation.exit_decision else {
+            return Ok(None);
+        };
+        let Some(exit_decision_reason) =
+            exit_decision_reason_as_decision_fact(exit_decision, &decision.forced_flat_reasons)
+        else {
+            return Ok(None);
+        };
 
         Ok(Some(BoltV3ExitEvaluationFacts {
             authoritative_position_quantity: Some(position_quantity),
@@ -3236,6 +3258,7 @@ impl EthChainlinkTaker {
 
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         let mut decision = self.exit_submission_decision_at(now_ms);
+        self.write_bolt_v3_exit_evaluation(now_ms, &decision)?;
         self.write_bolt_v3_exit_pre_submit_rejection(now_ms, &decision)?;
 
         let Some(instrument_id) = decision.instrument_id else {
@@ -3281,7 +3304,6 @@ impl EthChainlinkTaker {
             None,
             Some(client_order_id),
         );
-        self.write_bolt_v3_exit_evaluation(now_ms, &decision)?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         let Some(managed_position) = self.managed_position().cloned() else {
@@ -5087,6 +5109,15 @@ fn exit_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&'
             Some("exit_quantity_exceeds_sellable_quantity")
         }
         "exit_quantity_not_positive" => Some("invalid_quantity"),
+        _ => None,
+    }
+}
+
+fn exit_order_mechanical_rejection_reason(
+    internal_reason: Option<&'static str>,
+) -> Option<&'static str> {
+    match internal_reason? {
+        "exit_price_missing" => Some("exit_bid_unavailable"),
         _ => None,
     }
 }

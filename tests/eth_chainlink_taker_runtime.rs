@@ -3173,6 +3173,57 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
         submission_events.is_empty(),
         "exit pre-submit rejection must not persist order submission"
     );
+
+    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
+                .expect("BoltV3ExitEvaluationDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                Some(&serde_json::Value::String("rejected".to_string()))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("exit_order_mechanical_rejection_reason"),
+                Some(&serde_json::Value::String(
+                    "exit_bid_unavailable".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("exit_decision"),
+                Some(&serde_json::Value::String("hold".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("exit_decision_reason"),
+                Some(&serde_json::Value::String(
+                    "exit_order_mechanical_rejection".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("authoritative_position_quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("authoritative_sellable_quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("open_exit_order_quantity"),
+                Some(&serde_json::Value::from(0.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("uncovered_position_quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
 }
 
 #[test]

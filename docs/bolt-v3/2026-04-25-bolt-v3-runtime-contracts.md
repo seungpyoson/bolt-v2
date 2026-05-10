@@ -1411,6 +1411,20 @@ If no clients are configured, the check still emits `Satisfied` root facts for s
 
 The built `LiveNode` is discarded after the build fact is recorded. The check must not call `connect_bolt_v3_clients`, `disconnect_bolt_v3_clients`, any user-level subscription API, any runner API, any strategy actor API, or any order API. Controlled-connect remains an explicit, separate caller action under Section 11.6.
 
+### 11.8 Start readiness gate boundary
+
+The bolt-v3 start readiness gate is the canonical pre-start report surface for checks that can run while the NT `LiveNode` is still `Idle`.
+
+Current contract:
+
+- `src/bolt_v3_start_readiness.rs` composes `check_bolt_v3_instrument_readiness_for_start`
+- a `Ready` report means configured strategy targets have selected-market instruments present in the NT cache for the supplied market-selection timestamp
+- a `Blocked` report means `LiveNode::start` remains disallowed for production use
+- the gate does not call `LiveNode::start`, `LiveNode::run`, controlled-connect, user-level subscriptions, order factories, or submit APIs
+- the gate does not fetch instruments directly from a provider, mutate the NT cache, or duplicate NT startup flush logic
+
+This gate is not production approval. It does not prove real-provider delivery, automatic instrument loading, strategy activation safety, decision-event persistence, order admission, order lifecycle, reconciliation, or live capital readiness.
+
 ## 12. Panic Gate: Issue `#239`
 
 ### 12.1 Required test matrix

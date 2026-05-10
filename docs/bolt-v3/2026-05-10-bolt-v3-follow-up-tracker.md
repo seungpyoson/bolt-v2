@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-11
-Branch context: `codex/bolt-v3-reference-delivery-proof`
+Branch context: `codex/bolt-v3-start-readiness-gate`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -24,7 +24,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F4 | Fused-price policy | partial | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams project into the existing fusion algorithm: configured source IDs, source types, weights, freshness windows, disabled inputs, topic, and existing strategy stream. Remaining proof: accepted cross-source disagreement fail-closed policy and any strategy-specific fast-feed modifier policy | client implementation |
 | F5 | Reference producer wiring | partial | `tests/bolt_v3_adapter_mapping.rs` proves a v3 Chainlink client maps stream feed metadata into `ChainlinkReferenceClientConfig`; `tests/bolt_v3_reference_producer.rs` proves the existing eth stream builds an existing `ReferenceActorConfig`/`ReferenceVenueEntry` plan from v3 TOML without legacy `Config.reference`; `tests/bolt_v3_reference_actor_registration.rs` proves the v3 LiveNode build path registers one selected `ReferenceActor` and remains idle; `tests/bolt_v3_reference_delivery.rs` proves mock-only NT `LiveNode::start` drives the registered actor to publish `ReferenceSnapshot`. Remaining proof: real provider delivery through accepted production start/run gate | changing strategy signal logic |
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
-| F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
+| F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache; `tests/bolt_v3_start_readiness_gate.rs` proves the canonical start-readiness surface composes that instrument gate and remains source-fenced from `LiveNode::start`, `LiveNode::run`, subscriptions, and order APIs | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
 | F7 | Decision-event persistence | unverified | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. The nullable-field contract uses registered NT custom-data with fixed `event_facts: Params`; `tests/nt_custom_data_catalog_integration.rs` proves explicit JSON null survives local catalog round-trip. `tests/bolt_v3_decision_event_handoff.rs` proves `market_selection_result`, entry/exit order submission, and entry/exit pre-submit rejection events write through the canonical NT catalog handoff and return write errors. Remaining proof: `entry_evaluation`, `exit_evaluation`, and integration into the v3 order-intent path | sentinel null encoding, JSON blob fallback, second writer path |
 | F8 | Risk/order admission gate | blocked | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution. v3 maps NT `LiveRiskEngineConfig`, but bolt-owned order admission needs an accepted decision-event persistence gate and a v3 order intent path | venue-specific order lifecycle, ad hoc strategy-local submit guards |
@@ -41,13 +41,15 @@ The current reference-producer branch proves only:
 root reference stream TOML -> existing ReferenceActor plan -> selected ReferenceActor registered on idle LiveNode -> mock-only NT start publishes ReferenceSnapshot
 ```
 
-This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, real-provider runtime delivery, automatic production start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
+This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, real-provider runtime delivery, automatic production start/run execution, decision persistence, order lifecycle, reconciliation, or scale.
 
 ## Instrument Blocker
 
 F6c is blocked because the accepted NT path that populates the cache before execution clients is inside `LiveNode::start`. That path also runs reconciliation and starts the trader. NT source evidence at pinned `nautilus_trader@38b912a`: `crates/live/src/node.rs` startup sequencing comments, `LiveNode::start`, and private `flush_pending_data`; `crates/live/src/runner.rs` routes `DataEvent::Instrument` into `DataEngine`; `crates/data/src/engine/mod.rs` processes `InstrumentAny` into cache.
 
 Do not work around this by fetching venue instruments directly in bolt-v3 and writing them into the NT cache. That creates a second production instrument-loading path.
+
+The current start-readiness surface is intentionally pre-start only. It composes the accepted NT-cache instrument gate and returns a report while the `LiveNode` remains idle. It does not call `LiveNode::start`, connect real providers, activate strategies, or approve production launch.
 
 ## Reference Blocker
 

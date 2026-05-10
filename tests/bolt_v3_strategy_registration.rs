@@ -17,6 +17,29 @@ fn existing_strategy_root_fixture() -> std::path::PathBuf {
 }
 
 #[test]
+fn existing_strategy_fixture_uses_explicit_placeholder_reference_topic() {
+    let loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
+        .expect("v3 TOML fixture should load");
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy fixture should load one strategy");
+
+    let topic = strategy
+        .config
+        .parameters
+        .get("reference_publish_topic")
+        .and_then(toml::Value::as_str)
+        .expect("existing-strategy fixture should set reference_publish_topic");
+
+    assert_eq!(topic, "reference.eth_usd.placeholder-mustchange");
+    assert!(
+        !topic.contains("chainlink"),
+        "v3 tracer topic must not imply a specific reference producer"
+    );
+}
+
+#[test]
 fn bolt_v3_registers_existing_strategy_and_remains_idle_no_trade() {
     let loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
         .expect("v3 TOML fixture should load");

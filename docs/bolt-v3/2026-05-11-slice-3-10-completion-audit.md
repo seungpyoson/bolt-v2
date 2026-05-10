@@ -15,7 +15,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | Requirement | Evidence | Status |
 | --- | --- | --- |
 | Use fresh branches/worktrees from origin | Current branch `codex/bolt-v3-order-intent-gate` was created in `.worktrees/bolt-v3-order-intent-gate` from pushed origin ref `origin/codex/bolt-v3-evaluation-decision-events` | met |
-| Commit and push each slice | Current order-intent-gate slice is local until commit/push; prior slices remain pushed separately | pending |
+| Commit and push each slice | Current order-intent-gate slice is committed as `46860c41fe374170a40266337f0dac322a8fc5ea` and pushed to `origin/codex/bolt-v3-order-intent-gate`; prior slices remain pushed separately | met |
 | Do not merge without approval | No merge command used; no PR opened from these branches | met |
 | F3 ETH/USD reference contract | Root TOML now defines `[reference_streams.eth_usd]`; existing strategy TOML selects it with `parameters.reference_stream_id`; validation rejects missing stream IDs and invalid stream values; strategy registration resolves selected stream to NT context `reference_publish_topic` | verified-local |
 | F4 fused-price policy | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams use the existing fusion algorithm for configured source IDs, source types, weights, freshness windows, disabled inputs, and topic; no disagreement fail-closed policy exists yet | partial |
@@ -28,7 +28,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | No Python production path | All F3-F10 tracker entries reject Python or avoid it; no Python runtime artifact added | met |
 | No direct venue bypass | F6c, F9, and F10 tracker entries reject direct provider/venue bypasses | met |
 | No hardcoded runtime values added | Runtime stream/topic/source/client/freshness values live in TOML fixtures; Rust only parses, validates, and looks up configured IDs | met locally |
-| Verification before claims | Focused order-intent-gate tests pass locally; full branch verification still pending before commit/push | pending |
+| Verification before claims | `cargo test --test bolt_v3_order_intent_gate -- --nocapture`, `cargo test --test bolt_v3_decision_event_handoff -- --nocapture`, `cargo test --tests --no-run`, `cargo fmt`, `git diff --check`, and changed-file marker scan pass locally | met-local |
 
 ## Result
 
@@ -48,4 +48,4 @@ F3-F10 are not production-complete. They are classified with evidence:
 
 External reviews remain pending and are intentionally not requested here. CI on these branches has not been used as acceptance evidence. Merge approval remains required.
 
-The next implementation decision should not start F9 or F10. After this order-intent-gate slice is committed and pushed, the next credible slice remains wiring the actual v3 strategy/order-intent path through the gate before any production start/run wrapper, still no orders.
+The next implementation decision should not start F9 or F10. With this order-intent-gate slice pushed, the next credible slice remains wiring the actual v3 strategy/order-intent path through the gate before any production start/run wrapper, still no orders.

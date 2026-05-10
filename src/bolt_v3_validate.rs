@@ -536,17 +536,17 @@ fn validate_reference_data(
     let mut errors = Vec::new();
 
     for (role, block) in &strategy.reference_data {
-        match root.adapter_instances.get(&block.venue) {
+        match root.adapter_instances.get(&block.adapter_instance) {
             None => errors.push(format!(
-                "{context}: reference_data.{role}.venue `{}` does not match any [adapter_instances.<id>] block",
-                block.venue
+                "{context}: reference_data.{role}.adapter_instance `{}` does not match any [adapter_instances.<id>] block",
+                block.adapter_instance
             )),
             Some(adapter_instance) => {
                 if adapter_instance.data.is_none() {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.venue `{}` must reference a data-capable adapter instance \
+                        "{context}: reference_data.{role}.adapter_instance `{}` must reference a data-capable adapter instance \
                          (the referenced adapter instance has no [data] block)",
-                        block.venue
+                        block.adapter_instance
                     ));
                 }
             }

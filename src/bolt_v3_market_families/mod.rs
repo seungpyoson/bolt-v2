@@ -34,6 +34,18 @@ struct TargetFamilyDispatch {
     rotating_market_family: String,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum MarketSelectionTypeDispatch {
+    RotatingMarket,
+    FixedInstrument,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TargetSelectionDispatch {
+    market_selection_type: MarketSelectionTypeDispatch,
+}
+
 pub struct MarketFamilyValidationBinding {
     pub key: &'static str,
     pub validate_target: fn(&str, &toml::Value) -> Vec<String>,
@@ -58,6 +70,20 @@ pub fn validate_strategy_target(
     target: &toml::Value,
 ) -> (Option<TargetMetadata>, Vec<String>) {
     let metadata = target.clone().try_into::<TargetMetadata>().ok();
+    let selection: TargetSelectionDispatch = match target.clone().try_into() {
+        Ok(value) => value,
+        Err(error) => {
+            return (metadata, vec![format!("{context}: target: {error}")]);
+        }
+    };
+    if selection.market_selection_type == MarketSelectionTypeDispatch::FixedInstrument {
+        return (
+            metadata,
+            vec![format!(
+                "{context}: target.market_selection_type `fixed_instrument` is reserved but not supported by this build"
+            )],
+        );
+    }
     let dispatch: TargetFamilyDispatch = match target.clone().try_into() {
         Ok(value) => value,
         Err(error) => {
@@ -75,4 +101,31 @@ pub fn validate_strategy_target(
         )],
     };
     (metadata, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target_value(source: &str) -> toml::Value {
+        toml::from_str(source).expect("target TOML should parse")
+    }
+
+    #[test]
+    fn fixed_instrument_selection_type_fails_with_explicit_unsupported_error() {
+        let target = target_value(
+            r#"
+configured_target_id = "fixed_eth_yes"
+market_selection_type = "fixed_instrument"
+"#,
+        );
+
+        let (_metadata, errors) = validate_strategy_target("strategy", &target);
+        assert!(
+            errors.iter().any(|message| message.contains(
+                "target.market_selection_type `fixed_instrument` is reserved but not supported by this build"
+            )),
+            "fixed_instrument must fail as explicit unsupported market_selection_type, got: {errors:#?}"
+        );
+    }
 }

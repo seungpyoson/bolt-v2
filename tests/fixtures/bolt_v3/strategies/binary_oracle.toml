@@ -16,7 +16,7 @@ retry_interval_seconds = 5
 blocked_after_seconds = 60
 
 [reference_data.primary]
-venue = "binance_reference"
+adapter_instance = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]

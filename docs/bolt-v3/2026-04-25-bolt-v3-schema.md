@@ -819,7 +819,7 @@ retry_interval_seconds = 5
 blocked_after_seconds = 60
 
 [reference_data.primary]
-venue = "binance_reference"
+adapter_instance = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]
@@ -912,15 +912,17 @@ It is configuration, not a selected-market identifier.
 
 - type: string enum
 - required: yes
-- current allowed values:
+- current supported values:
   - `rotating_market`
+- reserved unsupported values:
+  - `fixed_instrument`
 
-#### Instrument target fields
+#### Fixed-instrument target fields
 
-Deferred.
-Instrument targets are not part of the current frozen target-stack model.
+Reserved.
+Fixed-instrument targets are not part of the current frozen target-stack model.
 
-If `market_selection_type = "instrument"`, validation must fail until a future contract slice defines the configured-target shape, selected-market facts boundary, and event projection.
+If `market_selection_type = "fixed_instrument"`, validation must fail until a future contract slice defines the configured-target shape, selected-market facts boundary, and event projection.
 
 #### Rotating-market target fields
 
@@ -1129,7 +1131,7 @@ Must fail if:
 - Polymarket `signature_type = "poly_proxy"` or `signature_type = "poly_gnosis_safe"` is missing a non-zero `funder_address`
 - Polymarket `funder_address`, when present, is not a `0x`-prefixed 40-hex-character non-zero EVM address
 - `target.market_selection_type = "rotating_market"` includes fields not valid for rotating-market targets
-- `target.market_selection_type = "instrument"` is selected before instrument targets are added by a future contract slice
+- `target.market_selection_type = "fixed_instrument"` is selected before fixed-instrument targets are added by a future contract slice
 - `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
 - `target.cadence_seconds` is not positive or is not divisible by `60`
 - `target.cadence_seconds` does not have a runtime-contract-defined slug-token mapping
@@ -1324,7 +1326,7 @@ retry_interval_seconds = 5
 blocked_after_seconds = 60
 
 [reference_data.primary]
-venue = "binance_reference"
+adapter_instance = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]

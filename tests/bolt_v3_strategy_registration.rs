@@ -43,6 +43,8 @@ fn existing_strategy_fixture_uses_explicit_placeholder_reference_topic() {
 fn bolt_v3_registers_existing_strategy_and_remains_idle_no_trade() {
     let loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
         .expect("v3 TOML fixture should load");
+    let expected_strategy_id =
+        StrategyId::from(loaded.strategies[0].config.strategy_instance_id.as_str());
 
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
@@ -53,9 +55,7 @@ fn bolt_v3_registers_existing_strategy_and_remains_idle_no_trade() {
     let trader = trader.borrow();
     assert_eq!(trader.strategy_count(), 1);
     assert!(
-        trader
-            .strategy_ids()
-            .contains(&StrategyId::from("ETHCHAINLINKTAKER-V3-001")),
+        trader.strategy_ids().contains(&expected_strategy_id),
         "expected existing strategy registered in NT trader, got {:?}",
         trader.strategy_ids()
     );

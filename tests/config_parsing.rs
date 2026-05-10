@@ -755,8 +755,92 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     );
     assert!(strategy.reference_data.contains_key("primary"));
     assert_eq!(
-        strategy.reference_data["primary"].venue,
+        strategy.reference_data["primary"].adapter_instance,
         "binance_reference"
+    );
+}
+
+#[test]
+fn bolt_v3_reference_data_uses_adapter_instance_field() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    assert!(
+        fixture.contains("adapter_instance = \"binance_reference\""),
+        "reference_data.primary must use adapter_instance in fixture"
+    );
+    assert!(
+        !fixture.contains("venue = \"binance_reference\""),
+        "reference_data.primary must not use legacy venue field"
+    );
+
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&fixture).expect("strategy fixture should parse");
+    assert_eq!(
+        strategy.reference_data["primary"].adapter_instance,
+        "binance_reference"
+    );
+}
+
+#[test]
+fn bolt_v3_reference_data_rejects_legacy_venue_field() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    let mutated = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "adapter_instance = \"binance_reference\"",
+        "venue = \"binance_reference\"",
+    );
+
+    let error = toml::from_str::<BoltV3StrategyConfig>(&mutated)
+        .expect_err("legacy reference_data venue field should fail to parse")
+        .to_string();
+    assert!(
+        error.contains("unknown field `venue`"),
+        "error should reject legacy reference_data venue field, got: {error}"
+    );
+}
+
+#[test]
+fn invalid_reference_data_adapter_instance_error_names_field() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("root fixture should parse");
+    let mutated = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "adapter_instance = \"binance_reference\"",
+        "adapter_instance = \"missing_reference\"",
+    );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&mutated).expect("mutated strategy should parse");
+    let loaded = [LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&root, &loaded);
+    assert!(
+        messages.iter().any(|m| m.contains(
+            "reference_data.primary.adapter_instance `missing_reference` does not match any [adapter_instances.<id>] block"
+        )),
+        "expected adapter_instance validation error, got: {messages:#?}"
     );
 }
 

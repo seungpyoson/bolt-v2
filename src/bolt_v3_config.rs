@@ -271,7 +271,7 @@ pub enum OmsType {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
-    pub venue: String,
+    pub adapter_instance: String,
     pub instrument_id: String,
 }
 

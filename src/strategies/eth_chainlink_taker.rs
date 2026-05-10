@@ -2878,16 +2878,16 @@ impl EthChainlinkTaker {
             decision.blocked_reason = Some("open_position_missing");
             return decision;
         };
-        if !open_position.quantity.as_f64().is_finite() || open_position.quantity.as_f64() <= 0.0 {
-            decision.blocked_reason = Some("exit_quantity_not_positive");
-            return decision;
-        }
         decision.instrument_id = Some(open_position.instrument_id);
         decision.order_side = match open_position.side {
             PositionSide::Long => Some(OrderSide::Sell),
             _ => None,
         };
         decision.quantity = Some(open_position.quantity);
+        if !open_position.quantity.as_f64().is_finite() || open_position.quantity.as_f64() <= 0.0 {
+            decision.blocked_reason = Some("exit_quantity_not_positive");
+            return decision;
+        }
 
         let Some((order_side, price)) = self.current_exit_order_for_open_position() else {
             decision.blocked_reason = Some("exit_price_missing");
@@ -4985,9 +4985,11 @@ fn exit_pre_submit_rejection_facts(
     let Some(rejection_reason) = decision.blocked_reason else {
         return Ok(None);
     };
-    if rejection_reason != "exit_price_missing" {
+    let Some(contract_rejection_reason) =
+        exit_pre_submit_rejection_contract_reason(rejection_reason)
+    else {
         return Ok(None);
-    }
+    };
 
     let side = decision
         .order_side
@@ -5014,12 +5016,20 @@ fn exit_pre_submit_rejection_facts(
                 .as_ref()
                 .map(std::string::ToString::to_string),
         },
-        rejection_reason: rejection_reason.to_string(),
+        rejection_reason: contract_rejection_reason.to_string(),
         authoritative_position_quantity: position_quantity,
         authoritative_sellable_quantity: decision.quantity.map(|quantity| quantity.as_f64()),
         open_exit_order_quantity: Some(0.0),
         uncovered_position_quantity: position_quantity.map(|quantity| quantity.max(0.0)),
     }))
+}
+
+fn exit_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&'static str> {
+    match internal_reason {
+        "exit_price_missing" => Some("exit_price_missing"),
+        "exit_quantity_not_positive" => Some("invalid_quantity"),
+        _ => None,
+    }
 }
 
 fn order_type_as_decision_fact(order_type: OrderType) -> Result<&'static str> {

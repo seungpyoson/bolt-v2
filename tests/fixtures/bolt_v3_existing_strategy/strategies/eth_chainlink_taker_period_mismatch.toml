@@ -1,0 +1,37 @@
+schema_version = 1
+strategy_instance_id = "ETHCHAINLINKTAKER-V3-MISMATCH"
+strategy_archetype = "eth_chainlink_taker"
+order_id_tag = "099"
+oms_type = "netting"
+execution_client_id = "polymarket_main"
+
+[target]
+configured_target_id = "eth_updown_mismatch"
+market_selection_type = "rotating_market"
+rotating_market_family = "updown"
+underlying_asset = "ETH"
+cadence_seconds = 900
+market_selection_rule = "active_or_next"
+retry_interval_seconds = 5
+blocked_after_seconds = 60
+
+[parameters]
+reference_publish_topic = "reference.eth_usd.placeholder-mustchange"
+warmup_tick_count = 1
+period_duration_secs = 300
+reentry_cooldown_secs = 30
+max_position_usdc = 1000.0
+book_impact_cap_bps = 15
+risk_lambda = 0.0
+worst_case_ev_min_bps = -20
+exit_hysteresis_bps = 5
+vol_window_secs = 60
+vol_gap_reset_secs = 10
+vol_min_observations = 1
+vol_bridge_valid_secs = 10
+pricing_kurtosis = 0.0
+theta_decay_factor = 0.0
+forced_flat_stale_chainlink_ms = 1500
+forced_flat_thin_book_min_liquidity = 100.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250

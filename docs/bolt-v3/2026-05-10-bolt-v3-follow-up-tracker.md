@@ -9,6 +9,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 ## Status Legend
 
 - `unverified`: not proven in current branch
+- `verified-local`: proven by local tests in current branch, not production evidence
 - `reserved`: accepted concept, intentionally unsupported now
 - `blocked`: needs prior decision or evidence
 
@@ -16,7 +17,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 
 | ID | Item | Status | Required Proof | Non-Goals |
 | --- | --- | --- | --- | --- |
-| F1 | Multi-strategy idle verification | unverified | Root TOML with 2+ `strategy_files` builds one `LiveNode`, registers all strategies from TOML, reaches `NodeState::Idle`, no submit/subscribe calls in registration wiring | live run, order lifecycle, many-client scale |
+| F1 | Multi-strategy idle verification | verified-local | `tests/bolt_v3_strategy_registration.rs` proves root TOML with 2 `strategy_files` builds one `LiveNode`, registers both strategy IDs from TOML, reaches `NodeState::Idle`, and source-fences registration wiring from submit/subscribe calls | live run, order lifecycle, many-client scale |
 | F2 | Reference role naming | blocked | Decide whether `reference_data.primary` is correct role language; update schema/tests only after decision | fused-price policy, producer wiring |
 | F3 | ETH/USD reference contract | blocked | Define logical reference stream name, required inputs, freshness/confidence semantics, and source ownership | live orders, order admission |
 | F4 | Fused-price policy | blocked | Tests for anchor source, fast-feed modifiers, weights, stale handling, disagreement handling, fail-closed cases | client implementation |

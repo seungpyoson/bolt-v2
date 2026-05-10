@@ -12,8 +12,10 @@ use bolt_v2::{
     bolt_v3_decision_events::{
         BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+        BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE, BoltV3EntryEvaluationDecisionEvent,
-        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
+        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
+        BoltV3ExitOrderSubmissionDecisionEvent,
     },
     bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     config::Config,
@@ -256,6 +258,24 @@ fn query_exit_order_submission_events(
     ParquetDataCatalog::new(path, None, None, None, None)
         .query_custom_data_dynamic(
             BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
+}
+
+fn query_exit_evaluation_events(
+    path: &std::path::Path,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    ParquetDataCatalog::new(path, None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
             Some(&ids),
             None,
             None,
@@ -1446,9 +1466,38 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
     assert_eq!(submissions[0].instrument_id, up);
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
 
-    let events = query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(events.len(), 1);
-    match &events[0] {
+    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    let evaluation_trace_id = match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
+                .expect("BoltV3ExitEvaluationDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("exit_decision"),
+                Some(&serde_json::Value::String("exit".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("exit_decision_reason"),
+                Some(&serde_json::Value::String("forced_flat".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                Some(&serde_json::Value::String("accepted".to_string()))
+            );
+            decoded.decision_trace_id.clone()
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    };
+
+    let submission_events =
+        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(submission_events.len(), 1);
+    match &submission_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
             let decoded = custom
                 .data
@@ -1457,6 +1506,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
                 .expect("BoltV3ExitOrderSubmissionDecisionEvent");
             assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
             assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
                 decoded.event_facts.get("client_order_id"),
                 Some(&serde_json::Value::String(

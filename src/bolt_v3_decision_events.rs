@@ -849,12 +849,17 @@ fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<(
                     "exit_order_mechanical_rejection_reason must be null when exit_order_mechanical_outcome is accepted"
                 );
             }
-            if facts.exit_decision != "hold"
-                || facts.exit_decision_reason != "active_exit_not_defined"
-            {
-                bail!(
-                    "accepted exit_order_mechanical_outcome requires exit_decision hold and exit_decision_reason active_exit_not_defined"
-                );
+            match (
+                facts.exit_decision.as_str(),
+                facts.exit_decision_reason.as_str(),
+            ) {
+                ("hold", "active_exit_not_defined") => {}
+                ("exit", "forced_flat" | "ev_hysteresis" | "fail_closed") => {}
+                _ => {
+                    bail!(
+                        "accepted exit_order_mechanical_outcome requires exit_decision hold/active_exit_not_defined or exit with supported reason"
+                    );
+                }
             }
         }
         "rejected" => {

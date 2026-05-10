@@ -12,6 +12,7 @@ use crate::{
     bolt_v3_decision_events::{
         BoltV3DecisionEventCatalogHandoff, BoltV3EntryEvaluationDecisionEvent,
         BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
+        BoltV3ExitEvaluationDecisionEvent, BoltV3ExitEvaluationFacts,
         BoltV3ExitOrderSubmissionDecisionEvent, BoltV3OrderSubmissionFacts,
     },
 };
@@ -82,6 +83,20 @@ impl BoltV3StrategyDecisionEvidence {
         submit()
     }
 
+    pub fn write_exit_evaluation(
+        &self,
+        decision_trace_id: &str,
+        facts: BoltV3ExitEvaluationFacts,
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    ) -> Result<()> {
+        let common = self.common_context.common_fields(decision_trace_id)?;
+        let event =
+            BoltV3ExitEvaluationDecisionEvent::exit_evaluation(common, facts, ts_event, ts_init)?;
+        self.write_exit_evaluation_event(event)
+            .context("bolt-v3 exit evaluation handoff failed")
+    }
+
     fn write_entry_order_submission(
         &self,
         event: BoltV3EntryOrderSubmissionDecisionEvent,
@@ -110,6 +125,18 @@ impl BoltV3StrategyDecisionEvidence {
         })
         .join()
         .map_err(|_| anyhow!("bolt-v3 entry evaluation handoff thread panicked"))?
+    }
+
+    fn write_exit_evaluation_event(&self, event: BoltV3ExitEvaluationDecisionEvent) -> Result<()> {
+        let handoff = Arc::clone(&self.handoff);
+        thread::spawn(move || {
+            let mut handoff = handoff
+                .lock()
+                .map_err(|_| anyhow!("bolt-v3 decision-evidence handoff mutex poisoned"))?;
+            handoff.write_exit_evaluation(event)
+        })
+        .join()
+        .map_err(|_| anyhow!("bolt-v3 exit evaluation handoff thread panicked"))?
     }
 
     fn write_exit_order_submission(

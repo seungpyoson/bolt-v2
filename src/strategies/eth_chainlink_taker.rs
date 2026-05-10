@@ -29,7 +29,9 @@ use serde_json::json;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_events::{BoltV3EntryEvaluationFacts, BoltV3OrderSubmissionFacts},
+    bolt_v3_decision_events::{
+        BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3OrderSubmissionFacts,
+    },
     platform::{
         polymarket_catalog::polymarket_instrument_id,
         reference::ReferenceSnapshot,
@@ -2913,6 +2915,67 @@ impl EthChainlinkTaker {
         }
     }
 
+    fn write_bolt_v3_exit_evaluation(
+        &mut self,
+        now_ms: u64,
+        decision: &ExitSubmissionDecision,
+    ) -> Result<()> {
+        let Some(evidence) = self.context.bolt_v3_decision_evidence.clone() else {
+            return Ok(());
+        };
+        let Some(facts) = self.exit_evaluation_decision_facts(decision)? else {
+            return Ok(());
+        };
+        let decision_trace_id = self.active_decision_trace_id();
+        let ts = unix_nanos_from_millis(now_ms)?;
+        evidence.write_exit_evaluation(&decision_trace_id, facts, ts, ts)
+    }
+
+    fn exit_evaluation_decision_facts(
+        &self,
+        decision: &ExitSubmissionDecision,
+    ) -> Result<Option<BoltV3ExitEvaluationFacts>> {
+        if decision.blocked_reason.is_some() {
+            return Ok(None);
+        }
+
+        let Some(exit_decision) = decision.evaluation.exit_decision else {
+            return Ok(None);
+        };
+        let Some(exit_decision_reason) =
+            exit_decision_reason_as_decision_fact(exit_decision, &decision.forced_flat_reasons)
+        else {
+            return Ok(None);
+        };
+
+        let position_quantity = self
+            .managed_position()
+            .map(|managed| managed.position.quantity.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("exit evaluation event requires managed position"))?;
+        let exit_quantity = decision
+            .quantity
+            .map(|quantity| quantity.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("exit evaluation event requires exit quantity"))?;
+        let open_exit_order_quantity = 0.0;
+        let uncovered_position_quantity = (position_quantity - open_exit_order_quantity).max(0.0);
+
+        Ok(Some(BoltV3ExitEvaluationFacts {
+            authoritative_position_quantity: Some(position_quantity),
+            authoritative_sellable_quantity: Some(exit_quantity),
+            open_exit_order_quantity: Some(open_exit_order_quantity),
+            uncovered_position_quantity: Some(uncovered_position_quantity),
+            exit_order_mechanical_outcome: "accepted".to_string(),
+            exit_order_mechanical_rejection_reason: None,
+            exit_decision: "exit".to_string(),
+            exit_decision_reason: exit_decision_reason.to_string(),
+            archetype_metrics: json!({
+                "hold_ev_bps": decision.evaluation.hold_ev_bps,
+                "exit_ev_bps": decision.evaluation.exit_ev_bps,
+                "forced_flat_reasons": forced_flat_reasons_as_decision_facts(&decision.forced_flat_reasons),
+            }),
+        }))
+    }
+
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         let mut decision = self.exit_submission_decision_at(now_ms);
 
@@ -2959,6 +3022,7 @@ impl EthChainlinkTaker {
             None,
             Some(client_order_id),
         );
+        self.write_bolt_v3_exit_evaluation(now_ms, &decision)?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         let Some(managed_position) = self.managed_position().cloned() else {
@@ -4532,6 +4596,35 @@ fn outcome_side_as_decision_fact(outcome_side: OutcomeSide) -> &'static str {
     match outcome_side {
         OutcomeSide::Up => "up",
         OutcomeSide::Down => "down",
+    }
+}
+
+fn forced_flat_reason_as_decision_fact(reason: &ForcedFlatReason) -> &'static str {
+    match reason {
+        ForcedFlatReason::Freeze => "freeze",
+        ForcedFlatReason::StaleChainlink => "stale_reference_quote",
+        ForcedFlatReason::ThinBook => "thin_book",
+        ForcedFlatReason::MetadataMismatch => "metadata_mismatch",
+        ForcedFlatReason::FastVenueIncoherent => "fast_venue_incoherent",
+    }
+}
+
+fn forced_flat_reasons_as_decision_facts(reasons: &[ForcedFlatReason]) -> Vec<&'static str> {
+    reasons
+        .iter()
+        .map(forced_flat_reason_as_decision_fact)
+        .collect()
+}
+
+fn exit_decision_reason_as_decision_fact(
+    decision: ExitDecision,
+    forced_flat_reasons: &[ForcedFlatReason],
+) -> Option<&'static str> {
+    match decision {
+        ExitDecision::Exit if !forced_flat_reasons.is_empty() => Some("forced_flat"),
+        ExitDecision::Exit => Some("ev_hysteresis"),
+        ExitDecision::ExitFailClosed => Some("fail_closed"),
+        ExitDecision::Hold => None,
     }
 }
 

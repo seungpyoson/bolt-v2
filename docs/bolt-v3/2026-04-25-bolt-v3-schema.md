@@ -40,8 +40,8 @@ The root file owns:
 - entity-level risk settings
 - logging configuration
 - persistence paths
-- keyed venue definitions
-- venue secret references
+- keyed client definitions
+- client secret references
 - explicit strategy file list
 
 The root file does not own:
@@ -58,7 +58,7 @@ The strategy file owns:
 
 - strategy instance identity
 - strategy archetype
-- venue reference
+- client reference
 - target definition
 - target retry/block timing
 - optional reference data declarations
@@ -67,8 +67,8 @@ The strategy file owns:
 
 The strategy file does not own:
 
-- venue client construction
-- venue credentials
+- client construction
+- client credentials
 - process-wide logging settings
 - process-wide state paths
 - process-wide Nautilus runtime settings
@@ -76,7 +76,7 @@ The strategy file does not own:
 ## 4. Root File: Candidate Schema
 
 This is a structural example, not a default configuration.
-Values such as paths, SSM parameter names, account identifiers, wallet addresses, and venue keys must be operator-owned TOML values in a real deploy.
+Values such as paths, SSM parameter names, account identifiers, wallet addresses, and client keys must be operator-owned TOML values in a real deploy.
 
 ```toml
 schema_version = 1
@@ -183,10 +183,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
 base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
@@ -197,7 +197,7 @@ subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_mar
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
 signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
 funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
@@ -210,23 +210,23 @@ retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_de
 retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 
-[venues.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
-[venues.binance_reference]
-kind = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[venues.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
-[venues.binance_reference.secrets]
+[clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
 api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 ```
@@ -582,34 +582,34 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
 - used by the Rust Amazon Web Services Systems Manager client
 - no implicit region fallback
 
-### `[venues.<identifier>]`
+### `[clients.<client_id>]`
 
-#### Venue key
+#### Client ID
 
-- type: keyed identifier
-- required: yes for every configured venue
+- type: NT ClientId string
+- required: yes for every configured client
 - examples:
   - `polymarket_main`
   - `binance_reference`
 
-The key is a configuration reference name.
-It is not the trader identifier.
+The key is the NT client ID passed to LiveNodeBuilder client registration.
+It is not the NT Venue.
 
-#### `kind`
+#### `venue`
 
 - type: string enum
 - required: yes
 - current allowed values:
-  - `polymarket`
-  - `binance`
+  - `POLYMARKET`
+  - `BINANCE`
 
-### `[venues.<identifier>.data]`
+### `[clients.<client_id>.data]`
 
 Presence of `[data]` means a data client is configured.
 
 #### Common rule
 
-- any field here is owned by venue-client construction, not by strategies
+- any field here is owned by client construction, not by strategies
 
 #### Polymarket data fields
 
@@ -665,17 +665,17 @@ Presence of `[data]` means a data client is configured.
 
 No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
 
-For current reference-data venues other than Polymarket, each venue kind defines its own allowed `[data]` field set.
-Unknown fields fail validation against the venue-kind-specific set in Section 8.
+For current reference-data clients other than Polymarket, each venue defines its own allowed `[data]` field set.
+Unknown fields fail validation against the venue-specific set in Section 8.
 
-### `[venues.<identifier>.execution]`
+### `[clients.<client_id>.execution]`
 
 Presence of `[execution]` means an execution client is configured.
 
 #### `account_id`
 
 - type: string
-- required: yes for execution-capable venues
+- required: yes for execution-capable clients
 
 Meaning:
 
@@ -699,7 +699,7 @@ bolt parses this string enum and maps it to the current pinned Nautilus/Polymark
 - required: yes for Polymarket execution when `signature_type` is `poly_proxy` or `poly_gnosis_safe`
 - allowed absent for `signature_type = "eoa"`
 - this is a public address, not a secret value
-- it lives in the root venue execution config, not in `[secrets]`
+- it lives in the root client execution config, not in `[secrets]`
 - zero address is invalid when the selected signature path requires a real funder wallet
 
 #### `max_retries`
@@ -732,10 +732,10 @@ The current schema also requires these pinned adapter fields to be explicit:
 - `base_url_data_api`
 - `http_timeout_seconds`
 
-### `[venues.<identifier>.secrets]`
+### `[clients.<client_id>.secrets]`
 
-Presence of `[secrets]` means the venue requires credential resolution.
-The block must be consumed by an adapter in the same venue:
+Presence of `[secrets]` means the client requires credential resolution.
+The block must be consumed by a data or execution block in the same client:
 
 - Polymarket `[secrets]` is allowed only when `[execution]` is present
 - Binance `[secrets]` is allowed only when `[data]` is present
@@ -806,7 +806,7 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
-venue = "polymarket_main"
+execution_client_id = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
@@ -819,7 +819,7 @@ retry_interval_seconds = 5
 blocked_after_seconds = 60
 
 [reference_data.primary]
-adapter_instance = "binance_reference"
+data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]
@@ -889,11 +889,11 @@ Nautilus strategy identity mapping for live trading:
   - `netting`
 - maps directly to Nautilus `StrategyConfig.oms_type`
 
-#### `venue`
+#### `client_id`
 
 - type: keyed reference string
 - required: yes
-- must reference a root venue block that includes `[execution]`
+- must reference a root client block that includes `[execution]`
 
 ### `[target]`
 
@@ -985,7 +985,7 @@ If `market_selection_type = "rotating_market"`:
 These fields live in the strategy file because they control that strategy's market-selection behavior.
 The schema does not hardcode `BTC`, `ETH`, or `300` as the only supported `updown` target values; those may appear in examples only.
 
-The runtime projection of the strategy-file `[target]` block plus the top-level `venue` field into `configured_updown_target` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 6.1.
+The runtime projection of the strategy-file `[target]` block plus the top-level `client_id` field into `configured_updown_target` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 6.1.
 
 ### `[reference_data.<name>]`
 
@@ -993,13 +993,13 @@ This section is optional.
 
 If present:
 
-- each block references a root venue that includes `[data]`
+- each block references a root client that includes `[data]`
 - each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
 - for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
 Fields:
 
-#### `venue`
+#### `client_id`
 
 - type: keyed reference string
 - required
@@ -1118,11 +1118,11 @@ Must fail if:
 - any unknown field is present
 - a strategy file path is duplicated
 - a referenced file does not exist
-- a venue reference points to a missing venue
-- a strategy `venue` points to a data-only venue
-- a reference-data venue points to a venue without `[data]`
-- more than one `[venues.<identifier>]` block declares the same `kind` in the current one-venue-per-kind slice
-- a `[secrets]` block is present without the same venue-kind's consuming adapter block
+- a client reference points to a missing client
+- a strategy `execution_client_id` points to a data-only client
+- a reference-data client points to a client without `[data]`
+- more than one `[clients.<client_id>]` block declares the same `venue` in the current one-client-per-venue slice
+- a `[secrets]` block is present without the same venue's consuming client block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
 - two listed strategy files declare the same `order_id_tag`
@@ -1135,7 +1135,7 @@ Must fail if:
 - `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
 - `target.cadence_seconds` is not positive or is not divisible by `60`
 - `target.cadence_seconds` does not have a runtime-contract-defined slug-token mapping
-- a field appears under `[venues.<identifier>.data]` or `[venues.<identifier>.execution]` that is not allowed for that venue `kind`
+- a field appears under `[clients.<client_id>.data]` or `[clients.<client_id>.execution]` that is not allowed for that `venue`
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
@@ -1148,7 +1148,7 @@ Live validation behavior, fatal-vs-warning classification, and the full failure-
 ## 9. Canonical Example: Minimal Live-Trading Pair
 
 This example is structural.
-It is not live-valid until the operator supplies real paths, SSM parameters, account identifiers, wallet addresses, a writable catalog directory, and venue credentials.
+It is not live-valid until the operator supplies real paths, SSM parameters, account identifiers, wallet addresses, a writable catalog directory, and client credentials.
 
 ### Root
 
@@ -1257,10 +1257,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
 base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
@@ -1271,7 +1271,7 @@ subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_mar
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
 signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
 funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
@@ -1284,23 +1284,23 @@ retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_de
 retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 
-[venues.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
-[venues.binance_reference]
-kind = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[venues.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
-[venues.binance_reference.secrets]
+[clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
 api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 ```
@@ -1313,7 +1313,7 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
-venue = "polymarket_main"
+execution_client_id = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
@@ -1326,7 +1326,7 @@ retry_interval_seconds = 5
 blocked_after_seconds = 60
 
 [reference_data.primary]
-adapter_instance = "binance_reference"
+data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]

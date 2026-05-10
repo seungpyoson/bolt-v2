@@ -3,7 +3,7 @@ strategy_instance_id = "ETHCHAINLINKTAKER-V3-001"
 strategy_archetype = "eth_chainlink_taker"
 order_id_tag = "001"
 oms_type = "netting"
-adapter_instance = "polymarket_main"
+execution_client_id = "polymarket_main"
 
 [target]
 configured_target_id = "eth_updown_5m"

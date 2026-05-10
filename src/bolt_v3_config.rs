@@ -5,7 +5,7 @@
 //!
 //! This module is intentionally a no-trade boundary. It only parses and
 //! validates configuration; it does not register strategies, build
-//! adapter instances, perform market selection, or construct orders.
+//! clients, perform market selection, or construct orders.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -28,7 +28,7 @@ pub struct BoltV3RootConfig {
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
     pub aws: AwsBlock,
-    pub adapter_instances: BTreeMap<String, AdapterInstanceBlock>,
+    pub clients: BTreeMap<String, ClientBlock>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
@@ -210,8 +210,8 @@ pub struct AwsBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct AdapterInstanceBlock {
-    pub adapter_venue: AdapterVenueKey,
+pub struct ClientBlock {
+    pub venue: VenueKey,
     #[serde(default)]
     pub data: Option<toml::Value>,
     #[serde(default)]
@@ -222,9 +222,9 @@ pub struct AdapterInstanceBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(transparent)]
-pub struct AdapterVenueKey(String);
+pub struct VenueKey(String);
 
-impl AdapterVenueKey {
+impl VenueKey {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -238,7 +238,7 @@ pub struct BoltV3StrategyConfig {
     pub strategy_archetype: StrategyArchetypeKey,
     pub order_id_tag: String,
     pub oms_type: OmsType,
-    pub adapter_instance: String,
+    pub execution_client_id: String,
     /// Raw `[target]` envelope. The strategy envelope keeps the TOML
     /// field name `target` but its Rust type is a generic raw-TOML
     /// container so target-shape fields live in the per-family binding
@@ -271,7 +271,7 @@ pub enum OmsType {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
-    pub adapter_instance: String,
+    pub data_client_id: String,
     pub instrument_id: String,
 }
 
@@ -414,13 +414,13 @@ mod tests {
         assert_eq!(root.schema_version, 1);
         assert_eq!(root.trader_id, "BOLT-001");
         assert_eq!(root.runtime.mode, RuntimeMode::Live);
-        assert!(root.adapter_instances.contains_key("polymarket_main"));
-        assert!(root.adapter_instances.contains_key("binance_reference"));
-        let polymarket = &root.adapter_instances["polymarket_main"];
-        assert_eq!(polymarket.adapter_venue.as_str(), "polymarket");
+        assert!(root.clients.contains_key("polymarket_main"));
+        assert!(root.clients.contains_key("binance_reference"));
+        let polymarket = &root.clients["polymarket_main"];
+        assert_eq!(polymarket.venue.as_str(), "POLYMARKET");
         assert!(polymarket.execution.is_some());
-        let binance = &root.adapter_instances["binance_reference"];
-        assert_eq!(binance.adapter_venue.as_str(), "binance");
+        let binance = &root.clients["binance_reference"];
+        assert_eq!(binance.venue.as_str(), "BINANCE");
         assert!(binance.execution.is_none());
     }
 
@@ -428,7 +428,7 @@ mod tests {
     fn parses_minimal_strategy_block() {
         let strategy: BoltV3StrategyConfig = toml::from_str(minimal_strategy_toml()).unwrap();
         assert!(!strategy.strategy_archetype.as_str().is_empty());
-        assert_eq!(strategy.adapter_instance, "polymarket_main");
+        assert_eq!(strategy.execution_client_id, "polymarket_main");
         // The strategy envelope keeps `target` as raw TOML. Verify the
         // raw envelope here only at the structural level.
         let target_table = strategy

@@ -57,7 +57,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     let target = &plan.updown_targets[0];
     assert_eq!(target.strategy_instance_id, "bitcoin_updown_main");
     assert_eq!(target.configured_target_id, "btc_updown_5m");
-    assert_eq!(target.adapter_instance_key, "polymarket_main");
+    assert_eq!(target.client_id_key, "polymarket_main");
     assert_eq!(target.underlying_asset, "BTC");
     assert_eq!(target.cadence_seconds, 300);
     assert_eq!(target.cadence_slug_token, "5m");
@@ -145,7 +145,7 @@ fn candidates_for_target_btc_5m_yields_current_and_next_slugs() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "bitcoin_updown_main".to_string(),
         configured_target_id: "btc_updown_5m".to_string(),
-        adapter_instance_key: "polymarket_main".to_string(),
+        client_id_key: "polymarket_main".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_seconds: 300,
         cadence_slug_token: "5m".to_string(),
@@ -167,7 +167,7 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "bitcoin_updown_main".to_string(),
         configured_target_id: "btc_updown_5m".to_string(),
-        adapter_instance_key: "polymarket_main".to_string(),
+        client_id_key: "polymarket_main".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_seconds: 300,
         cadence_slug_token: "5m".to_string(),
@@ -328,7 +328,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let zero = &plan.updown_targets[0];
     assert_eq!(zero.strategy_instance_id, "zeta_strategy_main");
     assert_eq!(zero.configured_target_id, "ltc_updown_15m");
-    assert_eq!(zero.adapter_instance_key, "polymarket_main");
+    assert_eq!(zero.client_id_key, "polymarket_main");
     assert_eq!(zero.underlying_asset, "LTC");
     assert_eq!(zero.cadence_seconds, 900);
     assert_eq!(zero.cadence_slug_token, "15m");
@@ -336,7 +336,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let one = &plan.updown_targets[1];
     assert_eq!(one.strategy_instance_id, "alpha_strategy_main");
     assert_eq!(one.configured_target_id, "xrp_updown_5m");
-    assert_eq!(one.adapter_instance_key, "polymarket_main");
+    assert_eq!(one.client_id_key, "polymarket_main");
     assert_eq!(one.underlying_asset, "XRP");
     assert_eq!(one.cadence_seconds, 300);
     assert_eq!(one.cadence_slug_token, "5m");
@@ -344,7 +344,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let two = &plan.updown_targets[2];
     assert_eq!(two.strategy_instance_id, "mike_strategy_main");
     assert_eq!(two.configured_target_id, "btc_updown_1h");
-    assert_eq!(two.adapter_instance_key, "polymarket_main");
+    assert_eq!(two.client_id_key, "polymarket_main");
     assert_eq!(two.underlying_asset, "BTC");
     assert_eq!(two.cadence_seconds, 3600);
     assert_eq!(two.cadence_slug_token, "1h");
@@ -427,7 +427,7 @@ fn candidates_for_target_propagates_period_pair_overflow() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "bitcoin_updown_main".to_string(),
         configured_target_id: "btc_updown_5m".to_string(),
-        adapter_instance_key: "polymarket_main".to_string(),
+        client_id_key: "polymarket_main".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_seconds: 300,
         cadence_slug_token: "5m".to_string(),
@@ -718,7 +718,7 @@ fn config_module_must_not_own_provider_specific_config_block_types() {
     // provider binding modules. The config module owns the root and
     // strategy envelope plus minimal dispatch identifiers like
     // `VenueKind::Polymarket` / `VenueKind::Binance`; concrete
-    // `[adapter_instances.<name>.{data,execution,secrets}]` block shapes belong to
+    // `[clients.<name>.{data,execution,secrets}]` block shapes belong to
     // a per-provider binding (`crate::bolt_v3_providers::polymarket` or
     // `crate::bolt_v3_providers::binance`), not to core config. The
     // type names forbidden below pin policy *ownership* — none of these
@@ -843,7 +843,7 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
 }
 
 #[test]
-fn validate_module_must_not_own_adapter_venue_validation() {
+fn validate_module_must_not_own_venue_validation() {
     // Bolt-v3 startup validation must stay provider-neutral and
     // dispatch provider-specific venue-block validation out to the
     // per-provider binding modules. The validation policy for
@@ -855,7 +855,7 @@ fn validate_module_must_not_own_adapter_venue_validation() {
     // binding modules under `crate::bolt_v3_providers`, not to core
     // validation. Validate.rs may still hand the venue block to a
     // family-agnostic provider dispatcher
-    // (`bolt_v3_providers::validate_adapter_instance_block`) for routing; the
+    // (`bolt_v3_providers::validate_client_id_block`) for routing; the
     // substrings forbidden below pin policy *ownership* (function
     // definitions and provider-shaped block types referenced by
     // those validators), not the dispatch call itself.
@@ -895,7 +895,7 @@ fn validate_module_must_not_own_adapter_venue_validation() {
              provider-shaped block types they consume) into \
              src/bolt_v3_providers/polymarket.rs and src/bolt_v3_providers/binance.rs; \
              have validate.rs dispatch into the provider validator via \
-             `bolt_v3_providers::validate_adapter_instance_block` instead."
+             `bolt_v3_providers::validate_client_id_block` instead."
         );
     }
 }

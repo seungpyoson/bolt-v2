@@ -36,29 +36,29 @@ pub enum BoltV3StrategyRegistrationError {
         strategy_file: String,
         strategy_archetype: String,
     },
-    MissingAdapterInstance {
+    MissingClient {
         strategy_file: String,
-        adapter_instance: String,
+        client_id: String,
     },
-    UnsupportedAdapterVenue {
+    UnsupportedVenue {
         strategy_file: String,
-        adapter_instance: String,
-        adapter_venue: String,
+        client_id: String,
+        venue: String,
     },
     MissingExecutionBlock {
         strategy_file: String,
-        adapter_instance: String,
+        client_id: String,
     },
     MissingProviderSecrets {
         strategy_file: String,
-        adapter_instance: String,
+        client_id: String,
     },
     InvalidParameters {
         reason: String,
     },
     FeeProviderBuild {
         strategy_file: String,
-        adapter_instance: String,
+        client_id: String,
         source: String,
     },
     AddStrategy {
@@ -77,43 +77,43 @@ impl std::fmt::Display for BoltV3StrategyRegistrationError {
                 f,
                 "strategy `{strategy_file}` uses unsupported strategy_archetype `{strategy_archetype}`"
             ),
-            Self::MissingAdapterInstance {
+            Self::MissingClient {
                 strategy_file,
-                adapter_instance,
+                client_id,
             } => write!(
                 f,
-                "strategy `{strategy_file}` references missing adapter_instance `{adapter_instance}`"
+                "strategy `{strategy_file}` references missing client_id `{client_id}`"
             ),
-            Self::UnsupportedAdapterVenue {
+            Self::UnsupportedVenue {
                 strategy_file,
-                adapter_instance,
-                adapter_venue,
+                client_id,
+                venue,
             } => write!(
                 f,
-                "strategy `{strategy_file}` references adapter_instance `{adapter_instance}` with unsupported adapter_venue `{adapter_venue}`"
+                "strategy `{strategy_file}` references client_id `{client_id}` with unsupported venue `{venue}`"
             ),
             Self::MissingExecutionBlock {
                 strategy_file,
-                adapter_instance,
+                client_id,
             } => write!(
                 f,
-                "strategy `{strategy_file}` references adapter_instance `{adapter_instance}`, but that adapter instance has no execution block"
+                "strategy `{strategy_file}` references client_id `{client_id}`, but that client has no execution block"
             ),
             Self::MissingProviderSecrets {
                 strategy_file,
-                adapter_instance,
+                client_id,
             } => write!(
                 f,
-                "strategy `{strategy_file}` references adapter_instance `{adapter_instance}`, but provider secrets are missing"
+                "strategy `{strategy_file}` references client_id `{client_id}`, but provider secrets are missing"
             ),
             Self::InvalidParameters { reason } => write!(f, "{reason}"),
             Self::FeeProviderBuild {
                 strategy_file,
-                adapter_instance,
+                client_id,
                 source,
             } => write!(
                 f,
-                "strategy `{strategy_file}` failed to build fee provider for adapter_instance `{adapter_instance}`: {source}"
+                "strategy `{strategy_file}` failed to build fee provider for client_id `{client_id}`: {source}"
             ),
             Self::AddStrategy {
                 strategy_file,

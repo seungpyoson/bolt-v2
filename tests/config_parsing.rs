@@ -700,27 +700,15 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(loaded.root.trader_id, "BOLT-001");
     assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
     assert_eq!(
-        loaded.root.adapter_instances["polymarket_main"]
-            .adapter_venue
-            .as_str(),
-        "polymarket"
+        loaded.root.clients["polymarket_main"].venue.as_str(),
+        "POLYMARKET"
     );
     assert_eq!(
-        loaded.root.adapter_instances["binance_reference"]
-            .adapter_venue
-            .as_str(),
-        "binance"
+        loaded.root.clients["binance_reference"].venue.as_str(),
+        "BINANCE"
     );
-    assert!(
-        loaded.root.adapter_instances["polymarket_main"]
-            .execution
-            .is_some()
-    );
-    assert!(
-        loaded.root.adapter_instances["binance_reference"]
-            .execution
-            .is_none()
-    );
+    assert!(loaded.root.clients["polymarket_main"].execution.is_some());
+    assert!(loaded.root.clients["binance_reference"].execution.is_none());
 
     assert_eq!(loaded.strategies.len(), 1);
     let strategy = &loaded.strategies[0].config;
@@ -755,13 +743,13 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     );
     assert!(strategy.reference_data.contains_key("primary"));
     assert_eq!(
-        strategy.reference_data["primary"].adapter_instance,
+        strategy.reference_data["primary"].data_client_id,
         "binance_reference"
     );
 }
 
 #[test]
-fn bolt_v3_reference_data_uses_adapter_instance_field() {
+fn bolt_v3_reference_data_uses_data_client_id_field() {
     use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
 
     let fixture = std::fs::read_to_string(support::repo_path(
@@ -769,8 +757,8 @@ fn bolt_v3_reference_data_uses_adapter_instance_field() {
     ))
     .expect("strategy fixture should be readable");
     assert!(
-        fixture.contains("adapter_instance = \"binance_reference\""),
-        "reference_data.primary must use adapter_instance in fixture"
+        fixture.contains("data_client_id = \"binance_reference\""),
+        "reference_data.primary must use data_client_id in fixture"
     );
     assert!(
         !fixture.contains("venue = \"binance_reference\""),
@@ -780,7 +768,7 @@ fn bolt_v3_reference_data_uses_adapter_instance_field() {
     let strategy: BoltV3StrategyConfig =
         toml::from_str(&fixture).expect("strategy fixture should parse");
     assert_eq!(
-        strategy.reference_data["primary"].adapter_instance,
+        strategy.reference_data["primary"].data_client_id,
         "binance_reference"
     );
 }
@@ -794,7 +782,7 @@ fn bolt_v3_reference_data_rejects_legacy_venue_field() {
     ))
     .expect("strategy fixture should be readable")
     .replace(
-        "adapter_instance = \"binance_reference\"",
+        "data_client_id = \"binance_reference\"",
         "venue = \"binance_reference\"",
     );
 
@@ -808,7 +796,7 @@ fn bolt_v3_reference_data_rejects_legacy_venue_field() {
 }
 
 #[test]
-fn invalid_reference_data_adapter_instance_error_names_field() {
+fn invalid_reference_data_client_id_error_names_field() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -824,8 +812,8 @@ fn invalid_reference_data_adapter_instance_error_names_field() {
     ))
     .expect("strategy fixture should be readable")
     .replace(
-        "adapter_instance = \"binance_reference\"",
-        "adapter_instance = \"missing_reference\"",
+        "data_client_id = \"binance_reference\"",
+        "data_client_id = \"missing_reference\"",
     );
     let strategy: BoltV3StrategyConfig =
         toml::from_str(&mutated).expect("mutated strategy should parse");
@@ -838,9 +826,9 @@ fn invalid_reference_data_adapter_instance_error_names_field() {
     let messages = validate_strategies(&root, &loaded);
     assert!(
         messages.iter().any(|m| m.contains(
-            "reference_data.primary.adapter_instance `missing_reference` does not match any [adapter_instances.<id>] block"
+            "reference_data.primary.data_client_id `missing_reference` does not match any [clients.<id>] block"
         )),
-        "expected adapter_instance validation error, got: {messages:#?}"
+        "expected data_client_id validation error, got: {messages:#?}"
     );
 }
 
@@ -919,7 +907,7 @@ fn rejects_forbidden_polymarket_env_vars_before_client_build() {
         match error {
             BoltV3LiveNodeError::ForbiddenEnv(report) => {
                 assert_eq!(report.findings.len(), 1, "{report}");
-                assert_eq!(report.findings[0].adapter_instance_key, "polymarket_main");
+                assert_eq!(report.findings[0].client_id_key, "polymarket_main");
                 assert_eq!(report.findings[0].env_var, forbidden);
             }
             other => panic!("expected ForbiddenEnv error, got {other:?}"),
@@ -928,7 +916,7 @@ fn rejects_forbidden_polymarket_env_vars_before_client_build() {
 }
 
 #[test]
-fn rejects_polymarket_execution_venue_missing_secrets_block() {
+fn rejects_polymarket_execution_client_id_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
@@ -1033,10 +1021,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[adapter_instances.polymarket_main]
-adapter_venue = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[adapter_instances.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
 funder_address = "0x1111111111111111111111111111111111111111"
@@ -1057,12 +1045,12 @@ ack_timeout_seconds = 5
         messages.iter().any(|m| m.contains("polymarket_main")
             && m.contains("[execution]")
             && m.contains("required [secrets] block")),
-        "expected missing-secrets failure for polymarket execution venue, got: {messages:#?}"
+        "expected missing-secrets failure for polymarket execution client, got: {messages:#?}"
     );
 }
 
 #[test]
-fn rejects_binance_reference_data_venue_missing_secrets_block() {
+fn rejects_binance_reference_data_client_id_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
@@ -1167,10 +1155,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[adapter_instances.binance_reference]
-adapter_venue = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[adapter_instances.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://binance.test.invalid/http"
@@ -1185,12 +1173,12 @@ instrument_status_poll_seconds = 3600
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[data]")
             && m.contains("required [secrets] block")),
-        "expected missing-secrets failure for binance reference-data venue, got: {messages:#?}"
+        "expected missing-secrets failure for binance reference-data client, got: {messages:#?}"
     );
 }
 
 #[test]
-fn rejects_polymarket_venue_numeric_fields_at_zero() {
+fn rejects_polymarket_client_id_numeric_fields_at_zero() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
@@ -1295,10 +1283,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[adapter_instances.polymarket_main]
-adapter_venue = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[adapter_instances.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 base_url_gamma = "https://gamma-api.polymarket.com"
@@ -1309,7 +1297,7 @@ subscribe_new_markets = false
 update_instruments_interval_minutes = 0
 websocket_max_subscriptions_per_connection = 0
 
-[adapter_instances.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
 funder_address = "0x1111111111111111111111111111111111111111"
@@ -1322,7 +1310,7 @@ retry_delay_initial_milliseconds = 0
 retry_delay_max_milliseconds = 0
 ack_timeout_seconds = 0
 
-[adapter_instances.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
@@ -1333,15 +1321,15 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
         toml::from_str(toml_text).expect("polymarket bounds TOML should parse");
     let messages = validate_root_only(&root);
     let expected = [
-        "adapter_instances.polymarket_main.data.http_timeout_seconds must be a positive integer",
-        "adapter_instances.polymarket_main.data.ws_timeout_seconds must be a positive integer",
-        "adapter_instances.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
-        "adapter_instances.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
-        "adapter_instances.polymarket_main.execution.http_timeout_seconds must be a positive integer",
-        "adapter_instances.polymarket_main.execution.max_retries must be a positive integer",
-        "adapter_instances.polymarket_main.execution.retry_delay_initial_milliseconds must be a positive integer",
-        "adapter_instances.polymarket_main.execution.retry_delay_max_milliseconds must be a positive integer",
-        "adapter_instances.polymarket_main.execution.ack_timeout_seconds must be a positive integer",
+        "clients.polymarket_main.data.http_timeout_seconds must be a positive integer",
+        "clients.polymarket_main.data.ws_timeout_seconds must be a positive integer",
+        "clients.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
+        "clients.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
+        "clients.polymarket_main.execution.http_timeout_seconds must be a positive integer",
+        "clients.polymarket_main.execution.max_retries must be a positive integer",
+        "clients.polymarket_main.execution.retry_delay_initial_milliseconds must be a positive integer",
+        "clients.polymarket_main.execution.retry_delay_max_milliseconds must be a positive integer",
+        "clients.polymarket_main.execution.ack_timeout_seconds must be a positive integer",
     ];
     for needle in expected {
         assert!(
@@ -1683,7 +1671,7 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "[adapter_instances.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
+        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
         "",
     );
     let root: BoltV3RootConfig =
@@ -1813,10 +1801,10 @@ fn rejects_binance_data_zero_instrument_status_poll_seconds() {
 }
 
 #[test]
-fn rejects_polymarket_data_only_venue_with_secrets_block() {
+fn rejects_polymarket_data_only_client_id_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let execution_block = "[adapter_instances.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
+    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
     let mutated = replace_in_fixture_root(execution_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
@@ -1849,20 +1837,21 @@ fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
 }
 
 #[test]
-fn rejects_more_than_one_polymarket_venue_in_current_slice() {
+fn rejects_more_than_one_polymarket_client_id_in_current_slice() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_venue = "\n\n[adapter_instances.polymarket_secondary]\nadapter_venue = \"polymarket\"\n\n[adapter_instances.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[adapter_instances.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let extra_client_id = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
-    let mutated = format!("{fixture}{extra_venue}");
+    let mutated = format!("{fixture}{extra_client_id}");
     let root: BoltV3RootConfig =
-        toml::from_str(&mutated).expect("two-polymarket-venues fixture should parse");
+        toml::from_str(&mutated).expect("two-polymarket-clients fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages.iter().any(|m| m
-            .contains("at most one [adapter_instances.<id>] block per adapter_venue")
-            && m.contains("polymarket")),
-        "expected one-venue-per-kind validation error, got: {messages:#?}"
+        messages
+            .iter()
+            .any(|m| m.contains("at most one [clients.<id>] block per venue")
+                && m.contains("POLYMARKET")),
+        "expected one-client-per-venue validation error, got: {messages:#?}"
     );
 }

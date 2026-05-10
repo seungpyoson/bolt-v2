@@ -1,16 +1,16 @@
-//! Per-provider binding root for bolt-v3 adapter-instance config
+//! Per-provider binding root for bolt-v3 client config
 //! block shapes and per-instance startup-validation policy.
 //!
 //! Core config in `crate::bolt_v3_config` owns the root and strategy
-//! envelopes plus raw adapter-venue keys. Concrete adapter-venue key
-//! literals and `[adapter_instances.<name>.{data,execution,secrets}]`
+//! envelopes plus raw venue keys. Concrete venue key
+//! literals and `[clients.<name>.{data,execution,secrets}]`
 //! block shapes live in
 //! per-provider binding modules under this root.
 //!
 //! This module also owns the family-agnostic dispatch surface that
 //! core startup validation in `crate::bolt_v3_validate` calls into:
-//! every `[adapter_instances.<id>]` block is routed here, the
-//! adapter-venue key is read once, and the matching per-provider
+//! every `[clients.<id>]` block is routed here, the
+//! venue key is read once, and the matching per-provider
 //! validator owns the rest of the structural instance-shape rules.
 //! Provider-neutral helpers used by more than one provider validator
 //! (today: `crate::bolt_v3_validate::validate_ssm_parameter_path`)
@@ -22,18 +22,18 @@ pub mod polymarket;
 use std::{any::Any, fmt, sync::Arc};
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterInstanceConfig, BoltV3AdapterMappingError, BoltV3UpdownNowFn},
-    bolt_v3_config::{AdapterInstanceBlock, BoltV3RootConfig},
+    bolt_v3_adapters::{BoltV3ClientConfig, BoltV3ClientMappingError, BoltV3UpdownNowFn},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
     bolt_v3_market_families::updown::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
 };
 
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
-    fn provider_key(&self) -> &'static str;
+    fn venue_key(&self) -> &'static str;
     fn as_any(&self) -> &dyn Any;
 }
 
-pub type ResolvedVenueSecrets = Arc<dyn ProviderResolvedSecrets>;
+pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
 
 pub trait SsmSecretResolver {
     fn resolve_secret(&mut self, region: &str, ssm_path: &str) -> Result<String, String>;
@@ -50,15 +50,15 @@ where
 }
 
 pub struct ProviderSecretResolveContext<'a> {
-    pub adapter_instance_key: &'a str,
+    pub client_id_key: &'a str,
     pub region: &'a str,
-    pub adapter_instance: &'a AdapterInstanceBlock,
+    pub client_id: &'a ClientBlock,
 }
 
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
-    pub adapter_instance_key: &'a str,
-    pub adapter_instance: &'a AdapterInstanceBlock,
+    pub client_id_key: &'a str,
+    pub client_id: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3UpdownNowFn,
@@ -78,10 +78,10 @@ impl ProviderCredentialedBlock {
         }
     }
 
-    fn is_present(self, adapter_instance: &AdapterInstanceBlock) -> bool {
+    fn is_present(self, client_id: &ClientBlock) -> bool {
         match self {
-            Self::Data => adapter_instance.data.is_some(),
-            Self::Execution => adapter_instance.execution.is_some(),
+            Self::Data => client_id.data.is_some(),
+            Self::Execution => client_id.execution.is_some(),
         }
     }
 }
@@ -94,7 +94,7 @@ pub struct ProviderSecretRequirement {
 
 pub struct ProviderBinding {
     pub key: &'static str,
-    pub validate_adapter_instance: fn(&str, &AdapterInstanceBlock) -> Vec<String>,
+    pub validate_client_id: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub credential_log_modules: &'static [&'static str],
@@ -102,17 +102,16 @@ pub struct ProviderBinding {
     pub resolve_secrets: for<'a> fn(
         ProviderSecretResolveContext<'a>,
         &mut dyn SsmSecretResolver,
-    ) -> Result<ResolvedVenueSecrets, BoltV3SecretError>,
+    ) -> Result<ResolvedClientSecrets, BoltV3SecretError>,
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
-    )
-        -> Result<BoltV3AdapterInstanceConfig, BoltV3AdapterMappingError>,
+    ) -> Result<BoltV3ClientConfig, BoltV3ClientMappingError>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
-        validate_adapter_instance: polymarket::validate_adapter_instance,
+        validate_client_id: polymarket::validate_client_id,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
@@ -122,7 +121,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: binance::KEY,
-        validate_adapter_instance: binance::validate_adapter_instance,
+        validate_client_id: binance::validate_client_id,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
@@ -136,7 +135,7 @@ pub fn provider_bindings() -> &'static [ProviderBinding] {
     PROVIDER_BINDINGS
 }
 
-pub fn binding_for_adapter_venue(key: &str) -> Option<&'static ProviderBinding> {
+pub fn binding_for_venue(key: &str) -> Option<&'static ProviderBinding> {
     provider_bindings()
         .iter()
         .find(|binding| binding.key == key)
@@ -153,44 +152,41 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 }
 
 /// Family-agnostic surface read by core startup validation. Routes
-/// each adapter-instance block to its per-provider validator based on
-/// adapter-venue key. Returns the full error list for the block.
-pub fn validate_adapter_instance_block(
-    key: &str,
-    adapter_instance: &AdapterInstanceBlock,
-) -> Vec<String> {
-    match binding_for_adapter_venue(adapter_instance.adapter_venue.as_str()) {
+/// each client block to its per-provider validator based on
+/// venue key. Returns the full error list for the block.
+pub fn validate_client_id_block(key: &str, client_id: &ClientBlock) -> Vec<String> {
+    match binding_for_venue(client_id.venue.as_str()) {
         Some(binding) => {
             let mut errors = validate_required_secret_blocks(
                 key,
                 binding.key,
-                adapter_instance,
+                client_id,
                 binding.required_secret_blocks,
             );
-            errors.extend((binding.validate_adapter_instance)(key, adapter_instance));
+            errors.extend((binding.validate_client_id)(key, client_id));
             errors
         }
         None => vec![format!(
-            "adapter_instances.{key}.adapter_venue `{}` is not supported by this build",
-            adapter_instance.adapter_venue.as_str()
+            "clients.{key}.venue `{}` is not supported by this build",
+            client_id.venue.as_str()
         )],
     }
 }
 
 fn validate_required_secret_blocks(
     key: &str,
-    adapter_venue: &str,
-    adapter_instance: &AdapterInstanceBlock,
+    venue: &str,
+    client_id: &ClientBlock,
     requirements: &[ProviderSecretRequirement],
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    if adapter_instance.secrets.is_some() {
+    if client_id.secrets.is_some() {
         return errors;
     }
     for requirement in requirements {
-        if requirement.block.is_present(adapter_instance) {
+        if requirement.block.is_present(client_id) {
             errors.push(format!(
-                "adapter_instances.{key} (adapter_venue={adapter_venue}) declares [{}] but is missing the required [secrets] block; \
+                "clients.{key} (venue={venue}) declares [{}] but is missing the required [secrets] block; \
                  the bolt-v3 secret contract requires SSM credential resolution for every {}",
                 requirement.block.as_str(),
                 requirement.consumer
@@ -204,21 +200,20 @@ fn validate_required_secret_blocks(
 mod tests {
     use super::*;
 
-    fn adapter_instance_from_toml(text: &str) -> AdapterInstanceBlock {
-        toml::from_str(text).expect("test adapter instance should parse")
+    fn client_id_from_toml(text: &str) -> ClientBlock {
+        toml::from_str(text).expect("test client should parse")
     }
 
     #[test]
     fn credential_log_modules_are_provider_owned() {
-        let polymarket = binding_for_adapter_venue(polymarket::KEY)
-            .expect("Polymarket binding must be registered");
+        let polymarket =
+            binding_for_venue(polymarket::KEY).expect("Polymarket binding must be registered");
         assert_eq!(
             polymarket.credential_log_modules,
             polymarket::CREDENTIAL_LOG_MODULES
         );
 
-        let binance =
-            binding_for_adapter_venue(binance::KEY).expect("Binance binding must be registered");
+        let binance = binding_for_venue(binance::KEY).expect("Binance binding must be registered");
         assert_eq!(
             binance.credential_log_modules,
             binance::CREDENTIAL_LOG_MODULES
@@ -227,9 +222,9 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_rejects_credentialed_block_without_secrets() {
-        let adapter_instance = adapter_instance_from_toml(
+        let client_id = client_id_from_toml(
             r#"
-            adapter_venue = "fake"
+            venue = "fake"
 
             [data]
             "#,
@@ -239,12 +234,8 @@ mod tests {
             consumer: "fake data adapter",
         };
 
-        let errors = validate_required_secret_blocks(
-            "fake_instance",
-            "fake",
-            &adapter_instance,
-            &[requirement],
-        );
+        let errors =
+            validate_required_secret_blocks("fake_instance", "fake", &client_id, &[requirement]);
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("declares [data] but is missing the required [secrets] block"));
@@ -253,9 +244,9 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_ignores_absent_credentialed_block() {
-        let adapter_instance = adapter_instance_from_toml(
+        let client_id = client_id_from_toml(
             r#"
-            adapter_venue = "fake"
+            venue = "fake"
             "#,
         );
         let requirement = ProviderSecretRequirement {
@@ -263,12 +254,8 @@ mod tests {
             consumer: "fake execution adapter",
         };
 
-        let errors = validate_required_secret_blocks(
-            "fake_instance",
-            "fake",
-            &adapter_instance,
-            &[requirement],
-        );
+        let errors =
+            validate_required_secret_blocks("fake_instance", "fake", &client_id, &[requirement]);
 
         assert!(errors.is_empty());
     }

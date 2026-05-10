@@ -1,26 +1,26 @@
-//! Per-provider binding for `polymarket` adapter-instance config block
+//! Per-provider binding for `polymarket` client config block
 //! shapes and per-instance startup validation.
 //!
-//! Owns the concrete shape of `[adapter_instances.<name>.data]`,
-//! `[adapter_instances.<name>.execution]`, and
-//! `[adapter_instances.<name>.secrets]` for any adapter instance whose
-//! `adapter_venue = "polymarket"` key is configured. Core config in
+//! Owns the concrete shape of `[clients.<name>.data]`,
+//! `[clients.<name>.execution]`, and
+//! `[clients.<name>.secrets]` for any client whose
+//! `venue = "POLYMARKET"` key is configured. Core config in
 //! `crate::bolt_v3_config` only owns the root/strategy envelope
-//! and raw adapter-venue field; the provider-shaped block types and their
+//! and raw venue field; the provider-shaped block types and their
 //! serde rules live here so provider-specific schema evolution does not
 //! reach back into the envelope module.
 //!
 //! This module also owns the per-instance startup-validation policy for
-//! Polymarket adapter instances: typed deserialization of each present block,
+//! Polymarket clients: typed deserialization of each present block,
 //! cross-block presence rule ([secrets] is only allowed alongside
 //! [execution]), Polymarket data/execution bounds, EVM funder-address
 //! syntax, and Polymarket secret-path ownership. The cross-provider rule
 //! that [execution] requires [secrets] is declared by
 //! [`REQUIRED_SECRET_BLOCKS`] and enforced centrally in
-//! `bolt_v3_providers::validate_adapter_instance_block`. Core startup validation in
+//! `bolt_v3_providers::validate_client_id_block`. Core startup validation in
 //! `crate::bolt_v3_validate`
-//! dispatches into `bolt_v3_providers::validate_adapter_instance_block`, which
-//! routes Polymarket adapter instances here. The neutral SSM-path utility
+//! dispatches into `bolt_v3_providers::validate_client_id_block`, which
+//! routes Polymarket clients here. The neutral SSM-path utility
 //! (`crate::bolt_v3_validate::validate_ssm_parameter_path`) stays in
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
@@ -40,16 +40,16 @@ use serde::Deserialize;
 
 use crate::{
     bolt_v3_adapters::{
-        BoltV3AdapterInstanceConfig, BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig,
+        BoltV3ClientConfig, BoltV3ClientMappingError, BoltV3DataClientAdapterConfig,
         BoltV3ExecutionClientAdapterConfig, BoltV3UpdownNowFn,
     },
-    bolt_v3_config::AdapterInstanceBlock,
+    bolt_v3_config::ClientBlock,
     bolt_v3_market_families::updown::{
         self, MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedClientSecrets,
         SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
@@ -57,11 +57,11 @@ use crate::{
     secrets::pad_base64,
 };
 
-pub const KEY: &str = "polymarket";
+pub const KEY: &str = "POLYMARKET";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
-    consumer: "Polymarket execution venue",
+    consumer: "Polymarket execution client",
 }];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_polymarket::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
@@ -154,7 +154,7 @@ impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
 }
 
 impl ProviderResolvedSecrets for ResolvedBoltV3PolymarketSecrets {
-    fn provider_key(&self) -> &'static str {
+    fn venue_key(&self) -> &'static str {
         KEY
     }
 
@@ -163,47 +163,44 @@ impl ProviderResolvedSecrets for ResolvedBoltV3PolymarketSecrets {
     }
 }
 
-pub fn validate_adapter_instance(
-    key: &str,
-    adapter_instance: &AdapterInstanceBlock,
-) -> Vec<String> {
+pub fn validate_client_id(key: &str, client_id: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    if let Some(data) = &adapter_instance.data {
+    if let Some(data) = &client_id.data {
         match data.clone().try_into::<PolymarketDataConfig>() {
             Ok(parsed) => errors.extend(validate_data_bounds(key, &parsed)),
-            Err(message) => errors.push(format!("adapter_instances.{key}.data: {message}")),
+            Err(message) => errors.push(format!("clients.{key}.data: {message}")),
         }
     }
-    if let Some(execution) = &adapter_instance.execution {
+    if let Some(execution) = &client_id.execution {
         match execution.clone().try_into::<PolymarketExecutionConfig>() {
             Ok(parsed) => {
                 if parsed.account_id.trim().is_empty() {
                     errors.push(format!(
-                        "adapter_instances.{key}.execution.account_id must be a non-empty string"
+                        "clients.{key}.execution.account_id must be a non-empty string"
                     ));
                 }
                 errors.extend(validate_funder_address(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
             }
             Err(message) => {
-                errors.push(format!("adapter_instances.{key}.execution: {message}"));
+                errors.push(format!("clients.{key}.execution: {message}"));
             }
         }
     }
-    if let Some(secrets) = &adapter_instance.secrets {
+    if let Some(secrets) = &client_id.secrets {
         // Only Polymarket execution consumes Polymarket credentials in
-        // this slice. A data-only Polymarket venue with `[secrets]`
+        // this slice. A data-only Polymarket client with `[secrets]`
         // would carry credential paths that no adapter uses, which is a
         // misconfiguration rather than a silent no-op.
-        if adapter_instance.execution.is_none() {
+        if client_id.execution.is_none() {
             errors.push(format!(
-                "adapter_instances.{key} (adapter_venue=polymarket) declares [secrets] but no [execution] block is configured; \
+                "clients.{key} (venue=POLYMARKET) declares [secrets] but no [execution] block is configured; \
                  Polymarket [secrets] are only allowed alongside the execution adapter that consumes them"
             ));
         }
         match secrets.clone().try_into::<PolymarketSecretsConfig>() {
             Ok(parsed) => errors.extend(validate_secret_paths(key, &parsed)),
-            Err(message) => errors.push(format!("adapter_instances.{key}.secrets: {message}")),
+            Err(message) => errors.push(format!("clients.{key}.secrets: {message}")),
         }
     }
     errors
@@ -222,12 +219,12 @@ fn validate_funder_address(key: &str, execution: &PolymarketExecutionConfig) -> 
     );
     match (requires_funder, funder) {
         (true, None) => errors.push(format!(
-            "adapter_instances.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
+            "clients.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
         )),
         (_, Some(value)) => {
             if let Err(message) = check_evm_address_syntax(value) {
                 errors.push(format!(
-                    "adapter_instances.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
+                    "clients.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
                 ));
             }
         }
@@ -267,7 +264,7 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
     for (field, value) in positive_fields {
         if *value == 0 {
             errors.push(format!(
-                "adapter_instances.{key}.data.{field} must be a positive integer"
+                "clients.{key}.data.{field} must be a positive integer"
             ));
         }
     }
@@ -280,7 +277,7 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
     // closed here keeps that invariant honest.
     if data.subscribe_new_markets {
         errors.push(format!(
-            "adapter_instances.{key}.data.subscribe_new_markets must be false in the current bolt-v3 scope; \
+            "clients.{key}.data.subscribe_new_markets must be false in the current bolt-v3 scope; \
              the pinned NT Polymarket data client subscribes to all markets via \
              `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
              which violates the bolt-v3 controlled-connect boundary until the \
@@ -308,13 +305,13 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
     for (field, value) in positive_fields {
         if *value == 0 {
             errors.push(format!(
-                "adapter_instances.{key}.execution.{field} must be a positive integer"
+                "clients.{key}.execution.{field} must be a positive integer"
             ));
         }
     }
     if execution.retry_delay_initial_milliseconds > execution.retry_delay_max_milliseconds {
         errors.push(format!(
-            "adapter_instances.{key}.execution.retry_delay_initial_milliseconds ({}) must be <= retry_delay_max_milliseconds ({})",
+            "clients.{key}.execution.retry_delay_initial_milliseconds ({}) must be <= retry_delay_max_milliseconds ({})",
             execution.retry_delay_initial_milliseconds, execution.retry_delay_max_milliseconds
         ));
     }
@@ -340,44 +337,43 @@ fn validate_secret_paths(key: &str, secrets: &PolymarketSecretsConfig) -> Vec<St
 pub fn resolve_secrets(
     context: ProviderSecretResolveContext<'_>,
     resolver: &mut dyn SsmSecretResolver,
-) -> Result<ResolvedVenueSecrets, BoltV3SecretError> {
-    let secrets_value =
-        context
-            .adapter_instance
-            .secrets
-            .as_ref()
-            .ok_or_else(|| BoltV3SecretError {
-                adapter_instance_key: context.adapter_instance_key.to_string(),
-                field: "secrets".to_string(),
-                ssm_path: String::new(),
-                source: "missing [secrets] block".to_string(),
-            })?;
+) -> Result<ResolvedClientSecrets, BoltV3SecretError> {
+    let secrets_value = context
+        .client_id
+        .secrets
+        .as_ref()
+        .ok_or_else(|| BoltV3SecretError {
+            client_id_key: context.client_id_key.to_string(),
+            field: "secrets".to_string(),
+            ssm_path: String::new(),
+            source: "missing [secrets] block".to_string(),
+        })?;
     let secrets: PolymarketSecretsConfig =
         secrets_value
             .clone()
             .try_into()
             .map_err(|error: toml::de::Error| BoltV3SecretError {
-                adapter_instance_key: context.adapter_instance_key.to_string(),
+                client_id_key: context.client_id_key.to_string(),
                 field: KEY.to_string(),
                 ssm_path: String::new(),
                 source: format!("invalid polymarket secrets schema: {error}"),
             })?;
     let private_key = resolve_field(
-        context.adapter_instance_key,
+        context.client_id_key,
         "private_key_ssm_path",
         context.region,
         &secrets.private_key_ssm_path,
         resolver,
     )?;
     let api_key = resolve_field(
-        context.adapter_instance_key,
+        context.client_id_key,
         "api_key_ssm_path",
         context.region,
         &secrets.api_key_ssm_path,
         resolver,
     )?;
     let api_secret_raw = resolve_field(
-        context.adapter_instance_key,
+        context.client_id_key,
         "api_secret_ssm_path",
         context.region,
         &secrets.api_secret_ssm_path,
@@ -385,7 +381,7 @@ pub fn resolve_secrets(
     )?;
     let api_secret = pad_base64(api_secret_raw);
     let passphrase = resolve_field(
-        context.adapter_instance_key,
+        context.client_id_key,
         "passphrase_ssm_path",
         context.region,
         &secrets.passphrase_ssm_path,
@@ -401,12 +397,12 @@ pub fn resolve_secrets(
 
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
-) -> Result<BoltV3AdapterInstanceConfig, BoltV3AdapterMappingError> {
-    let data = match &context.adapter_instance.data {
+) -> Result<BoltV3ClientConfig, BoltV3ClientMappingError> {
+    let data = match &context.client_id.data {
         Some(value) => Some(BoltV3DataClientAdapterConfig {
             factory: Box::new(PolymarketDataClientFactory),
             config: Box::new(map_data(
-                context.adapter_instance_key,
+                context.client_id_key,
                 value,
                 context.plan,
                 context.clock,
@@ -414,14 +410,14 @@ pub fn map_adapters(
         }),
         None => None,
     };
-    let execution = match &context.adapter_instance.execution {
+    let execution = match &context.client_id.execution {
         Some(value) => {
-            let secrets = secrets_for(context.adapter_instance_key, context.resolved)?;
+            let secrets = secrets_for(context.client_id_key, context.resolved)?;
             Some(BoltV3ExecutionClientAdapterConfig {
                 factory: Box::new(PolymarketExecutionClientFactory),
                 config: Box::new(map_execution(
                     context.root,
-                    context.adapter_instance_key,
+                    context.client_id_key,
                     value,
                     secrets,
                 )?),
@@ -429,7 +425,7 @@ pub fn map_adapters(
         }
         None => None,
     };
-    Ok(BoltV3AdapterInstanceConfig { data, execution })
+    Ok(BoltV3ClientConfig { data, execution })
 }
 
 pub fn build_fee_provider(
@@ -456,36 +452,36 @@ pub fn build_fee_provider(
 }
 
 fn map_data(
-    adapter_instance_key: &str,
+    client_id_key: &str,
     value: &toml::Value,
     plan: &MarketIdentityPlan,
     clock: BoltV3UpdownNowFn,
-) -> Result<PolymarketDataClientConfig, BoltV3AdapterMappingError> {
+) -> Result<PolymarketDataClientConfig, BoltV3ClientMappingError> {
     let cfg: PolymarketDataConfig =
         value.clone().try_into().map_err(|error: toml::de::Error| {
-            BoltV3AdapterMappingError::SchemaParse {
-                adapter_instance_key: adapter_instance_key.to_string(),
+            BoltV3ClientMappingError::SchemaParse {
+                client_id_key: client_id_key.to_string(),
                 block: "data",
                 message: error.to_string(),
             }
         })?;
     if cfg.subscribe_new_markets {
-        return Err(BoltV3AdapterMappingError::ValidationInvariant {
-            adapter_instance_key: adapter_instance_key.to_string(),
+        return Err(BoltV3ClientMappingError::ValidationInvariant {
+            client_id_key: client_id_key.to_string(),
             field: "data.subscribe_new_markets",
             message: "must be false before mapping to NT because pinned NT subscribes to all Polymarket markets when this flag is true".to_string(),
         });
     }
     let ws_max_subscriptions = usize::try_from(cfg.websocket_max_subscriptions_per_connection)
-        .map_err(|_| BoltV3AdapterMappingError::NumericRange {
-            adapter_instance_key: adapter_instance_key.to_string(),
+        .map_err(|_| BoltV3ClientMappingError::NumericRange {
+            client_id_key: client_id_key.to_string(),
             field: "data.websocket_max_subscriptions_per_connection",
             message: format!(
                 "value {} does not fit in usize on this target",
                 cfg.websocket_max_subscriptions_per_connection
             ),
         })?;
-    let filters = build_market_slug_filters_for_venue(plan, adapter_instance_key, clock);
+    let filters = build_market_slug_filters_for_client_id(plan, client_id_key, clock);
     Ok(PolymarketDataClientConfig {
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
@@ -504,14 +500,14 @@ fn map_data(
     })
 }
 
-fn build_market_slug_filters_for_venue(
+fn build_market_slug_filters_for_client_id(
     plan: &MarketIdentityPlan,
-    adapter_instance_key: &str,
+    client_id_key: &str,
     clock: BoltV3UpdownNowFn,
 ) -> Vec<Arc<dyn InstrumentFilter>> {
     plan.updown_targets
         .iter()
-        .filter(|target| target.adapter_instance_key == adapter_instance_key)
+        .filter(|target| target.client_id_key == client_id_key)
         .map(|target| build_market_slug_filter(target, clock.clone()))
         .collect()
 }
@@ -542,21 +538,21 @@ fn build_market_slug_filter(
 
 fn map_execution(
     root: &crate::bolt_v3_config::BoltV3RootConfig,
-    adapter_instance_key: &str,
+    client_id_key: &str,
     value: &toml::Value,
     secrets: &ResolvedBoltV3PolymarketSecrets,
-) -> Result<PolymarketExecClientConfig, BoltV3AdapterMappingError> {
+) -> Result<PolymarketExecClientConfig, BoltV3ClientMappingError> {
     let cfg: PolymarketExecutionConfig =
         value.clone().try_into().map_err(|error: toml::de::Error| {
-            BoltV3AdapterMappingError::SchemaParse {
-                adapter_instance_key: adapter_instance_key.to_string(),
+            BoltV3ClientMappingError::SchemaParse {
+                client_id_key: client_id_key.to_string(),
                 block: "execution",
                 message: error.to_string(),
             }
         })?;
     let max_retries =
-        u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
-            adapter_instance_key: adapter_instance_key.to_string(),
+        u32::try_from(cfg.max_retries).map_err(|_| BoltV3ClientMappingError::NumericRange {
+            client_id_key: client_id_key.to_string(),
             field: "execution.max_retries",
             message: format!(
                 "value {} does not fit in u32 expected by NT",
@@ -585,19 +581,19 @@ fn map_execution(
 }
 
 fn secrets_for<'a>(
-    adapter_instance_key: &str,
+    client_id_key: &str,
     resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
-) -> Result<&'a ResolvedBoltV3PolymarketSecrets, BoltV3AdapterMappingError> {
-    match resolved.adapter_instances.get(adapter_instance_key) {
+) -> Result<&'a ResolvedBoltV3PolymarketSecrets, BoltV3ClientMappingError> {
+    match resolved.clients.get(client_id_key) {
         Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
-            BoltV3AdapterMappingError::SecretKindMismatch {
-                adapter_instance_key: adapter_instance_key.to_string(),
-                expected_adapter_venue: KEY,
+            BoltV3ClientMappingError::SecretVenueMismatch {
+                client_id_key: client_id_key.to_string(),
+                expected_venue: KEY,
             }
         }),
-        None => Err(BoltV3AdapterMappingError::MissingResolvedSecrets {
-            adapter_instance_key: adapter_instance_key.to_string(),
-            expected_adapter_venue: KEY,
+        None => Err(BoltV3ClientMappingError::MissingResolvedSecrets {
+            client_id_key: client_id_key.to_string(),
+            expected_venue: KEY,
         }),
     }
 }

@@ -102,10 +102,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[adapter_instances.polymarket_main]
-adapter_venue = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[adapter_instances.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 base_url_gamma = "https://gamma-api.polymarket.com"
@@ -116,7 +116,7 @@ subscribe_new_markets = false
 update_instruments_interval_minutes = 60
 websocket_max_subscriptions_per_connection = 200
 
-[adapter_instances.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
 funder_address = "0x1111111111111111111111111111111111111111"
@@ -129,22 +129,22 @@ retry_delay_initial_milliseconds = 250
 retry_delay_max_milliseconds = 2000
 ack_timeout_seconds = 5
 
-[adapter_instances.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
-[adapter_instances.binance_reference]
-adapter_venue = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[adapter_instances.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
 instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
-[adapter_instances.binance_reference.secrets]
+[clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
 api_secret_ssm_path = "/bolt/binance_reference/api_secret"

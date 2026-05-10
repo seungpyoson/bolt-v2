@@ -3,7 +3,7 @@
 //! Schema rules: docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 8.
 //!
 //! This module owns common strategy-envelope validation (schema
-//! version, uniqueness of instance / order-id-tag, adapter-instance / execution
+//! version, uniqueness of instance / order-id-tag, client / execution
 //! lookup, per-role reference-data structural validation), root-block
 //! validation, and root risk decimal syntax only. Market-family-shaped
 //! target rules
@@ -21,14 +21,14 @@
 //! root-cap comparison. `validate_strategies` dispatches into the
 //! matching archetype validator via
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
-//! Per-provider adapter-instance validation (provider-shaped
-//! `[adapter_instances.<id>.{data,execution,secrets}]` rules: typed
+//! Per-provider client validation (provider-shaped
+//! `[clients.<id>.{data,execution,secrets}]` rules: typed
 //! deserialization, cross-block presence rules, provider data /
 //! execution bounds, EVM funder-address syntax, provider secret-path
 //! ownership) is owned by the per-provider binding modules under
-//! `crate::bolt_v3_providers`; `validate_adapter_instances_block`
-//! dispatches each adapter-instance block through
-//! `crate::bolt_v3_providers::validate_adapter_instance_block`.
+//! `crate::bolt_v3_providers`; `validate_clients_block`
+//! dispatches each client block through
+//! `crate::bolt_v3_providers::validate_client_id_block`.
 //! Only the genuinely provider-neutral SSM parameter-path utility
 //! (`validate_ssm_parameter_path`) stays in this module and is exposed
 //! `pub(crate)` so the per-provider secret validators can call it the
@@ -43,8 +43,8 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AdapterInstanceBlock, AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy,
-    NautilusBlock, PersistenceBlock, RiskBlock,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
+    PersistenceBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -101,7 +101,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
-    errors.extend(validate_adapter_instances_block(&root.adapter_instances));
+    errors.extend(validate_clients_block(&root.clients));
 
     errors
 }
@@ -386,44 +386,40 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
-fn validate_adapter_instances_block(
-    adapter_instances: &BTreeMap<String, AdapterInstanceBlock>,
-) -> Vec<String> {
+fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
     let mut errors = Vec::new();
-    if adapter_instances.is_empty() {
-        errors
-            .push("adapter_instances must define at least one adapter instance block".to_string());
+    if clients.is_empty() {
+        errors.push("clients must define at least one client block".to_string());
         return errors;
     }
-    // The current bolt-v3 scope is one adapter instance per adapter venue.
+    // The current bolt-v3 scope is one client per venue.
     // Multi-instance routing (multiple keyed instances for the same
-    // adapter venue) is not yet
+    // venue) is not yet
     // covered by the NT typed-venue routing path or by bolt-v3 strategy
     // validation. NT client registration names can differ, but engine
     // instrument subscriptions still key on typed venues such as
     // POLYMARKET/BINANCE, so we fail closed until that routing is
     // explicitly designed.
-    let mut adapter_venue_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-    for (key, adapter_instance) in adapter_instances {
-        adapter_venue_counts
-            .entry(adapter_instance.adapter_venue.as_str().to_string())
+    let mut venue_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for (key, client_id) in clients {
+        venue_counts
+            .entry(client_id.venue.as_str().to_string())
             .or_default()
             .push(key.as_str());
     }
-    for (adapter_venue, keys) in &adapter_venue_counts {
+    for (venue, keys) in &venue_counts {
         if keys.len() > 1 {
             errors.push(format!(
-                "adapter_instances: at most one [adapter_instances.<id>] block per adapter_venue is supported in this slice; \
-                 adapter_venue `{adapter_venue}` is declared by {} adapter instances: {}",
+                "clients: at most one [clients.<id>] block per venue is supported in this slice; \
+                 venue `{venue}` is declared by {} clients: {}",
                 keys.len(),
                 keys.join(", ")
             ));
         }
     }
-    for (key, adapter_instance) in adapter_instances {
-        errors.extend(crate::bolt_v3_providers::validate_adapter_instance_block(
-            key,
-            adapter_instance,
+    for (key, client_id) in clients {
+        errors.extend(crate::bolt_v3_providers::validate_client_id_block(
+            key, client_id,
         ));
     }
     errors
@@ -440,7 +436,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
     let trimmed = value.trim();
     if trimmed.is_empty() {
         errors.push(format!(
-            "adapter_instances.{key}.secrets.{field} must be a non-empty SSM path"
+            "clients.{key}.secrets.{field} must be a non-empty SSM path"
         ));
     } else if !trimmed.starts_with('/') {
         // The Rust AWS SDK accepts both `name`-style and `/name`-style
@@ -449,7 +445,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
         // like `/bolt/<venue>/<field>` is the only supported shape and
         // typos that drop the leading slash fail closed at startup.
         errors.push(format!(
-            "adapter_instances.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
+            "clients.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
         ));
     }
     errors
@@ -489,17 +485,17 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        match root.adapter_instances.get(&strategy.adapter_instance) {
+        match root.clients.get(&strategy.execution_client_id) {
             None => errors.push(format!(
-                "{context}: adapter_instance reference `{}` does not match any [adapter_instances.<id>] block",
-                strategy.adapter_instance
+                "{context}: execution_client_id reference `{}` does not match any [clients.<id>] block",
+                strategy.execution_client_id
             )),
-            Some(adapter_instance) => {
-                if adapter_instance.execution.is_none() {
+            Some(client_id) => {
+                if client_id.execution.is_none() {
                     errors.push(format!(
-                        "{context}: strategy adapter_instance `{}` must reference an execution-capable adapter instance \
-                         (the referenced adapter instance has no [execution] block)",
-                        strategy.adapter_instance
+                        "{context}: strategy execution_client_id `{}` must reference an execution-capable client \
+                         (the referenced client has no [execution] block)",
+                        strategy.execution_client_id
                     ));
                 }
             }
@@ -536,17 +532,17 @@ fn validate_reference_data(
     let mut errors = Vec::new();
 
     for (role, block) in &strategy.reference_data {
-        match root.adapter_instances.get(&block.adapter_instance) {
+        match root.clients.get(&block.data_client_id) {
             None => errors.push(format!(
-                "{context}: reference_data.{role}.adapter_instance `{}` does not match any [adapter_instances.<id>] block",
-                block.adapter_instance
+                "{context}: reference_data.{role}.data_client_id `{}` does not match any [clients.<id>] block",
+                block.data_client_id
             )),
-            Some(adapter_instance) => {
-                if adapter_instance.data.is_none() {
+            Some(client_id) => {
+                if client_id.data.is_none() {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.adapter_instance `{}` must reference a data-capable adapter instance \
-                         (the referenced adapter instance has no [data] block)",
-                        block.adapter_instance
+                        "{context}: reference_data.{role}.data_client_id `{}` must reference a data-capable client \
+                         (the referenced client has no [data] block)",
+                        block.data_client_id
                     ));
                 }
             }

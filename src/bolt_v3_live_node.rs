@@ -8,15 +8,15 @@
 //! - validates the forbidden credential env-var blocklist before
 //!   constructing any NautilusTrader client
 //! - resolves SSM secrets via the bolt-v3 secret resolver
-//! - maps the validated bolt-v3 adapter instance blocks into provider-owned
-//!   NT-native adapter configs
-//! - registers the per-adapter instance NT data and execution client factories on a
+//! - maps the validated bolt-v3 client blocks into provider-owned
+//!   NT-native client configs
+//! - registers the per-client NT data and execution client factories on a
 //!   `nautilus_live::builder::LiveNodeBuilder` via the
 //!   [`crate::bolt_v3_client_registration`] boundary
 //! - calls `LiveNodeBuilder::build`, which is **not** purely passive:
 //!   it constructs the NT client objects, lets provider-owned NT
 //!   factories parse their credential material, and performs internal
-//!   NT engine/message-bus subscriptions for adapter instance instrument topics.
+//!   NT engine/message-bus subscriptions for client instrument topics.
 //!   None of these steps open a network connection or run the event
 //!   loop.
 //! - registers configured bolt-v3 strategies on the built `LiveNode`
@@ -54,7 +54,7 @@ use nautilus_model::{
 use ustr::Ustr;
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_adapters::{BoltV3ClientConfigs, BoltV3ClientMappingError, map_bolt_v3_clients},
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
@@ -96,16 +96,16 @@ impl std::error::Error for BoltV3LiveNodeBuilderError {
 #[derive(Debug)]
 pub enum BoltV3LiveNodeError {
     ForbiddenEnv(ForbiddenEnvVarError),
-    /// `SsmResolverSession::new()` failed before any adapter instance secret was
+    /// `SsmResolverSession::new()` failed before any client secret was
     /// read. The wrapped `SecretError` is the upstream Tokio /
     /// AWS-SDK-config setup failure. Distinct from
-    /// [`SecretResolution`] (which carries a per-adapter instance `BoltV3SecretError`
-    /// with adapter instance key, secret-config field name, and SSM path) because
-    /// session setup happens before any adapter instance path is consulted, so an
-    /// operator message that names a adapter instance or SSM path would be wrong.
+    /// [`SecretResolution`] (which carries a per-client `BoltV3SecretError`
+    /// with client key, secret-config field name, and SSM path) because
+    /// session setup happens before any client path is consulted, so an
+    /// operator message that names a client or SSM path would be wrong.
     SecretResolverSetup(crate::secrets::SecretError),
     SecretResolution(BoltV3SecretError),
-    AdapterMapping(BoltV3AdapterMappingError),
+    AdapterMapping(BoltV3ClientMappingError),
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
@@ -166,14 +166,14 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ForbiddenEnv(error) => write!(f, "{error}"),
             BoltV3LiveNodeError::SecretResolverSetup(error) => write!(
                 f,
-                "bolt-v3 SSM resolver session setup failed before any adapter instance \
+                "bolt-v3 SSM resolver session setup failed before any client \
                  secret could be read: {error}"
             ),
             BoltV3LiveNodeError::SecretResolution(error) => {
                 write!(f, "bolt-v3 secret resolution failed: {error}")
             }
             BoltV3LiveNodeError::AdapterMapping(error) => {
-                write!(f, "bolt-v3 adapter config mapping failed: {error}")
+                write!(f, "bolt-v3 client config mapping failed: {error}")
             }
             BoltV3LiveNodeError::BuilderConstruction(error) => write!(f, "{error}"),
             BoltV3LiveNodeError::ClientRegistration(error) => {
@@ -238,13 +238,13 @@ pub fn build_bolt_v3_live_node(
     // every secret resolution in this build, and so the session lifetime is
     // visible to the caller of `resolve_bolt_v3_secrets`. Session-setup
     // failure surfaces as the dedicated `SecretResolverSetup` variant
-    // (#255-2) so operator-facing messages don't pretend a adapter instance or SSM
+    // (#255-2) so operator-facing messages don't pretend a client or SSM
     // path is involved before any path has been read.
     let session = SsmResolverSession::new().map_err(BoltV3LiveNodeError::SecretResolverSetup)?;
     let resolved =
         resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
-        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
+        map_bolt_v3_clients(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let (node, _summary) = build_live_node_with_clients(loaded, adapters, &resolved)?;
     Ok(node)
 }
@@ -287,13 +287,13 @@ where
     let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
-        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
+        map_bolt_v3_clients(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     build_live_node_with_clients(loaded, adapters, &resolved)
 }
 
 fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
-    adapters: BoltV3AdapterConfigs,
+    adapters: BoltV3ClientConfigs,
     resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
 ) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let builder =
@@ -905,14 +905,14 @@ mod tests {
     }
 
     #[test]
-    fn secret_resolver_setup_variant_renders_clean_message_without_empty_adapter_instance_path() {
+    fn secret_resolver_setup_variant_renders_clean_message_without_empty_client_id_path() {
         // Per #255-2: before this fix, session-construction failure was
-        // mapped into `BoltV3SecretError` with empty `adapter_instance_key` and
+        // mapped into `BoltV3SecretError` with empty `client_id_key` and
         // `ssm_path`, rendering as a confusing
-        // `adapter_instances..secrets.ssm_resolver_session ...`. The dedicated
+        // `clients..secrets.ssm_resolver_session ...`. The dedicated
         // `BoltV3LiveNodeError::SecretResolverSetup(SecretError)` variant
         // gives operators a clean, accurate message that does not
-        // pretend a adapter instance or SSM path is involved (none is — the
+        // pretend a client or SSM path is involved (none is — the
         // failure happens before any path is read).
         let inner = crate::secrets::SecretError::for_test(
             "failed to build Tokio runtime for SSM resolver session: simulated".to_string(),
@@ -920,8 +920,8 @@ mod tests {
         let err = BoltV3LiveNodeError::SecretResolverSetup(inner);
         let rendered = format!("{err}");
         assert!(
-            !rendered.contains("adapter_instances."),
-            "SecretResolverSetup must not render through the adapter instance/SSM-path template"
+            !rendered.contains("clients."),
+            "SecretResolverSetup must not render through the client/SSM-path template"
         );
         assert!(
             !rendered.contains("ssm_path"),

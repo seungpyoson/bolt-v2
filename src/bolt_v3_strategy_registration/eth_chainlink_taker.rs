@@ -46,7 +46,7 @@ pub fn legacy_config_from_strategy(
     );
     table.insert(
         CLIENT_ID_FIELD.to_string(),
-        Value::String(strategy.adapter_instance.clone()),
+        Value::String(strategy.execution_client_id.clone()),
     );
     Ok(Value::Table(table))
 }
@@ -79,36 +79,36 @@ fn build_context(
     context: &StrategyRegistrationContext<'_>,
 ) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
     let strategy = &context.strategy.config;
-    let adapter_instance = context
+    let client_id = context
         .loaded
         .root
-        .adapter_instances
-        .get(&strategy.adapter_instance)
-        .ok_or_else(|| BoltV3StrategyRegistrationError::MissingAdapterInstance {
+        .clients
+        .get(&strategy.execution_client_id)
+        .ok_or_else(|| BoltV3StrategyRegistrationError::MissingClient {
             strategy_file: context.strategy.relative_path.clone(),
-            adapter_instance: strategy.adapter_instance.clone(),
+            client_id: strategy.execution_client_id.clone(),
         })?;
 
-    if adapter_instance.adapter_venue.as_str() != bolt_v3_providers::polymarket::KEY {
-        return Err(BoltV3StrategyRegistrationError::UnsupportedAdapterVenue {
+    if client_id.venue.as_str() != bolt_v3_providers::polymarket::KEY {
+        return Err(BoltV3StrategyRegistrationError::UnsupportedVenue {
             strategy_file: context.strategy.relative_path.clone(),
-            adapter_instance: strategy.adapter_instance.clone(),
-            adapter_venue: adapter_instance.adapter_venue.as_str().to_string(),
+            client_id: strategy.execution_client_id.clone(),
+            venue: client_id.venue.as_str().to_string(),
         });
     }
 
-    let execution = adapter_instance.execution.as_ref().ok_or_else(|| {
+    let execution = client_id.execution.as_ref().ok_or_else(|| {
         BoltV3StrategyRegistrationError::MissingExecutionBlock {
             strategy_file: context.strategy.relative_path.clone(),
-            adapter_instance: strategy.adapter_instance.clone(),
+            client_id: strategy.execution_client_id.clone(),
         }
     })?;
     let secrets = context
         .resolved
-        .get_as::<ResolvedBoltV3PolymarketSecrets>(&strategy.adapter_instance)
+        .get_as::<ResolvedBoltV3PolymarketSecrets>(&strategy.execution_client_id)
         .ok_or_else(|| BoltV3StrategyRegistrationError::MissingProviderSecrets {
             strategy_file: context.strategy.relative_path.clone(),
-            adapter_instance: strategy.adapter_instance.clone(),
+            client_id: strategy.execution_client_id.clone(),
         })?;
     let fee_provider = bolt_v3_providers::polymarket::build_fee_provider(
         execution,
@@ -117,7 +117,7 @@ fn build_context(
     )
     .map_err(|source| BoltV3StrategyRegistrationError::FeeProviderBuild {
         strategy_file: context.strategy.relative_path.clone(),
-        adapter_instance: strategy.adapter_instance.clone(),
+        client_id: strategy.execution_client_id.clone(),
         source,
     })?;
 

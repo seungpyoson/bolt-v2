@@ -3,7 +3,7 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
-adapter_instance = "polymarket_main"
+execution_client_id = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
@@ -16,7 +16,7 @@ retry_interval_seconds = 5
 blocked_after_seconds = 60
 
 [reference_data.primary]
-adapter_instance = "binance_reference"
+data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]

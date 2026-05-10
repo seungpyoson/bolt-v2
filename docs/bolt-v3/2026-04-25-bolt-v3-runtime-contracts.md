@@ -51,9 +51,9 @@ This phase may use network access and real environment dependencies.
 It validates:
 
 - Amazon Web Services Systems Manager secret resolution
-- forbidden venue-kind environment-variable fallbacks are absent
-- keyed venue config can be converted into NautilusTrader client config
-- required reference-data venues and instruments are resolvable
+- forbidden venue environment-variable fallbacks are absent
+- keyed client config can be converted into NautilusTrader client config
+- required reference-data clients and instruments are resolvable
 - current market-selection machinery can load NautilusTrader venue/instrument state and attempt selection through that state only
 - root risk config is enforced for Bolt-owned strategy sizing fields, and supported NautilusTrader risk-engine knobs are explicit and mapped rather than accepted as no-ops
 - current `updown` market-identity readiness gates for each configured `updown` target
@@ -108,9 +108,9 @@ Rules:
 - no second secret source is allowed
 - resolved secret values must never be written to logs
 
-For every keyed venue which declares a `[secrets]` block, bolt must fail live validation and startup if any canonical credential environment variables for that venue kind are present.
+For every keyed client which declares a `[secrets]` block, bolt must fail live validation and startup if any canonical credential environment variables for that venue are present.
 
-Structural validation also rejects secret blocks that no configured adapter consumes:
+Structural validation also rejects secret blocks that no configured client block consumes:
 
 - Polymarket `[secrets]` is allowed only alongside `[execution]`
 - Binance `[secrets]` is allowed only alongside `[data]`
@@ -130,9 +130,9 @@ For current Binance reference-data use, the forbidden variables are:
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
 
-This per-venue environment-variable blocklist belongs to the venue-kind handler in bolt code.
+This per-venue environment-variable blocklist belongs to the venue handler in bolt code.
 It is not a generic secret framework.
-The handler must derive the effective blocklist from the configured venue kind, environment, and product type before any NautilusTrader client constructor is called.
+The handler must derive the effective blocklist from the configured venue, environment, and product type before any NautilusTrader client constructor is called.
 
 ## 4. Root Risk Contract
 
@@ -216,8 +216,8 @@ The current Phase 1 contract has exactly one implicit execution leg.
 
 For the implicit Phase 1 leg:
 
-- `venue_config_key` identifies the configured venue instance from TOML
-- `venue_kind` identifies the venue family for that configured instance
+- `client_id` identifies the configured client from TOML
+- `venue` identifies the venue for that configured instance
 - selected-market, mechanical, entry, pre-submit, and order-submission fields describe that same implicit leg
 
 This is the `leg_count = 1` case of the execution-leg model, not a Bolt-wide single-venue architecture limit.
@@ -357,8 +357,8 @@ Exact fields:
 
 - `configured_target_id`
 - `market_selection_type`
-- `venue_config_key`
-- `venue_kind`
+- `client_id`
+- `venue`
 - `rotating_market_family`
 - `underlying_asset`
 - `cadence_seconds`
@@ -369,8 +369,8 @@ Exact fields:
 Field constraints:
 
 - `market_selection_type = "rotating_market"`
-- `venue_config_key` is the exact strategy-file `venue` reference
-- `venue_kind = "polymarket"` for the current `updown` scope
+- `client_id` is the exact strategy-file `client_id` reference
+- `venue = "POLYMARKET"` for the current `updown` scope
 - `rotating_market_family = "updown"`
 - `market_selection_rule = "active_or_next"`
 
@@ -394,8 +394,8 @@ It is not an observed-facts object and it does not include entry readiness or st
 Every selected market must contain:
 
 - `market_selection_type`
-- `venue_config_key`
-- `venue_kind`
+- `client_id`
+- `venue`
 
 #### Current updown rotating-market fields
 
@@ -792,8 +792,8 @@ These fields are required on every structured decision event:
 - `strategy_instance_id`
 - `strategy_archetype`
 - `trader_id`
-- `venue_config_key`
-- `venue_kind`
+- `client_id`
+- `venue`
 - `runtime_mode`
 - `release_id`
 - `config_hash`
@@ -819,11 +819,11 @@ Definitions:
   - the exact `strategy_archetype` value from the strategy file
 - `trader_id`
   - the exact root-file `trader_id` value
-- `venue_config_key`
+- `client_id`
   - the keyed trading venue reference from the strategy file
   - not a reference-data venue key
-- `venue_kind`
-  - the exact `kind` value from the configured venue block referenced by `venue_config_key`
+- `venue`
+  - the exact `venue` value from the configured client block referenced by `client_id`
   - for the current `updown` scope, `polymarket`
   - describes the implicit execution leg in the Phase 1 execution-leg model
 - `runtime_mode`
@@ -1272,7 +1272,7 @@ Raw NautilusTrader capture scope:
 - every NautilusTrader market-data record from every subscribed or requested stream exposed by the pinned adapter for the activated venue, target, and instrument scope
 - every NautilusTrader execution command, execution report, order event, position event, account event, and lifecycle message visible to bolt through the pinned Rust APIs
 - every NautilusTrader cache, portfolio, risk, and execution state snapshot explicitly read to compute a strategy decision
-- every NautilusTrader adapter configuration value after TOML-to-NT mapping, excluding secrets
+- every NautilusTrader client configuration value after TOML-to-NT mapping, excluding secrets
 - unavailable subscribed-stream attempts, including the NautilusTrader Rust API path or adapter capability that was missing
 
 Broad capture callbacks must hand off raw facts to the catalog path without performing strategy evaluation, order construction, or broad synchronous scans.
@@ -1397,11 +1397,11 @@ The controlled-connect and controlled-disconnect boundaries alone do not enable 
 
 ### 11.7 Startup readiness check boundary
 
-The bolt-v3 startup readiness check is a library-level diagnostic surface. It reports explicit facts for the existing startup boundaries: forbidden credential environment variables, SSM secret resolution, adapter mapping, `LiveNodeBuilder` construction, NT client registration, and final `LiveNode` build. It does not return or encode an aggregate launch decision.
+The bolt-v3 startup readiness check is a library-level diagnostic surface. It reports explicit facts for the existing startup boundaries: forbidden credential environment variables, SSM secret resolution, client mapping, `LiveNodeBuilder` construction, NT client registration, and final `LiveNode` build. It does not return or encode an aggregate launch decision.
 
-The check composes the same production boundaries used by the build path and stops before the controlled-connect boundary. A successful report means the configured venues can pass those startup checks and a `LiveNode` can be built with registered clients. It does not prove that clients are connected, NT caches are populated, instruments are available, strategies are registered, markets have been selected, orders can be constructed, or orders can be submitted.
+The check composes the same production boundaries used by the build path and stops before the controlled-connect boundary. A successful report means the configured clients can pass those startup checks and a `LiveNode` can be built with registered clients. It does not prove that clients are connected, NT caches are populated, instruments are available, strategies are registered, markets have been selected, orders can be constructed, or orders can be submitted.
 
-If no venues are configured, the check still emits `Satisfied` root facts for stages that have no venue work to perform. Callers must inspect fact details and subjects instead of treating a uniform `Satisfied` status set as a venue-bearing launch decision.
+If no clients are configured, the check still emits `Satisfied` root facts for stages that have no client work to perform. Callers must inspect fact details and subjects instead of treating a uniform `Satisfied` status set as a client-bearing launch decision.
 
 The built `LiveNode` is discarded after the build fact is recorded. The check must not call `connect_bolt_v3_clients`, `disconnect_bolt_v3_clients`, any user-level subscription API, any runner API, any strategy actor API, or any order API. Controlled-connect remains an explicit, separate caller action under Section 11.6.
 

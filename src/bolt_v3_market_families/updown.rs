@@ -225,22 +225,20 @@ pub struct MarketIdentityPlan {
     pub updown_targets: Vec<UpdownTargetPlan>,
 }
 
-pub struct MarketIdentityAdapterInstanceTargetRef<'a> {
+pub struct MarketIdentityClientTargetRef<'a> {
     pub family_key: &'static str,
     pub configured_target_id: &'a str,
-    pub adapter_instance_key: &'a str,
+    pub client_id_key: &'a str,
 }
 
 impl MarketIdentityPlan {
-    pub fn venue_target_refs(
-        &self,
-    ) -> impl Iterator<Item = MarketIdentityAdapterInstanceTargetRef<'_>> {
+    pub fn client_id_target_refs(&self) -> impl Iterator<Item = MarketIdentityClientTargetRef<'_>> {
         self.updown_targets
             .iter()
-            .map(|target| MarketIdentityAdapterInstanceTargetRef {
+            .map(|target| MarketIdentityClientTargetRef {
                 family_key: KEY,
                 configured_target_id: target.configured_target_id.as_str(),
-                adapter_instance_key: target.adapter_instance_key.as_str(),
+                client_id_key: target.client_id_key.as_str(),
             })
     }
 }
@@ -253,7 +251,7 @@ impl MarketIdentityPlan {
 pub struct UpdownTargetPlan {
     pub strategy_instance_id: String,
     pub configured_target_id: String,
-    pub adapter_instance_key: String,
+    pub client_id_key: String,
     pub underlying_asset: String,
     pub cadence_seconds: i64,
     pub cadence_slug_token: String,
@@ -383,7 +381,7 @@ fn plan_strategy_updown_target(
     strategy: &LoadedStrategy,
 ) -> Result<Option<UpdownTargetPlan>, BoltV3MarketIdentityError> {
     let strategy_instance_id = strategy.config.strategy_instance_id.clone();
-    let adapter_instance_key = strategy.config.adapter_instance.clone();
+    let client_id_key = strategy.config.execution_client_id.clone();
     let target: TargetBlock =
         deserialize_target_block(&strategy.config.target).map_err(|message| {
             BoltV3MarketIdentityError::TargetParseFailed {
@@ -420,7 +418,7 @@ fn plan_strategy_updown_target(
     Ok(Some(UpdownTargetPlan {
         strategy_instance_id,
         configured_target_id,
-        adapter_instance_key,
+        client_id_key,
         underlying_asset: target.underlying_asset.clone(),
         cadence_seconds: target.cadence_seconds,
         cadence_slug_token: token.to_string(),

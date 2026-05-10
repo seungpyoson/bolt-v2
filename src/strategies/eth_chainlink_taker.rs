@@ -2145,11 +2145,8 @@ impl EthChainlinkTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<Option<BoltV3EntryEvaluationFacts>> {
-        let no_action_insufficient_edge = decision.blocked_reason.as_deref()
-            == Some("no_side_selected")
-            && decision.evaluation.gate.blocked_by.is_empty()
-            && decision.evaluation.pricing_blocked_by.is_empty();
-        if decision.blocked_reason.is_some() && !no_action_insufficient_edge {
+        let no_action_reason = entry_no_action_reason(decision);
+        if decision.blocked_reason.is_some() && no_action_reason.is_none() {
             return Ok(None);
         }
 
@@ -2165,11 +2162,11 @@ impl EthChainlinkTaker {
             "book_impact_cap_usdc": decision.evaluation.book_impact_cap_usdc,
         });
 
-        if no_action_insufficient_edge {
+        if let Some(reason) = no_action_reason {
             return Ok(Some(BoltV3EntryEvaluationFacts {
                 updown_side: None,
                 entry_decision: "no_action".to_string(),
-                entry_no_action_reason: Some("insufficient_edge".to_string()),
+                entry_no_action_reason: Some(reason.to_string()),
                 seconds_to_market_end,
                 has_selected_market_open_orders: false,
                 updown_market_mechanical_outcome: "accepted".to_string(),
@@ -3531,6 +3528,29 @@ impl EthChainlinkTaker {
         }
         evaluation
     }
+}
+
+fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static str> {
+    if decision.blocked_reason == Some("no_side_selected")
+        && decision.evaluation.gate.blocked_by.is_empty()
+        && decision.evaluation.pricing_blocked_by.is_empty()
+    {
+        return Some("insufficient_edge");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
+        && !decision.evaluation.gate.blocked_by.is_empty()
+        && decision.evaluation.gate.blocked_by.iter().all(|reason| {
+            matches!(
+                reason,
+                EntryBlockReason::IntervalOpenMissing | EntryBlockReason::WarmupIncomplete
+            )
+        })
+    {
+        return Some("missing_reference_quote");
+    }
+
+    None
 }
 
 impl std::fmt::Debug for EthChainlinkTaker {

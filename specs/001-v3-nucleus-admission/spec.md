@@ -2,7 +2,7 @@
 
 **Feature Branch**: `001-v3-nucleus-admission`
 **Created**: 2026-05-09
-**Status**: Draft
+**Status**: Implemented
 **Input**: User description: "Bolt-v3 nucleus admission audit: report-only verifier proving generic NT-first contract readiness before any concrete provider, market-family, strategy, or live behavior continues."
 
 ## User Scenarios & Testing *(mandatory)*

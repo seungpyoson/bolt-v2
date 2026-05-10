@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-10
-Branch context: `codex/bolt-v3-order-lifecycle`
+Branch context: `codex/bolt-v3-reconciliation`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -28,7 +28,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F7 | Decision-event persistence | blocked | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. Current fixed nullable-field contract conflicts with pinned NT `#[custom_data]`, which rejects `Option<String>` fields | sentinel null encoding, JSON blob fallback, second writer path |
 | F8 | Risk/order admission gate | blocked | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution. v3 maps NT `LiveRiskEngineConfig`, but bolt-owned order admission needs an accepted decision-event persistence gate and a v3 order intent path | venue-specific order lifecycle, ad hoc strategy-local submit guards |
 | F9 | Order lifecycle proof | blocked | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions. NT and the legacy strategy have order machinery, but bolt-v3 has not proven a v3 run path with accepted decision evidence and bolt-owned order admission | direct venue calls, Python, bypassing NT risk/execution, multi-client scale |
-| F10 | Reconciliation/restart proof | unverified | Restart observes external orders/fills/positions and avoids duplicate submit | new strategy logic |
+| F10 | Reconciliation/restart proof | blocked | Restart observes external orders/fills/positions and avoids duplicate submit. bolt-v3 maps NT reconciliation config, but no v3 start/restart proof exists and the pinned Polymarket adapter's external-order registration hook is a no-op | bolt-owned portfolio, direct venue reconciliation, new strategy logic |
 | F11 | Fixed-instrument target | reserved | Schema, validation, planner, event facts, and idle test for `market_selection_type = "fixed_instrument"` | rotating-market refactor |
 | F12 | Scale/process model | unverified | Evidence for many strategies, markets, and clients; process sharding; panic behavior; restart discipline | changing trading logic |
 
@@ -71,3 +71,11 @@ Do not add one-off submit guards inside `eth_chainlink_taker` as the production 
 F9 is blocked by missing bolt-v3 order-intent evidence, not by missing NT primitives. The existing strategy can construct and submit NT orders and handle order events (`src/strategies/eth_chainlink_taker.rs:2827`, `:2978`, `:3324`, `:3410`, `:3435`). Pinned NT routes submitted orders through RiskEngine to ExecutionEngine (`nautilus_trader@38b912a:crates/risk/src/engine/mod.rs:496`, `:1764`; `crates/execution/src/engine/mod.rs:1625`), and the pinned Polymarket adapter exposes submit/cancel methods (`crates/adapters/polymarket/src/execution/mod.rs:792`, `:1036`).
 
 Bolt-v3 only proves build, client registration, strategy registration, and idle/controlled-connect behavior today. `build_live_node_with_clients` builds the node and registers strategies (`src/bolt_v3_live_node.rs:298`), while current v3 tests intentionally fence out `LiveNode::start` and `LiveNode::run`. An accepted order-lifecycle slice must come after F6c, F7, and F8: instrument load/start gate, durable decision event contract, and bolt-owned order admission.
+
+## Reconciliation / Restart Blocker
+
+F10 must stay NT-owned. Bolt-v3 already maps TOML into NT reconciliation config (`src/bolt_v3_live_node.rs:371`, `:381`), and pinned NT startup reconciliation queries execution mass status, reconciles it, and registers external orders (`nautilus_trader@38b912a:crates/live/src/node.rs:486`, `:532`, `:547`, `:569`). Pinned NT reconciliation also deduplicates already-synced or closed reconciliation orders (`crates/live/src/manager.rs:354`, `:396`, `:407`, `:425`).
+
+That is not bolt-v3 restart readiness. Current bolt-v3 proof stops before `LiveNode::start` / `LiveNode::run`, so no restart path has observed venue orders, fills, balances, positions, or duplicate-submit behavior under the v3 runtime. For Polymarket specifically, the adapter can generate mass status (`crates/adapters/polymarket/src/execution/mod.rs:1513`), but `register_external_order` is currently empty (`:1283`), so external-order tracking after reconciliation needs source or canary evidence before acceptance.
+
+Accepted unblocker: after F6c, F7, F8, and F9, prove one NT-owned restart scenario end to end under bolt-v3: start, submit or import one known order state, stop/crash boundary, restart, startup reconciliation, no duplicate submit, and correct order/fill/position state in NT.

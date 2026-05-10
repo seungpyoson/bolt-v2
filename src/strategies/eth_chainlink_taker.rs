@@ -3550,6 +3550,12 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
         return Some("missing_reference_quote");
     }
 
+    if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision.evaluation.gate.blocked_by == [EntryBlockReason::FeesNotReady]
+    {
+        return Some("fee_rate_unavailable");
+    }
+
     None
 }
 

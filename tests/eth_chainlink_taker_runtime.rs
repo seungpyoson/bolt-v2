@@ -69,6 +69,9 @@ use toml::Value;
 #[derive(Debug, Default)]
 struct StaticFeeProvider;
 
+#[derive(Debug, Default)]
+struct MissingFeeProvider;
+
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -78,6 +81,17 @@ fn runtime_test_mutex() -> &'static Mutex<()> {
 impl bolt_v2::clients::polymarket::FeeProvider for StaticFeeProvider {
     fn fee_bps(&self, _token_id: &str) -> Option<rust_decimal::Decimal> {
         Some(rust_decimal::Decimal::ZERO)
+    }
+
+    fn warm(&self, _token_id: &str) -> futures_util::future::BoxFuture<'_, anyhow::Result<()>> {
+        use futures_util::FutureExt;
+        async { Ok(()) }.boxed()
+    }
+}
+
+impl bolt_v2::clients::polymarket::FeeProvider for MissingFeeProvider {
+    fn fee_bps(&self, _token_id: &str) -> Option<rust_decimal::Decimal> {
+        None
     }
 
     fn warm(&self, _token_id: &str) -> futures_util::future::BoxFuture<'_, anyhow::Result<()>> {
@@ -1595,6 +1609,74 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     assert!(
         submission_events.is_empty(),
         "missing-reference entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(MissingFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "fee-rate-unavailable entry evaluation must not submit order"
+    );
+
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "fee_rate_unavailable".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_side"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert!(
+        submission_events.is_empty(),
+        "fee-rate-unavailable entry evaluation must not persist order submission"
     );
 }
 

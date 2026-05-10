@@ -85,8 +85,39 @@ pub struct BoltV3OrderSubmissionFacts {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3RejectedOrderFacts {
+    pub order_type: Option<String>,
+    pub time_in_force: Option<String>,
+    pub instrument_id: Option<String>,
+    pub side: Option<String>,
+    pub price: Option<f64>,
+    pub quantity: Option<f64>,
+    pub is_quote_quantity: Option<bool>,
+    pub is_post_only: Option<bool>,
+    pub is_reduce_only: Option<bool>,
+    pub client_order_id: Option<String>,
+}
+
+impl From<BoltV3OrderSubmissionFacts> for BoltV3RejectedOrderFacts {
+    fn from(facts: BoltV3OrderSubmissionFacts) -> Self {
+        Self {
+            order_type: Some(facts.order_type),
+            time_in_force: Some(facts.time_in_force),
+            instrument_id: Some(facts.instrument_id),
+            side: Some(facts.side),
+            price: Some(facts.price),
+            quantity: Some(facts.quantity),
+            is_quote_quantity: Some(facts.is_quote_quantity),
+            is_post_only: Some(facts.is_post_only),
+            is_reduce_only: Some(facts.is_reduce_only),
+            client_order_id: facts.client_order_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoltV3PreSubmitRejectionFacts {
-    pub order: BoltV3OrderSubmissionFacts,
+    pub order: BoltV3RejectedOrderFacts,
     pub rejection_reason: String,
 }
 
@@ -841,6 +872,45 @@ fn order_submission_facts_to_params(facts: BoltV3OrderSubmissionFacts) -> Params
     params
 }
 
+fn rejected_order_facts_to_params(facts: BoltV3RejectedOrderFacts) -> Params {
+    let mut params = Params::new();
+    params.insert(
+        "order_type".to_string(),
+        optional_string_to_value(facts.order_type),
+    );
+    params.insert(
+        "time_in_force".to_string(),
+        optional_string_to_value(facts.time_in_force),
+    );
+    params.insert(
+        "instrument_id".to_string(),
+        optional_string_to_value(facts.instrument_id),
+    );
+    params.insert("side".to_string(), optional_string_to_value(facts.side));
+    params.insert("price".to_string(), optional_f64_to_value(facts.price));
+    params.insert(
+        "quantity".to_string(),
+        optional_f64_to_value(facts.quantity),
+    );
+    params.insert(
+        "is_quote_quantity".to_string(),
+        optional_bool_to_value(facts.is_quote_quantity),
+    );
+    params.insert(
+        "is_post_only".to_string(),
+        optional_bool_to_value(facts.is_post_only),
+    );
+    params.insert(
+        "is_reduce_only".to_string(),
+        optional_bool_to_value(facts.is_reduce_only),
+    );
+    params.insert(
+        "client_order_id".to_string(),
+        optional_string_to_value(facts.client_order_id),
+    );
+    params
+}
+
 fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<()> {
     match facts.exit_order_mechanical_outcome.as_str() {
         "accepted" => {
@@ -943,7 +1013,7 @@ fn pre_submit_rejection_facts_to_params(
     facts: BoltV3PreSubmitRejectionFacts,
     rejection_reason_key: &str,
 ) -> Params {
-    let mut params = order_submission_facts_to_params(facts.order);
+    let mut params = rejected_order_facts_to_params(facts.order);
     params.insert(
         rejection_reason_key.to_string(),
         Value::String(facts.rejection_reason),
@@ -956,5 +1026,9 @@ fn optional_string_to_value(value: Option<String>) -> Value {
 }
 
 fn optional_f64_to_value(value: Option<f64>) -> Value {
+    value.map(Value::from).unwrap_or(Value::Null)
+}
+
+fn optional_bool_to_value(value: Option<bool>) -> Value {
     value.map(Value::from).unwrap_or(Value::Null)
 }

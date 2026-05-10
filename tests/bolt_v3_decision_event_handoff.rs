@@ -12,7 +12,7 @@ use bolt_v2::bolt_v3_decision_events::{
     BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
     BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
     BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
-    register_bolt_v3_decision_event_types,
+    BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
@@ -273,7 +273,7 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
     let event = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
-            order: order_submission_facts(None),
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
             rejection_reason: "invalid_quantity".to_string(),
         },
         UnixNanos::from(4_000),
@@ -368,7 +368,7 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
     let event = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
-            order: order_submission_facts(None),
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
             rejection_reason: "invalid_quantity".to_string(),
         },
         UnixNanos::from(6_000),

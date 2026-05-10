@@ -12,10 +12,11 @@ use bolt_v2::{
     bolt_v3_decision_events::{
         BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+        BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE, BoltV3EntryEvaluationDecisionEvent,
-        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
-        BoltV3ExitOrderSubmissionDecisionEvent,
+        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
+        BoltV3ExitEvaluationDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
     },
     bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     config::Config,
@@ -240,6 +241,24 @@ fn query_entry_order_submission_events(
     ParquetDataCatalog::new(path, None, None, None, None)
         .query_custom_data_dynamic(
             BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
+}
+
+fn query_entry_pre_submit_rejection_events(
+    path: &std::path::Path,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    ParquetDataCatalog::new(path, None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
             Some(&ids),
             None,
             None,
@@ -725,6 +744,56 @@ fn drive_eth_entry_no_action(mut node: LiveNode, strategy_id: StrategyId) {
     });
 }
 
+fn drive_eth_entry_pre_submit_rejection(mut node: LiveNode, strategy_id: StrategyId) {
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+
+            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+
+            for _ in 0..50 {
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+}
+
 #[test]
 fn eth_chainlink_taker_runtime_submits_real_entry_order() {
     let _guard = runtime_test_mutex().lock().unwrap();
@@ -975,6 +1044,108 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     assert!(
         submission_events.is_empty(),
         "no-action entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    drive_eth_entry_pre_submit_rejection(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "pre-submit rejection must not submit order"
+    );
+
+    let rejection_events =
+        query_entry_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(rejection_events.len(), 1);
+    match &rejection_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryPreSubmitRejectionDecisionEvent>()
+                .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                Some(&serde_json::Value::String(
+                    "instrument_missing_from_cache".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("instrument_id"),
+                Some(&serde_json::Value::String(
+                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("order_type"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("time_in_force"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("side"),
+                Some(&serde_json::Value::String("buy".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("price"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("quantity"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("is_quote_quantity"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("is_post_only"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("is_reduce_only"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert!(
+        submission_events.is_empty(),
+        "pre-submit rejection must not persist order submission"
     );
 }
 

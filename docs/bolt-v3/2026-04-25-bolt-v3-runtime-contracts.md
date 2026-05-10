@@ -1042,9 +1042,11 @@ This event must also contain:
 - `client_order_id`
 
 `client_order_id` may be null when local rejection happens before a NautilusTrader order object is constructed.
+For `entry_pre_submit_rejection`, order fact keys are required, but `order_type`, `time_in_force`, `side`, `price`, `quantity`, `is_quote_quantity`, `is_post_only`, and `is_reduce_only` may be explicit null when rejection happens before those facts exist. `instrument_id` should be non-null when the selected instrument is known.
 
 Allowed `entry_pre_submit_rejection_reason` values:
 
+- `instrument_missing_from_cache`
 - `invalid_price`
 - `invalid_quantity`
 - `exceeds_order_notional_cap`
@@ -1174,6 +1176,7 @@ This event must also contain:
 - `client_order_id`
 
 `client_order_id` may be null when local rejection happens before a NautilusTrader order object is constructed.
+For `exit_pre_submit_rejection`, order fact keys are required, but `order_type`, `time_in_force`, `instrument_id`, `side`, `price`, `quantity`, `is_quote_quantity`, `is_post_only`, and `is_reduce_only` may be explicit null when rejection happens before those facts exist.
 For `exit_order_submission` and `exit_pre_submit_rejection`, `authoritative_position_quantity`, `authoritative_sellable_quantity`, `open_exit_order_quantity`, and `uncovered_position_quantity` must be non-null.
 For the current `binary_oracle_edge_taker`, this event is not emitted until a later contract slice defines an active exit predicate.
 

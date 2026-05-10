@@ -31,6 +31,7 @@ use toml::Value;
 use crate::{
     bolt_v3_decision_events::{
         BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3OrderSubmissionFacts,
+        BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
     },
     platform::{
         polymarket_catalog::polymarket_instrument_id,
@@ -2093,6 +2094,23 @@ impl EthChainlinkTaker {
         evidence.write_entry_evaluation(&decision_trace_id, facts, ts, ts)
     }
 
+    fn write_bolt_v3_entry_pre_submit_rejection(
+        &mut self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+    ) -> Result<()> {
+        let Some(evidence) = self.context.bolt_v3_decision_evidence.clone() else {
+            return Ok(());
+        };
+
+        let Some(facts) = entry_pre_submit_rejection_facts(decision)? else {
+            return Ok(());
+        };
+        let decision_trace_id = self.active_decision_trace_id();
+        let ts = unix_nanos_from_millis(now_ms)?;
+        evidence.write_entry_pre_submit_rejection(&decision_trace_id, facts, ts, ts)
+    }
+
     fn entry_evaluation_decision_facts(
         &self,
         now_ms: u64,
@@ -3119,6 +3137,10 @@ impl EthChainlinkTaker {
             decision.blocked_reason = Some("instrument_id_missing");
             return decision;
         };
+        let order_side = strategy_entry_order_side(selected_side);
+        decision.instrument_id = Some(instrument_id);
+        decision.order_side = Some(order_side);
+
         let Some(instrument) = self.current_instrument(instrument_id) else {
             decision.blocked_reason = Some("instrument_missing_from_cache");
             return decision;
@@ -3142,10 +3164,6 @@ impl EthChainlinkTaker {
             return decision;
         }
 
-        let order_side = strategy_entry_order_side(selected_side);
-
-        decision.instrument_id = Some(instrument_id);
-        decision.order_side = Some(order_side);
         decision.price = Some(price);
         decision.quantity_value = Some(quantity_value);
         decision
@@ -3154,6 +3172,7 @@ impl EthChainlinkTaker {
     fn try_submit_entry_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         let decision = self.entry_submission_decision_at(now_ms);
         self.write_bolt_v3_entry_evaluation(now_ms, &decision)?;
+        self.write_bolt_v3_entry_pre_submit_rejection(now_ms, &decision)?;
         self.log_entry_evaluation(now_ms, &decision);
 
         let Some(instrument_id) = decision.instrument_id else {
@@ -4563,6 +4582,45 @@ fn order_submission_facts(
         is_reduce_only,
         client_order_id: Some(client_order_id.to_string()),
     })
+}
+
+fn entry_pre_submit_rejection_facts(
+    decision: &EntrySubmissionDecision,
+) -> Result<Option<BoltV3PreSubmitRejectionFacts>> {
+    let Some(rejection_reason) = decision.blocked_reason else {
+        return Ok(None);
+    };
+    if rejection_reason != "instrument_missing_from_cache" {
+        return Ok(None);
+    }
+
+    let side = decision
+        .order_side
+        .map(order_side_as_decision_fact)
+        .transpose()?
+        .map(str::to_string);
+
+    Ok(Some(BoltV3PreSubmitRejectionFacts {
+        order: BoltV3RejectedOrderFacts {
+            order_type: None,
+            time_in_force: None,
+            instrument_id: decision
+                .instrument_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            side,
+            price: decision.price,
+            quantity: decision.quantity_value,
+            is_quote_quantity: None,
+            is_post_only: None,
+            is_reduce_only: None,
+            client_order_id: decision
+                .client_order_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+        },
+        rejection_reason: rejection_reason.to_string(),
+    }))
 }
 
 fn order_type_as_decision_fact(order_type: OrderType) -> Result<&'static str> {

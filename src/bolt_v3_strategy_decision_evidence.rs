@@ -12,8 +12,9 @@ use crate::{
     bolt_v3_decision_events::{
         BoltV3DecisionEventCatalogHandoff, BoltV3EntryEvaluationDecisionEvent,
         BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
-        BoltV3ExitEvaluationDecisionEvent, BoltV3ExitEvaluationFacts,
-        BoltV3ExitOrderSubmissionDecisionEvent, BoltV3OrderSubmissionFacts,
+        BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
+        BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
+        BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
     },
 };
 
@@ -64,6 +65,21 @@ impl BoltV3StrategyDecisionEvidence {
             BoltV3EntryEvaluationDecisionEvent::entry_evaluation(common, facts, ts_event, ts_init)?;
         self.write_entry_evaluation_event(event)
             .context("bolt-v3 entry evaluation handoff failed")
+    }
+
+    pub fn write_entry_pre_submit_rejection(
+        &self,
+        decision_trace_id: &str,
+        facts: BoltV3PreSubmitRejectionFacts,
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    ) -> Result<()> {
+        let common = self.common_context.common_fields(decision_trace_id)?;
+        let event = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
+            common, facts, ts_event, ts_init,
+        )?;
+        self.write_entry_pre_submit_rejection_event(event)
+            .context("bolt-v3 entry pre-submit rejection handoff failed")
     }
 
     pub fn gate_exit_order_submission<T>(
@@ -125,6 +141,21 @@ impl BoltV3StrategyDecisionEvidence {
         })
         .join()
         .map_err(|_| anyhow!("bolt-v3 entry evaluation handoff thread panicked"))?
+    }
+
+    fn write_entry_pre_submit_rejection_event(
+        &self,
+        event: BoltV3EntryPreSubmitRejectionDecisionEvent,
+    ) -> Result<()> {
+        let handoff = Arc::clone(&self.handoff);
+        thread::spawn(move || {
+            let mut handoff = handoff
+                .lock()
+                .map_err(|_| anyhow!("bolt-v3 decision-evidence handoff mutex poisoned"))?;
+            handoff.write_entry_pre_submit_rejection(event)
+        })
+        .join()
+        .map_err(|_| anyhow!("bolt-v3 entry pre-submit rejection handoff thread panicked"))?
     }
 
     fn write_exit_evaluation_event(&self, event: BoltV3ExitEvaluationDecisionEvent) -> Result<()> {

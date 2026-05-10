@@ -3556,6 +3556,15 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
         return Some("fee_rate_unavailable");
     }
 
+    if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision.evaluation.gate.blocked_by
+            == [EntryBlockReason::ForcedFlat(
+                ForcedFlatReason::StaleChainlink,
+            )]
+    {
+        return Some("stale_reference_quote");
+    }
+
     None
 }
 

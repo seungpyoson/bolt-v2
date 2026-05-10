@@ -44,7 +44,7 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, RiskBlock,
+    PersistenceBlock, ReferenceStreamBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -101,6 +101,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
+    errors.extend(validate_reference_streams(&root.reference_streams));
     errors.extend(validate_clients_block(&root.clients));
 
     errors
@@ -386,6 +387,69 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
+fn validate_reference_streams(streams: &BTreeMap<String, ReferenceStreamBlock>) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for (stream_id, stream) in streams {
+        if stream_id.trim().is_empty() {
+            errors.push("reference_streams must not contain an empty stream id".to_string());
+            continue;
+        }
+
+        let context = format!("reference_streams.{stream_id}");
+        if stream.publish_topic.trim().is_empty() {
+            errors.push(format!(
+                "{context}.publish_topic must be a non-empty string"
+            ));
+        }
+        if stream.min_publish_interval_milliseconds == 0 {
+            errors.push(format!(
+                "{context}.min_publish_interval_milliseconds must be a positive integer"
+            ));
+        }
+        if stream.inputs.is_empty() {
+            errors.push(format!("{context}.inputs must list at least one input"));
+        }
+
+        let mut seen_source_ids: HashSet<&str> = HashSet::new();
+        for (index, input) in stream.inputs.iter().enumerate() {
+            let input_context = format!("{context}.inputs[{index}]");
+            if input.source_id.trim().is_empty() {
+                errors.push(format!(
+                    "{input_context}.source_id must be a non-empty string"
+                ));
+            } else if !seen_source_ids.insert(input.source_id.as_str()) {
+                errors.push(format!(
+                    "{input_context}.source_id `{}` is already used by another input in {context}",
+                    input.source_id
+                ));
+            }
+            if input.instrument_id.trim().is_empty() {
+                errors.push(format!(
+                    "{input_context}.instrument_id must be a non-empty string"
+                ));
+            }
+            if !input.base_weight.is_finite() || input.base_weight <= 0.0 {
+                errors.push(format!("{input_context}.base_weight must be positive"));
+            }
+            if input.stale_after_milliseconds == 0 {
+                errors.push(format!(
+                    "{input_context}.stale_after_milliseconds must be a positive integer"
+                ));
+            }
+            if input.disable_after_milliseconds == 0
+                || input.disable_after_milliseconds < input.stale_after_milliseconds
+            {
+                errors.push(format!(
+                    "{input_context}.disable_after_milliseconds must be greater than or equal to stale_after_milliseconds"
+                ));
+            }
+        }
+    }
+
+    errors
+}
+
 fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
     let mut errors = Vec::new();
     if clients.is_empty() {
@@ -514,11 +578,43 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         errors.extend(target_errors);
 
         errors.extend(validate_reference_data(&context, root, strategy));
+        errors.extend(validate_reference_stream_id(&context, root, strategy));
         errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
             &context,
             strategy,
             default_max_notional_decimal.as_ref(),
         ));
+    }
+
+    errors
+}
+
+fn validate_reference_stream_id(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(parameters) = strategy.parameters.as_table() else {
+        return errors;
+    };
+    let Some(value) = parameters.get("reference_stream_id") else {
+        return errors;
+    };
+
+    match value.as_str() {
+        Some(stream_id) if stream_id.trim().is_empty() => errors.push(format!(
+            "{context}: parameters.reference_stream_id must be a non-empty string"
+        )),
+        Some(stream_id) if !root.reference_streams.contains_key(stream_id) => {
+            errors.push(format!(
+                "{context}: parameters.reference_stream_id `{stream_id}` does not match any [reference_streams.<id>] block"
+            ));
+        }
+        Some(_) => {}
+        None => errors.push(format!(
+            "{context}: parameters.reference_stream_id must be a string"
+        )),
     }
 
     errors

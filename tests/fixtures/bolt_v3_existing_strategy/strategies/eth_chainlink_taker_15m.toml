@@ -16,7 +16,7 @@ retry_interval_seconds = 5
 blocked_after_seconds = 60
 
 [parameters]
-reference_publish_topic = "reference.eth_usd.placeholder-mustchange"
+reference_stream_id = "eth_usd"
 warmup_tick_count = 1
 period_duration_secs = 900
 reentry_cooldown_secs = 30

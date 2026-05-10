@@ -28,6 +28,8 @@ pub struct BoltV3RootConfig {
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
     pub aws: AwsBlock,
+    #[serde(default)]
+    pub reference_streams: BTreeMap<String, ReferenceStreamBlock>,
     pub clients: BTreeMap<String, ClientBlock>,
 }
 
@@ -206,6 +208,32 @@ pub enum RotationKind {
 #[serde(deny_unknown_fields)]
 pub struct AwsBlock {
     pub region: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceStreamBlock {
+    pub publish_topic: String,
+    pub min_publish_interval_milliseconds: u64,
+    pub inputs: Vec<ReferenceStreamInputBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceStreamInputBlock {
+    pub source_id: String,
+    pub source_type: ReferenceSourceType,
+    pub instrument_id: String,
+    pub base_weight: f64,
+    pub stale_after_milliseconds: u64,
+    pub disable_after_milliseconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceSourceType {
+    Oracle,
+    Orderbook,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

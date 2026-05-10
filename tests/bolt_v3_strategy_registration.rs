@@ -23,7 +23,7 @@ fn existing_strategy_multi_root_fixture() -> std::path::PathBuf {
 }
 
 #[test]
-fn existing_strategy_fixture_uses_explicit_placeholder_reference_topic() {
+fn existing_strategy_fixture_selects_root_reference_stream() {
     let loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
         .expect("v3 TOML fixture should load");
     let strategy = loaded
@@ -31,18 +31,22 @@ fn existing_strategy_fixture_uses_explicit_placeholder_reference_topic() {
         .first()
         .expect("existing-strategy fixture should load one strategy");
 
-    let topic = strategy
+    let stream_id = strategy
         .config
         .parameters
-        .get("reference_publish_topic")
+        .get("reference_stream_id")
         .and_then(toml::Value::as_str)
-        .expect("existing-strategy fixture should set reference_publish_topic");
+        .expect("existing-strategy fixture should set reference_stream_id");
 
-    assert_eq!(topic, "reference.eth_usd.placeholder-mustchange");
-    assert!(
-        !topic.contains("chainlink"),
-        "v3 tracer topic must not imply a specific reference producer"
-    );
+    let stream = loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .expect("root should define selected reference stream");
+
+    assert_eq!(stream.publish_topic, "reference.eth_usd");
+    assert_eq!(stream.inputs.len(), 1);
+    assert_eq!(stream.inputs[0].source_id, "eth_usd_oracle_anchor");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
-Date: 2026-05-10
-Branch context: `codex/bolt-v3-decision-event-contract`
+Date: 2026-05-11
+Branch context: `codex/bolt-v3-reference-contract`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -19,8 +19,8 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | --- | --- | --- | --- | --- |
 | F1 | Multi-strategy idle verification | verified-local | `tests/bolt_v3_strategy_registration.rs` proves root TOML with 2 `strategy_files` builds one `LiveNode`, registers both strategy IDs from TOML, reaches `NodeState::Idle`, and source-fences registration wiring from submit/subscribe calls | live run, order lifecycle, many-client scale |
 | F2 | Reference role naming | blocked | Decide whether `reference_data.primary` is correct role language; update schema/tests only after decision | fused-price policy, producer wiring |
-| F3 | ETH/USD reference contract | blocked | Define logical reference stream name, required inputs, freshness/confidence semantics, and source ownership; current eth tracer has only `parameters.reference_publish_topic`, while `[reference_data]` is not present in the eth strategy fixture | live orders, order admission |
-| F4 | Fused-price policy | blocked | Tests for anchor source, fast-feed modifiers, weights, stale handling, disagreement handling, fail-closed cases | client implementation |
+| F3 | ETH/USD reference contract | verified-local | Root TOML defines `[reference_streams.eth_usd]` with topic, input source, source type, instrument ID, weight, stale window, and disable window; existing strategy TOML selects it with `parameters.reference_stream_id`; `tests/bolt_v3_strategy_registration.rs` and `tests/config_parsing.rs` prove lookup and validation | live orders, order admission, producer wiring |
+| F4 | Fused-price policy | blocked | Tests for anchor source, fast-feed modifiers, weights beyond the raw configured `base_weight`, stale handling, disagreement handling, fail-closed cases | client implementation |
 | F5 | Reference producer wiring | blocked | v3 TOML must create a producer path and the strategy must receive `ReferenceSnapshot` on the configured topic; current producer code is legacy `Config.reference`/`ReferenceActor`, not bolt-v3 root/strategy TOML | changing strategy signal logic |
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
@@ -34,15 +34,15 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 
 ## Current Narrow Proof
 
-The current branch aims to prove only:
+The current reference-contract branch proves only:
 
 ```text
-v3 TOML -> registered idle LiveNode -> NT cache selected-market readiness gate -> Ready/Blocked before start
+root reference stream TOML -> strategy reference_stream_id -> NT strategy context reference_publish_topic
 ```
 
-This does not prove production readiness, live orders, automatic instrument loading, fused-reference correctness, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
+This does not prove production readiness, live orders, automatic instrument loading, fused-reference correctness, producer construction, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
 
-## Current Blocker
+## Instrument Blocker
 
 F6c is blocked because the accepted NT path that populates the cache before execution clients is inside `LiveNode::start`. That path also runs reconciliation and starts the trader. NT source evidence at pinned `nautilus_trader@38b912a`: `crates/live/src/node.rs` startup sequencing comments, `LiveNode::start`, and private `flush_pending_data`; `crates/live/src/runner.rs` routes `DataEvent::Instrument` into `DataEngine`; `crates/data/src/engine/mod.rs` processes `InstrumentAny` into cache.
 
@@ -50,9 +50,9 @@ Do not work around this by fetching venue instruments directly in bolt-v3 and wr
 
 ## Reference Blocker
 
-F3-F5 are blocked by a contract gap, not code volume. Current bolt-v3 eth tracer passes `parameters.reference_publish_topic` into the existing strategy. It does not define reference inputs, source ownership, weights, freshness, or producer construction from bolt-v3 TOML. Existing `ReferenceActor` proves a legacy producer exists under old `Config.reference`, but wiring that into bolt-v3 without a v3 contract would create a hidden dual config path.
+F3 local contract is no longer blocked: bolt-v3 root TOML defines the logical reference stream, and the existing eth tracer selects it by `parameters.reference_stream_id`. The strategy still receives the NT-owned `StrategyBuildContext.reference_publish_topic`; the topic is now resolved from root TOML, not strategy-local policy.
 
-Do not create a bolt-v3 reference producer until the v3 reference contract names the configured stream, its input sources, freshness rules, and whether `reference_data` remains in strategy TOML or moves to root-level reference config.
+F4-F5 remain blocked. The configured stream names source facts and freshness windows, but it does not yet define the fused-price decision policy or construct a producer from bolt-v3 TOML. Existing `ReferenceActor` proves a legacy producer exists under old `Config.reference`, but wiring that into bolt-v3 without an accepted v3 producer path would create a hidden dual config path.
 
 ## Decision-Event Status
 

@@ -183,6 +183,18 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
+[reference_streams.eth_usd]
+publish_topic = "reference.eth_usd"
+min_publish_interval_milliseconds = 100
+
+[[reference_streams.eth_usd.inputs]]
+source_id = "eth_usd_oracle_anchor"
+source_type = "oracle"
+instrument_id = "ETHUSD.CHAINLINK"
+base_weight = 1.0
+stale_after_milliseconds = 1500
+disable_after_milliseconds = 5000
+
 [clients.polymarket_main]
 venue = "POLYMARKET"
 
@@ -582,6 +594,47 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
 - required: yes
 - used by the Rust Amazon Web Services Systems Manager client
 - no implicit region fallback
+
+### `[reference_streams.<stream_id>]`
+
+This root block names a logical reference stream shared by strategies.
+It does not construct the reference producer yet.
+Producer wiring remains a separate gate.
+
+#### Stream ID
+
+- type: keyed reference string
+- required only when configured strategies select it
+- examples:
+  - `eth_usd`
+
+#### `publish_topic`
+
+- type: string
+- required: yes
+- must be non-empty
+- internal strategy subscription topic for `ReferenceSnapshot`
+
+#### `min_publish_interval_milliseconds`
+
+- type: positive integer
+- required: yes
+- intended producer publish cadence
+
+#### `inputs`
+
+- type: array of tables
+- required: yes
+- must contain at least one input
+
+Each `[[reference_streams.<stream_id>.inputs]]` block declares one logical source:
+
+- `source_id`: non-empty source key unique within the stream
+- `source_type`: current allowed values are `oracle` and `orderbook`
+- `instrument_id`: source instrument identity
+- `base_weight`: positive finite numeric weight
+- `stale_after_milliseconds`: positive freshness window
+- `disable_after_milliseconds`: positive disable window, greater than or equal to `stale_after_milliseconds`
 
 ### `[clients.<client_id>]`
 
@@ -1109,6 +1162,16 @@ For the current `binary_oracle_edge_taker` archetype:
 - fees are not included in this cap
 - runtime capacity computation is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
+For the current `eth_chainlink_taker` existing-strategy tracer:
+
+#### `reference_stream_id`
+
+- type: keyed reference string
+- required
+- must match a root `[reference_streams.<stream_id>]` block
+- selected stream `publish_topic` becomes the NT strategy context `reference_publish_topic`
+- strategy-local `reference_publish_topic` is not accepted by the bolt-v3 tracer
+
 ## 8. Validation Rules
 
 ### Structural validation
@@ -1125,6 +1188,8 @@ Must fail if:
 - more than one `[clients.<client_id>]` block declares the same `venue` in the current one-client-per-venue slice
 - a `[secrets]` block is present without the same venue's consuming client block
 - an SSM parameter path is empty or does not start with `/`
+- a configured reference stream has an empty publish topic, non-positive publish cadence, no inputs, empty input source or instrument IDs, non-positive weight, non-positive stale window, or a disable window before the stale window
+- a strategy `parameters.reference_stream_id`, when present, does not match a root `[reference_streams.<id>]` block
 - two listed strategy files declare the same `strategy_instance_id`
 - two listed strategy files declare the same `order_id_tag`
 - two configured targets declare the same `configured_target_id`
@@ -1257,6 +1322,18 @@ rotation_kind = "none"
 
 [aws]
 region = "eu-west-1"
+
+[reference_streams.eth_usd]
+publish_topic = "reference.eth_usd"
+min_publish_interval_milliseconds = 100
+
+[[reference_streams.eth_usd.inputs]]
+source_id = "eth_usd_oracle_anchor"
+source_type = "oracle"
+instrument_id = "ETHUSD.CHAINLINK"
+base_weight = 1.0
+stale_after_milliseconds = 1500
+disable_after_milliseconds = 5000
 
 [clients.polymarket_main]
 venue = "POLYMARKET"

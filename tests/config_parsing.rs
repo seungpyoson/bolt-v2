@@ -833,6 +833,96 @@ fn invalid_reference_data_client_id_error_names_field() {
 }
 
 #[test]
+fn invalid_reference_stream_id_error_names_field() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy, load_bolt_v3_config},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let loaded_root = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing strategy root fixture should load");
+    let mutated = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/strategies/eth_chainlink_taker.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "reference_stream_id = \"eth_usd\"",
+        "reference_stream_id = \"missing_stream\"",
+    );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&mutated).expect("mutated strategy should parse");
+    let loaded = [LoadedStrategy {
+        config_path: support::repo_path(
+            "tests/fixtures/bolt_v3_existing_strategy/strategies/eth_chainlink_taker.toml",
+        ),
+        relative_path: "strategies/eth_chainlink_taker.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&loaded_root.root, &loaded);
+
+    assert!(
+        messages.iter().any(|message| message.contains(
+            "parameters.reference_stream_id `missing_stream` does not match any [reference_streams.<id>] block"
+        )),
+        "expected reference_stream_id validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn invalid_reference_stream_values_are_rejected() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("root fixture should be readable")
+    .replace(
+        "publish_topic = \"reference.eth_usd\"",
+        "publish_topic = \"\"",
+    )
+    .replace(
+        "min_publish_interval_milliseconds = 100",
+        "min_publish_interval_milliseconds = 0",
+    )
+    .replace("source_id = \"eth_usd_oracle_anchor\"", "source_id = \"\"")
+    .replace(
+        "instrument_id = \"ETHUSD.CHAINLINK\"",
+        "instrument_id = \"\"",
+    )
+    .replace("base_weight = 1.0", "base_weight = 0.0")
+    .replace(
+        "stale_after_milliseconds = 1500",
+        "stale_after_milliseconds = 0",
+    )
+    .replace(
+        "disable_after_milliseconds = 5000",
+        "disable_after_milliseconds = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid reference stream root should parse");
+
+    let messages = validate_root_only(&root);
+
+    for expected in [
+        "reference_streams.eth_usd.publish_topic must be a non-empty string",
+        "reference_streams.eth_usd.min_publish_interval_milliseconds must be a positive integer",
+        "reference_streams.eth_usd.inputs[0].source_id must be a non-empty string",
+        "reference_streams.eth_usd.inputs[0].instrument_id must be a non-empty string",
+        "reference_streams.eth_usd.inputs[0].base_weight must be positive",
+        "reference_streams.eth_usd.inputs[0].stale_after_milliseconds must be a positive integer",
+        "reference_streams.eth_usd.inputs[0].disable_after_milliseconds must be greater than or equal to stale_after_milliseconds",
+    ] {
+        assert!(
+            messages.iter().any(|message| message.contains(expected)),
+            "expected validation error `{expected}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_unknown_bolt_v3_config_fields() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 

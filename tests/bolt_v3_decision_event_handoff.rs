@@ -1,8 +1,15 @@
 use bolt_v2::bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock};
 use bolt_v2::bolt_v3_decision_events::{
+    BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+    BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
     BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BoltV3DecisionEventCatalogHandoff,
-    BoltV3DecisionEventCommonFields, BoltV3MarketSelectionDecisionEvent,
-    BoltV3MarketSelectionResultFacts, register_bolt_v3_decision_event_types,
+    BoltV3DecisionEventCommonFields, BoltV3EntryOrderSubmissionDecisionEvent,
+    BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
+    BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
+    BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
+    register_bolt_v3_decision_event_types,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
@@ -120,6 +127,213 @@ fn market_selection_result_handoff_returns_catalog_write_error() {
     assert!(!error.to_string().is_empty());
 }
 
+#[test]
+fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
+        &persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+
+    let event = BoltV3EntryOrderSubmissionDecisionEvent::entry_order_submission(
+        common_fields(),
+        order_submission_facts(Some("ORDER-001".to_string())),
+        UnixNanos::from(3_000),
+        UnixNanos::from(3_001),
+    )
+    .unwrap();
+
+    handoff.write_entry_order_submission(event).unwrap();
+
+    let ids = vec!["target-eth-updown".to_string()];
+    let loaded = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+    assert_eq!(loaded.len(), 1);
+    match &loaded[0] {
+        Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3EntryOrderSubmissionDecisionEvent>()
+                .expect("BoltV3EntryOrderSubmissionDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&Value::String("ORDER-001".to_string()))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn entry_order_submission_rejects_missing_client_order_id() {
+    let error = BoltV3EntryOrderSubmissionDecisionEvent::entry_order_submission(
+        common_fields(),
+        order_submission_facts(None),
+        UnixNanos::from(3_000),
+        UnixNanos::from(3_001),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("client_order_id must be non-null")
+    );
+}
+
+#[test]
+fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
+        &persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+
+    let event = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
+        common_fields(),
+        BoltV3PreSubmitRejectionFacts {
+            order: order_submission_facts(None),
+            rejection_reason: "invalid_quantity".to_string(),
+        },
+        UnixNanos::from(4_000),
+        UnixNanos::from(4_001),
+    )
+    .unwrap();
+
+    handoff.write_entry_pre_submit_rejection(event).unwrap();
+
+    let ids = vec!["target-eth-updown".to_string()];
+    let loaded = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+    assert_eq!(loaded.len(), 1);
+    match &loaded[0] {
+        Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3EntryPreSubmitRejectionDecisionEvent>()
+                .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                Some(&Value::String("invalid_quantity".to_string()))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn exit_order_submission_event_writes_through_nt_catalog_handoff() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
+        &persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+
+    let event = BoltV3ExitOrderSubmissionDecisionEvent::exit_order_submission(
+        common_fields(),
+        order_submission_facts(Some("EXIT-ORDER-001".to_string())),
+        UnixNanos::from(5_000),
+        UnixNanos::from(5_001),
+    )
+    .unwrap();
+
+    handoff.write_exit_order_submission(event).unwrap();
+
+    let loaded = query_events(
+        temp_dir.path(),
+        BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    );
+
+    assert_eq!(loaded.len(), 1);
+    match &loaded[0] {
+        Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3ExitOrderSubmissionDecisionEvent>()
+                .expect("BoltV3ExitOrderSubmissionDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&Value::String("EXIT-ORDER-001".to_string()))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
+        &persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+
+    let event = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
+        common_fields(),
+        BoltV3PreSubmitRejectionFacts {
+            order: order_submission_facts(None),
+            rejection_reason: "invalid_quantity".to_string(),
+        },
+        UnixNanos::from(6_000),
+        UnixNanos::from(6_001),
+    )
+    .unwrap();
+
+    handoff.write_exit_pre_submit_rejection(event).unwrap();
+
+    let loaded = query_events(
+        temp_dir.path(),
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+    );
+
+    assert_eq!(loaded.len(), 1);
+    match &loaded[0] {
+        Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3ExitPreSubmitRejectionDecisionEvent>()
+                .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                Some(&Value::String("invalid_quantity".to_string()))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
 fn common_fields() -> BoltV3DecisionEventCommonFields {
     BoltV3DecisionEventCommonFields {
         schema_version: 1,
@@ -135,6 +349,28 @@ fn common_fields() -> BoltV3DecisionEventCommonFields {
         nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e".to_string(),
         configured_target_id: "target-eth-updown".to_string(),
     }
+}
+
+fn order_submission_facts(client_order_id: Option<String>) -> BoltV3OrderSubmissionFacts {
+    BoltV3OrderSubmissionFacts {
+        order_type: "limit".to_string(),
+        time_in_force: "gtc".to_string(),
+        instrument_id: "ETH-UP.POLYMARKET".to_string(),
+        side: "buy".to_string(),
+        price: 0.52,
+        quantity: 10.0,
+        is_quote_quantity: false,
+        is_post_only: false,
+        is_reduce_only: false,
+        client_order_id,
+    }
+}
+
+fn query_events(path: &std::path::Path, event_type: &str) -> Vec<Data> {
+    let ids = vec!["target-eth-updown".to_string()];
+    ParquetDataCatalog::new(path, None, None, None, None)
+        .query_custom_data_dynamic(event_type, Some(&ids), None, None, None, None, true)
+        .unwrap()
 }
 
 fn persistence_block(path: impl AsRef<std::path::Path>) -> PersistenceBlock {

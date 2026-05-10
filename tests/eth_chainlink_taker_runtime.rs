@@ -480,6 +480,27 @@ fn selection_snapshot_for(market_id: &str, start_ts_ms: u64) -> RuntimeSelection
     }
 }
 
+fn future_selection_snapshot(
+    published_at_ms: u64,
+    market_start_ts_ms: u64,
+) -> RuntimeSelectionSnapshot {
+    let mut market = candidate_market_named("MKT-ETH-1", market_start_ts_ms);
+    market.selected_market_observed_ts_ms = published_at_ms;
+    market.end_ts_ms = market_start_ts_ms + 300_000;
+    market.seconds_to_end = (market.end_ts_ms - published_at_ms) / 1_000;
+    RuntimeSelectionSnapshot {
+        ruleset_id: "PRIMARY".to_string(),
+        decision: SelectionDecision {
+            ruleset_id: "PRIMARY".to_string(),
+            state: SelectionState::Active {
+                market: market.clone(),
+            },
+        },
+        eligible_candidates: vec![market],
+        published_at_ms,
+    }
+}
+
 fn freeze_selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     freeze_selection_snapshot_for("MKT-ETH-1", start_ts_ms)
 }
@@ -933,6 +954,57 @@ fn drive_eth_entry_stale_reference_no_action(mut node: LiveNode, strategy_id: St
                 &reference_snapshot(start_ts_ms + 1, 3_101.0, 3_105.0),
             );
             sleep(Duration::from_millis(20)).await;
+
+            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+
+            for _ in 0..50 {
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+}
+
+fn drive_eth_entry_market_not_started_no_action(mut node: LiveNode, strategy_id: StrategyId) {
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let market_start_ts_ms = start_ts_ms + 60_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &future_selection_snapshot(start_ts_ms, market_start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
 
             let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
             let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
@@ -1981,6 +2053,88 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
     assert!(
         submission_events.is_empty(),
         "position-limit-reached entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_market_not_started_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "market-not-started mechanical entry evaluation must not submit order"
+    );
+
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "updown_market_mechanical_rejection".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_market_mechanical_outcome"),
+                Some(&serde_json::Value::String("rejected".to_string()))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("updown_market_mechanical_rejection_reason"),
+                Some(&serde_json::Value::String("market_not_started".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("has_selected_market_open_orders"),
+                Some(&serde_json::Value::Bool(false))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_side"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert!(
+        submission_events.is_empty(),
+        "market-not-started mechanical entry evaluation must not persist order submission"
     );
 }
 

@@ -2145,7 +2145,11 @@ impl EthChainlinkTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<Option<BoltV3EntryEvaluationFacts>> {
-        let no_action_reason = entry_no_action_reason(decision);
+        let mechanical_rejection_reason =
+            self.updown_market_mechanical_rejection_reason(now_ms, decision);
+        let no_action_reason = mechanical_rejection_reason
+            .map(|_| "updown_market_mechanical_rejection")
+            .or_else(|| entry_no_action_reason(decision));
         if decision.blocked_reason.is_some() && no_action_reason.is_none() {
             return Ok(None);
         }
@@ -2163,14 +2167,20 @@ impl EthChainlinkTaker {
         });
 
         if let Some(reason) = no_action_reason {
+            let mechanical_rejected = mechanical_rejection_reason.is_some();
             return Ok(Some(BoltV3EntryEvaluationFacts {
                 updown_side: None,
                 entry_decision: "no_action".to_string(),
                 entry_no_action_reason: Some(reason.to_string()),
                 seconds_to_market_end,
                 has_selected_market_open_orders: false,
-                updown_market_mechanical_outcome: "accepted".to_string(),
-                updown_market_mechanical_rejection_reason: None,
+                updown_market_mechanical_outcome: if mechanical_rejected {
+                    "rejected".to_string()
+                } else {
+                    "accepted".to_string()
+                },
+                updown_market_mechanical_rejection_reason: mechanical_rejection_reason
+                    .map(str::to_string),
                 entry_filled_notional: 0.0,
                 open_entry_notional: 0.0,
                 strategy_remaining_entry_capacity: self.config.max_position_usdc,
@@ -2196,6 +2206,32 @@ impl EthChainlinkTaker {
             strategy_remaining_entry_capacity: self.config.max_position_usdc,
             archetype_metrics,
         }))
+    }
+
+    fn updown_market_mechanical_rejection_reason(
+        &self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+    ) -> Option<&'static str> {
+        if decision.blocked_reason != Some("entry_gate_blocked") {
+            return None;
+        }
+        if decision.evaluation.gate.blocked_by.iter().any(|reason| {
+            matches!(
+                reason,
+                EntryBlockReason::MetadataMismatch | EntryBlockReason::ActiveBookNotPriced
+            )
+        }) {
+            return None;
+        }
+        if self
+            .active
+            .interval_start_ms
+            .is_some_and(|start_ms| now_ms < start_ms)
+        {
+            return Some("market_not_started");
+        }
+        None
     }
 
     fn outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {

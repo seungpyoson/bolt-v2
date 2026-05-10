@@ -15,7 +15,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | Requirement | Evidence | Status |
 | --- | --- | --- |
 | Use fresh branches/worktrees from origin | Current branch `codex/bolt-v3-reference-delivery-proof` was created in `.worktrees/bolt-v3-reference-delivery-proof` from pushed origin ref `origin/codex/bolt-v3-reference-actor-registration` | met |
-| Commit and push each slice | Current reference-delivery-proof slice is local until commit/push; prior slices remain pushed separately | pending |
+| Commit and push each slice | Current reference-delivery-proof slice committed as `a36278c` and pushed to `origin/codex/bolt-v3-reference-delivery-proof`; prior slices remain pushed separately | met |
 | Do not merge without approval | No merge command used; no PR opened from these branches | met |
 | F3 ETH/USD reference contract | Root TOML now defines `[reference_streams.eth_usd]`; existing strategy TOML selects it with `parameters.reference_stream_id`; validation rejects missing stream IDs and invalid stream values; strategy registration resolves selected stream to NT context `reference_publish_topic` | verified-local |
 | F4 fused-price policy | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams use the existing fusion algorithm for configured source IDs, source types, weights, freshness windows, disabled inputs, and topic; no disagreement fail-closed policy exists yet | partial |
@@ -28,7 +28,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | No Python production path | All F3-F10 tracker entries reject Python or avoid it; no Python runtime artifact added | met |
 | No direct venue bypass | F6c, F9, and F10 tracker entries reject direct provider/venue bypasses | met |
 | No hardcoded runtime values added | Runtime stream/topic/source/client/freshness values live in TOML fixtures; Rust only parses, validates, and looks up configured IDs | met locally |
-| Verification before claims | Focused reference-delivery-proof tests pass locally; full branch verification still pending before commit/push | pending |
+| Verification before claims | `cargo test --test bolt_v3_reference_delivery -- --nocapture`, `cargo test --test bolt_v3_reference_actor_registration -- --nocapture`, `cargo test --test bolt_v3_reference_producer -- --nocapture`, `cargo test --tests --no-run`, `cargo fmt`, `git diff --check`, and changed-file marker scan pass locally | met-local |
 
 ## Result
 
@@ -48,4 +48,4 @@ F3-F10 are not production-complete. They are classified with evidence:
 
 External reviews remain pending and are intentionally not requested here. CI on these branches has not been used as acceptance evidence. Merge approval remains required.
 
-The next implementation decision should not start F9 or F10. After this reference-delivery-proof slice is committed and pushed, the next credible slice is the production start/readiness gate decision before any real-provider start/run claim, still no orders.
+The next implementation decision should not start F9 or F10. With this reference-delivery-proof slice pushed, the next credible slice is the production start/readiness gate decision before any real-provider start/run claim, still no orders.

@@ -4,7 +4,7 @@ use nautilus_model::identifiers::StrategyId;
 use toml::{Value, map::Map};
 
 use crate::{
-    bolt_v3_config::BoltV3StrategyConfig,
+    bolt_v3_config::{BoltV3StrategyConfig, REFERENCE_STREAM_ID_PARAMETER},
     bolt_v3_providers::{self, polymarket::ResolvedBoltV3PolymarketSecrets},
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -15,7 +15,7 @@ use crate::{
     },
 };
 
-const REFERENCE_STREAM_ID_FIELD: &str = "reference_stream_id";
+const REFERENCE_STREAM_ID_FIELD: &str = REFERENCE_STREAM_ID_PARAMETER;
 const STRATEGY_ID_FIELD: &str = "strategy_id";
 const CLIENT_ID_FIELD: &str = "client_id";
 

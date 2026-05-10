@@ -19,6 +19,8 @@
 //!   NT engine/message-bus subscriptions for client instrument topics.
 //!   None of these steps open a network connection or run the event
 //!   loop.
+//! - registers one NT `ReferenceActor` for each distinct
+//!   `parameters.reference_stream_id` selected by configured strategies
 //! - registers configured bolt-v3 strategies on the built `LiveNode`
 //!   through the strategy-runtime binding registry
 //! - returns the resulting `nautilus_live::node::LiveNode` to the caller
@@ -60,6 +62,9 @@ use crate::{
     },
     bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
     bolt_v3_providers,
+    bolt_v3_reference_actor_registration::{
+        BoltV3ReferenceActorRegistrationError, register_bolt_v3_reference_actors,
+    },
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets,
@@ -108,6 +113,7 @@ pub enum BoltV3LiveNodeError {
     AdapterMapping(BoltV3ClientMappingError),
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
+    ReferenceActorRegistration(BoltV3ReferenceActorRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
     Build(anyhow::Error),
     /// The bolt-v3 controlled-connect boundary
@@ -179,6 +185,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ClientRegistration(error) => {
                 write!(f, "bolt-v3 client registration failed: {error}")
             }
+            BoltV3LiveNodeError::ReferenceActorRegistration(error) => {
+                write!(f, "bolt-v3 reference actor registration failed: {error}")
+            }
             BoltV3LiveNodeError::StrategyRegistration(error) => {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
             }
@@ -218,6 +227,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::AdapterMapping(error) => Some(error),
             BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
+            BoltV3LiveNodeError::ReferenceActorRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::ConnectTimeout { .. }
@@ -301,6 +311,8 @@ fn build_live_node_with_clients(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    register_bolt_v3_reference_actors(&mut node, loaded)
+        .map_err(BoltV3LiveNodeError::ReferenceActorRegistration)?;
     register_bolt_v3_strategies(&mut node, loaded, resolved)
         .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     Ok((node, summary))

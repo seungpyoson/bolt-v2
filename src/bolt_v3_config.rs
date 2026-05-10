@@ -16,6 +16,8 @@ use serde::Deserialize;
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
+pub const REFERENCE_STREAM_ID_PARAMETER: &str = "reference_stream_id";
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BoltV3RootConfig {

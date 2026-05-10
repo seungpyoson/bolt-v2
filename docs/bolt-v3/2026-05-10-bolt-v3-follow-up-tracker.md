@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-11
-Branch context: `codex/bolt-v3-chainlink-provider`
+Branch context: `codex/bolt-v3-reference-actor-registration`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -22,7 +22,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F2 | Reference role naming | blocked | Decide whether `reference_data.primary` is correct role language; update schema/tests only after decision | fused-price policy, producer wiring |
 | F3 | ETH/USD reference contract | verified-local | Root TOML defines `[reference_streams.eth_usd]` with topic, input source, source type, instrument ID, weight, stale window, and disable window; existing strategy TOML selects it with `parameters.reference_stream_id`; `tests/bolt_v3_strategy_registration.rs` and `tests/config_parsing.rs` prove lookup and validation | live orders, order admission, producer wiring |
 | F4 | Fused-price policy | partial | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams project into the existing fusion algorithm: configured source IDs, source types, weights, freshness windows, disabled inputs, topic, and existing strategy stream. Remaining proof: accepted cross-source disagreement fail-closed policy and any strategy-specific fast-feed modifier policy | client implementation |
-| F5 | Reference producer wiring | partial | `tests/bolt_v3_adapter_mapping.rs` proves a v3 Chainlink client maps stream feed metadata into `ChainlinkReferenceClientConfig`; `tests/bolt_v3_reference_producer.rs` proves the existing eth stream builds an existing `ReferenceActorConfig`/`ReferenceVenueEntry` plan from v3 TOML without legacy `Config.reference`. Remaining proof: LiveNode actor registration and observed `ReferenceSnapshot` delivery on the configured topic | changing strategy signal logic |
+| F5 | Reference producer wiring | partial | `tests/bolt_v3_adapter_mapping.rs` proves a v3 Chainlink client maps stream feed metadata into `ChainlinkReferenceClientConfig`; `tests/bolt_v3_reference_producer.rs` proves the existing eth stream builds an existing `ReferenceActorConfig`/`ReferenceVenueEntry` plan from v3 TOML without legacy `Config.reference`; `tests/bolt_v3_reference_actor_registration.rs` proves the v3 LiveNode build path registers one selected `ReferenceActor` and remains idle. Remaining proof: observed `ReferenceSnapshot` delivery on the configured topic after an accepted start/run gate | changing strategy signal logic |
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
@@ -38,10 +38,10 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 The current reference-producer branch proves only:
 
 ```text
-root reference stream TOML -> existing ReferenceActor plan
+root reference stream TOML -> existing ReferenceActor plan -> selected ReferenceActor registered on idle LiveNode
 ```
 
-This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, LiveNode actor registration, producer runtime delivery, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
+This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, producer runtime delivery, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
 
 ## Instrument Blocker
 
@@ -55,7 +55,7 @@ F3 local contract is no longer blocked: bolt-v3 root TOML defines the logical re
 
 F4 is partial. The configured stream now projects into the existing fusion path, which computes weighted fair value, confidence, stale exclusion, and disabled-source exclusion. No cross-source disagreement fail-closed rule is accepted yet.
 
-F5 is partial. v3 TOML can now build an existing `ReferenceActor` plan when each source names a configured data client. The existing eth Chainlink stream now names `chainlink_reference`, and the v3 Chainlink provider maps feed metadata into the existing Chainlink reference data client. The remaining gap is LiveNode actor registration and observed runtime delivery.
+F5 is partial. v3 TOML can now build an existing `ReferenceActor` plan when each source names a configured data client. The existing eth Chainlink stream now names `chainlink_reference`, and the v3 Chainlink provider maps feed metadata into the existing Chainlink reference data client. The v3 LiveNode build path now registers one selected `ReferenceActor` while remaining idle. The remaining gap is observed runtime delivery after an accepted start/run gate.
 
 ## Decision-Event Status
 
@@ -75,7 +75,7 @@ Do not add one-off submit guards inside `eth_chainlink_taker` as the production 
 
 F9 is blocked by missing bolt-v3 order-intent evidence, not by missing NT primitives. The existing strategy can construct and submit NT orders and handle order events (`src/strategies/eth_chainlink_taker.rs:2827`, `:2978`, `:3324`, `:3410`, `:3435`). Pinned NT routes submitted orders through RiskEngine to ExecutionEngine (`nautilus_trader@38b912a:crates/risk/src/engine/mod.rs:496`, `:1764`; `crates/execution/src/engine/mod.rs:1625`), and the pinned Polymarket adapter exposes submit/cancel methods (`crates/adapters/polymarket/src/execution/mod.rs:792`, `:1036`).
 
-Bolt-v3 only proves build, client registration, strategy registration, and idle/controlled-connect behavior today. `build_live_node_with_clients` builds the node and registers strategies (`src/bolt_v3_live_node.rs:298`), while current v3 tests intentionally fence out `LiveNode::start` and `LiveNode::run`. An accepted order-lifecycle slice must come after F6c, F7, and F8: instrument load/start gate, durable decision event contract, and bolt-owned order admission.
+Bolt-v3 only proves build, client registration, selected reference actor registration, strategy registration, and idle/controlled-connect behavior today. `build_live_node_with_clients` builds the node, registers selected reference actors, and registers strategies (`src/bolt_v3_live_node.rs`), while current v3 tests intentionally fence out `LiveNode::start` and `LiveNode::run`. An accepted order-lifecycle slice must come after F6c, F7, and F8: instrument load/start gate, durable decision event contract, and bolt-owned order admission.
 
 ## Reconciliation / Restart Blocker
 

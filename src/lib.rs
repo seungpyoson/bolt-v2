@@ -9,6 +9,7 @@ pub mod bolt_v3_market_families;
 pub mod bolt_v3_market_identity;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_readiness;
+pub mod bolt_v3_reference_actor_registration;
 pub mod bolt_v3_reference_policy;
 pub mod bolt_v3_reference_producer;
 pub mod bolt_v3_secrets;

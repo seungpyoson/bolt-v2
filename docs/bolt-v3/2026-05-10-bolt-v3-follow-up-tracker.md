@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-10
-Branch context: `codex/bolt-v3-risk-gate`
+Branch context: `codex/bolt-v3-order-lifecycle`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -27,7 +27,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
 | F7 | Decision-event persistence | blocked | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. Current fixed nullable-field contract conflicts with pinned NT `#[custom_data]`, which rejects `Option<String>` fields | sentinel null encoding, JSON blob fallback, second writer path |
 | F8 | Risk/order admission gate | blocked | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution. v3 maps NT `LiveRiskEngineConfig`, but bolt-owned order admission needs an accepted decision-event persistence gate and a v3 order intent path | venue-specific order lifecycle, ad hoc strategy-local submit guards |
-| F9 | Order lifecycle proof | unverified | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions | multi-client scale |
+| F9 | Order lifecycle proof | blocked | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions. NT and the legacy strategy have order machinery, but bolt-v3 has not proven a v3 run path with accepted decision evidence and bolt-owned order admission | direct venue calls, Python, bypassing NT risk/execution, multi-client scale |
 | F10 | Reconciliation/restart proof | unverified | Restart observes external orders/fills/positions and avoids duplicate submit | new strategy logic |
 | F11 | Fixed-instrument target | reserved | Schema, validation, planner, event facts, and idle test for `market_selection_type = "fixed_instrument"` | rotating-market refactor |
 | F12 | Scale/process model | unverified | Evidence for many strategies, markets, and clients; process sharding; panic behavior; restart discipline | changing trading logic |
@@ -65,3 +65,9 @@ Accepted unblocker: revise the decision-event contract to match pinned NT custom
 F8 is blocked above the NT RiskEngine. Pinned NT RiskEngine provides pre-trade checks (`nautilus_trader@38b912a:crates/risk/src/engine/mod.rs:81`, `:721`, `:777`), and bolt-v3 already maps root TOML into `LiveRiskEngineConfig` (`src/bolt_v3_live_node.rs:425`) with `nt_bypass = false` validation (`src/bolt_v3_validate.rs:271`). That is necessary but not sufficient for bolt-owned admission: size, exposure, cooldown, kill-switch, and no-action evidence must be evaluated before any order reaches NT execution.
 
 Do not add one-off submit guards inside `eth_chainlink_taker` as the production solution. The accepted gate must sit on the v3 order-intent path after decision evidence is accepted and before NT order submission.
+
+## Order Lifecycle Blocker
+
+F9 is blocked by missing bolt-v3 order-intent evidence, not by missing NT primitives. The existing strategy can construct and submit NT orders and handle order events (`src/strategies/eth_chainlink_taker.rs:2827`, `:2978`, `:3324`, `:3410`, `:3435`). Pinned NT routes submitted orders through RiskEngine to ExecutionEngine (`nautilus_trader@38b912a:crates/risk/src/engine/mod.rs:496`, `:1764`; `crates/execution/src/engine/mod.rs:1625`), and the pinned Polymarket adapter exposes submit/cancel methods (`crates/adapters/polymarket/src/execution/mod.rs:792`, `:1036`).
+
+Bolt-v3 only proves build, client registration, strategy registration, and idle/controlled-connect behavior today. `build_live_node_with_clients` builds the node and registers strategies (`src/bolt_v3_live_node.rs:298`), while current v3 tests intentionally fence out `LiveNode::start` and `LiveNode::run`. An accepted order-lifecycle slice must come after F6c, F7, and F8: instrument load/start gate, durable decision event contract, and bolt-owned order admission.

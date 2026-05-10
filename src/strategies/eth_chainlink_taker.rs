@@ -2082,11 +2082,10 @@ impl EthChainlinkTaker {
         let Some(evidence) = self.context.bolt_v3_decision_evidence.clone() else {
             return Ok(());
         };
-        if decision.blocked_reason.is_some() {
-            return Ok(());
-        }
 
-        let facts = self.entry_evaluation_decision_facts(now_ms, decision)?;
+        let Some(facts) = self.entry_evaluation_decision_facts(now_ms, decision)? else {
+            return Ok(());
+        };
         let decision_trace_id = self.active_decision_trace_id();
         let ts = unix_nanos_from_millis(now_ms)?;
         evidence.write_entry_evaluation(&decision_trace_id, facts, ts, ts)
@@ -2096,16 +2095,49 @@ impl EthChainlinkTaker {
         &self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
-    ) -> Result<BoltV3EntryEvaluationFacts> {
-        let selected_side = decision
-            .evaluation
-            .selected_side
-            .ok_or_else(|| anyhow::anyhow!("entry evaluation event requires selected side"))?;
+    ) -> Result<Option<BoltV3EntryEvaluationFacts>> {
+        let no_action_insufficient_edge = decision.blocked_reason.as_deref()
+            == Some("no_side_selected")
+            && decision.evaluation.gate.blocked_by.is_empty()
+            && decision.evaluation.pricing_blocked_by.is_empty();
+        if decision.blocked_reason.is_some() && !no_action_insufficient_edge {
+            return Ok(None);
+        }
+
         let seconds_to_market_end = self.current_seconds_to_expiry_at(now_ms).ok_or_else(|| {
             anyhow::anyhow!("entry evaluation event requires seconds to market end")
         })?;
 
-        Ok(BoltV3EntryEvaluationFacts {
+        let archetype_metrics = json!({
+            "expected_ev_per_usdc": decision.evaluation.expected_ev_per_usdc,
+            "up_worst_case_ev_bps": decision.evaluation.up_worst_case_ev_bps,
+            "down_worst_case_ev_bps": decision.evaluation.down_worst_case_ev_bps,
+            "sized_notional_usdc": decision.evaluation.sized_notional_usdc,
+            "book_impact_cap_usdc": decision.evaluation.book_impact_cap_usdc,
+        });
+
+        if no_action_insufficient_edge {
+            return Ok(Some(BoltV3EntryEvaluationFacts {
+                updown_side: None,
+                entry_decision: "no_action".to_string(),
+                entry_no_action_reason: Some("insufficient_edge".to_string()),
+                seconds_to_market_end,
+                has_selected_market_open_orders: false,
+                updown_market_mechanical_outcome: "accepted".to_string(),
+                updown_market_mechanical_rejection_reason: None,
+                entry_filled_notional: 0.0,
+                open_entry_notional: 0.0,
+                strategy_remaining_entry_capacity: self.config.max_position_usdc,
+                archetype_metrics,
+            }));
+        }
+
+        let selected_side = decision
+            .evaluation
+            .selected_side
+            .ok_or_else(|| anyhow::anyhow!("entry evaluation event requires selected side"))?;
+
+        Ok(Some(BoltV3EntryEvaluationFacts {
             updown_side: Some(outcome_side_as_decision_fact(selected_side).to_string()),
             entry_decision: "enter".to_string(),
             entry_no_action_reason: None,
@@ -2116,14 +2148,8 @@ impl EthChainlinkTaker {
             entry_filled_notional: 0.0,
             open_entry_notional: 0.0,
             strategy_remaining_entry_capacity: self.config.max_position_usdc,
-            archetype_metrics: json!({
-                "expected_ev_per_usdc": decision.evaluation.expected_ev_per_usdc,
-                "up_worst_case_ev_bps": decision.evaluation.up_worst_case_ev_bps,
-                "down_worst_case_ev_bps": decision.evaluation.down_worst_case_ev_bps,
-                "sized_notional_usdc": decision.evaluation.sized_notional_usdc,
-                "book_impact_cap_usdc": decision.evaluation.book_impact_cap_usdc,
-            }),
-        })
+            archetype_metrics,
+        }))
     }
 
     fn outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {

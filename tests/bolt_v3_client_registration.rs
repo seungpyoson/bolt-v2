@@ -21,10 +21,12 @@ use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
 };
+use support::lock_live_node_build;
 use nautilus_model::identifiers::ClientId;
 
 #[test]
 fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
+    let _guard = lock_live_node_build();
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
@@ -184,6 +186,7 @@ fn empty_venues_root_config_registers_zero_clients() {
     let resolver = |_region: &str, _path: &str| -> Result<String, &'static str> {
         Err("resolver must not be called when no venues are configured")
     };
+    let _guard = lock_live_node_build();
     let (node, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
         .expect("empty venue set should still build a clean LiveNode");
     assert!(summary.venues.is_empty());

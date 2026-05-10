@@ -5,14 +5,15 @@ use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
     BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
-    BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BoltV3DecisionEventCatalogHandoff,
-    BoltV3DecisionEventCommonFields, BoltV3EntryEvaluationDecisionEvent,
-    BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
-    BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
-    BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
-    BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
-    BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
-    BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
+    BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
+    BoltV3DecisionEventCatalogHandoff, BoltV3DecisionEventCommonFields,
+    BoltV3EntryEvaluationDecisionEvent, BoltV3EntryEvaluationFacts,
+    BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
+    BoltV3ExitEvaluationDecisionEvent, BoltV3ExitEvaluationFacts,
+    BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
+    BoltV3MarketSelectionDecisionEvent, BoltV3MarketSelectionResultFacts,
+    BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
+    register_bolt_v3_decision_event_types,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
@@ -102,29 +103,7 @@ fn market_selection_result_event_writes_through_nt_catalog_handoff() {
 fn market_selection_result_rejects_missing_failure_reason_for_failed_outcome() {
     let error = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
-        BoltV3MarketSelectionResultFacts {
-            market_selection_type: "rotating_market".to_string(),
-            market_selection_timestamp_milliseconds: 1_000,
-            market_selection_outcome: "failed".to_string(),
-            market_selection_failure_reason: None,
-            rotating_market_family: Some("updown".to_string()),
-            underlying_asset: Some("ETH".to_string()),
-            cadence_seconds: Some(300),
-            market_selection_rule: Some("active_or_next".to_string()),
-            retry_interval_seconds: Some(5),
-            blocked_after_seconds: Some(60),
-            polymarket_condition_id: None,
-            polymarket_market_slug: None,
-            polymarket_question_id: None,
-            up_instrument_id: None,
-            down_instrument_id: None,
-            selected_market_observed_timestamp: None,
-            polymarket_market_start_timestamp_milliseconds: None,
-            polymarket_market_end_timestamp_milliseconds: None,
-            price_to_beat_value: None,
-            price_to_beat_observed_timestamp: None,
-            price_to_beat_source: None,
-        },
+        failed_market_selection_result_facts(None),
         UnixNanos::from(2_000),
         UnixNanos::from(2_001),
     )
@@ -135,6 +114,36 @@ fn market_selection_result_rejects_missing_failure_reason_for_failed_outcome() {
             .to_string()
             .contains("market_selection_failure_reason must be non-null")
     );
+}
+
+#[test]
+fn market_selection_result_rejects_unknown_failure_reason() {
+    let error = BoltV3MarketSelectionDecisionEvent::market_selection_result(
+        common_fields(),
+        failed_market_selection_result_facts(Some("some_new_reason")),
+        UnixNanos::from(2_000),
+        UnixNanos::from(2_001),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported market_selection_failure_reason `some_new_reason`")
+    );
+}
+
+#[test]
+fn market_selection_result_accepts_allowed_failure_reasons() {
+    for reason in BOLT_V3_MARKET_SELECTION_FAILURE_REASONS {
+        BoltV3MarketSelectionDecisionEvent::market_selection_result(
+            common_fields(),
+            failed_market_selection_result_facts(Some(reason)),
+            UnixNanos::from(2_000),
+            UnixNanos::from(2_001),
+        )
+        .unwrap();
+    }
 }
 
 #[test]
@@ -544,6 +553,32 @@ fn common_fields() -> BoltV3DecisionEventCommonFields {
         config_hash: "config-hash".to_string(),
         nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e".to_string(),
         configured_target_id: "target-eth-updown".to_string(),
+    }
+}
+
+fn failed_market_selection_result_facts(reason: Option<&str>) -> BoltV3MarketSelectionResultFacts {
+    BoltV3MarketSelectionResultFacts {
+        market_selection_type: "rotating_market".to_string(),
+        market_selection_timestamp_milliseconds: 1_000,
+        market_selection_outcome: "failed".to_string(),
+        market_selection_failure_reason: reason.map(str::to_string),
+        rotating_market_family: Some("updown".to_string()),
+        underlying_asset: Some("ETH".to_string()),
+        cadence_seconds: Some(300),
+        market_selection_rule: Some("active_or_next".to_string()),
+        retry_interval_seconds: Some(5),
+        blocked_after_seconds: Some(60),
+        polymarket_condition_id: None,
+        polymarket_market_slug: None,
+        polymarket_question_id: None,
+        up_instrument_id: None,
+        down_instrument_id: None,
+        selected_market_observed_timestamp: None,
+        polymarket_market_start_timestamp_milliseconds: None,
+        polymarket_market_end_timestamp_milliseconds: None,
+        price_to_beat_value: None,
+        price_to_beat_observed_timestamp: None,
+        price_to_beat_source: None,
     }
 }
 

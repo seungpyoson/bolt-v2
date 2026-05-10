@@ -16,10 +16,11 @@ use bolt_v2::{
         BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
-        BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BoltV3EntryEvaluationDecisionEvent,
-        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
-        BoltV3ExitEvaluationDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
-        BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
+        BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
+        BoltV3EntryEvaluationDecisionEvent, BoltV3EntryOrderSubmissionDecisionEvent,
+        BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
+        BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
+        BoltV3MarketSelectionDecisionEvent,
     },
     bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     config::Config,
@@ -410,13 +411,13 @@ fn selection_snapshot_with_market_facts(
     }
 }
 
-fn idle_selection_snapshot(published_at_ms: u64) -> RuntimeSelectionSnapshot {
+fn idle_selection_snapshot(reason: &str, published_at_ms: u64) -> RuntimeSelectionSnapshot {
     RuntimeSelectionSnapshot {
         ruleset_id: "PRIMARY".to_string(),
         decision: SelectionDecision {
             ruleset_id: "PRIMARY".to_string(),
             state: SelectionState::Idle {
-                reason: "no_selected_market".to_string(),
+                reason: reason.to_string(),
             },
         },
         eligible_candidates: Vec::new(),
@@ -1198,8 +1199,15 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
 }
 
 #[test]
-fn eth_chainlink_taker_runtime_writes_failed_market_selection_result_without_submit() {
+fn eth_chainlink_taker_runtime_writes_allowed_failed_market_selection_results_without_submit() {
     let _guard = runtime_test_mutex().lock().unwrap();
+
+    for reason in BOLT_V3_MARKET_SELECTION_FAILURE_REASONS {
+        assert_failed_market_selection_result_without_submit(reason);
+    }
+}
+
+fn assert_failed_market_selection_result_without_submit(reason: &str) {
     clear_mock_exec_submissions();
 
     let temp_dir = TempDir::new().unwrap();
@@ -1241,7 +1249,7 @@ fn eth_chainlink_taker_runtime_writes_failed_market_selection_result_without_sub
             wait_for_running(&handle).await;
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
-                &idle_selection_snapshot(published_at_ms),
+                &idle_selection_snapshot(reason, published_at_ms),
             );
             sleep(Duration::from_millis(50)).await;
 
@@ -1288,7 +1296,7 @@ fn eth_chainlink_taker_runtime_writes_failed_market_selection_result_without_sub
             );
             assert_eq!(
                 decoded.event_facts.get("market_selection_failure_reason"),
-                Some(&serde_json::Value::String("no_selected_market".to_string()))
+                Some(&serde_json::Value::String(reason.to_string()))
             );
             assert_eq!(
                 decoded.event_facts.get("rotating_market_family"),

@@ -23,6 +23,14 @@ pub const BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE: &str =
     "BoltV3ExitOrderSubmissionDecisionEvent";
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE: &str =
     "BoltV3ExitPreSubmitRejectionDecisionEvent";
+pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASONS: &[&str] = &[
+    "request_instruments_failed",
+    "instruments_not_in_cache",
+    "no_selected_market",
+    "ambiguous_selected_market",
+    "price_to_beat_unavailable",
+    "price_to_beat_ambiguous",
+];
 const MARKET_SELECTION_RESULT: &str = "market_selection_result";
 const ENTRY_EVALUATION: &str = "entry_evaluation";
 const ENTRY_ORDER_SUBMISSION: &str = "entry_order_submission";
@@ -30,6 +38,14 @@ const ENTRY_PRE_SUBMIT_REJECTION: &str = "entry_pre_submit_rejection";
 const EXIT_EVALUATION: &str = "exit_evaluation";
 const EXIT_ORDER_SUBMISSION: &str = "exit_order_submission";
 const EXIT_PRE_SUBMIT_REJECTION: &str = "exit_pre_submit_rejection";
+
+pub fn validate_bolt_v3_market_selection_failure_reason(reason: &str) -> Result<()> {
+    if BOLT_V3_MARKET_SELECTION_FAILURE_REASONS.contains(&reason) {
+        return Ok(());
+    }
+
+    bail!("unsupported market_selection_failure_reason `{reason}`")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3DecisionEventCommonFields {
@@ -671,11 +687,12 @@ fn validate_market_selection_result_facts(facts: &BoltV3MarketSelectionResultFac
             }
         }
         "failed" => {
-            if facts.market_selection_failure_reason.is_none() {
+            let Some(reason) = facts.market_selection_failure_reason.as_deref() else {
                 bail!(
                     "market_selection_failure_reason must be non-null when market_selection_outcome is failed"
                 );
-            }
+            };
+            validate_bolt_v3_market_selection_failure_reason(reason)?;
         }
         value => bail!("unsupported market_selection_outcome `{value}`"),
     }

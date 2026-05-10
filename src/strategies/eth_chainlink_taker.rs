@@ -32,6 +32,7 @@ use crate::{
     bolt_v3_decision_events::{
         BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts,
         BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
+        validate_bolt_v3_market_selection_failure_reason,
     },
     platform::{
         polymarket_catalog::polymarket_instrument_id,
@@ -4003,17 +4004,8 @@ fn market_selection_result_facts(
 }
 
 fn market_selection_failure_reason(reason: &str) -> Result<String> {
-    match reason {
-        "request_instruments_failed"
-        | "instruments_not_in_cache"
-        | "no_selected_market"
-        | "ambiguous_selected_market"
-        | "price_to_beat_unavailable"
-        | "price_to_beat_ambiguous" => Ok(reason.to_string()),
-        value => Err(anyhow!(
-            "unsupported market selection failure reason `{value}`"
-        )),
-    }
+    validate_bolt_v3_market_selection_failure_reason(reason)?;
+    Ok(reason.to_string())
 }
 
 fn market_selection_outcome(market: &CandidateMarket, timestamp_ms: u64) -> Result<String> {

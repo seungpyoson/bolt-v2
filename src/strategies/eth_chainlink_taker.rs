@@ -2861,6 +2861,10 @@ impl EthChainlinkTaker {
             price: None,
             quantity: None,
             client_order_id: None,
+            authoritative_position_quantity: None,
+            authoritative_sellable_quantity: None,
+            open_exit_order_quantity: None,
+            uncovered_position_quantity: None,
             blocked_reason: evaluation.blocked_reason,
             forced_flat_reasons: evaluation.forced_flat_reasons.clone(),
         };
@@ -2884,8 +2888,20 @@ impl EthChainlinkTaker {
             _ => None,
         };
         decision.quantity = Some(open_position.quantity);
+        let position_quantity = open_position.quantity.as_f64();
+        let open_exit_order_quantity =
+            self.open_exit_order_quantity_for_position(open_position.instrument_id);
+        let uncovered_position_quantity = (position_quantity - open_exit_order_quantity).max(0.0);
+        decision.authoritative_position_quantity = Some(position_quantity);
+        decision.authoritative_sellable_quantity = Some(uncovered_position_quantity);
+        decision.open_exit_order_quantity = Some(open_exit_order_quantity);
+        decision.uncovered_position_quantity = Some(uncovered_position_quantity);
         if !open_position.quantity.as_f64().is_finite() || open_position.quantity.as_f64() <= 0.0 {
             decision.blocked_reason = Some("exit_quantity_not_positive");
+            return decision;
+        }
+        if position_quantity > uncovered_position_quantity {
+            decision.blocked_reason = Some("exit_quantity_exceeds_sellable_quantity");
             return decision;
         }
 
@@ -2897,6 +2913,26 @@ impl EthChainlinkTaker {
         decision.price = Some(price);
         decision.blocked_reason = None;
         decision
+    }
+
+    fn open_exit_order_quantity_for_position(&self, instrument_id: InstrumentId) -> f64 {
+        if self.core.trader_id().is_none() {
+            return 0.0;
+        }
+
+        let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+        self.cache()
+            .orders_open(
+                None,
+                Some(&instrument_id),
+                Some(&strategy_id),
+                None,
+                Some(OrderSide::Sell),
+            )
+            .into_iter()
+            .map(|order| order.leaves_qty().as_f64())
+            .filter(|quantity| quantity.is_finite() && *quantity > 0.0)
+            .sum()
     }
 
     fn exit_evaluation_log_fields_at(
@@ -3156,20 +3192,24 @@ impl EthChainlinkTaker {
             return Ok(None);
         };
 
-        let position_quantity = self
-            .managed_position()
-            .map(|managed| managed.position.quantity.as_f64())
-            .ok_or_else(|| anyhow::anyhow!("exit evaluation event requires managed position"))?;
-        let exit_quantity = decision
-            .quantity
-            .map(|quantity| quantity.as_f64())
-            .ok_or_else(|| anyhow::anyhow!("exit evaluation event requires exit quantity"))?;
-        let open_exit_order_quantity = 0.0;
-        let uncovered_position_quantity = (position_quantity - open_exit_order_quantity).max(0.0);
+        let position_quantity = decision.authoritative_position_quantity.ok_or_else(|| {
+            anyhow::anyhow!("exit evaluation event requires authoritative position quantity")
+        })?;
+        let authoritative_sellable_quantity =
+            decision.authoritative_sellable_quantity.ok_or_else(|| {
+                anyhow::anyhow!("exit evaluation event requires authoritative sellable quantity")
+            })?;
+        let open_exit_order_quantity = decision
+            .open_exit_order_quantity
+            .ok_or_else(|| anyhow::anyhow!("exit evaluation event requires open exit quantity"))?;
+        let uncovered_position_quantity =
+            decision.uncovered_position_quantity.ok_or_else(|| {
+                anyhow::anyhow!("exit evaluation event requires uncovered position quantity")
+            })?;
 
         Ok(Some(BoltV3ExitEvaluationFacts {
             authoritative_position_quantity: Some(position_quantity),
-            authoritative_sellable_quantity: Some(exit_quantity),
+            authoritative_sellable_quantity: Some(authoritative_sellable_quantity),
             open_exit_order_quantity: Some(open_exit_order_quantity),
             uncovered_position_quantity: Some(uncovered_position_quantity),
             exit_order_mechanical_outcome: "accepted".to_string(),
@@ -4809,6 +4849,10 @@ struct ExitSubmissionDecision {
     price: Option<f64>,
     quantity: Option<Quantity>,
     client_order_id: Option<ClientOrderId>,
+    authoritative_position_quantity: Option<f64>,
+    authoritative_sellable_quantity: Option<f64>,
+    open_exit_order_quantity: Option<f64>,
+    uncovered_position_quantity: Option<f64>,
     blocked_reason: Option<&'static str>,
     forced_flat_reasons: Vec<ForcedFlatReason>,
 }
@@ -4980,7 +5024,7 @@ fn entry_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&
 
 fn exit_pre_submit_rejection_facts(
     decision: &ExitSubmissionDecision,
-    position_quantity: Option<f64>,
+    fallback_position_quantity: Option<f64>,
 ) -> Result<Option<BoltV3PreSubmitRejectionFacts>> {
     let Some(rejection_reason) = decision.blocked_reason else {
         return Ok(None);
@@ -5017,16 +5061,21 @@ fn exit_pre_submit_rejection_facts(
                 .map(std::string::ToString::to_string),
         },
         rejection_reason: contract_rejection_reason.to_string(),
-        authoritative_position_quantity: position_quantity,
-        authoritative_sellable_quantity: decision.quantity.map(|quantity| quantity.as_f64()),
-        open_exit_order_quantity: Some(0.0),
-        uncovered_position_quantity: position_quantity.map(|quantity| quantity.max(0.0)),
+        authoritative_position_quantity: decision
+            .authoritative_position_quantity
+            .or(fallback_position_quantity),
+        authoritative_sellable_quantity: decision.authoritative_sellable_quantity,
+        open_exit_order_quantity: decision.open_exit_order_quantity,
+        uncovered_position_quantity: decision.uncovered_position_quantity,
     }))
 }
 
 fn exit_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&'static str> {
     match internal_reason {
         "exit_price_missing" => Some("exit_price_missing"),
+        "exit_quantity_exceeds_sellable_quantity" => {
+            Some("exit_quantity_exceeds_sellable_quantity")
+        }
         "exit_quantity_not_positive" => Some("invalid_quantity"),
         _ => None,
     }

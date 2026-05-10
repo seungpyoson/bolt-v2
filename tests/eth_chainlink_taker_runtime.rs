@@ -755,12 +755,30 @@ fn seed_cached_open_entry_order(
     quantity: Quantity,
     price: Price,
 ) {
+    seed_cached_open_order(
+        node,
+        strategy_id,
+        instrument_id,
+        OrderSide::Buy,
+        quantity,
+        price,
+    );
+}
+
+fn seed_cached_open_order(
+    node: &LiveNode,
+    strategy_id: StrategyId,
+    instrument_id: InstrumentId,
+    side: OrderSide,
+    quantity: Quantity,
+    price: Price,
+) {
     let mut order = OrderTestBuilder::new(OrderType::Limit)
         .trader_id(TraderId::from("BOLT-001"))
         .strategy_id(strategy_id)
         .instrument_id(instrument_id)
         .client_order_id(ClientOrderId::from("O-RECOVERY-ENTRY-001"))
-        .side(OrderSide::Buy)
+        .side(side)
         .quantity(quantity)
         .price(price)
         .submit(true)
@@ -1452,6 +1470,73 @@ fn drive_eth_exit_pre_submit_rejection_with_quantity(
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
                 &freeze_selection_snapshot(start_ts_ms),
+            );
+            sleep(Duration::from_millis(50)).await;
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+}
+
+fn drive_eth_exit_sellable_rejection(mut node: LiveNode, strategy_id: StrategyId) {
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            sleep(Duration::from_millis(20)).await;
+
+            if let Some(mut actor) =
+                try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
+            {
+                actor.on_position_opened(position_opened_event(
+                    strategy_id,
+                    up,
+                    PositionId::from("P-RT-EXIT-SELLABLE-REJECT"),
+                    Quantity::new(5.0, 2),
+                    0.450,
+                ));
+            } else {
+                panic!("runtime strategy actor should be registered");
+            }
+            clear_mock_exec_submissions();
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &freeze_selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
             );
             sleep(Duration::from_millis(50)).await;
 
@@ -3189,6 +3274,104 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
     assert!(
         submission_events.is_empty(),
         "exit invalid quantity rejection must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejection_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    seed_cached_open_order(
+        &node,
+        strategy_id,
+        up,
+        OrderSide::Sell,
+        Quantity::new(5.0, 2),
+        Price::from("0.430"),
+    );
+    drive_eth_exit_sellable_rejection(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "exit sellable quantity rejection must not submit another sell order"
+    );
+
+    let rejection_events =
+        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(rejection_events.len(), 1);
+    match &rejection_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
+                .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                Some(&serde_json::Value::String(
+                    "exit_quantity_exceeds_sellable_quantity".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("instrument_id"),
+                Some(&serde_json::Value::String(
+                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("side"),
+                Some(&serde_json::Value::String("sell".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("authoritative_position_quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("authoritative_sellable_quantity"),
+                Some(&serde_json::Value::from(0.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("open_exit_order_quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("uncovered_position_quantity"),
+                Some(&serde_json::Value::from(0.0))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert!(
+        submission_events.is_empty(),
+        "exit sellable quantity rejection must not persist order submission"
     );
 }
 

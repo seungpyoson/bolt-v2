@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-10
-Branch context: `codex/bolt-v3-reference-facts`
+Branch context: `codex/bolt-v3-decision-events`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -25,7 +25,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
-| F7 | Decision-event persistence | unverified | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons | full event lake design rewrite |
+| F7 | Decision-event persistence | blocked | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. Current fixed nullable-field contract conflicts with pinned NT `#[custom_data]`, which rejects `Option<String>` fields | sentinel null encoding, JSON blob fallback, second writer path |
 | F8 | Risk/order admission gate | unverified | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution | venue-specific order lifecycle |
 | F9 | Order lifecycle proof | unverified | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions | multi-client scale |
 | F10 | Reconciliation/restart proof | unverified | Restart observes external orders/fills/positions and avoids duplicate submit | new strategy logic |
@@ -53,3 +53,9 @@ Do not work around this by fetching venue instruments directly in bolt-v3 and wr
 F3-F5 are blocked by a contract gap, not code volume. Current bolt-v3 eth tracer passes `parameters.reference_publish_topic` into the existing strategy. It does not define reference inputs, source ownership, weights, freshness, or producer construction from bolt-v3 TOML. Existing `ReferenceActor` proves a legacy producer exists under old `Config.reference`, but wiring that into bolt-v3 without a v3 contract would create a hidden dual config path.
 
 Do not create a bolt-v3 reference producer until the v3 reference contract names the configured stream, its input sources, freshness rules, and whether `reference_data` remains in strategy TOML or moves to root-level reference config.
+
+## Decision-Event Blocker
+
+F7 is blocked by an NT serialization contract mismatch. A TDD probe for a production `BoltV3MarketSelectionDecisionEvent` custom-data type failed because pinned NT `#[custom_data]` does not support nullable `Option<String>` fields. The current runtime contract requires nullable event fields to be explicit nulls. Replacing nulls with sentinel strings or hiding the event in an ad hoc JSON blob would violate the contract and create forensic ambiguity.
+
+Accepted unblocker: revise the decision-event contract to match pinned NT custom-data field support, or prove a pinned NT custom-data encoding that preserves explicit null semantics without a second persistence path.

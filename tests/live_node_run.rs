@@ -13,10 +13,13 @@ use nautilus_live::node::NodeState;
 use nautilus_model::identifiers::TraderId;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
+    lock_live_node_build,
 };
 
 #[test]
 fn explicit_live_node_config_path_runs_with_registered_clients() {
+    let _guard = lock_live_node_build();
+
     let trader_id = TraderId::from("BOLT-001");
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
@@ -118,6 +121,8 @@ fn explicit_live_node_config_path_runs_with_registered_clients() {
 
 #[test]
 fn sandbox_startup_path_preserves_environment_when_position_check_is_unset() {
+    let _guard = lock_live_node_build();
+
     let trader_id = TraderId::from("BOLT-001");
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
@@ -286,6 +291,8 @@ fn builds_bolt_v3_livenode_without_running_event_loop() {
     use nautilus_common::enums::Environment;
     use nautilus_live::node::NodeState;
 
+    let _guard = lock_live_node_build();
+
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded: LoadedBoltV3Config =
         load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -312,6 +319,8 @@ fn wires_runtime_capture_from_bolt_v3_persistence_config() {
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::task::LocalSet;
+
+    let _guard = lock_live_node_build();
 
     let local = LocalSet::new();
     let runtime = tokio::runtime::Builder::new_current_thread()

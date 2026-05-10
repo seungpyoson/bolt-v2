@@ -7,6 +7,14 @@ use std::{
 };
 
 use bolt_v2::{
+    bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock},
+    bolt_v3_decision_event_context::BoltV3DecisionEventCommonContext,
+    bolt_v3_decision_events::{
+        BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+        BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE, BoltV3EntryOrderSubmissionDecisionEvent,
+        BoltV3ExitOrderSubmissionDecisionEvent,
+    },
+    bolt_v3_strategy_order_intent::BoltV3StrategyOrderIntentEvidence,
     config::Config,
     live_node_setup::{
         DataClientRegistration, ExecClientRegistration, build_live_node, make_live_node_config,
@@ -40,11 +48,13 @@ use nautilus_model::{
     position::Position,
     types::{Currency, Money, Price, Quantity},
 };
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_trading::Strategy;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     clear_mock_exec_submissions, recorded_mock_exec_submissions,
 };
+use tempfile::TempDir;
 use tokio::time::sleep;
 use toml::Value;
 #[derive(Debug, Default)]
@@ -162,6 +172,70 @@ fn strategy_raw_config() -> Value {
         lead_jitter_max_ms = 250
     }
     .into()
+}
+
+fn common_decision_context() -> BoltV3DecisionEventCommonContext {
+    BoltV3DecisionEventCommonContext {
+        schema_version: 1,
+        strategy_instance_id: "ETHCHAINLINKTAKER-RT-001".to_string(),
+        strategy_archetype: "eth_chainlink_taker".to_string(),
+        trader_id: "BOLT-001".to_string(),
+        client_id: "TEST".to_string(),
+        venue: "POLYMARKET".to_string(),
+        runtime_mode: "live".to_string(),
+        release_id: "release-sha".to_string(),
+        config_hash: "config-hash".to_string(),
+        nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e".to_string(),
+        configured_target_id: "target-eth-updown".to_string(),
+    }
+}
+
+fn decision_persistence_block(path: impl AsRef<std::path::Path>) -> PersistenceBlock {
+    PersistenceBlock {
+        catalog_directory: path.as_ref().to_string_lossy().into_owned(),
+        streaming: StreamingBlock {
+            catalog_fs_protocol: CatalogFsProtocol::File,
+            flush_interval_milliseconds: 1,
+            replace_existing: false,
+            rotation_kind: RotationKind::None,
+        },
+    }
+}
+
+fn query_entry_order_submission_events(
+    path: &std::path::Path,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    ParquetDataCatalog::new(path, None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
+}
+
+fn query_exit_order_submission_events(
+    path: &std::path::Path,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    ParquetDataCatalog::new(path, None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
 }
 
 fn candidate_market_named(market_id: &str, start_ts_ms: u64) -> CandidateMarket {
@@ -489,6 +563,70 @@ async fn wait_for_running(handle: &LiveNodeHandle) {
     }
 }
 
+fn add_eth_entry_instruments(node: &mut LiveNode) {
+    let cache_handle = node.kernel().cache();
+    let mut cache = cache_handle.borrow_mut();
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    cache.add_instrument(polymarket_binary_option(up)).unwrap();
+    cache
+        .add_instrument(polymarket_binary_option(down))
+        .unwrap();
+}
+
+fn drive_eth_entry_submission(mut node: LiveNode, strategy_id: StrategyId) {
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+
+            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+
+            for _ in 0..50 {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+}
+
 #[test]
 fn eth_chainlink_taker_runtime_submits_real_entry_order() {
     let _guard = runtime_test_mutex().lock().unwrap();
@@ -587,6 +725,91 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
         InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
     );
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_entry_order_intent_before_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_order_intent_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_submission(node, strategy_id);
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+
+    let events = query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryOrderSubmissionDecisionEvent>()
+                .expect("BoltV3EntryOrderSubmissionDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&serde_json::Value::String(
+                    submissions[0].client_order_id.to_string()
+                ))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_blocks_entry_submit_when_order_intent_write_fails() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let occupied_path = temp_dir.path().join("not-a-directory");
+    std::fs::write(&occupied_path, b"occupied").unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(&occupied_path),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_order_intent_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_submission(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "failed order-intent handoff must block NT submit"
+    );
 }
 
 #[test]
@@ -926,16 +1149,22 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
+    let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
-    let strategy_factory = registry_runtime_strategy_factory(
-        production_strategy_registry().unwrap(),
-        make_strategy_build_context(
-            Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
-        ),
+    let evidence = BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
     );
+    build_context.bolt_v3_order_intent_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
     let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
@@ -1036,6 +1265,27 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
+
+    let events = query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitOrderSubmissionDecisionEvent>()
+                .expect("BoltV3ExitOrderSubmissionDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&serde_json::Value::String(
+                    submissions[0].client_order_id.to_string()
+                ))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
 }
 
 #[test]

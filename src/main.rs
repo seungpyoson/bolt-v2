@@ -144,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     cfg.node.timeout_connection_secs,
                                 )?,
                                 reference_publish_topic: cfg.reference.publish_topic.clone(),
+                                bolt_v3_order_intent_evidence: None,
                             });
                         }
                         let (factory, config) =

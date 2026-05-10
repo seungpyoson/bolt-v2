@@ -11,11 +11,12 @@ use nautilus_common::{
     component::Component,
     msgbus::{self, ShareableMessageHandler},
 };
+use nautilus_core::{UUID4, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
 use nautilus_model::enums::PositionSide;
 use nautilus_model::{
-    enums::{BookAction, OrderSide, TimeInForce},
+    enums::{BookAction, OrderSide, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
@@ -27,6 +28,7 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
+    bolt_v3_decision_events::BoltV3OrderSubmissionFacts,
     platform::{
         polymarket_catalog::polymarket_instrument_id,
         reference::ReferenceSnapshot,
@@ -341,6 +343,7 @@ struct ActiveMarketState {
     books: OutcomePreparedBooks,
     fast_venue_incoherent: bool,
     forced_flat: bool,
+    decision_trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1390,6 +1393,13 @@ impl EthChainlinkTaker {
 
     fn current_market_id(&self) -> Option<&str> {
         self.active.market_id.as_deref()
+    }
+
+    fn active_decision_trace_id(&mut self) -> String {
+        self.active
+            .decision_trace_id
+            .get_or_insert_with(|| UUID4::new().to_string())
+            .clone()
     }
 
     fn tracked_observed_position(&self) -> Option<&OpenPositionState> {
@@ -2850,12 +2860,14 @@ impl EthChainlinkTaker {
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
         self.log_exit_evaluation(now_ms, &decision);
+        let order_type = OrderType::Limit;
+        let time_in_force = TimeInForce::Fok;
         let order = self.core.order_factory().limit(
             instrument_id,
             order_side,
             quantity,
             price,
-            Some(TimeInForce::Fok),
+            Some(time_in_force),
             None,
             None,
             None,
@@ -2893,7 +2905,28 @@ impl EthChainlinkTaker {
             client_order_id,
         );
 
-        if let Err(error) = self.submit_order(order, None, Some(client_id)) {
+        let evidence = self.context.bolt_v3_order_intent_evidence.clone();
+        let submit_result = if let Some(evidence) = evidence {
+            let decision_trace_id = self.active_decision_trace_id();
+            let facts = order_submission_facts(
+                order_type,
+                time_in_force,
+                instrument_id,
+                order_side,
+                price,
+                quantity,
+                false,
+                client_order_id,
+            )?;
+            let ts = unix_nanos_from_millis(now_ms)?;
+            evidence.gate_exit_order_submission(&decision_trace_id, facts, ts, ts, || {
+                self.submit_order(order, None, Some(client_id))
+            })
+        } else {
+            self.submit_order(order, None, Some(client_id))
+        };
+
+        if let Err(error) = submit_result {
             self.exposure = ExposureState::Managed(managed_position);
             return Err(error);
         }
@@ -3042,12 +3075,14 @@ impl EthChainlinkTaker {
 
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
+        let order_type = OrderType::Limit;
+        let time_in_force = TimeInForce::Fok;
         let order = self.core.order_factory().limit(
             instrument_id,
             order_side,
             quantity,
             price,
-            Some(TimeInForce::Fok),
+            Some(time_in_force),
             None,
             None,
             None,
@@ -3096,7 +3131,28 @@ impl EthChainlinkTaker {
             client_order_id,
         );
 
-        if let Err(error) = self.submit_order(order, None, Some(client_id)) {
+        let evidence = self.context.bolt_v3_order_intent_evidence.clone();
+        let submit_result = if let Some(evidence) = evidence {
+            let decision_trace_id = self.active_decision_trace_id();
+            let facts = order_submission_facts(
+                order_type,
+                time_in_force,
+                instrument_id,
+                order_side,
+                price,
+                quantity,
+                false,
+                client_order_id,
+            )?;
+            let ts = unix_nanos_from_millis(now_ms)?;
+            evidence.gate_entry_order_submission(&decision_trace_id, facts, ts, ts, || {
+                self.submit_order(order, None, Some(client_id))
+            })
+        } else {
+            self.submit_order(order, None, Some(client_id))
+        };
+
+        if let Err(error) = submit_result {
             self.clear_pending_entry_state();
             return Err(error);
         }
@@ -4341,6 +4397,64 @@ fn build_entry_order_plan(inputs: &EntryOrderPlanInputs) -> Result<EntryOrderPla
     })
 }
 
+fn order_submission_facts(
+    order_type: OrderType,
+    time_in_force: TimeInForce,
+    instrument_id: InstrumentId,
+    order_side: OrderSide,
+    price: Price,
+    quantity: Quantity,
+    is_reduce_only: bool,
+    client_order_id: ClientOrderId,
+) -> Result<BoltV3OrderSubmissionFacts> {
+    Ok(BoltV3OrderSubmissionFacts {
+        order_type: order_type_as_decision_fact(order_type)?.to_string(),
+        time_in_force: time_in_force_as_decision_fact(time_in_force)?.to_string(),
+        instrument_id: instrument_id.to_string(),
+        side: order_side_as_decision_fact(order_side)?.to_string(),
+        price: price.as_f64(),
+        quantity: quantity.as_f64(),
+        is_quote_quantity: false,
+        is_post_only: false,
+        is_reduce_only,
+        client_order_id: Some(client_order_id.to_string()),
+    })
+}
+
+fn order_type_as_decision_fact(order_type: OrderType) -> Result<&'static str> {
+    match order_type {
+        OrderType::Limit => Ok("limit"),
+        OrderType::Market => Ok("market"),
+        _ => anyhow::bail!("unsupported order type for bolt-v3 decision event: {order_type:?}"),
+    }
+}
+
+fn time_in_force_as_decision_fact(time_in_force: TimeInForce) -> Result<&'static str> {
+    match time_in_force {
+        TimeInForce::Gtc => Ok("gtc"),
+        TimeInForce::Fok => Ok("fok"),
+        TimeInForce::Ioc => Ok("ioc"),
+        _ => {
+            anyhow::bail!("unsupported time-in-force for bolt-v3 decision event: {time_in_force:?}")
+        }
+    }
+}
+
+fn order_side_as_decision_fact(order_side: OrderSide) -> Result<&'static str> {
+    match order_side {
+        OrderSide::Buy => Ok("buy"),
+        OrderSide::Sell => Ok("sell"),
+        _ => anyhow::bail!("unsupported order side for bolt-v3 decision event: {order_side:?}"),
+    }
+}
+
+fn unix_nanos_from_millis(ts_ms: u64) -> Result<UnixNanos> {
+    let ts_ns = ts_ms
+        .checked_mul(1_000_000)
+        .ok_or_else(|| anyhow::anyhow!("timestamp milliseconds overflows nanoseconds: {ts_ms}"))?;
+    Ok(UnixNanos::from(ts_ns))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExitDecision {
     Hold,
@@ -4567,6 +4681,7 @@ mod tests {
             StrategyBuildContext {
                 fee_provider,
                 reference_publish_topic: "platform.reference.test.chainlink".to_string(),
+                bolt_v3_order_intent_evidence: None,
             },
         )
     }

@@ -7,12 +7,16 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy, load_bolt_v3_config},
+    bolt_v3_config::{
+        BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy, load_bolt_v3_config,
+    },
     bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
     bolt_v3_validate::validate_strategies,
 };
 use nautilus_live::node::NodeState;
 use nautilus_model::identifiers::StrategyId;
+use tempfile::TempDir;
 
 fn existing_strategy_root_fixture() -> std::path::PathBuf {
     support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml")
@@ -20,6 +24,35 @@ fn existing_strategy_root_fixture() -> std::path::PathBuf {
 
 fn existing_strategy_multi_root_fixture() -> std::path::PathBuf {
     support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root_multi.toml")
+}
+
+fn attach_release_identity_manifest(loaded: &mut LoadedBoltV3Config, temp_dir: &TempDir) {
+    let config_hash = bolt_v3_config_hash(loaded).expect("fixture config hash should compute");
+    let nt_revision = bolt_v3_compiled_nautilus_trader_revision()
+        .expect("fixture NT revision should resolve from Cargo.toml");
+    let manifest_path = temp_dir.path().join("release-identity.toml");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            r#"
+release_id = "test-release"
+git_commit_sha = "test-git-sha"
+nautilus_trader_revision = "{nt_revision}"
+binary_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+cargo_lock_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+config_hash = "{config_hash}"
+build_profile = "test"
+
+[artifact_sha256]
+bolt_v2 = "3333333333333333333333333333333333333333333333333333333333333333"
+"#,
+        ),
+    )
+    .expect("release identity manifest should write");
+    loaded.root.release.identity_manifest_path = manifest_path.to_string_lossy().into_owned();
+    let catalog_dir = temp_dir.path().join("catalog");
+    std::fs::create_dir_all(&catalog_dir).expect("catalog dir should create");
+    loaded.root.persistence.catalog_directory = catalog_dir.to_string_lossy().into_owned();
 }
 
 #[test]
@@ -51,8 +84,10 @@ fn existing_strategy_fixture_selects_root_reference_stream() {
 
 #[test]
 fn bolt_v3_registers_existing_strategy_and_remains_idle_no_trade() {
-    let loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
         .expect("v3 TOML fixture should load");
+    attach_release_identity_manifest(&mut loaded, &temp_dir);
     let expected_strategy_id =
         StrategyId::from(loaded.strategies[0].config.strategy_instance_id.as_str());
 
@@ -73,8 +108,10 @@ fn bolt_v3_registers_existing_strategy_and_remains_idle_no_trade() {
 
 #[test]
 fn bolt_v3_registers_two_existing_strategy_instances_and_remains_idle_no_trade() {
-    let loaded = load_bolt_v3_config(&existing_strategy_multi_root_fixture())
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&existing_strategy_multi_root_fixture())
         .expect("v3 multi-strategy TOML fixture should load");
+    attach_release_identity_manifest(&mut loaded, &temp_dir);
     let expected_strategy_ids: Vec<StrategyId> = loaded
         .strategies
         .iter()

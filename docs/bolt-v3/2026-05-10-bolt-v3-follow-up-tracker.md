@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-11
-Branch context: `codex/bolt-v3-order-intent-gate`
+Branch context: `codex/bolt-v3-strategy-order-intent-wiring`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -26,22 +26,22 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache; `tests/bolt_v3_start_readiness_gate.rs` proves the canonical start-readiness surface composes that instrument gate and remains source-fenced from `LiveNode::start`, `LiveNode::run`, subscriptions, and order APIs | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
-| F7 | Decision-event persistence | partial | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. The nullable-field contract uses registered NT custom-data with fixed `event_facts: Params`; `tests/nt_custom_data_catalog_integration.rs` proves explicit JSON null survives local catalog round-trip. `tests/bolt_v3_decision_event_handoff.rs` proves `market_selection_result`, `entry_evaluation`, `exit_evaluation`, entry/exit order submission, and entry/exit pre-submit rejection events write through the canonical NT catalog handoff and return write errors. `tests/bolt_v3_order_intent_gate.rs` proves entry/exit order submit closures are not invoked when order-submission event handoff fails. `tests/bolt_v3_decision_event_context.rs` proves common event fields derive from loaded v3 TOML plus supplied release identity, without strategy or venue literal dispatch. `tests/bolt_v3_release_identity.rs` proves release identity loads only from configured manifest path, verifies config hash against loaded TOML, and verifies NT revision against `Cargo.toml`. Remaining proof: actual v3 strategy/order-intent wiring uses this context and gate before NT submit | sentinel null encoding, JSON blob fallback, second writer path, hardcoded event common fields, env/git/cwd release identity |
+| F7 | Decision-event persistence | partial | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. The nullable-field contract uses registered NT custom-data with fixed `event_facts: Params`; `tests/nt_custom_data_catalog_integration.rs` proves explicit JSON null survives local catalog round-trip. `tests/bolt_v3_decision_event_handoff.rs` proves `market_selection_result`, `entry_evaluation`, `exit_evaluation`, entry/exit order submission, and entry/exit pre-submit rejection events write through the canonical NT catalog handoff and return write errors. `tests/bolt_v3_order_intent_gate.rs` proves entry/exit order submit closures are not invoked when order-submission event handoff fails. `tests/bolt_v3_decision_event_context.rs` proves common event fields derive from loaded v3 TOML plus supplied release identity, without strategy or venue literal dispatch. `tests/bolt_v3_release_identity.rs` proves release identity loads only from configured manifest path, verifies config hash against loaded TOML, and verifies NT revision against `Cargo.toml`. `tests/eth_chainlink_taker_runtime.rs` proves the existing strategy writes entry and exit order-submission events through `StrategyBuildContext` before NT submit, and blocks entry submit when the order-intent write fails. Remaining proof: full strategy decision-event lifecycle, including market-selection/evaluation/pre-submit rejection events emitted from the actual strategy path | sentinel null encoding, JSON blob fallback, second writer path, hardcoded event common fields, env/git/cwd release identity |
 | F8 | Risk/order admission gate | blocked | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution. v3 maps NT `LiveRiskEngineConfig`, but bolt-owned order admission needs an accepted decision-event persistence gate and a v3 order intent path | venue-specific order lifecycle, ad hoc strategy-local submit guards |
 | F9 | Order lifecycle proof | blocked | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions. NT and the legacy strategy have order machinery, but bolt-v3 has not proven a v3 run path with accepted decision evidence and bolt-owned order admission | direct venue calls, Python, bypassing NT risk/execution, multi-client scale |
 | F10 | Reconciliation/restart proof | blocked | Restart observes external orders/fills/positions and avoids duplicate submit. bolt-v3 maps NT reconciliation config, but no v3 start/restart proof exists and the pinned Polymarket adapter's external-order registration hook is a no-op | bolt-owned portfolio, direct venue reconciliation, new strategy logic |
 | F11 | Fixed-instrument target | reserved | Schema, validation, planner, event facts, and idle test for `market_selection_type = "fixed_instrument"` | rotating-market refactor |
 | F12 | Scale/process model | unverified | Evidence for many strategies, markets, and clients; process sharding; panic behavior; restart discipline | changing trading logic |
 
-## Current Narrow Proof
+## Reference-Producer Narrow Proof
 
-The current reference-producer branch proves only:
+The reference-producer slice proved only:
 
 ```text
 root reference stream TOML -> existing ReferenceActor plan -> selected ReferenceActor registered on idle LiveNode -> mock-only NT start publishes ReferenceSnapshot
 ```
 
-This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, real-provider runtime delivery, automatic production start/run execution, decision persistence, order lifecycle, reconciliation, or scale.
+This did not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, real-provider runtime delivery, automatic production start/run execution, decision persistence, order lifecycle, reconciliation, or scale.
 
 ## Instrument Blocker
 
@@ -65,13 +65,13 @@ F7 is no longer blocked by the nullable-field encoding mismatch. Pinned NT `#[cu
 
 Source evidence: pinned NT `#[custom_data]` supports `Params`, `Params` stores `serde_json::Value`, and `tests/nt_custom_data_catalog_integration.rs` proves explicit JSON null survives write/read through `ParquetDataCatalog`.
 
-This now proves the market-selection, evaluation, order-submission, pre-submit-rejection event subset, direct catalog handoff, a gate helper that refuses to call entry/exit submit closures when order-submission event handoff fails, common event-field construction from v3 TOML plus supplied release identity, and release-identity loading from a configured deploy-written manifest. It does not prove actual strategy submit wiring. The next F7 implementation slice must wire the v3 order-intent path through this context and gate before NT submit.
+This now proves the market-selection, evaluation, order-submission, pre-submit-rejection event subset, direct catalog handoff, a gate helper that refuses to call entry/exit submit closures when order-submission event handoff fails, common event-field construction from v3 TOML plus supplied release identity, release-identity loading from a configured deploy-written manifest, and actual existing-strategy entry/exit order-submission wiring before NT submit. The next F7 implementation slice must wire market-selection/evaluation/pre-submit rejection events from the actual strategy path, not just the catalog handoff tests.
 
 ## Risk Gate Blocker
 
 F8 is blocked above the NT RiskEngine. Pinned NT RiskEngine provides pre-trade checks (`nautilus_trader@38b912a:crates/risk/src/engine/mod.rs:81`, `:721`, `:777`), and bolt-v3 already maps root TOML into `LiveRiskEngineConfig` (`src/bolt_v3_live_node.rs:425`) with `nt_bypass = false` validation (`src/bolt_v3_validate.rs:271`). That is necessary but not sufficient for bolt-owned admission: size, exposure, cooldown, kill-switch, and no-action evidence must be evaluated before any order reaches NT execution.
 
-Do not add one-off submit guards inside `eth_chainlink_taker` as the production solution. The accepted gate must sit on the v3 order-intent path after decision evidence is accepted and before NT order submission.
+Do not add one-off submit guards inside `eth_chainlink_taker` as the production solution. The accepted gate now enters the existing strategy through `StrategyBuildContext`, with v3 registration supplying the order-intent evidence object and legacy paths leaving it absent.
 
 ## Order Lifecycle Blocker
 

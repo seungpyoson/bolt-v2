@@ -17,6 +17,7 @@ pub mod bolt_v3_reference_producer;
 pub mod bolt_v3_release_identity;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_start_readiness;
+pub mod bolt_v3_strategy_order_intent;
 pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_validate;
 pub mod clients;

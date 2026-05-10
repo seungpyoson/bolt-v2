@@ -5,7 +5,10 @@ use toml::{Value, map::Map};
 
 use crate::{
     bolt_v3_config::{BoltV3StrategyConfig, REFERENCE_STREAM_ID_PARAMETER},
+    bolt_v3_decision_event_context::bolt_v3_decision_event_common_context,
     bolt_v3_providers::{self, polymarket::ResolvedBoltV3PolymarketSecrets},
+    bolt_v3_release_identity::load_bolt_v3_release_identity,
+    bolt_v3_strategy_order_intent::BoltV3StrategyOrderIntentEvidence,
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
     },
@@ -124,7 +127,44 @@ fn build_context(
     Ok(StrategyBuildContext {
         fee_provider,
         reference_publish_topic: reference_publish_topic(context)?,
+        bolt_v3_order_intent_evidence: Some(order_intent_evidence(context)?),
     })
+}
+
+fn order_intent_evidence(
+    context: &StrategyRegistrationContext<'_>,
+) -> Result<BoltV3StrategyOrderIntentEvidence, BoltV3StrategyRegistrationError> {
+    let identity = load_bolt_v3_release_identity(context.loaded).map_err(|source| {
+        BoltV3StrategyRegistrationError::InvalidParameters {
+            reason: format!(
+                "strategy `{}` failed to load bolt-v3 release identity: {source}",
+                context.strategy.relative_path
+            ),
+        }
+    })?;
+    let common_context =
+        bolt_v3_decision_event_common_context(context.loaded, context.strategy, &identity)
+            .map_err(
+                |source| BoltV3StrategyRegistrationError::InvalidParameters {
+                    reason: format!(
+                        "strategy `{}` failed to build bolt-v3 decision event context: {source}",
+                        context.strategy.relative_path
+                    ),
+                },
+            )?;
+
+    BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+        common_context,
+        &context.loaded.root.persistence,
+    )
+    .map_err(
+        |source| BoltV3StrategyRegistrationError::InvalidParameters {
+            reason: format!(
+                "strategy `{}` failed to build bolt-v3 order-intent evidence handoff: {source}",
+                context.strategy.relative_path
+            ),
+        },
+    )
 }
 
 fn remove_reference_stream_id(

@@ -34,6 +34,7 @@ pub fn make_strategy_build_context(
     StrategyBuildContext {
         fee_provider,
         reference_publish_topic,
+        bolt_v3_order_intent_evidence: None,
     }
 }
 

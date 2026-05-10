@@ -7,7 +7,10 @@ use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
 use toml::Value;
 
-use crate::{clients::polymarket::FeeProvider, validate::ValidationError};
+use crate::{
+    bolt_v3_strategy_order_intent::BoltV3StrategyOrderIntentEvidence,
+    clients::polymarket::FeeProvider, validate::ValidationError,
+};
 
 pub trait RuntimeStrategy: Strategy + DataActor + Component + std::fmt::Debug {}
 
@@ -19,6 +22,7 @@ pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 pub struct StrategyBuildContext {
     pub fee_provider: Arc<dyn FeeProvider>,
     pub reference_publish_topic: String,
+    pub bolt_v3_order_intent_evidence: Option<BoltV3StrategyOrderIntentEvidence>,
 }
 
 pub trait StrategyBuilder: Send + Sync + 'static {
@@ -287,6 +291,7 @@ mod tests {
         StrategyBuildContext {
             fee_provider: Arc::new(NoopFeeProvider),
             reference_publish_topic: "platform.reference.test".to_string(),
+            bolt_v3_order_intent_evidence: None,
         }
     }
 

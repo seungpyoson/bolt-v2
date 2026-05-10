@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-10
-Branch context: `codex/bolt-v3-decision-events`
+Branch context: `codex/bolt-v3-risk-gate`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -26,7 +26,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
 | F7 | Decision-event persistence | blocked | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. Current fixed nullable-field contract conflicts with pinned NT `#[custom_data]`, which rejects `Option<String>` fields | sentinel null encoding, JSON blob fallback, second writer path |
-| F8 | Risk/order admission gate | unverified | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution | venue-specific order lifecycle |
+| F8 | Risk/order admission gate | blocked | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution. v3 maps NT `LiveRiskEngineConfig`, but bolt-owned order admission needs an accepted decision-event persistence gate and a v3 order intent path | venue-specific order lifecycle, ad hoc strategy-local submit guards |
 | F9 | Order lifecycle proof | unverified | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions | multi-client scale |
 | F10 | Reconciliation/restart proof | unverified | Restart observes external orders/fills/positions and avoids duplicate submit | new strategy logic |
 | F11 | Fixed-instrument target | reserved | Schema, validation, planner, event facts, and idle test for `market_selection_type = "fixed_instrument"` | rotating-market refactor |
@@ -59,3 +59,9 @@ Do not create a bolt-v3 reference producer until the v3 reference contract names
 F7 is blocked by an NT serialization contract mismatch. A TDD probe for a production `BoltV3MarketSelectionDecisionEvent` custom-data type failed because pinned NT `#[custom_data]` does not support nullable `Option<String>` fields. The current runtime contract requires nullable event fields to be explicit nulls. Replacing nulls with sentinel strings or hiding the event in an ad hoc JSON blob would violate the contract and create forensic ambiguity.
 
 Accepted unblocker: revise the decision-event contract to match pinned NT custom-data field support, or prove a pinned NT custom-data encoding that preserves explicit null semantics without a second persistence path.
+
+## Risk Gate Blocker
+
+F8 is blocked above the NT RiskEngine. Pinned NT RiskEngine provides pre-trade checks (`nautilus_trader@38b912a:crates/risk/src/engine/mod.rs:81`, `:721`, `:777`), and bolt-v3 already maps root TOML into `LiveRiskEngineConfig` (`src/bolt_v3_live_node.rs:425`) with `nt_bypass = false` validation (`src/bolt_v3_validate.rs:271`). That is necessary but not sufficient for bolt-owned admission: size, exposure, cooldown, kill-switch, and no-action evidence must be evaluated before any order reaches NT execution.
+
+Do not add one-off submit guards inside `eth_chainlink_taker` as the production solution. The accepted gate must sit on the v3 order-intent path after decision evidence is accepted and before NT order submission.

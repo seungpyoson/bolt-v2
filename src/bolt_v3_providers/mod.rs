@@ -17,6 +17,7 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod chainlink;
 pub mod polymarket;
 
 use std::{any::Any, fmt, sync::Arc};
@@ -160,6 +161,17 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,
         map_adapters: binance::map_adapters,
+        check_instrument_readiness: None,
+    },
+    ProviderBinding {
+        key: chainlink::KEY,
+        validate_client_id: chainlink::validate_client_id,
+        supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
+        credential_log_modules: chainlink::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: chainlink::FORBIDDEN_ENV_VARS,
+        resolve_secrets: chainlink::resolve_secrets,
+        map_adapters: chainlink::map_adapters,
         check_instrument_readiness: None,
     },
 ];

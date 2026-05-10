@@ -41,7 +41,7 @@ fn reference_actor_plan_uses_configured_data_client_id() {
 }
 
 #[test]
-fn existing_eth_stream_fails_closed_until_producer_client_is_configured() {
+fn existing_eth_stream_builds_chainlink_reference_actor_plan_from_toml() {
     let loaded = load_bolt_v3_config(&support::repo_path(
         "tests/fixtures/bolt_v3_existing_strategy/root.toml",
     ))
@@ -52,12 +52,22 @@ fn existing_eth_stream_fails_closed_until_producer_client_is_configured() {
         .get("eth_usd")
         .expect("existing root should define eth_usd stream");
 
-    let error = BoltV3ReferenceActorPlan::from_stream(&loaded.root, "eth_usd", stream)
-        .expect_err("existing eth stream must not silently choose a producer client")
-        .to_string();
+    let plan = BoltV3ReferenceActorPlan::from_stream(&loaded.root, "eth_usd", stream)
+        .expect("existing eth stream should build Chainlink reference actor plan");
 
-    assert!(
-        error.contains("reference_streams.eth_usd.inputs[0].data_client_id is required"),
-        "error should name missing producer client field, got: {error}"
+    assert_eq!(plan.config.publish_topic, "reference.eth_usd");
+    assert_eq!(
+        plan.config.venue_subscriptions[0].client_id.to_string(),
+        "chainlink_reference"
     );
+    assert_eq!(plan.venue_cfgs[0].kind, ReferenceVenueKind::Chainlink);
+    let chainlink = plan.venue_cfgs[0]
+        .chainlink
+        .as_ref()
+        .expect("Chainlink producer input should carry feed config");
+    assert_eq!(
+        chainlink.feed_id,
+        "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+    );
+    assert_eq!(chainlink.price_scale, 8);
 }

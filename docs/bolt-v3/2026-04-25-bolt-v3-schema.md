@@ -636,6 +636,9 @@ Each `[[reference_streams.<stream_id>.inputs]]` block declares one logical sourc
 - `base_weight`: positive finite numeric weight
 - `stale_after_milliseconds`: positive freshness window
 - `disable_after_milliseconds`: positive disable window, greater than or equal to `stale_after_milliseconds`
+- `chainlink`: required for Chainlink oracle producer inputs
+  - `feed_id`: Chainlink Data Streams feed ID
+  - `price_scale`: Chainlink benchmark price decimal scale
 
 Current local fusion policy:
 
@@ -650,7 +653,7 @@ Current local fusion policy:
 Current local producer-plan policy:
 
 - orderbook producer inputs may map to configured `BINANCE` or `POLYMARKET` data clients
-- oracle producer inputs fail closed until a supported bolt-v3 oracle data-client provider exists
+- oracle producer inputs may map to configured `CHAINLINK` data clients
 - the existing `ReferenceActor` remains the producer actor; bolt-v3 owns only TOML-to-actor planning in the current slice
 
 ### `[clients.<client_id>]`

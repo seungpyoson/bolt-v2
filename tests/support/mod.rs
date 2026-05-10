@@ -648,6 +648,8 @@ pub fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'stat
         "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
         "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
         "/bolt/binance_reference/api_secret" => Ok(FAKE_BOLT_V3_BINANCE_API_SECRET.to_string()),
+        "/bolt/chainlink_reference/api_key" => Ok("chainlink-api-key".to_string()),
+        "/bolt/chainlink_reference/api_secret" => Ok("chainlink-api-secret".to_string()),
         _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
     }
 }

@@ -3,8 +3,8 @@ use nautilus_model::identifiers::{ClientId, InstrumentId};
 
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, ReferenceSourceType, ReferenceStreamBlock},
-    bolt_v3_providers::{binance, polymarket},
-    config::{ReferenceVenueEntry, ReferenceVenueKind},
+    bolt_v3_providers::{binance, chainlink, polymarket},
+    config::{ChainlinkReferenceConfig, ReferenceVenueEntry, ReferenceVenueKind},
     platform::reference_actor::{ReferenceActor, ReferenceActorConfig, ReferenceSubscription},
 };
 
@@ -67,6 +67,19 @@ impl BoltV3ReferenceActorPlan {
                 instrument_id: InstrumentId::from(input.instrument_id.as_str()),
                 client_id: ClientId::from(data_client_id),
             });
+            let chainlink = if kind == ReferenceVenueKind::Chainlink {
+                let chainlink = input.chainlink.as_ref().ok_or_else(|| {
+                    BoltV3ReferenceProducerError::new(format!(
+                        "{context}.chainlink feed config is required for Chainlink producer inputs"
+                    ))
+                })?;
+                Some(ChainlinkReferenceConfig {
+                    feed_id: chainlink.feed_id.clone(),
+                    price_scale: chainlink.price_scale,
+                })
+            } else {
+                None
+            };
             venue_cfgs.push(ReferenceVenueEntry {
                 name: input.source_id.clone(),
                 kind,
@@ -74,7 +87,7 @@ impl BoltV3ReferenceActorPlan {
                 base_weight: input.base_weight,
                 stale_after_ms: input.stale_after_milliseconds,
                 disable_after_ms: input.disable_after_milliseconds,
-                chainlink: None,
+                chainlink,
             });
         }
 
@@ -102,8 +115,9 @@ fn reference_kind_for_source(
     match (source_type, venue) {
         (ReferenceSourceType::Orderbook, binance::KEY) => Ok(ReferenceVenueKind::Binance),
         (ReferenceSourceType::Orderbook, polymarket::KEY) => Ok(ReferenceVenueKind::Polymarket),
-        (ReferenceSourceType::Oracle, _) => Err(BoltV3ReferenceProducerError::new(format!(
-            "{context}.source_type `oracle` requires a supported bolt-v3 oracle data-client provider"
+        (ReferenceSourceType::Oracle, chainlink::KEY) => Ok(ReferenceVenueKind::Chainlink),
+        (ReferenceSourceType::Oracle, venue) => Err(BoltV3ReferenceProducerError::new(format!(
+            "{context}.source_type `oracle` is not supported for client venue `{venue}`"
         ))),
         (ReferenceSourceType::Orderbook, venue) => Err(BoltV3ReferenceProducerError::new(format!(
             "{context}.source_type `orderbook` is not supported for client venue `{venue}`"

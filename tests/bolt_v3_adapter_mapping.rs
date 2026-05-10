@@ -2,12 +2,14 @@ mod support;
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use bolt_v2::clients::chainlink::ChainlinkReferenceClientConfig;
 use bolt_v2::{
     bolt_v3_adapters::{BoltV3ClientMappingError, map_bolt_v3_clients},
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets,
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
@@ -37,6 +39,13 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
     }
 }
 
+fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
+    ResolvedBoltV3ChainlinkSecrets {
+        api_key: "regression-chainlink-api-key".to_string(),
+        api_secret: "regression-chainlink-api-secret".to_string(),
+    }
+}
+
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -47,7 +56,38 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         "binance_reference".to_string(),
         Arc::new(fixture_binance_secrets()),
     );
+    clients.insert(
+        "chainlink_reference".to_string(),
+        Arc::new(fixture_chainlink_secrets()),
+    );
     ResolvedBoltV3Secrets { clients }
+}
+
+#[test]
+fn chainlink_reference_client_maps_from_v3_stream_inputs() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("existing strategy fixture should load");
+    let resolved = fixture_resolved_secrets();
+
+    let configs = map_bolt_v3_clients(&loaded, &resolved).expect("fixture should map cleanly");
+
+    let chainlink = configs
+        .clients
+        .get("chainlink_reference")
+        .expect("chainlink_reference must be present in mapper output");
+    let data = chainlink
+        .data
+        .as_ref()
+        .expect("chainlink [data] block must produce an NT data config")
+        .config_as::<ChainlinkReferenceClientConfig>()
+        .expect("chainlink [data] should downcast to ChainlinkReferenceClientConfig");
+
+    assert_eq!(data.shared.ws_url, "wss://ws.test.chain.link");
+    assert_eq!(data.shared.ws_reconnect_alert_threshold, 3);
+    assert_eq!(data.feeds.len(), 1);
+    assert_eq!(data.feeds[0].venue_name, "eth_usd_oracle_anchor");
+    assert_eq!(data.feeds[0].instrument_id, "ETHUSD.CHAINLINK");
+    assert_eq!(data.feeds[0].price_scale, 8);
 }
 
 #[test]

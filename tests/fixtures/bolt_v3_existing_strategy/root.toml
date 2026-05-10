@@ -109,10 +109,27 @@ min_publish_interval_milliseconds = 100
 [[reference_streams.eth_usd.inputs]]
 source_id = "eth_usd_oracle_anchor"
 source_type = "oracle"
+data_client_id = "chainlink_reference"
 instrument_id = "ETHUSD.CHAINLINK"
 base_weight = 1.0
 stale_after_milliseconds = 1500
 disable_after_milliseconds = 5000
+
+[reference_streams.eth_usd.inputs.chainlink]
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+
+[clients.chainlink_reference]
+venue = "CHAINLINK"
+
+[clients.chainlink_reference.data]
+region = "us-east-1"
+ws_url = "wss://ws.test.chain.link"
+ws_reconnect_alert_threshold = 3
+
+[clients.chainlink_reference.secrets]
+api_key_ssm_path = "/bolt/chainlink_reference/api_key"
+api_secret_ssm_path = "/bolt/chainlink_reference/api_secret"
 
 [clients.polymarket_main]
 venue = "POLYMARKET"

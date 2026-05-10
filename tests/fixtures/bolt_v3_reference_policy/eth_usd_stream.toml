@@ -1,0 +1,18 @@
+publish_topic = "reference.eth_usd"
+min_publish_interval_milliseconds = 100
+
+[[inputs]]
+source_id = "eth_usd_oracle_anchor"
+source_type = "oracle"
+instrument_id = "ETHUSD.CHAINLINK"
+base_weight = 2.0
+stale_after_milliseconds = 1500
+disable_after_milliseconds = 5000
+
+[[inputs]]
+source_id = "eth_usd_fast_orderbook"
+source_type = "orderbook"
+instrument_id = "ETHUSDT.POLYREFERENCE"
+base_weight = 1.0
+stale_after_milliseconds = 500
+disable_after_milliseconds = 2000

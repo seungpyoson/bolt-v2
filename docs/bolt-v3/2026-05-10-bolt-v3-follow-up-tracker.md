@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-11
-Branch context: `codex/bolt-v3-reference-contract`
+Branch context: `codex/bolt-v3-fused-price-policy`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -9,6 +9,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 ## Status Legend
 
 - `unverified`: not proven in current branch
+- `partial`: some local proof exists, but stated production gate remains incomplete
 - `verified-local`: proven by local tests in current branch, not production evidence
 - `reserved`: accepted concept, intentionally unsupported now
 - `blocked`: needs prior decision or evidence
@@ -20,7 +21,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F1 | Multi-strategy idle verification | verified-local | `tests/bolt_v3_strategy_registration.rs` proves root TOML with 2 `strategy_files` builds one `LiveNode`, registers both strategy IDs from TOML, reaches `NodeState::Idle`, and source-fences registration wiring from submit/subscribe calls | live run, order lifecycle, many-client scale |
 | F2 | Reference role naming | blocked | Decide whether `reference_data.primary` is correct role language; update schema/tests only after decision | fused-price policy, producer wiring |
 | F3 | ETH/USD reference contract | verified-local | Root TOML defines `[reference_streams.eth_usd]` with topic, input source, source type, instrument ID, weight, stale window, and disable window; existing strategy TOML selects it with `parameters.reference_stream_id`; `tests/bolt_v3_strategy_registration.rs` and `tests/config_parsing.rs` prove lookup and validation | live orders, order admission, producer wiring |
-| F4 | Fused-price policy | blocked | Tests for anchor source, fast-feed modifiers, weights beyond the raw configured `base_weight`, stale handling, disagreement handling, fail-closed cases | client implementation |
+| F4 | Fused-price policy | partial | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams project into the existing fusion algorithm: configured source IDs, source types, weights, freshness windows, disabled inputs, topic, and existing strategy stream. Remaining proof: accepted cross-source disagreement fail-closed policy and any strategy-specific fast-feed modifier policy | client implementation |
 | F5 | Reference producer wiring | blocked | v3 TOML must create a producer path and the strategy must receive `ReferenceSnapshot` on the configured topic; current producer code is legacy `Config.reference`/`ReferenceActor`, not bolt-v3 root/strategy TOML | changing strategy signal logic |
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
@@ -34,13 +35,13 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 
 ## Current Narrow Proof
 
-The current reference-contract branch proves only:
+The current fused-price-policy branch proves only:
 
 ```text
-root reference stream TOML -> strategy reference_stream_id -> NT strategy context reference_publish_topic
+root reference stream TOML -> existing fusion algorithm -> weighted ReferenceSnapshot
 ```
 
-This does not prove production readiness, live orders, automatic instrument loading, fused-reference correctness, producer construction, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
+This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, producer construction, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
 
 ## Instrument Blocker
 
@@ -52,7 +53,9 @@ Do not work around this by fetching venue instruments directly in bolt-v3 and wr
 
 F3 local contract is no longer blocked: bolt-v3 root TOML defines the logical reference stream, and the existing eth tracer selects it by `parameters.reference_stream_id`. The strategy still receives the NT-owned `StrategyBuildContext.reference_publish_topic`; the topic is now resolved from root TOML, not strategy-local policy.
 
-F4-F5 remain blocked. The configured stream names source facts and freshness windows, but it does not yet define the fused-price decision policy or construct a producer from bolt-v3 TOML. Existing `ReferenceActor` proves a legacy producer exists under old `Config.reference`, but wiring that into bolt-v3 without an accepted v3 producer path would create a hidden dual config path.
+F4 is partial. The configured stream now projects into the existing fusion path, which computes weighted fair value, confidence, stale exclusion, and disabled-source exclusion. No cross-source disagreement fail-closed rule is accepted yet.
+
+F5 remains blocked. Existing `ReferenceActor` proves a legacy producer exists under old `Config.reference`, but wiring that into bolt-v3 without an accepted v3 producer path would create a hidden dual config path.
 
 ## Decision-Event Status
 

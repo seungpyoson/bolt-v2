@@ -37,6 +37,16 @@ pub enum ReferenceObservation {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceFusionInput {
+    pub source_id: String,
+    pub source_type: VenueKind,
+    pub instrument_id: String,
+    pub base_weight: f64,
+    pub stale_after_ms: u64,
+    pub disable_after_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveVenueState {
     pub venue_name: String,
     pub base_weight: f64,
@@ -66,35 +76,49 @@ pub fn fuse_reference_snapshot(
     latest: &BTreeMap<String, ReferenceObservation>,
     disabled: &BTreeMap<String, String>,
 ) -> ReferenceSnapshot {
+    let inputs = venue_cfgs
+        .iter()
+        .map(ReferenceFusionInput::from_reference_entry)
+        .collect::<Vec<_>>();
+    fuse_reference_snapshot_from_inputs(topic, now_ms, &inputs, latest, disabled)
+}
+
+pub fn fuse_reference_snapshot_from_inputs(
+    topic: &str,
+    now_ms: u64,
+    inputs: &[ReferenceFusionInput],
+    latest: &BTreeMap<String, ReferenceObservation>,
+    disabled: &BTreeMap<String, String>,
+) -> ReferenceSnapshot {
     let mut weighted_price_sum = 0.0;
     let mut total_effective_weight = 0.0;
     let mut total_base_weight = 0.0;
-    let mut venues = Vec::with_capacity(venue_cfgs.len());
+    let mut venues = Vec::with_capacity(inputs.len());
 
-    for venue in venue_cfgs {
-        total_base_weight += venue.base_weight;
+    for input in inputs {
+        total_base_weight += input.base_weight;
 
         let observation = latest
-            .get(&venue.name)
-            .filter(|observation| observation.matches_identity(venue));
+            .get(&input.source_id)
+            .filter(|observation| observation.matches_identity(input));
         let missing_observation_reason = observation.is_none().then(missing_observation_reason);
         let observed_ts_ms = observation.map(|observation| observation.observed_ts_ms());
         let venue_kind = observation
             .map(ReferenceObservation::venue_kind)
-            .unwrap_or_else(|| VenueKind::from_reference_entry(venue));
+            .unwrap_or(input.source_type);
         let observed_price = observation.map(ReferenceObservation::observed_price);
         let observed_bid = observation.and_then(ReferenceObservation::observed_bid);
         let observed_ask = observation.and_then(ReferenceObservation::observed_ask);
         let age_ms = observation.map(|observation| now_ms.saturating_sub(observation.ts_ms()));
         let auto_disabled_reason = age_ms
-            .filter(|age_ms| *age_ms > venue.disable_after_ms)
+            .filter(|age_ms| *age_ms > input.disable_after_ms)
             .map(auto_disable_reason);
         let stale = missing_observation_reason.is_some()
             || age_ms
-                .map(|age_ms| age_ms > venue.stale_after_ms || auto_disabled_reason.is_some())
+                .map(|age_ms| age_ms > input.stale_after_ms || auto_disabled_reason.is_some())
                 .unwrap_or(false);
 
-        let health = match disabled.get(&venue.name) {
+        let health = match disabled.get(&input.source_id) {
             Some(reason) => VenueHealth::Disabled {
                 reason: reason.clone(),
             },
@@ -106,7 +130,7 @@ pub fn fuse_reference_snapshot(
 
         let enabled = matches!(health, VenueHealth::Healthy) && !stale;
         let effective_weight = if enabled && observed_price.is_some() {
-            venue.base_weight
+            input.base_weight
         } else {
             0.0
         };
@@ -117,8 +141,8 @@ pub fn fuse_reference_snapshot(
         total_effective_weight += effective_weight;
 
         venues.push(EffectiveVenueState {
-            venue_name: venue.name.clone(),
-            base_weight: venue.base_weight,
+            venue_name: input.source_id.clone(),
+            base_weight: input.base_weight,
             effective_weight,
             stale,
             health,
@@ -159,7 +183,7 @@ fn missing_observation_reason() -> String {
 }
 
 impl ReferenceObservation {
-    fn matches_identity(&self, venue: &ReferenceVenueEntry) -> bool {
+    fn matches_identity(&self, input: &ReferenceFusionInput) -> bool {
         match self {
             Self::Orderbook {
                 venue_name,
@@ -170,7 +194,7 @@ impl ReferenceObservation {
                 venue_name,
                 instrument_id,
                 ..
-            } => venue_name == &venue.name && instrument_id == &venue.instrument_id,
+            } => venue_name == &input.source_id && instrument_id == &input.instrument_id,
         }
     }
 
@@ -217,11 +241,19 @@ impl ReferenceObservation {
     }
 }
 
-impl VenueKind {
-    fn from_reference_entry(venue: &ReferenceVenueEntry) -> Self {
-        match venue.kind {
-            crate::config::ReferenceVenueKind::Chainlink => Self::Oracle,
-            _ => Self::Orderbook,
+impl ReferenceFusionInput {
+    pub fn from_reference_entry(venue: &ReferenceVenueEntry) -> Self {
+        let source_type = match venue.kind {
+            crate::config::ReferenceVenueKind::Chainlink => VenueKind::Oracle,
+            _ => VenueKind::Orderbook,
+        };
+        Self {
+            source_id: venue.name.clone(),
+            source_type,
+            instrument_id: venue.instrument_id.clone(),
+            base_weight: venue.base_weight,
+            stale_after_ms: venue.stale_after_ms,
+            disable_after_ms: venue.disable_after_ms,
         }
     }
 }

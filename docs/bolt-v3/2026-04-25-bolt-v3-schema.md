@@ -636,6 +636,16 @@ Each `[[reference_streams.<stream_id>.inputs]]` block declares one logical sourc
 - `stale_after_milliseconds`: positive freshness window
 - `disable_after_milliseconds`: positive disable window, greater than or equal to `stale_after_milliseconds`
 
+Current local fusion policy:
+
+- observations match an input only when `source_id` and `instrument_id` both match
+- `oracle` inputs use direct observed price
+- `orderbook` inputs use midpoint `(bid + ask) / 2`
+- missing, stale, disabled, or identity-mismatched inputs receive zero effective weight
+- fair value is the weighted mean of enabled observed prices
+- confidence is `total_effective_weight / total_configured_base_weight`
+- no cross-source disagreement fail-closed policy is accepted yet
+
 ### `[clients.<client_id>]`
 
 #### Client ID

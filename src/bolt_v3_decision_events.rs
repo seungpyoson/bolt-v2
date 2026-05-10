@@ -119,6 +119,10 @@ impl From<BoltV3OrderSubmissionFacts> for BoltV3RejectedOrderFacts {
 pub struct BoltV3PreSubmitRejectionFacts {
     pub order: BoltV3RejectedOrderFacts,
     pub rejection_reason: String,
+    pub authoritative_position_quantity: Option<f64>,
+    pub authoritative_sellable_quantity: Option<f64>,
+    pub open_exit_order_quantity: Option<f64>,
+    pub uncovered_position_quantity: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -394,6 +398,7 @@ impl BoltV3EntryPreSubmitRejectionDecisionEvent {
             event_facts: pre_submit_rejection_facts_to_params(
                 facts,
                 "entry_pre_submit_rejection_reason",
+                false,
             ),
             ts_event,
             ts_init,
@@ -473,6 +478,13 @@ impl BoltV3ExitPreSubmitRejectionDecisionEvent {
         if facts.rejection_reason.is_empty() {
             bail!("exit_pre_submit_rejection_reason must be non-empty");
         }
+        if facts.authoritative_position_quantity.is_none()
+            || facts.authoritative_sellable_quantity.is_none()
+            || facts.open_exit_order_quantity.is_none()
+            || facts.uncovered_position_quantity.is_none()
+        {
+            bail!("exit_pre_submit_rejection requires non-null exit position quantities");
+        }
 
         Ok(Self {
             schema_version: common.schema_version,
@@ -491,6 +503,7 @@ impl BoltV3ExitPreSubmitRejectionDecisionEvent {
             event_facts: pre_submit_rejection_facts_to_params(
                 facts,
                 "exit_pre_submit_rejection_reason",
+                true,
             ),
             ts_event,
             ts_init,
@@ -1012,12 +1025,31 @@ fn exit_evaluation_facts_to_params(facts: BoltV3ExitEvaluationFacts) -> Params {
 fn pre_submit_rejection_facts_to_params(
     facts: BoltV3PreSubmitRejectionFacts,
     rejection_reason_key: &str,
+    include_exit_position_facts: bool,
 ) -> Params {
     let mut params = rejected_order_facts_to_params(facts.order);
     params.insert(
         rejection_reason_key.to_string(),
         Value::String(facts.rejection_reason),
     );
+    if include_exit_position_facts {
+        params.insert(
+            "authoritative_position_quantity".to_string(),
+            optional_f64_to_value(facts.authoritative_position_quantity),
+        );
+        params.insert(
+            "authoritative_sellable_quantity".to_string(),
+            optional_f64_to_value(facts.authoritative_sellable_quantity),
+        );
+        params.insert(
+            "open_exit_order_quantity".to_string(),
+            optional_f64_to_value(facts.open_exit_order_quantity),
+        );
+        params.insert(
+            "uncovered_position_quantity".to_string(),
+            optional_f64_to_value(facts.uncovered_position_quantity),
+        );
+    }
     params
 }
 

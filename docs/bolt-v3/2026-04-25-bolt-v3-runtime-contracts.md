@@ -1182,6 +1182,7 @@ For the current `binary_oracle_edge_taker`, this event is not emitted until a la
 
 Allowed `exit_pre_submit_rejection_reason` values:
 
+- `exit_price_missing`
 - `exit_quantity_exceeds_sellable_quantity`
 - `invalid_quantity`
 

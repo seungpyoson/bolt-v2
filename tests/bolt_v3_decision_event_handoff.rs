@@ -275,6 +275,10 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
         BoltV3PreSubmitRejectionFacts {
             order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
             rejection_reason: "invalid_quantity".to_string(),
+            authoritative_position_quantity: None,
+            authoritative_sellable_quantity: None,
+            open_exit_order_quantity: None,
+            uncovered_position_quantity: None,
         },
         UnixNanos::from(4_000),
         UnixNanos::from(4_001),
@@ -370,6 +374,10 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
         BoltV3PreSubmitRejectionFacts {
             order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
             rejection_reason: "invalid_quantity".to_string(),
+            authoritative_position_quantity: Some(10.0),
+            authoritative_sellable_quantity: Some(10.0),
+            open_exit_order_quantity: Some(0.0),
+            uncovered_position_quantity: Some(10.0),
         },
         UnixNanos::from(6_000),
         UnixNanos::from(6_001),

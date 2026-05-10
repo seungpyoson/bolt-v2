@@ -2712,19 +2712,23 @@ impl EthChainlinkTaker {
             decision.blocked_reason = Some("open_position_missing");
             return decision;
         };
-        let Some((order_side, price)) = self.current_exit_order_for_open_position() else {
-            decision.blocked_reason = Some("exit_price_missing");
-            return decision;
-        };
         if !open_position.quantity.as_f64().is_finite() || open_position.quantity.as_f64() <= 0.0 {
             decision.blocked_reason = Some("exit_quantity_not_positive");
             return decision;
         }
-
         decision.instrument_id = Some(open_position.instrument_id);
+        decision.order_side = match open_position.side {
+            PositionSide::Long => Some(OrderSide::Sell),
+            _ => None,
+        };
+        decision.quantity = Some(open_position.quantity);
+
+        let Some((order_side, price)) = self.current_exit_order_for_open_position() else {
+            decision.blocked_reason = Some("exit_price_missing");
+            return decision;
+        };
         decision.order_side = Some(order_side);
         decision.price = Some(price);
-        decision.quantity = Some(open_position.quantity);
         decision.blocked_reason = None;
         decision
     }
@@ -2949,6 +2953,26 @@ impl EthChainlinkTaker {
         evidence.write_exit_evaluation(&decision_trace_id, facts, ts, ts)
     }
 
+    fn write_bolt_v3_exit_pre_submit_rejection(
+        &mut self,
+        now_ms: u64,
+        decision: &ExitSubmissionDecision,
+    ) -> Result<()> {
+        let Some(evidence) = self.context.bolt_v3_decision_evidence.clone() else {
+            return Ok(());
+        };
+
+        let position_quantity = self
+            .managed_position()
+            .map(|managed| managed.position.quantity.as_f64());
+        let Some(facts) = exit_pre_submit_rejection_facts(decision, position_quantity)? else {
+            return Ok(());
+        };
+        let decision_trace_id = self.active_decision_trace_id();
+        let ts = unix_nanos_from_millis(now_ms)?;
+        evidence.write_exit_pre_submit_rejection(&decision_trace_id, facts, ts, ts)
+    }
+
     fn exit_evaluation_decision_facts(
         &self,
         decision: &ExitSubmissionDecision,
@@ -2996,6 +3020,7 @@ impl EthChainlinkTaker {
 
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         let mut decision = self.exit_submission_decision_at(now_ms);
+        self.write_bolt_v3_exit_pre_submit_rejection(now_ms, &decision)?;
 
         let Some(instrument_id) = decision.instrument_id else {
             self.log_exit_evaluation(now_ms, &decision);
@@ -4620,6 +4645,54 @@ fn entry_pre_submit_rejection_facts(
                 .map(std::string::ToString::to_string),
         },
         rejection_reason: rejection_reason.to_string(),
+        authoritative_position_quantity: None,
+        authoritative_sellable_quantity: None,
+        open_exit_order_quantity: None,
+        uncovered_position_quantity: None,
+    }))
+}
+
+fn exit_pre_submit_rejection_facts(
+    decision: &ExitSubmissionDecision,
+    position_quantity: Option<f64>,
+) -> Result<Option<BoltV3PreSubmitRejectionFacts>> {
+    let Some(rejection_reason) = decision.blocked_reason else {
+        return Ok(None);
+    };
+    if rejection_reason != "exit_price_missing" {
+        return Ok(None);
+    }
+
+    let side = decision
+        .order_side
+        .map(order_side_as_decision_fact)
+        .transpose()?
+        .map(str::to_string);
+
+    Ok(Some(BoltV3PreSubmitRejectionFacts {
+        order: BoltV3RejectedOrderFacts {
+            order_type: None,
+            time_in_force: None,
+            instrument_id: decision
+                .instrument_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            side,
+            price: decision.price,
+            quantity: decision.quantity.map(|quantity| quantity.as_f64()),
+            is_quote_quantity: None,
+            is_post_only: None,
+            is_reduce_only: None,
+            client_order_id: decision
+                .client_order_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+        },
+        rejection_reason: rejection_reason.to_string(),
+        authoritative_position_quantity: position_quantity,
+        authoritative_sellable_quantity: decision.quantity.map(|quantity| quantity.as_f64()),
+        open_exit_order_quantity: Some(0.0),
+        uncovered_position_quantity: position_quantity.map(|quantity| quantity.max(0.0)),
     }))
 }
 

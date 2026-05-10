@@ -14,7 +14,8 @@ use crate::{
         BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
         BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
         BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
-        BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
+        BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3OrderSubmissionFacts,
+        BoltV3PreSubmitRejectionFacts,
     },
 };
 
@@ -113,6 +114,21 @@ impl BoltV3StrategyDecisionEvidence {
             .context("bolt-v3 exit evaluation handoff failed")
     }
 
+    pub fn write_exit_pre_submit_rejection(
+        &self,
+        decision_trace_id: &str,
+        facts: BoltV3PreSubmitRejectionFacts,
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    ) -> Result<()> {
+        let common = self.common_context.common_fields(decision_trace_id)?;
+        let event = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
+            common, facts, ts_event, ts_init,
+        )?;
+        self.write_exit_pre_submit_rejection_event(event)
+            .context("bolt-v3 exit pre-submit rejection handoff failed")
+    }
+
     fn write_entry_order_submission(
         &self,
         event: BoltV3EntryOrderSubmissionDecisionEvent,
@@ -168,6 +184,21 @@ impl BoltV3StrategyDecisionEvidence {
         })
         .join()
         .map_err(|_| anyhow!("bolt-v3 exit evaluation handoff thread panicked"))?
+    }
+
+    fn write_exit_pre_submit_rejection_event(
+        &self,
+        event: BoltV3ExitPreSubmitRejectionDecisionEvent,
+    ) -> Result<()> {
+        let handoff = Arc::clone(&self.handoff);
+        thread::spawn(move || {
+            let mut handoff = handoff
+                .lock()
+                .map_err(|_| anyhow!("bolt-v3 decision-evidence handoff mutex poisoned"))?;
+            handoff.write_exit_pre_submit_rejection(event)
+        })
+        .join()
+        .map_err(|_| anyhow!("bolt-v3 exit pre-submit rejection handoff thread panicked"))?
     }
 
     fn write_exit_order_submission(

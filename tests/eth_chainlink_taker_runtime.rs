@@ -638,8 +638,14 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
 }
 
 fn polymarket_binary_option(instrument_id: InstrumentId) -> InstrumentAny {
+    polymarket_binary_option_with_size_increment(instrument_id, Quantity::from("0.01"))
+}
+
+fn polymarket_binary_option_with_size_increment(
+    instrument_id: InstrumentId,
+    size_increment: Quantity,
+) -> InstrumentAny {
     let price_increment = Price::from("0.001");
-    let size_increment = Quantity::from("0.01");
     InstrumentAny::BinaryOption(BinaryOption::new(
         instrument_id,
         instrument_id.symbol,
@@ -866,13 +872,25 @@ async fn wait_for_running(handle: &LiveNodeHandle) {
 }
 
 fn add_eth_entry_instruments(node: &mut LiveNode) {
+    add_eth_entry_instruments_with_size_increment(node, Quantity::from("0.01"));
+}
+
+fn add_eth_entry_instruments_with_size_increment(node: &mut LiveNode, size_increment: Quantity) {
     let cache_handle = node.kernel().cache();
     let mut cache = cache_handle.borrow_mut();
     let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
     let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
-    cache.add_instrument(polymarket_binary_option(up)).unwrap();
     cache
-        .add_instrument(polymarket_binary_option(down))
+        .add_instrument(polymarket_binary_option_with_size_increment(
+            up,
+            size_increment,
+        ))
+        .unwrap();
+    cache
+        .add_instrument(polymarket_binary_option_with_size_increment(
+            down,
+            size_increment,
+        ))
         .unwrap();
 }
 
@@ -2710,6 +2728,92 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
     assert!(
         submission_events.is_empty(),
         "pre-submit rejection must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(
+        &trader,
+        "eth_chainlink_taker",
+        &strategy_raw_config_with_max_position_usdc(0.1),
+    )
+    .unwrap();
+
+    add_eth_entry_instruments_with_size_increment(&mut node, Quantity::from("1"));
+    drive_eth_entry_pre_submit_rejection(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "invalid quantity rejection must not submit order"
+    );
+
+    let rejection_events =
+        query_entry_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(rejection_events.len(), 1);
+    match &rejection_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryPreSubmitRejectionDecisionEvent>()
+                .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                Some(&serde_json::Value::String("invalid_quantity".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("instrument_id"),
+                Some(&serde_json::Value::String(
+                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("side"),
+                Some(&serde_json::Value::String("buy".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("price"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("quantity"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("client_order_id"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert!(
+        submission_events.is_empty(),
+        "invalid quantity rejection must not persist order submission"
     );
 }
 

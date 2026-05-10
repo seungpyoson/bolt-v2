@@ -4931,9 +4931,11 @@ fn entry_pre_submit_rejection_facts(
     let Some(rejection_reason) = decision.blocked_reason else {
         return Ok(None);
     };
-    if rejection_reason != "instrument_missing_from_cache" {
+    let Some(contract_rejection_reason) =
+        entry_pre_submit_rejection_contract_reason(rejection_reason)
+    else {
         return Ok(None);
-    }
+    };
 
     let side = decision
         .order_side
@@ -4960,12 +4962,20 @@ fn entry_pre_submit_rejection_facts(
                 .as_ref()
                 .map(std::string::ToString::to_string),
         },
-        rejection_reason: rejection_reason.to_string(),
+        rejection_reason: contract_rejection_reason.to_string(),
         authoritative_position_quantity: None,
         authoritative_sellable_quantity: None,
         open_exit_order_quantity: None,
         uncovered_position_quantity: None,
     }))
+}
+
+fn entry_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&'static str> {
+    match internal_reason {
+        "instrument_missing_from_cache" => Some("instrument_missing_from_cache"),
+        "quantity_rounding_failed" | "quantity_not_positive" => Some("invalid_quantity"),
+        _ => None,
+    }
 }
 
 fn exit_pre_submit_rejection_facts(

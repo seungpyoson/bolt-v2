@@ -15,7 +15,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | Requirement | Evidence | Status |
 | --- | --- | --- |
 | Use fresh branches/worktrees from origin | Current branch `codex/bolt-v3-reference-producer` was created in `.worktrees/bolt-v3-reference-producer` from pushed origin ref `origin/codex/bolt-v3-fused-price-policy` | met |
-| Commit and push each slice | Current reference-producer slice is local until commit/push; prior slices remain pushed separately | pending |
+| Commit and push each slice | Current reference-producer slice is committed on `codex/bolt-v3-reference-producer` and pushed to origin; prior slices remain pushed separately | met |
 | Do not merge without approval | No merge command used; no PR opened from these branches | met |
 | F3 ETH/USD reference contract | Root TOML now defines `[reference_streams.eth_usd]`; existing strategy TOML selects it with `parameters.reference_stream_id`; validation rejects missing stream IDs and invalid stream values; strategy registration resolves selected stream to NT context `reference_publish_topic` | verified-local |
 | F4 fused-price policy | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams use the existing fusion algorithm for configured source IDs, source types, weights, freshness windows, disabled inputs, and topic; no disagreement fail-closed policy exists yet | partial |
@@ -28,7 +28,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | No Python production path | All F3-F10 tracker entries reject Python or avoid it; no Python runtime artifact added | met |
 | No direct venue bypass | F6c, F9, and F10 tracker entries reject direct provider/venue bypasses | met |
 | No hardcoded runtime values added | Runtime stream/topic/source/client/freshness values live in TOML fixtures; Rust only parses, validates, and looks up configured IDs | met locally |
-| Verification before claims | Focused reference-producer tests pass locally; full branch verification still pending before commit/push | pending |
+| Verification before claims | Focused reference-producer tests and `cargo test --tests --no-run` passed locally before push; whitespace and marker scans were clean | met locally |
 
 ## Result
 

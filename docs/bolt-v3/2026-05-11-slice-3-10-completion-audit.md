@@ -15,7 +15,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | Requirement | Evidence | Status |
 | --- | --- | --- |
 | Use fresh branches/worktrees from origin | Current branch `codex/bolt-v3-reference-actor-registration` was created in `.worktrees/bolt-v3-reference-actor-registration` from pushed origin ref `origin/codex/bolt-v3-chainlink-provider` | met |
-| Commit and push each slice | Current reference-actor-registration slice is local until commit/push; prior slices remain pushed separately | pending |
+| Commit and push each slice | Current reference-actor-registration slice committed as `d1a8ae2` and pushed to `origin/codex/bolt-v3-reference-actor-registration`; prior slices remain pushed separately | met |
 | Do not merge without approval | No merge command used; no PR opened from these branches | met |
 | F3 ETH/USD reference contract | Root TOML now defines `[reference_streams.eth_usd]`; existing strategy TOML selects it with `parameters.reference_stream_id`; validation rejects missing stream IDs and invalid stream values; strategy registration resolves selected stream to NT context `reference_publish_topic` | verified-local |
 | F4 fused-price policy | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams use the existing fusion algorithm for configured source IDs, source types, weights, freshness windows, disabled inputs, and topic; no disagreement fail-closed policy exists yet | partial |
@@ -28,7 +28,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | No Python production path | All F3-F10 tracker entries reject Python or avoid it; no Python runtime artifact added | met |
 | No direct venue bypass | F6c, F9, and F10 tracker entries reject direct provider/venue bypasses | met |
 | No hardcoded runtime values added | Runtime stream/topic/source/client/freshness values live in TOML fixtures; Rust only parses, validates, and looks up configured IDs | met locally |
-| Verification before claims | Focused reference-actor-registration tests pass locally; full branch verification still pending before commit/push | pending |
+| Verification before claims | Focused reference-actor-registration tests pass locally; `cargo test --tests --no-run` passes; `cargo fmt`, `git diff --check`, and changed-file debt-marker scan are clean | met-local |
 
 ## Result
 
@@ -48,4 +48,4 @@ F3-F10 are not production-complete. They are classified with evidence:
 
 External reviews remain pending and are intentionally not requested here. CI on these branches has not been used as acceptance evidence. Merge approval remains required.
 
-The next implementation decision should not start F9 or F10. After this reference-actor-registration slice is committed and pushed, the next credible slice is observed reference delivery behind an accepted start/run gate, still no orders.
+The next implementation decision should not start F9 or F10. With this reference-actor-registration slice pushed, the next credible slice is observed reference delivery behind an accepted start/run gate, still no orders.

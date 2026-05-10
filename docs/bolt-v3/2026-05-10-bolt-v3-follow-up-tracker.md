@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-11
-Branch context: `codex/bolt-v3-fused-price-policy`
+Branch context: `codex/bolt-v3-reference-producer`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -22,7 +22,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F2 | Reference role naming | blocked | Decide whether `reference_data.primary` is correct role language; update schema/tests only after decision | fused-price policy, producer wiring |
 | F3 | ETH/USD reference contract | verified-local | Root TOML defines `[reference_streams.eth_usd]` with topic, input source, source type, instrument ID, weight, stale window, and disable window; existing strategy TOML selects it with `parameters.reference_stream_id`; `tests/bolt_v3_strategy_registration.rs` and `tests/config_parsing.rs` prove lookup and validation | live orders, order admission, producer wiring |
 | F4 | Fused-price policy | partial | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams project into the existing fusion algorithm: configured source IDs, source types, weights, freshness windows, disabled inputs, topic, and existing strategy stream. Remaining proof: accepted cross-source disagreement fail-closed policy and any strategy-specific fast-feed modifier policy | client implementation |
-| F5 | Reference producer wiring | blocked | v3 TOML must create a producer path and the strategy must receive `ReferenceSnapshot` on the configured topic; current producer code is legacy `Config.reference`/`ReferenceActor`, not bolt-v3 root/strategy TOML | changing strategy signal logic |
+| F5 | Reference producer wiring | partial | `tests/bolt_v3_reference_producer.rs` proves v3 stream TOML with `data_client_id` can produce an existing `ReferenceActorConfig`/`ReferenceVenueEntry` plan without legacy `Config.reference`, and that the existing eth stream fails closed instead of silently choosing a producer client. Remaining proof: supported v3 oracle data-client provider for the eth Chainlink source, LiveNode actor registration, and observed `ReferenceSnapshot` delivery on the configured topic | changing strategy signal logic |
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
@@ -35,13 +35,13 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 
 ## Current Narrow Proof
 
-The current fused-price-policy branch proves only:
+The current reference-producer branch proves only:
 
 ```text
-root reference stream TOML -> existing fusion algorithm -> weighted ReferenceSnapshot
+root reference stream TOML -> existing ReferenceActor plan
 ```
 
-This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, producer construction, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
+This does not prove production readiness, live orders, automatic instrument loading, disagreement fail-closed behavior, LiveNode actor registration, producer runtime delivery, automatic start/run enforcement, decision persistence, order lifecycle, reconciliation, or scale.
 
 ## Instrument Blocker
 
@@ -55,7 +55,7 @@ F3 local contract is no longer blocked: bolt-v3 root TOML defines the logical re
 
 F4 is partial. The configured stream now projects into the existing fusion path, which computes weighted fair value, confidence, stale exclusion, and disabled-source exclusion. No cross-source disagreement fail-closed rule is accepted yet.
 
-F5 remains blocked. Existing `ReferenceActor` proves a legacy producer exists under old `Config.reference`, but wiring that into bolt-v3 without an accepted v3 producer path would create a hidden dual config path.
+F5 is partial. v3 TOML can now build an existing `ReferenceActor` plan when each source names a configured data client. The existing eth Chainlink stream still fails closed because it has no producer `data_client_id`, and bolt-v3 has no supported oracle data-client provider yet.
 
 ## Decision-Event Status
 

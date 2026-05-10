@@ -223,6 +223,8 @@ pub struct ReferenceStreamBlock {
 pub struct ReferenceStreamInputBlock {
     pub source_id: String,
     pub source_type: ReferenceSourceType,
+    #[serde(default)]
+    pub data_client_id: Option<String>,
     pub instrument_id: String,
     pub base_weight: f64,
     pub stale_after_milliseconds: u64,

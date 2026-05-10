@@ -1,0 +1,11 @@
+publish_topic = "reference.eth_usd"
+min_publish_interval_milliseconds = 100
+
+[[inputs]]
+source_id = "eth_usd_orderbook_anchor"
+source_type = "orderbook"
+data_client_id = "binance_reference"
+instrument_id = "ETHUSDT.BINANCE"
+base_weight = 1.0
+stale_after_milliseconds = 1500
+disable_after_milliseconds = 5000

@@ -631,6 +631,7 @@ Each `[[reference_streams.<stream_id>.inputs]]` block declares one logical sourc
 
 - `source_id`: non-empty source key unique within the stream
 - `source_type`: current allowed values are `oracle` and `orderbook`
+- `data_client_id`: optional for pure policy tests, required before reference producer construction; must reference a root data-capable `[clients.<id>]` block
 - `instrument_id`: source instrument identity
 - `base_weight`: positive finite numeric weight
 - `stale_after_milliseconds`: positive freshness window
@@ -645,6 +646,12 @@ Current local fusion policy:
 - fair value is the weighted mean of enabled observed prices
 - confidence is `total_effective_weight / total_configured_base_weight`
 - no cross-source disagreement fail-closed policy is accepted yet
+
+Current local producer-plan policy:
+
+- orderbook producer inputs may map to configured `BINANCE` or `POLYMARKET` data clients
+- oracle producer inputs fail closed until a supported bolt-v3 oracle data-client provider exists
+- the existing `ReferenceActor` remains the producer actor; bolt-v3 owns only TOML-to-actor planning in the current slice
 
 ### `[clients.<client_id>]`
 

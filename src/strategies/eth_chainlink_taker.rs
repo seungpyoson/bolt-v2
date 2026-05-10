@@ -2213,9 +2213,6 @@ impl EthChainlinkTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Option<&'static str> {
-        if decision.blocked_reason != Some("entry_gate_blocked") {
-            return None;
-        }
         if decision.evaluation.gate.blocked_by.iter().any(|reason| {
             matches!(
                 reason,
@@ -2223,6 +2220,12 @@ impl EthChainlinkTaker {
             )
         }) {
             return None;
+        }
+        if self
+            .current_seconds_to_expiry_at(now_ms)
+            .is_some_and(|seconds| seconds == 0)
+        {
+            return Some("market_ended");
         }
         if self
             .active

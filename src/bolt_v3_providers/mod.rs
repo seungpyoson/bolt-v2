@@ -21,10 +21,12 @@ pub mod polymarket;
 
 use std::{any::Any, fmt, sync::Arc};
 
+use nautilus_common::cache::Cache;
+
 use crate::{
     bolt_v3_adapters::{BoltV3ClientConfig, BoltV3ClientMappingError, BoltV3UpdownNowFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock},
-    bolt_v3_market_families::updown::MarketIdentityPlan,
+    bolt_v3_market_families::updown::{BoltV3MarketIdentityError, MarketIdentityPlan},
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
 };
 
@@ -62,6 +64,29 @@ pub struct ProviderAdapterMapContext<'a> {
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3UpdownNowFn,
+}
+
+pub struct ProviderInstrumentReadinessContext<'a> {
+    pub client_id_key: &'a str,
+    pub venue_key: &'a str,
+    pub plan: &'a MarketIdentityPlan,
+    pub cache: &'a Cache,
+    pub market_selection_timestamp_milliseconds: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProviderInstrumentReadinessStatus {
+    Ready,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderInstrumentReadinessFact {
+    pub client_id_key: String,
+    pub strategy_instance_id: String,
+    pub configured_target_id: String,
+    pub status: ProviderInstrumentReadinessStatus,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +131,12 @@ pub struct ProviderBinding {
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
     ) -> Result<BoltV3ClientConfig, BoltV3ClientMappingError>,
+    pub check_instrument_readiness: Option<
+        for<'a> fn(
+            ProviderInstrumentReadinessContext<'a>,
+        )
+            -> Result<Vec<ProviderInstrumentReadinessFact>, BoltV3MarketIdentityError>,
+    >,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
@@ -118,6 +149,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
         map_adapters: polymarket::map_adapters,
+        check_instrument_readiness: Some(polymarket::check_instrument_readiness),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -128,6 +160,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,
         map_adapters: binance::map_adapters,
+        check_instrument_readiness: None,
     },
 ];
 

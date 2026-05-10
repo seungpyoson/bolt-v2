@@ -54,9 +54,10 @@ use crate::{
         candidates_for_target, updown_market_slug, updown_period_pair,
     },
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderInstrumentReadinessContext,
+        ProviderInstrumentReadinessFact, ProviderInstrumentReadinessStatus,
+        ProviderResolvedSecrets, ProviderSecretRequirement, ProviderSecretResolveContext,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     clients::polymarket::{FeeProvider, PolymarketClobFeeProvider},
@@ -222,6 +223,52 @@ pub fn resolve_updown_selected_markets_for_client_from_cache(
         .collect()
 }
 
+pub fn check_instrument_readiness(
+    context: ProviderInstrumentReadinessContext<'_>,
+) -> Result<Vec<ProviderInstrumentReadinessFact>, BoltV3MarketIdentityError> {
+    let venue = Venue::new(context.venue_key);
+    resolve_updown_selected_markets_for_client_from_cache(
+        context.cache,
+        context.plan,
+        context.client_id_key,
+        &venue,
+        context.market_selection_timestamp_milliseconds,
+    )
+    .map(|resolutions| {
+        resolutions
+            .into_iter()
+            .map(|target| {
+                let (status, detail) = match target.resolution {
+                    UpdownSelectedMarketResolution::Selected {
+                        role,
+                        selected_market,
+                    } => (
+                        ProviderInstrumentReadinessStatus::Ready,
+                        format!(
+                            "selected_market role={} market_slug={} up_instrument_id={} down_instrument_id={}",
+                            selected_market_role_as_str(role),
+                            selected_market.polymarket_market_slug,
+                            selected_market.up_instrument_id,
+                            selected_market.down_instrument_id
+                        ),
+                    ),
+                    UpdownSelectedMarketResolution::Failed { failure_reason } => (
+                        ProviderInstrumentReadinessStatus::Blocked,
+                        updown_selected_market_failure_reason_as_str(failure_reason).to_string(),
+                    ),
+                };
+                ProviderInstrumentReadinessFact {
+                    client_id_key: context.client_id_key.to_string(),
+                    strategy_instance_id: target.strategy_instance_id,
+                    configured_target_id: target.configured_target_id,
+                    status,
+                    detail,
+                }
+            })
+            .collect()
+    })
+}
+
 fn complete_updown_markets_for_slug(
     cache: &Cache,
     target: &UpdownTargetPlan,
@@ -306,6 +353,23 @@ fn instrument_info_str<'a>(binary: &'a BinaryOption, key: &str) -> Option<&'a st
 
 fn unix_nanos_to_millis(value: nautilus_core::UnixNanos) -> Option<i64> {
     i64::try_from(value.as_u64() / 1_000_000).ok()
+}
+
+fn selected_market_role_as_str(role: UpdownSelectedMarketRole) -> &'static str {
+    match role {
+        UpdownSelectedMarketRole::Current => "current",
+        UpdownSelectedMarketRole::Next => "next",
+    }
+}
+
+fn updown_selected_market_failure_reason_as_str(
+    reason: UpdownSelectedMarketFailureReason,
+) -> &'static str {
+    match reason {
+        UpdownSelectedMarketFailureReason::InstrumentsNotInCache => "instruments_not_in_cache",
+        UpdownSelectedMarketFailureReason::NoSelectedMarket => "no_selected_market",
+        UpdownSelectedMarketFailureReason::AmbiguousSelectedMarket => "ambiguous_selected_market",
+    }
 }
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {

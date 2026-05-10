@@ -600,9 +600,11 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
 This root block names a logical reference stream shared by strategies.
 The bolt-v3 LiveNode build path registers one existing `ReferenceActor`
 for each distinct `parameters.reference_stream_id` selected by configured
-strategies. This remains an idle-node proof: no `LiveNode::start`, runner
-loop, user `subscribe_*` call, order construction, submit, fill handling,
-or reconciliation is claimed here.
+strategies. A mock-only local proof starts an NT `LiveNode` with the
+registered actor and a mock data client, publishes Chainlink custom data,
+and observes a `ReferenceSnapshot` on the configured topic. This is not
+real-provider, venue-live, order construction, submit, fill handling, or
+reconciliation evidence.
 
 #### Stream ID
 
@@ -657,7 +659,7 @@ Current local producer-plan policy:
 
 - orderbook producer inputs may map to configured `BINANCE` or `POLYMARKET` data clients
 - oracle producer inputs may map to configured `CHAINLINK` data clients
-- the existing `ReferenceActor` remains the producer actor; bolt-v3 owns TOML-to-actor planning and idle-node registration in the current slice
+- the existing `ReferenceActor` remains the producer actor; bolt-v3 owns TOML-to-actor planning, idle-node registration, and mock-only NT lifecycle delivery proof in the current slice
 
 ### `[clients.<client_id>]`
 

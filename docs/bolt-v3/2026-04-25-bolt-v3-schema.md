@@ -543,7 +543,7 @@ There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNod
 
 This section carries the current local catalog writer settings.
 It is required in the current live-trading scope.
-These settings apply to the single local persistence path for both structured decision events and raw NautilusTrader capture.
+These settings apply to the shared local catalog root for structured decision events and raw NautilusTrader capture.
 The schema does not expose a separate raw-capture backend, rotation policy, or writer path.
 
 #### `catalog_fs_protocol`
@@ -557,7 +557,8 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
 
 - type: positive integer
 - required: yes
-- controls the current catalog flush cadence for structured decision events and raw NautilusTrader capture
+- controls the current catalog flush cadence for raw NautilusTrader capture
+- structured decision events currently write synchronously through NautilusTrader's catalog API before order submission
 
 #### `replace_existing`
 

@@ -1194,8 +1194,9 @@ Registration and persistence mechanism:
 
 - bolt registers the fixed decision-event custom-data types with NautilusTrader at startup
 - registration happens before any strategy can emit decision evidence
-- the current live-trading persistence path uses one canonical bolt call site which hands registered custom-data values to NautilusTrader's catalog API
-- `[persistence.streaming]` supplies the catalog protocol, flush interval, replace behavior, and no-rotation policy for this call site
+- the current live-trading decision-event path uses one canonical bolt call site, `BoltV3DecisionEventCatalogHandoff::from_persistence_block`, which writes registered custom-data values through NautilusTrader's `ParquetDataCatalog::write_custom_data_batch`
+- `[persistence]` supplies the catalog directory; `[persistence.streaming]` supplies file protocol, replace behavior, and no-rotation policy for this call site
+- decision events do not use a background queue in the current scope
 - bolt does not implement a second writer, subscriber-writer loop, or parallel persistence path
 
 Every decision event must be constructed as the fixed registered NautilusTrader custom-data value before emission.
@@ -1207,9 +1208,8 @@ Order-submission events are `entry_order_submission` and `exit_order_submission`
 For pre-submit rejection events, the constructed value must be accepted by the single canonical in-process persistence handoff before the local rejection path completes.
 Pre-submit rejection events are `entry_pre_submit_rejection` and `exit_pre_submit_rejection`.
 
-Accepted handoff means the registered custom-data value has been accepted by the canonical bounded in-process catalog handoff without registration, encoding, capacity, or path rejection.
-Accepted handoff does not require durable catalog flush completion.
-Full handoff capacity is a handoff failure.
+Accepted handoff means `ParquetDataCatalog::write_custom_data_batch` returned success for the registered custom-data value without registration, encoding, path, or write rejection.
+The current direct handoff may block on local catalog write completion.
 An unbounded queue is forbidden.
 If construction, encoding, registration lookup, or accepted handoff fails for an order-submission event, the current submit is blocked.
 If construction, encoding, registration lookup, or accepted handoff fails for a pre-submit rejection event, the strategy enters `persistence_failed` before completing the local rejection path.

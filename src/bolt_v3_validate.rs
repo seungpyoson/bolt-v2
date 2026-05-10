@@ -44,7 +44,7 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, ReferenceStreamBlock, RiskBlock,
+    PersistenceBlock, ReferenceStreamBlock, ReleaseBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -100,6 +100,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_nautilus_block(&root.nautilus));
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));
+    errors.extend(validate_release_block(&root.release));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_reference_streams(&root.reference_streams));
     errors.extend(validate_clients_block(&root.clients));
@@ -375,6 +376,17 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             "persistence.streaming.flush_interval_milliseconds must be a positive integer"
                 .to_string(),
         );
+    }
+    errors
+}
+
+fn validate_release_block(block: &ReleaseBlock) -> Vec<String> {
+    let mut errors = Vec::new();
+    if !Path::new(&block.identity_manifest_path).is_absolute() {
+        errors.push(format!(
+            "release.identity_manifest_path must be an absolute path: `{}`",
+            block.identity_manifest_path
+        ));
     }
     errors
 }

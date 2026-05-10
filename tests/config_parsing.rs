@@ -700,6 +700,10 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(loaded.root.trader_id, "BOLT-001");
     assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
     assert_eq!(
+        loaded.root.release.identity_manifest_path,
+        "/var/lib/bolt/releases/current/release-identity.toml"
+    );
+    assert_eq!(
         loaded.root.clients["polymarket_main"].venue.as_str(),
         "POLYMARKET"
     );
@@ -745,6 +749,29 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(
         strategy.reference_data["primary"].data_client_id,
         "binance_reference"
+    );
+}
+
+#[test]
+fn bolt_v3_release_identity_manifest_path_must_be_absolute() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should be readable")
+        .replace(
+            "identity_manifest_path = \"/var/lib/bolt/releases/current/release-identity.toml\"",
+            "identity_manifest_path = \"release-identity.toml\"",
+        );
+    let root: BoltV3RootConfig = toml::from_str(&mutated).expect("mutated root should parse");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message
+                .contains("release.identity_manifest_path must be an absolute path")),
+        "expected release identity manifest path validation error, got {messages:#?}"
     );
 }
 
@@ -1108,6 +1135,9 @@ flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
 
+[release]
+identity_manifest_path = "/var/lib/bolt/releases/current/release-identity.toml"
+
 [aws]
 region = "eu-west-1"
 
@@ -1242,6 +1272,9 @@ flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
 
+[release]
+identity_manifest_path = "/var/lib/bolt/releases/current/release-identity.toml"
+
 [aws]
 region = "eu-west-1"
 
@@ -1369,6 +1402,9 @@ catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
+
+[release]
+identity_manifest_path = "/var/lib/bolt/releases/current/release-identity.toml"
 
 [aws]
 region = "eu-west-1"

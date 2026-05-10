@@ -40,6 +40,7 @@ The root file owns:
 - entity-level risk settings
 - logging configuration
 - persistence paths
+- release identity manifest path
 - keyed client definitions
 - client secret references
 - explicit strategy file list
@@ -179,6 +180,9 @@ catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
+
+[release]
+identity_manifest_path = "/var/lib/bolt/releases/current/release-identity.toml"
 
 [aws]
 region = "eu-west-1"
@@ -585,6 +589,17 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
 - current allowed value:
   - `none`
 - maps to the local catalog writer no-rotation behavior
+
+### `[release]`
+
+#### `identity_manifest_path`
+
+- type: absolute path string
+- required: yes
+- path to the deploy-written release identity manifest
+- bolt reads release identity from this file at startup; it must not derive release identity from current working directory, git commands, or environment variables
+- the manifest must contain the fields required by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 11.2
+- runtime loading verifies manifest `config_hash` against the loaded root and strategy TOML files, and verifies manifest `nautilus_trader_revision` against the pinned NautilusTrader rev in `Cargo.toml`
 
 ### `[aws]`
 
@@ -1344,6 +1359,9 @@ catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
+
+[release]
+identity_manifest_path = "/var/lib/bolt/releases/current/release-identity.toml"
 
 [aws]
 region = "eu-west-1"

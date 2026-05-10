@@ -29,6 +29,7 @@ pub struct BoltV3RootConfig {
     pub risk: RiskBlock,
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
+    pub release: ReleaseBlock,
     pub aws: AwsBlock,
     #[serde(default)]
     pub reference_streams: BTreeMap<String, ReferenceStreamBlock>,
@@ -192,6 +193,12 @@ pub struct StreamingBlock {
     pub flush_interval_milliseconds: u64,
     pub replace_existing: bool,
     pub rotation_kind: RotationKind,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseBlock {
+    pub identity_manifest_path: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

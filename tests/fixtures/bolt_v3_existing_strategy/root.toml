@@ -99,6 +99,9 @@ flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
 
+[release]
+identity_manifest_path = "/var/lib/bolt/releases/current/release-identity.toml"
+
 [aws]
 region = "eu-west-1"
 

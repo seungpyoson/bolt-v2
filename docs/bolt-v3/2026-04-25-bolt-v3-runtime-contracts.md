@@ -1313,7 +1313,7 @@ Immediate follow-up:
 
 ### 11.2 Release identity manifest
 
-Deploy automation writes a release identity manifest inside the selected release directory after artifact verification succeeds.
+Deploy automation writes a TOML release identity manifest inside the selected release directory after artifact verification succeeds.
 
 The manifest must contain at minimum:
 

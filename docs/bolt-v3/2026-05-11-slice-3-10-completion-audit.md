@@ -15,7 +15,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | Requirement | Evidence | Status |
 | --- | --- | --- |
 | Use fresh branches/worktrees from origin | Current branch `codex/bolt-v3-release-identity` was created in `.worktrees/bolt-v3-release-identity` from pushed origin ref `origin/codex/bolt-v3-decision-event-context` | met |
-| Commit and push each slice | Current release-identity slice is local until commit/push; prior slices remain pushed separately | pending |
+| Commit and push each slice | Current release-identity slice is committed as `5a2804bbf7741b3bfb375bf8389bc7a28316af94` and pushed to `origin/codex/bolt-v3-release-identity`; prior slices remain pushed separately | met |
 | Do not merge without approval | No merge command used; no PR opened from these branches | met |
 | F3 ETH/USD reference contract | Root TOML now defines `[reference_streams.eth_usd]`; existing strategy TOML selects it with `parameters.reference_stream_id`; validation rejects missing stream IDs and invalid stream values; strategy registration resolves selected stream to NT context `reference_publish_topic` | verified-local |
 | F4 fused-price policy | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams use the existing fusion algorithm for configured source IDs, source types, weights, freshness windows, disabled inputs, and topic; no disagreement fail-closed policy exists yet | partial |
@@ -48,4 +48,4 @@ F3-F10 are not production-complete. They are classified with evidence:
 
 External reviews remain pending and are intentionally not requested here. CI on these branches has not been used as acceptance evidence. Merge approval remains required.
 
-The next implementation decision should not start F9 or F10. After this release-identity slice is committed and pushed, the next credible slice remains wiring the actual v3 strategy/order-intent path through the context and gate before any production start/run wrapper, still no orders.
+The next implementation decision should not start F9 or F10. With this release-identity slice pushed, the next credible slice remains wiring the actual v3 strategy/order-intent path through the context and gate before any production start/run wrapper, still no orders.

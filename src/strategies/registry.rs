@@ -19,10 +19,22 @@ impl<T> RuntimeStrategy for T where T: Strategy + DataActor + Component + std::f
 pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 
 #[derive(Clone)]
+pub struct BoltV3MarketSelectionContext {
+    pub market_selection_type: String,
+    pub rotating_market_family: Option<String>,
+    pub underlying_asset: Option<String>,
+    pub cadence_seconds: Option<i64>,
+    pub market_selection_rule: Option<String>,
+    pub retry_interval_seconds: Option<u64>,
+    pub blocked_after_seconds: Option<u64>,
+}
+
+#[derive(Clone)]
 pub struct StrategyBuildContext {
     pub fee_provider: Arc<dyn FeeProvider>,
     pub reference_publish_topic: String,
     pub bolt_v3_decision_evidence: Option<BoltV3StrategyDecisionEvidence>,
+    pub bolt_v3_market_selection_context: Option<BoltV3MarketSelectionContext>,
 }
 
 pub trait StrategyBuilder: Send + Sync + 'static {
@@ -292,6 +304,7 @@ mod tests {
             fee_provider: Arc::new(NoopFeeProvider),
             reference_publish_topic: "platform.reference.test".to_string(),
             bolt_v3_decision_evidence: None,
+            bolt_v3_market_selection_context: None,
         }
     }
 

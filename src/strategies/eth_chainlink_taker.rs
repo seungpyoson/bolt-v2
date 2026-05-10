@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use nautilus_common::{
     actor::{DataActor, registry::try_get_actor_unchecked},
     component::Component,
@@ -30,8 +30,8 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_events::{
-        BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3OrderSubmissionFacts,
-        BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
+        BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts,
+        BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
     },
     platform::{
         polymarket_catalog::polymarket_instrument_id,
@@ -39,7 +39,9 @@ use crate::{
         ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionState},
         runtime::runtime_selection_topic,
     },
-    strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder},
+    strategies::registry::{
+        BoltV3MarketSelectionContext, BoxedStrategy, StrategyBuildContext, StrategyBuilder,
+    },
     validate::ValidationError,
 };
 
@@ -1288,6 +1290,14 @@ impl EthChainlinkTaker {
         self.sync_exposure_context_from_active();
         self.prune_market_lifecycle(now_ms);
         self.refresh_book_subscriptions_for_current_state();
+        if let Err(error) = self.write_bolt_v3_market_selection_result(&snapshot) {
+            log::error!(
+                "eth_chainlink_taker market selection evidence failed: strategy_id={} now_ms={} error={:#}",
+                self.config.strategy_id,
+                now_ms,
+                error
+            );
+        }
         if self.exposure.managed_position().is_some()
             && let Err(error) = self.try_submit_exit_order(now_ms)
         {
@@ -2092,6 +2102,24 @@ impl EthChainlinkTaker {
         let decision_trace_id = self.active_decision_trace_id();
         let ts = unix_nanos_from_millis(now_ms)?;
         evidence.write_entry_evaluation(&decision_trace_id, facts, ts, ts)
+    }
+
+    fn write_bolt_v3_market_selection_result(
+        &mut self,
+        snapshot: &RuntimeSelectionSnapshot,
+    ) -> Result<()> {
+        let Some(evidence) = self.context.bolt_v3_decision_evidence.clone() else {
+            return Ok(());
+        };
+        let Some(target_context) = self.context.bolt_v3_market_selection_context.as_ref() else {
+            return Ok(());
+        };
+        let Some(facts) = market_selection_result_facts(snapshot, target_context)? else {
+            return Ok(());
+        };
+        let decision_trace_id = self.active_decision_trace_id();
+        let ts = unix_nanos_from_millis(snapshot.published_at_ms)?;
+        evidence.write_market_selection_result(&decision_trace_id, facts, ts, ts)
     }
 
     fn write_bolt_v3_entry_pre_submit_rejection(
@@ -3922,6 +3950,58 @@ fn selection_book_subscriptions(snapshot: &RuntimeSelectionSnapshot) -> OutcomeB
     }
 }
 
+fn market_selection_result_facts(
+    snapshot: &RuntimeSelectionSnapshot,
+    target_context: &BoltV3MarketSelectionContext,
+) -> Result<Option<BoltV3MarketSelectionResultFacts>> {
+    let market = match &snapshot.decision.state {
+        SelectionState::Active { market } | SelectionState::Freeze { market, .. } => market,
+        SelectionState::Idle { .. } => return Ok(None),
+    };
+
+    Ok(Some(BoltV3MarketSelectionResultFacts {
+        market_selection_type: target_context.market_selection_type.clone(),
+        market_selection_timestamp_milliseconds: snapshot.published_at_ms,
+        market_selection_outcome: market_selection_outcome(market, snapshot.published_at_ms)?,
+        market_selection_failure_reason: None,
+        rotating_market_family: target_context.rotating_market_family.clone(),
+        underlying_asset: target_context.underlying_asset.clone(),
+        cadence_seconds: target_context.cadence_seconds,
+        market_selection_rule: target_context.market_selection_rule.clone(),
+        retry_interval_seconds: target_context.retry_interval_seconds,
+        blocked_after_seconds: target_context.blocked_after_seconds,
+        polymarket_condition_id: Some(market.condition_id.clone()),
+        polymarket_market_slug: Some(market.market_slug.clone()),
+        polymarket_question_id: Some(market.question_id.clone()),
+        up_instrument_id: Some(
+            polymarket_instrument_id(&market.condition_id, &market.up_token_id).to_string(),
+        ),
+        down_instrument_id: Some(
+            polymarket_instrument_id(&market.condition_id, &market.down_token_id).to_string(),
+        ),
+        selected_market_observed_timestamp: Some(market.selected_market_observed_ts_ms),
+        polymarket_market_start_timestamp_milliseconds: Some(market.start_ts_ms),
+        polymarket_market_end_timestamp_milliseconds: Some(market.end_ts_ms),
+        price_to_beat_value: market.price_to_beat,
+        price_to_beat_observed_timestamp: market.price_to_beat_observed_ts_ms,
+        price_to_beat_source: market.price_to_beat_source.clone(),
+    }))
+}
+
+fn market_selection_outcome(market: &CandidateMarket, timestamp_ms: u64) -> Result<String> {
+    if market.start_ts_ms <= timestamp_ms && timestamp_ms < market.end_ts_ms {
+        return Ok("current".to_string());
+    }
+    if market.start_ts_ms > timestamp_ms {
+        return Ok("next".to_string());
+    }
+    Err(anyhow!(
+        "selected market {} ended before market_selection_timestamp_milliseconds {}",
+        market.market_id,
+        timestamp_ms
+    ))
+}
+
 fn should_replace_book_subscriptions(
     current: &OutcomeBookSubscriptions,
     next: &OutcomeBookSubscriptions,
@@ -4993,6 +5073,7 @@ mod tests {
                 fee_provider,
                 reference_publish_topic: "platform.reference.test.chainlink".to_string(),
                 bolt_v3_decision_evidence: None,
+                bolt_v3_market_selection_context: None,
             },
         )
     }
@@ -5251,6 +5332,7 @@ mod tests {
             condition_id,
             up_token_id,
             down_token_id,
+            selected_market_observed_ts_ms: interval_start_ms,
             price_to_beat: None,
             price_to_beat_source: None,
             price_to_beat_observed_ts_ms: None,

@@ -404,6 +404,7 @@ fn translate_market_result(
         condition_id: market.condition_id,
         up_token_id,
         down_token_id,
+        selected_market_observed_ts_ms: now.timestamp_millis().max(0) as u64,
         price_to_beat,
         price_to_beat_source: price_to_beat.map(|_| "polymarket_gamma_market_anchor".to_string()),
         price_to_beat_observed_ts_ms: price_to_beat.map(|_| now.timestamp_millis().max(0) as u64),
@@ -635,6 +636,7 @@ mod tests {
         assert_eq!(candidate.question_id, "0xquestion1");
         assert_eq!(candidate.instrument_id, "0xcondition1-111.POLYMARKET");
         assert_eq!(candidate.end_ts_ms, 1_778_444_400_000);
+        assert_eq!(candidate.selected_market_observed_ts_ms, 1_778_443_200_000);
         assert_eq!(candidate.price_to_beat, Some(3100.0));
         assert_eq!(
             candidate.price_to_beat_source.as_deref(),

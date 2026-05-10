@@ -13,6 +13,7 @@ pub struct CandidateMarket {
     pub condition_id: String,
     pub up_token_id: String,
     pub down_token_id: String,
+    pub selected_market_observed_ts_ms: u64,
     pub price_to_beat: Option<f64>,
     pub price_to_beat_source: Option<String>,
     pub price_to_beat_observed_ts_ms: Option<u64>,

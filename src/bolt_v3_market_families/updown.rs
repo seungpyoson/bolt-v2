@@ -90,10 +90,26 @@ pub enum RotatingMarketFamily {
     Updown,
 }
 
+impl RotatingMarketFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Updown => "updown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MarketSelectionRule {
     ActiveOrNext,
+}
+
+impl MarketSelectionRule {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ActiveOrNext => "active_or_next",
+        }
+    }
 }
 
 /// Typed deserializer for the strategy envelope's raw `[target]` block.

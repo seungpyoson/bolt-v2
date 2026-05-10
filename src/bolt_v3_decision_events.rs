@@ -47,12 +47,29 @@ pub struct BoltV3DecisionEventCommonFields {
     pub configured_target_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoltV3MarketSelectionResultFacts {
     pub market_selection_type: String,
     pub market_selection_timestamp_milliseconds: u64,
     pub market_selection_outcome: String,
     pub market_selection_failure_reason: Option<String>,
+    pub rotating_market_family: Option<String>,
+    pub underlying_asset: Option<String>,
+    pub cadence_seconds: Option<i64>,
+    pub market_selection_rule: Option<String>,
+    pub retry_interval_seconds: Option<u64>,
+    pub blocked_after_seconds: Option<u64>,
+    pub polymarket_condition_id: Option<String>,
+    pub polymarket_market_slug: Option<String>,
+    pub polymarket_question_id: Option<String>,
+    pub up_instrument_id: Option<String>,
+    pub down_instrument_id: Option<String>,
+    pub selected_market_observed_timestamp: Option<u64>,
+    pub polymarket_market_start_timestamp_milliseconds: Option<u64>,
+    pub polymarket_market_end_timestamp_milliseconds: Option<u64>,
+    pub price_to_beat_value: Option<f64>,
+    pub price_to_beat_observed_timestamp: Option<u64>,
+    pub price_to_beat_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -663,6 +680,71 @@ fn validate_market_selection_result_facts(facts: &BoltV3MarketSelectionResultFac
         value => bail!("unsupported market_selection_outcome `{value}`"),
     }
 
+    if facts.market_selection_type == "rotating_market" {
+        require_some(
+            facts.rotating_market_family.as_ref(),
+            "rotating_market_family",
+        )?;
+        require_some(facts.underlying_asset.as_ref(), "underlying_asset")?;
+        require_some(facts.cadence_seconds.as_ref(), "cadence_seconds")?;
+        require_some(
+            facts.market_selection_rule.as_ref(),
+            "market_selection_rule",
+        )?;
+        require_some(
+            facts.retry_interval_seconds.as_ref(),
+            "retry_interval_seconds",
+        )?;
+        require_some(
+            facts.blocked_after_seconds.as_ref(),
+            "blocked_after_seconds",
+        )?;
+
+        if matches!(facts.market_selection_outcome.as_str(), "current" | "next") {
+            require_some(
+                facts.polymarket_condition_id.as_ref(),
+                "polymarket_condition_id",
+            )?;
+            require_some(
+                facts.polymarket_market_slug.as_ref(),
+                "polymarket_market_slug",
+            )?;
+            require_some(
+                facts.polymarket_question_id.as_ref(),
+                "polymarket_question_id",
+            )?;
+            require_some(facts.up_instrument_id.as_ref(), "up_instrument_id")?;
+            require_some(facts.down_instrument_id.as_ref(), "down_instrument_id")?;
+            require_some(
+                facts.selected_market_observed_timestamp.as_ref(),
+                "selected_market_observed_timestamp",
+            )?;
+            require_some(
+                facts
+                    .polymarket_market_start_timestamp_milliseconds
+                    .as_ref(),
+                "polymarket_market_start_timestamp_milliseconds",
+            )?;
+            require_some(
+                facts.polymarket_market_end_timestamp_milliseconds.as_ref(),
+                "polymarket_market_end_timestamp_milliseconds",
+            )?;
+            require_some(facts.price_to_beat_value.as_ref(), "price_to_beat_value")?;
+            require_some(
+                facts.price_to_beat_observed_timestamp.as_ref(),
+                "price_to_beat_observed_timestamp",
+            )?;
+            require_some(facts.price_to_beat_source.as_ref(), "price_to_beat_source")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn require_some<T>(value: Option<&T>, field_name: &str) -> Result<()> {
+    if value.is_none() {
+        bail!("{field_name} must be non-null");
+    }
     Ok(())
 }
 
@@ -684,6 +766,125 @@ fn market_selection_result_facts_to_params(facts: BoltV3MarketSelectionResultFac
         "market_selection_failure_reason".to_string(),
         facts
             .market_selection_failure_reason
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "rotating_market_family".to_string(),
+        facts
+            .rotating_market_family
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "underlying_asset".to_string(),
+        facts
+            .underlying_asset
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "cadence_seconds".to_string(),
+        facts
+            .cadence_seconds
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "market_selection_rule".to_string(),
+        facts
+            .market_selection_rule
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "retry_interval_seconds".to_string(),
+        facts
+            .retry_interval_seconds
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "blocked_after_seconds".to_string(),
+        facts
+            .blocked_after_seconds
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "polymarket_condition_id".to_string(),
+        facts
+            .polymarket_condition_id
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "polymarket_market_slug".to_string(),
+        facts
+            .polymarket_market_slug
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "polymarket_question_id".to_string(),
+        facts
+            .polymarket_question_id
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "up_instrument_id".to_string(),
+        facts
+            .up_instrument_id
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "down_instrument_id".to_string(),
+        facts
+            .down_instrument_id
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "selected_market_observed_timestamp".to_string(),
+        facts
+            .selected_market_observed_timestamp
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "polymarket_market_start_timestamp_milliseconds".to_string(),
+        facts
+            .polymarket_market_start_timestamp_milliseconds
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "polymarket_market_end_timestamp_milliseconds".to_string(),
+        facts
+            .polymarket_market_end_timestamp_milliseconds
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "price_to_beat_value".to_string(),
+        facts
+            .price_to_beat_value
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "price_to_beat_observed_timestamp".to_string(),
+        facts
+            .price_to_beat_observed_timestamp
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    params.insert(
+        "price_to_beat_source".to_string(),
+        facts
+            .price_to_beat_source
             .map(Value::String)
             .unwrap_or(Value::Null),
     );

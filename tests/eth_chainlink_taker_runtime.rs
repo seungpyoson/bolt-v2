@@ -15,10 +15,11 @@ use bolt_v2::{
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
-        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE, BoltV3EntryEvaluationDecisionEvent,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+        BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BoltV3EntryEvaluationDecisionEvent,
         BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
         BoltV3ExitEvaluationDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
-        BoltV3ExitPreSubmitRejectionDecisionEvent,
+        BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
     },
     bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     config::Config,
@@ -31,6 +32,7 @@ use bolt_v2::{
         ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionDecision, SelectionState},
         runtime::{registry_runtime_strategy_factory, runtime_selection_topic},
     },
+    strategies::registry::BoltV3MarketSelectionContext,
     strategies::{eth_chainlink_taker::EthChainlinkTaker, production_strategy_registry},
 };
 use nautilus_common::{
@@ -235,6 +237,24 @@ fn query_entry_evaluation_events(
         .unwrap()
 }
 
+fn query_market_selection_events(
+    path: &std::path::Path,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    ParquetDataCatalog::new(path, None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
+}
+
 fn query_entry_order_submission_events(
     path: &std::path::Path,
     configured_target_id: &str,
@@ -350,6 +370,7 @@ fn candidate_market_with_tokens(
         condition_id: condition_id.to_string(),
         up_token_id: up_token_id.to_string(),
         down_token_id: down_token_id.to_string(),
+        selected_market_observed_ts_ms: start_ts_ms,
         price_to_beat: None,
         price_to_beat_source: None,
         price_to_beat_observed_ts_ms: None,
@@ -366,6 +387,27 @@ fn candidate_market_with_tokens(
 
 fn selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     selection_snapshot_for("MKT-ETH-1", start_ts_ms)
+}
+
+fn selection_snapshot_with_market_facts(
+    start_ts_ms: u64,
+    price_to_beat_observed_ts_ms: u64,
+) -> RuntimeSelectionSnapshot {
+    let mut market = candidate_market_named("MKT-ETH-1", start_ts_ms);
+    market.price_to_beat = Some(3_100.0);
+    market.price_to_beat_source = Some("polymarket_gamma_market_anchor".to_string());
+    market.price_to_beat_observed_ts_ms = Some(price_to_beat_observed_ts_ms);
+    RuntimeSelectionSnapshot {
+        ruleset_id: "PRIMARY".to_string(),
+        decision: SelectionDecision {
+            ruleset_id: "PRIMARY".to_string(),
+            state: SelectionState::Active {
+                market: market.clone(),
+            },
+        },
+        eligible_candidates: vec![market],
+        published_at_ms: start_ts_ms,
+    }
 }
 
 fn selection_snapshot_for(market_id: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
@@ -966,6 +1008,179 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
         InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
     );
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    build_context.bolt_v3_market_selection_context = Some(BoltV3MarketSelectionContext {
+        market_selection_type: "rotating_market".to_string(),
+        rotating_market_family: Some("updown".to_string()),
+        underlying_asset: Some("ETH".to_string()),
+        cadence_seconds: Some(300),
+        market_selection_rule: Some("active_or_next".to_string()),
+        retry_interval_seconds: Some(5),
+        blocked_after_seconds: Some(60),
+    });
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let handle = node.handle();
+    let start_ts_ms = 1_000;
+    let price_to_beat_observed_ts_ms = 900;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot_with_market_facts(start_ts_ms, price_to_beat_observed_ts_ms),
+            );
+            sleep(Duration::from_millis(50)).await;
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 0, "{submissions:?}");
+
+    let market_selection_events =
+        query_market_selection_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(market_selection_events.len(), 1);
+    match &market_selection_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3MarketSelectionDecisionEvent>()
+                .expect("BoltV3MarketSelectionDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.decision_event_type, "market_selection_result");
+            assert!(!decoded.decision_trace_id.is_empty());
+            assert_eq!(
+                decoded.event_facts.get("market_selection_type"),
+                Some(&serde_json::Value::String("rotating_market".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("market_selection_outcome"),
+                Some(&serde_json::Value::String("current".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("market_selection_failure_reason"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("rotating_market_family"),
+                Some(&serde_json::Value::String("updown".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("underlying_asset"),
+                Some(&serde_json::Value::String("ETH".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("cadence_seconds"),
+                Some(&serde_json::Value::from(300))
+            );
+            assert_eq!(
+                decoded.event_facts.get("market_selection_rule"),
+                Some(&serde_json::Value::String("active_or_next".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("retry_interval_seconds"),
+                Some(&serde_json::Value::from(5))
+            );
+            assert_eq!(
+                decoded.event_facts.get("blocked_after_seconds"),
+                Some(&serde_json::Value::from(60))
+            );
+            assert_eq!(
+                decoded.event_facts.get("polymarket_condition_id"),
+                Some(&serde_json::Value::String("condition-eth".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("polymarket_market_slug"),
+                Some(&serde_json::Value::String("MKT-ETH-1".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("polymarket_question_id"),
+                Some(&serde_json::Value::String("question-MKT-ETH-1".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("up_instrument_id"),
+                Some(&serde_json::Value::String(
+                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("down_instrument_id"),
+                Some(&serde_json::Value::String(
+                    "condition-eth-MKT-ETH-1-DOWN.POLYMARKET".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("selected_market_observed_timestamp"),
+                Some(&serde_json::Value::from(start_ts_ms))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("polymarket_market_start_timestamp_milliseconds"),
+                Some(&serde_json::Value::from(start_ts_ms))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("polymarket_market_end_timestamp_milliseconds"),
+                Some(&serde_json::Value::from(start_ts_ms + 300_000))
+            );
+            assert_eq!(
+                decoded.event_facts.get("price_to_beat_value"),
+                Some(&serde_json::Value::from(3_100.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("price_to_beat_observed_timestamp"),
+                Some(&serde_json::Value::from(price_to_beat_observed_ts_ms))
+            );
+            assert_eq!(
+                decoded.event_facts.get("price_to_beat_source"),
+                Some(&serde_json::Value::String(
+                    "polymarket_gamma_market_anchor".to_string()
+                ))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
 }
 
 #[test]

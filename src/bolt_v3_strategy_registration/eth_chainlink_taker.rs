@@ -6,6 +6,7 @@ use toml::{Value, map::Map};
 use crate::{
     bolt_v3_config::{BoltV3StrategyConfig, REFERENCE_STREAM_ID_PARAMETER},
     bolt_v3_decision_event_context::bolt_v3_decision_event_common_context,
+    bolt_v3_market_families::updown,
     bolt_v3_providers::{self, polymarket::ResolvedBoltV3PolymarketSecrets},
     bolt_v3_release_identity::load_bolt_v3_release_identity,
     bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
@@ -14,7 +15,7 @@ use crate::{
     },
     strategies::{
         eth_chainlink_taker::{ETH_CHAINLINK_TAKER_KIND, EthChainlinkTakerBuilder},
-        registry::StrategyBuildContext,
+        registry::{BoltV3MarketSelectionContext, StrategyBuildContext},
     },
 };
 
@@ -128,6 +129,29 @@ fn build_context(
         fee_provider,
         reference_publish_topic: reference_publish_topic(context)?,
         bolt_v3_decision_evidence: Some(decision_evidence(context)?),
+        bolt_v3_market_selection_context: Some(market_selection_context(strategy).map_err(
+            |source| BoltV3StrategyRegistrationError::InvalidParameters {
+                reason: format!(
+                    "strategy `{}` failed to build bolt-v3 market selection context: {source}",
+                    context.strategy.relative_path
+                ),
+            },
+        )?),
+    })
+}
+
+fn market_selection_context(
+    strategy: &BoltV3StrategyConfig,
+) -> Result<BoltV3MarketSelectionContext, String> {
+    let target = updown::deserialize_target_block(&strategy.target)?;
+    Ok(BoltV3MarketSelectionContext {
+        market_selection_type: target.market_selection_type.as_str().to_string(),
+        rotating_market_family: Some(target.rotating_market_family.as_str().to_string()),
+        underlying_asset: Some(target.underlying_asset),
+        cadence_seconds: Some(target.cadence_seconds),
+        market_selection_rule: Some(target.market_selection_rule.as_str().to_string()),
+        retry_interval_seconds: Some(target.retry_interval_seconds),
+        blocked_after_seconds: Some(target.blocked_after_seconds),
     })
 }
 
@@ -238,6 +262,49 @@ fn reference_publish_topic(
                 "strategy `{}` parameters.{REFERENCE_STREAM_ID_FIELD} `{stream_id}` does not match any [reference_streams.<id>] block",
                 strategy.relative_path
             ),
-        })?;
+    })?;
     Ok(stream.publish_topic.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn market_selection_context_is_derived_from_strategy_target() {
+        let strategy: BoltV3StrategyConfig = toml::from_str(include_str!(
+            "../../tests/fixtures/bolt_v3_existing_strategy/strategies/eth_chainlink_taker.toml"
+        ))
+        .expect("strategy fixture should parse");
+        let target = updown::deserialize_target_block(&strategy.target)
+            .expect("strategy target fixture should deserialize");
+
+        let context = market_selection_context(&strategy).unwrap();
+
+        assert_eq!(
+            context.market_selection_type,
+            target.market_selection_type.as_str()
+        );
+        assert_eq!(
+            context.rotating_market_family.as_deref(),
+            Some(target.rotating_market_family.as_str())
+        );
+        assert_eq!(
+            context.underlying_asset.as_deref(),
+            Some(target.underlying_asset.as_str())
+        );
+        assert_eq!(context.cadence_seconds, Some(target.cadence_seconds));
+        assert_eq!(
+            context.market_selection_rule.as_deref(),
+            Some(target.market_selection_rule.as_str())
+        );
+        assert_eq!(
+            context.retry_interval_seconds,
+            Some(target.retry_interval_seconds)
+        );
+        assert_eq!(
+            context.blocked_after_seconds,
+            Some(target.blocked_after_seconds)
+        );
+    }
 }

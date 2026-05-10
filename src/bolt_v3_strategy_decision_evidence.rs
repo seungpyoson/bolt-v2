@@ -14,7 +14,8 @@ use crate::{
         BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
         BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
         BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
-        BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3OrderSubmissionFacts,
+        BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
+        BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts,
         BoltV3PreSubmitRejectionFacts,
     },
 };
@@ -52,6 +53,21 @@ impl BoltV3StrategyDecisionEvidence {
         self.write_entry_order_submission(event)
             .context("bolt-v3 entry order-intent handoff failed")?;
         submit()
+    }
+
+    pub fn write_market_selection_result(
+        &self,
+        decision_trace_id: &str,
+        facts: BoltV3MarketSelectionResultFacts,
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    ) -> Result<()> {
+        let common = self.common_context.common_fields(decision_trace_id)?;
+        let event = BoltV3MarketSelectionDecisionEvent::market_selection_result(
+            common, facts, ts_event, ts_init,
+        )?;
+        self.write_market_selection_result_event(event)
+            .context("bolt-v3 market selection handoff failed")
     }
 
     pub fn write_entry_evaluation(
@@ -142,6 +158,21 @@ impl BoltV3StrategyDecisionEvidence {
         })
         .join()
         .map_err(|_| anyhow!("bolt-v3 entry order-intent handoff thread panicked"))?
+    }
+
+    fn write_market_selection_result_event(
+        &self,
+        event: BoltV3MarketSelectionDecisionEvent,
+    ) -> Result<()> {
+        let handoff = Arc::clone(&self.handoff);
+        thread::spawn(move || {
+            let mut handoff = handoff
+                .lock()
+                .map_err(|_| anyhow!("bolt-v3 decision-evidence handoff mutex poisoned"))?;
+            handoff.write_market_selection_result(event)
+        })
+        .join()
+        .map_err(|_| anyhow!("bolt-v3 market selection handoff thread panicked"))?
     }
 
     fn write_entry_evaluation_event(

@@ -10,18 +10,19 @@ use crate::{
     bolt_v3_config::PersistenceBlock,
     bolt_v3_decision_event_context::BoltV3DecisionEventCommonContext,
     bolt_v3_decision_events::{
-        BoltV3DecisionEventCatalogHandoff, BoltV3EntryOrderSubmissionDecisionEvent,
+        BoltV3DecisionEventCatalogHandoff, BoltV3EntryEvaluationDecisionEvent,
+        BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
         BoltV3ExitOrderSubmissionDecisionEvent, BoltV3OrderSubmissionFacts,
     },
 };
 
 #[derive(Clone)]
-pub struct BoltV3StrategyOrderIntentEvidence {
+pub struct BoltV3StrategyDecisionEvidence {
     common_context: BoltV3DecisionEventCommonContext,
     handoff: Arc<Mutex<BoltV3DecisionEventCatalogHandoff>>,
 }
 
-impl BoltV3StrategyOrderIntentEvidence {
+impl BoltV3StrategyDecisionEvidence {
     pub fn from_persistence_block(
         common_context: BoltV3DecisionEventCommonContext,
         persistence: &PersistenceBlock,
@@ -50,6 +51,20 @@ impl BoltV3StrategyOrderIntentEvidence {
         submit()
     }
 
+    pub fn write_entry_evaluation(
+        &self,
+        decision_trace_id: &str,
+        facts: BoltV3EntryEvaluationFacts,
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    ) -> Result<()> {
+        let common = self.common_context.common_fields(decision_trace_id)?;
+        let event =
+            BoltV3EntryEvaluationDecisionEvent::entry_evaluation(common, facts, ts_event, ts_init)?;
+        self.write_entry_evaluation_event(event)
+            .context("bolt-v3 entry evaluation handoff failed")
+    }
+
     pub fn gate_exit_order_submission<T>(
         &self,
         decision_trace_id: &str,
@@ -75,11 +90,26 @@ impl BoltV3StrategyOrderIntentEvidence {
         thread::spawn(move || {
             let mut handoff = handoff
                 .lock()
-                .map_err(|_| anyhow!("bolt-v3 order-intent handoff mutex poisoned"))?;
+                .map_err(|_| anyhow!("bolt-v3 decision-evidence handoff mutex poisoned"))?;
             handoff.write_entry_order_submission(event)
         })
         .join()
         .map_err(|_| anyhow!("bolt-v3 entry order-intent handoff thread panicked"))?
+    }
+
+    fn write_entry_evaluation_event(
+        &self,
+        event: BoltV3EntryEvaluationDecisionEvent,
+    ) -> Result<()> {
+        let handoff = Arc::clone(&self.handoff);
+        thread::spawn(move || {
+            let mut handoff = handoff
+                .lock()
+                .map_err(|_| anyhow!("bolt-v3 decision-evidence handoff mutex poisoned"))?;
+            handoff.write_entry_evaluation(event)
+        })
+        .join()
+        .map_err(|_| anyhow!("bolt-v3 entry evaluation handoff thread panicked"))?
     }
 
     fn write_exit_order_submission(
@@ -90,7 +120,7 @@ impl BoltV3StrategyOrderIntentEvidence {
         thread::spawn(move || {
             let mut handoff = handoff
                 .lock()
-                .map_err(|_| anyhow!("bolt-v3 order-intent handoff mutex poisoned"))?;
+                .map_err(|_| anyhow!("bolt-v3 decision-evidence handoff mutex poisoned"))?;
             handoff.write_exit_order_submission(event)
         })
         .join()

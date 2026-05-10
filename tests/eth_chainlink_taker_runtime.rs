@@ -10,11 +10,12 @@ use bolt_v2::{
     bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock},
     bolt_v3_decision_event_context::BoltV3DecisionEventCommonContext,
     bolt_v3_decision_events::{
+        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
-        BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE, BoltV3EntryOrderSubmissionDecisionEvent,
-        BoltV3ExitOrderSubmissionDecisionEvent,
+        BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE, BoltV3EntryEvaluationDecisionEvent,
+        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
     },
-    bolt_v3_strategy_order_intent::BoltV3StrategyOrderIntentEvidence,
+    bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     config::Config,
     live_node_setup::{
         DataClientRegistration, ExecClientRegistration, build_live_node, make_live_node_config,
@@ -200,6 +201,24 @@ fn decision_persistence_block(path: impl AsRef<std::path::Path>) -> PersistenceB
             rotation_kind: RotationKind::None,
         },
     }
+}
+
+fn query_entry_evaluation_events(
+    path: &std::path::Path,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    ParquetDataCatalog::new(path, None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap()
 }
 
 fn query_entry_order_submission_events(
@@ -728,7 +747,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
 }
 
 #[test]
-fn eth_chainlink_taker_runtime_writes_entry_order_intent_before_submit() {
+fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_submit() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
@@ -736,7 +755,7 @@ fn eth_chainlink_taker_runtime_writes_entry_order_intent_before_submit() {
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
-    let evidence = BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
     )
@@ -745,7 +764,7 @@ fn eth_chainlink_taker_runtime_writes_entry_order_intent_before_submit() {
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
     );
-    build_context.bolt_v3_order_intent_evidence = Some(evidence);
+    build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -756,9 +775,39 @@ fn eth_chainlink_taker_runtime_writes_entry_order_intent_before_submit() {
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
 
-    let events = query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(events.len(), 1);
-    match &events[0] {
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    let evaluation_trace_id = match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("enter".to_string()))
+            );
+            let updown_side = decoded
+                .event_facts
+                .get("updown_side")
+                .and_then(serde_json::Value::as_str)
+                .expect("entry evaluation updown_side should be present");
+            assert!(
+                matches!(updown_side, "up" | "down"),
+                "unexpected updown_side {updown_side}"
+            );
+            decoded.decision_trace_id.clone()
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    };
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(submission_events.len(), 1);
+    match &submission_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
             let decoded = custom
                 .data
@@ -767,6 +816,7 @@ fn eth_chainlink_taker_runtime_writes_entry_order_intent_before_submit() {
                 .expect("BoltV3EntryOrderSubmissionDecisionEvent");
             assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
             assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
                 decoded.event_facts.get("client_order_id"),
                 Some(&serde_json::Value::String(
@@ -779,7 +829,7 @@ fn eth_chainlink_taker_runtime_writes_entry_order_intent_before_submit() {
 }
 
 #[test]
-fn eth_chainlink_taker_runtime_blocks_entry_submit_when_order_intent_write_fails() {
+fn eth_chainlink_taker_runtime_blocks_entry_submit_when_decision_evidence_write_fails() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
@@ -789,7 +839,7 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_order_intent_write_fails
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
-    let evidence = BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(&occupied_path),
     )
@@ -798,7 +848,7 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_order_intent_write_fails
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
     );
-    build_context.bolt_v3_order_intent_evidence = Some(evidence);
+    build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -808,7 +858,7 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_order_intent_write_fails
 
     assert!(
         recorded_mock_exec_submissions().is_empty(),
-        "failed order-intent handoff must block NT submit"
+        "failed decision-evidence handoff must block NT submit"
     );
 }
 
@@ -1153,7 +1203,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
-    let evidence = BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
     )
@@ -1162,7 +1212,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
     );
-    build_context.bolt_v3_order_intent_evidence = Some(evidence);
+    build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();

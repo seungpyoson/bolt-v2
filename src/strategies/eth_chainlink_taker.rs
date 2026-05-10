@@ -25,10 +25,11 @@ use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
 use rust_decimal::prelude::ToPrimitive;
 use serde::Deserialize;
+use serde_json::json;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_events::BoltV3OrderSubmissionFacts,
+    bolt_v3_decision_events::{BoltV3EntryEvaluationFacts, BoltV3OrderSubmissionFacts},
     platform::{
         polymarket_catalog::polymarket_instrument_id,
         reference::ReferenceSnapshot,
@@ -2073,6 +2074,58 @@ impl EthChainlinkTaker {
         }
     }
 
+    fn write_bolt_v3_entry_evaluation(
+        &mut self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+    ) -> Result<()> {
+        let Some(evidence) = self.context.bolt_v3_decision_evidence.clone() else {
+            return Ok(());
+        };
+        if decision.blocked_reason.is_some() {
+            return Ok(());
+        }
+
+        let facts = self.entry_evaluation_decision_facts(now_ms, decision)?;
+        let decision_trace_id = self.active_decision_trace_id();
+        let ts = unix_nanos_from_millis(now_ms)?;
+        evidence.write_entry_evaluation(&decision_trace_id, facts, ts, ts)
+    }
+
+    fn entry_evaluation_decision_facts(
+        &self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+    ) -> Result<BoltV3EntryEvaluationFacts> {
+        let selected_side = decision
+            .evaluation
+            .selected_side
+            .ok_or_else(|| anyhow::anyhow!("entry evaluation event requires selected side"))?;
+        let seconds_to_market_end = self.current_seconds_to_expiry_at(now_ms).ok_or_else(|| {
+            anyhow::anyhow!("entry evaluation event requires seconds to market end")
+        })?;
+
+        Ok(BoltV3EntryEvaluationFacts {
+            updown_side: Some(outcome_side_as_decision_fact(selected_side).to_string()),
+            entry_decision: "enter".to_string(),
+            entry_no_action_reason: None,
+            seconds_to_market_end,
+            has_selected_market_open_orders: false,
+            updown_market_mechanical_outcome: "accepted".to_string(),
+            updown_market_mechanical_rejection_reason: None,
+            entry_filled_notional: 0.0,
+            open_entry_notional: 0.0,
+            strategy_remaining_entry_capacity: self.config.max_position_usdc,
+            archetype_metrics: json!({
+                "expected_ev_per_usdc": decision.evaluation.expected_ev_per_usdc,
+                "up_worst_case_ev_bps": decision.evaluation.up_worst_case_ev_bps,
+                "down_worst_case_ev_bps": decision.evaluation.down_worst_case_ev_bps,
+                "sized_notional_usdc": decision.evaluation.sized_notional_usdc,
+                "book_impact_cap_usdc": decision.evaluation.book_impact_cap_usdc,
+            }),
+        })
+    }
+
     fn outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
         let token_id = match side {
             OutcomeSide::Up => self.active.outcome_fees.up_token_id.as_deref(),
@@ -2905,7 +2958,7 @@ impl EthChainlinkTaker {
             client_order_id,
         );
 
-        let evidence = self.context.bolt_v3_order_intent_evidence.clone();
+        let evidence = self.context.bolt_v3_decision_evidence.clone();
         let submit_result = if let Some(evidence) = evidence {
             let decision_trace_id = self.active_decision_trace_id();
             let facts = order_submission_facts(
@@ -3010,6 +3063,7 @@ impl EthChainlinkTaker {
 
     fn try_submit_entry_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         let decision = self.entry_submission_decision_at(now_ms);
+        self.write_bolt_v3_entry_evaluation(now_ms, &decision)?;
         self.log_entry_evaluation(now_ms, &decision);
 
         let Some(instrument_id) = decision.instrument_id else {
@@ -3131,7 +3185,7 @@ impl EthChainlinkTaker {
             client_order_id,
         );
 
-        let evidence = self.context.bolt_v3_order_intent_evidence.clone();
+        let evidence = self.context.bolt_v3_decision_evidence.clone();
         let submit_result = if let Some(evidence) = evidence {
             let decision_trace_id = self.active_decision_trace_id();
             let facts = order_submission_facts(
@@ -4448,6 +4502,13 @@ fn order_side_as_decision_fact(order_side: OrderSide) -> Result<&'static str> {
     }
 }
 
+fn outcome_side_as_decision_fact(outcome_side: OutcomeSide) -> &'static str {
+    match outcome_side {
+        OutcomeSide::Up => "up",
+        OutcomeSide::Down => "down",
+    }
+}
+
 fn unix_nanos_from_millis(ts_ms: u64) -> Result<UnixNanos> {
     let ts_ns = ts_ms
         .checked_mul(1_000_000)
@@ -4681,7 +4742,7 @@ mod tests {
             StrategyBuildContext {
                 fee_provider,
                 reference_publish_topic: "platform.reference.test.chainlink".to_string(),
-                bolt_v3_order_intent_evidence: None,
+                bolt_v3_decision_evidence: None,
             },
         )
     }

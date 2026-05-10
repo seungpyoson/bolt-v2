@@ -8,7 +8,7 @@ use crate::{
     bolt_v3_decision_event_context::bolt_v3_decision_event_common_context,
     bolt_v3_providers::{self, polymarket::ResolvedBoltV3PolymarketSecrets},
     bolt_v3_release_identity::load_bolt_v3_release_identity,
-    bolt_v3_strategy_order_intent::BoltV3StrategyOrderIntentEvidence,
+    bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
     },
@@ -127,13 +127,13 @@ fn build_context(
     Ok(StrategyBuildContext {
         fee_provider,
         reference_publish_topic: reference_publish_topic(context)?,
-        bolt_v3_order_intent_evidence: Some(order_intent_evidence(context)?),
+        bolt_v3_decision_evidence: Some(decision_evidence(context)?),
     })
 }
 
-fn order_intent_evidence(
+fn decision_evidence(
     context: &StrategyRegistrationContext<'_>,
-) -> Result<BoltV3StrategyOrderIntentEvidence, BoltV3StrategyRegistrationError> {
+) -> Result<BoltV3StrategyDecisionEvidence, BoltV3StrategyRegistrationError> {
     let identity = load_bolt_v3_release_identity(context.loaded).map_err(|source| {
         BoltV3StrategyRegistrationError::InvalidParameters {
             reason: format!(
@@ -153,7 +153,7 @@ fn order_intent_evidence(
                 },
             )?;
 
-    BoltV3StrategyOrderIntentEvidence::from_persistence_block(
+    BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_context,
         &context.loaded.root.persistence,
     )

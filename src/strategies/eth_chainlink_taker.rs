@@ -3565,6 +3565,13 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
         return Some("stale_reference_quote");
     }
 
+    if decision.blocked_reason == Some("entry_pricing_blocked")
+        && decision.evaluation.pricing_blocked_by
+            == [EntryPricingBlockReason::FairProbabilityUnavailable]
+    {
+        return Some("fair_probability_unavailable");
+    }
+
     None
 }
 

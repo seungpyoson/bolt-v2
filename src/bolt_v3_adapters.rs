@@ -515,6 +515,7 @@ mod tests {
             updown_targets: vec![UpdownTargetPlan {
                 strategy_instance_id: "fake-strategy".to_string(),
                 configured_target_id: "fake-updown".to_string(),
+                market_selection_type: "rotating_market".to_string(),
                 client_id_key: "polymarket_main".to_string(),
                 underlying_asset: "BTC".to_string(),
                 cadence_seconds: 300,
@@ -566,6 +567,7 @@ mod tests {
             updown_targets: vec![UpdownTargetPlan {
                 strategy_instance_id: "fake-strategy".to_string(),
                 configured_target_id: "fake-updown".to_string(),
+                market_selection_type: "rotating_market".to_string(),
                 client_id_key: "polymarket_main".to_string(),
                 underlying_asset: "BTC".to_string(),
                 cadence_seconds: 300,

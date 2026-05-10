@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-10
-Branch context: `codex/bolt-v3-strategy-idle`
+Branch context: `codex/bolt-v3-instrument-readiness`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -22,7 +22,8 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F3 | ETH/USD reference contract | blocked | Define logical reference stream name, required inputs, freshness/confidence semantics, and source ownership | live orders, order admission |
 | F4 | Fused-price policy | blocked | Tests for anchor source, fast-feed modifiers, weights, stale handling, disagreement handling, fail-closed cases | client implementation |
 | F5 | Reference producer wiring | unverified | TOML creates reference producer path; strategy receives `ReferenceSnapshot` on configured topic | changing strategy signal logic |
-| F6 | Instrument readiness gate | unverified | Selected market instruments are loaded/known in NT before strategy can proceed past readiness | submit/cancel/fill |
+| F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
+| F6b | Instrument readiness gate integration | unverified | Live/startup path consumes F6a resolution and blocks strategy activation when selected-market instruments are missing, stale, incomplete, or ambiguous | submit/cancel/fill |
 | F7 | Decision-event persistence | unverified | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons | full event lake design rewrite |
 | F8 | Risk/order admission gate | unverified | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution | venue-specific order lifecycle |
 | F9 | Order lifecycle proof | unverified | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions | multi-client scale |
@@ -35,7 +36,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 The current branch aims to prove only:
 
 ```text
-v3 TOML -> existing strategy -> NT Strategy -> LiveNode.add_strategy -> NodeState::Idle
+v3 TOML target -> updown identity plan -> NT cache BinaryOption instruments -> selected_market or blocked result
 ```
 
-This does not prove production readiness, live orders, fused-reference correctness, instrument readiness, decision persistence, order lifecycle, reconciliation, or scale.
+This does not prove production readiness, live orders, fused-reference correctness, strategy activation gating, decision persistence, order lifecycle, reconciliation, or scale.

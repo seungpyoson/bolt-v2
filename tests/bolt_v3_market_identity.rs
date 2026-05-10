@@ -57,6 +57,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     let target = &plan.updown_targets[0];
     assert_eq!(target.strategy_instance_id, "bitcoin_updown_main");
     assert_eq!(target.configured_target_id, "btc_updown_5m");
+    assert_eq!(target.market_selection_type, "rotating_market");
     assert_eq!(target.client_id_key, "polymarket_main");
     assert_eq!(target.underlying_asset, "BTC");
     assert_eq!(target.cadence_seconds, 300);
@@ -145,6 +146,7 @@ fn candidates_for_target_btc_5m_yields_current_and_next_slugs() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "bitcoin_updown_main".to_string(),
         configured_target_id: "btc_updown_5m".to_string(),
+        market_selection_type: "rotating_market".to_string(),
         client_id_key: "polymarket_main".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_seconds: 300,
@@ -167,6 +169,7 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "bitcoin_updown_main".to_string(),
         configured_target_id: "btc_updown_5m".to_string(),
+        market_selection_type: "rotating_market".to_string(),
         client_id_key: "polymarket_main".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_seconds: 300,
@@ -427,6 +430,7 @@ fn candidates_for_target_propagates_period_pair_overflow() {
     let target = UpdownTargetPlan {
         strategy_instance_id: "bitcoin_updown_main".to_string(),
         configured_target_id: "btc_updown_5m".to_string(),
+        market_selection_type: "rotating_market".to_string(),
         client_id_key: "polymarket_main".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_seconds: 300,

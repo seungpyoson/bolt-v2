@@ -76,6 +76,14 @@ pub enum MarketSelectionType {
     RotatingMarket,
 }
 
+impl MarketSelectionType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RotatingMarket => "rotating_market",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RotatingMarketFamily {
@@ -251,6 +259,7 @@ impl MarketIdentityPlan {
 pub struct UpdownTargetPlan {
     pub strategy_instance_id: String,
     pub configured_target_id: String,
+    pub market_selection_type: String,
     pub client_id_key: String,
     pub underlying_asset: String,
     pub cadence_seconds: i64,
@@ -418,6 +427,7 @@ fn plan_strategy_updown_target(
     Ok(Some(UpdownTargetPlan {
         strategy_instance_id,
         configured_target_id,
+        market_selection_type: target.market_selection_type.as_str().to_string(),
         client_id_key,
         underlying_asset: target.underlying_asset.clone(),
         cadence_seconds: target.cadence_seconds,

@@ -25,9 +25,14 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
-use std::{any::Any, sync::Arc};
+use std::{any::Any, collections::BTreeMap, sync::Arc};
 
+use nautilus_common::cache::Cache;
 use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_model::{
+    identifiers::Venue,
+    instruments::{InstrumentAny, binary_option::BinaryOption},
+};
 use nautilus_polymarket::{
     common::credential::Secrets as PolymarketSecrets,
     common::enums::SignatureType as NtPolymarketSignatureType,
@@ -45,7 +50,8 @@ use crate::{
     },
     bolt_v3_config::ClientBlock,
     bolt_v3_market_families::updown::{
-        self, MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
+        self, BoltV3MarketIdentityError, MarketIdentityPlan, UpdownTargetPlan,
+        candidates_for_target, updown_market_slug, updown_period_pair,
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
@@ -58,6 +64,249 @@ use crate::{
 };
 
 pub const KEY: &str = "POLYMARKET";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdownSelectedMarketRole {
+    Current,
+    Next,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdownSelectedMarketFailureReason {
+    InstrumentsNotInCache,
+    NoSelectedMarket,
+    AmbiguousSelectedMarket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdownSelectedMarket {
+    pub market_selection_type: String,
+    pub client_id: String,
+    pub venue: String,
+    pub rotating_market_family: String,
+    pub polymarket_condition_id: String,
+    pub polymarket_market_slug: String,
+    pub polymarket_question_id: String,
+    pub up_instrument_id: String,
+    pub down_instrument_id: String,
+    pub polymarket_market_start_timestamp_milliseconds: i64,
+    pub polymarket_market_end_timestamp_milliseconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdownSelectedMarketResolution {
+    Selected {
+        role: UpdownSelectedMarketRole,
+        selected_market: UpdownSelectedMarket,
+    },
+    Failed {
+        failure_reason: UpdownSelectedMarketFailureReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdownTargetSelectedMarketResolution {
+    pub strategy_instance_id: String,
+    pub configured_target_id: String,
+    pub resolution: UpdownSelectedMarketResolution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct UpdownMarketKey {
+    condition_id: String,
+    market_slug: String,
+    question_id: String,
+    start_ms: i64,
+    end_ms: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpdownInstrumentPair {
+    up_instrument_id: Option<String>,
+    down_instrument_id: Option<String>,
+}
+
+pub fn resolve_updown_selected_market_from_cache(
+    cache: &Cache,
+    target: &UpdownTargetPlan,
+    venue: &Venue,
+    market_selection_timestamp_milliseconds: i64,
+) -> Result<UpdownSelectedMarketResolution, BoltV3MarketIdentityError> {
+    if market_selection_timestamp_milliseconds < 0 {
+        return Err(BoltV3MarketIdentityError::NegativeNowUnixSeconds {
+            now_unix_seconds: market_selection_timestamp_milliseconds.div_euclid(1_000),
+        });
+    }
+    let candidates =
+        candidates_for_target(target, market_selection_timestamp_milliseconds / 1_000)?;
+    let current = complete_updown_markets_for_slug(
+        cache,
+        target,
+        venue,
+        &candidates.current_market_slug,
+        |market| {
+            market.polymarket_market_start_timestamp_milliseconds
+                <= market_selection_timestamp_milliseconds
+                && market_selection_timestamp_milliseconds
+                    < market.polymarket_market_end_timestamp_milliseconds
+        },
+    );
+    if current.len() > 1 {
+        return Ok(UpdownSelectedMarketResolution::Failed {
+            failure_reason: UpdownSelectedMarketFailureReason::AmbiguousSelectedMarket,
+        });
+    }
+    if let Some(selected_market) = current.into_iter().next() {
+        return Ok(UpdownSelectedMarketResolution::Selected {
+            role: UpdownSelectedMarketRole::Current,
+            selected_market,
+        });
+    }
+
+    let next = complete_updown_markets_for_slug(
+        cache,
+        target,
+        venue,
+        &candidates.next_market_slug,
+        |market| {
+            market.polymarket_market_start_timestamp_milliseconds
+                > market_selection_timestamp_milliseconds
+        },
+    );
+    if next.len() > 1 {
+        return Ok(UpdownSelectedMarketResolution::Failed {
+            failure_reason: UpdownSelectedMarketFailureReason::AmbiguousSelectedMarket,
+        });
+    }
+    if let Some(selected_market) = next.into_iter().next() {
+        return Ok(UpdownSelectedMarketResolution::Selected {
+            role: UpdownSelectedMarketRole::Next,
+            selected_market,
+        });
+    }
+
+    let has_candidate_instruments =
+        cache_contains_slug(cache, venue, &candidates.current_market_slug)
+            || cache_contains_slug(cache, venue, &candidates.next_market_slug);
+    Ok(UpdownSelectedMarketResolution::Failed {
+        failure_reason: if has_candidate_instruments {
+            UpdownSelectedMarketFailureReason::NoSelectedMarket
+        } else {
+            UpdownSelectedMarketFailureReason::InstrumentsNotInCache
+        },
+    })
+}
+
+pub fn resolve_updown_selected_markets_for_client_from_cache(
+    cache: &Cache,
+    plan: &MarketIdentityPlan,
+    client_id_key: &str,
+    venue: &Venue,
+    market_selection_timestamp_milliseconds: i64,
+) -> Result<Vec<UpdownTargetSelectedMarketResolution>, BoltV3MarketIdentityError> {
+    plan.updown_targets
+        .iter()
+        .filter(|target| target.client_id_key == client_id_key)
+        .map(|target| {
+            Ok(UpdownTargetSelectedMarketResolution {
+                strategy_instance_id: target.strategy_instance_id.clone(),
+                configured_target_id: target.configured_target_id.clone(),
+                resolution: resolve_updown_selected_market_from_cache(
+                    cache,
+                    target,
+                    venue,
+                    market_selection_timestamp_milliseconds,
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn complete_updown_markets_for_slug(
+    cache: &Cache,
+    target: &UpdownTargetPlan,
+    venue: &Venue,
+    market_slug: &str,
+    role_predicate: impl Fn(&UpdownSelectedMarket) -> bool,
+) -> Vec<UpdownSelectedMarket> {
+    let mut pairs = BTreeMap::<UpdownMarketKey, UpdownInstrumentPair>::new();
+    for instrument in cache.instruments(venue, None) {
+        let Some((key, outcome, instrument_id)) = updown_instrument_row(instrument, market_slug)
+        else {
+            continue;
+        };
+        let pair = pairs.entry(key).or_default();
+        if outcome.eq_ignore_ascii_case("up") {
+            pair.up_instrument_id = Some(instrument_id);
+        } else if outcome.eq_ignore_ascii_case("down") {
+            pair.down_instrument_id = Some(instrument_id);
+        }
+    }
+
+    pairs
+        .into_iter()
+        .filter_map(|(key, pair)| {
+            Some(UpdownSelectedMarket {
+                market_selection_type: target.market_selection_type.clone(),
+                client_id: target.client_id_key.clone(),
+                venue: venue.as_str().to_string(),
+                rotating_market_family: updown::KEY.to_string(),
+                polymarket_condition_id: key.condition_id,
+                polymarket_market_slug: key.market_slug,
+                polymarket_question_id: key.question_id,
+                up_instrument_id: pair.up_instrument_id?,
+                down_instrument_id: pair.down_instrument_id?,
+                polymarket_market_start_timestamp_milliseconds: key.start_ms,
+                polymarket_market_end_timestamp_milliseconds: key.end_ms,
+            })
+        })
+        .filter(role_predicate)
+        .collect()
+}
+
+fn cache_contains_slug(cache: &Cache, venue: &Venue, market_slug: &str) -> bool {
+    cache
+        .instruments(venue, None)
+        .into_iter()
+        .any(|instrument| instrument_market_slug(instrument) == Some(market_slug))
+}
+
+fn updown_instrument_row(
+    instrument: &InstrumentAny,
+    expected_market_slug: &str,
+) -> Option<(UpdownMarketKey, String, String)> {
+    let InstrumentAny::BinaryOption(binary) = instrument else {
+        return None;
+    };
+    let market_slug = instrument_info_str(binary, "market_slug")?;
+    if market_slug != expected_market_slug {
+        return None;
+    }
+    let key = UpdownMarketKey {
+        condition_id: instrument_info_str(binary, "condition_id")?.to_string(),
+        market_slug: market_slug.to_string(),
+        question_id: instrument_info_str(binary, "question_id")?.to_string(),
+        start_ms: unix_nanos_to_millis(binary.activation_ns)?,
+        end_ms: unix_nanos_to_millis(binary.expiration_ns)?,
+    };
+    let outcome = binary.outcome.map(|value| value.to_string())?;
+    Some((key, outcome, binary.id.to_string()))
+}
+
+fn instrument_market_slug(instrument: &InstrumentAny) -> Option<&str> {
+    let InstrumentAny::BinaryOption(binary) = instrument else {
+        return None;
+    };
+    instrument_info_str(binary, "market_slug")
+}
+
+fn instrument_info_str<'a>(binary: &'a BinaryOption, key: &str) -> Option<&'a str> {
+    binary.info.as_ref()?.get_str(key)
+}
+
+fn unix_nanos_to_millis(value: nautilus_core::UnixNanos) -> Option<i64> {
+    i64::try_from(value.as_u64() / 1_000_000).ok()
+}
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,

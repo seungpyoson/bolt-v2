@@ -224,6 +224,15 @@ fn strategy_raw_config_with_pricing_kurtosis(pricing_kurtosis: f64) -> Value {
     config
 }
 
+fn strategy_raw_config_with_max_position_usdc(max_position_usdc: f64) -> Value {
+    let mut config = strategy_raw_config();
+    config.as_table_mut().unwrap().insert(
+        "max_position_usdc".to_string(),
+        Value::Float(max_position_usdc),
+    );
+    config
+}
+
 fn common_decision_context() -> BoltV3DecisionEventCommonContext {
     BoltV3DecisionEventCommonContext {
         schema_version: 1,
@@ -1892,6 +1901,86 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
     assert!(
         submission_events.is_empty(),
         "fair-probability-unavailable entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(
+        &trader,
+        "eth_chainlink_taker",
+        &strategy_raw_config_with_max_position_usdc(0.0),
+    )
+    .unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "position-limit-reached entry evaluation must not submit order"
+    );
+
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "position_limit_reached".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_side"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("strategy_remaining_entry_capacity")
+                    .and_then(serde_json::Value::as_f64),
+                Some(0.0)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert!(
+        submission_events.is_empty(),
+        "position-limit-reached entry evaluation must not persist order submission"
     );
 }
 

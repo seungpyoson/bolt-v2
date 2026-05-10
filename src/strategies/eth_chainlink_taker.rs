@@ -3180,7 +3180,12 @@ impl EthChainlinkTaker {
             .sized_notional_usdc
             .filter(|value| value.is_finite() && *value > 0.0)
         else {
-            decision.blocked_reason = Some("sized_notional_not_positive");
+            decision.blocked_reason =
+                if evaluation.selected_side.is_some() && self.config.max_position_usdc <= 0.0 {
+                    Some("position_limit_reached")
+                } else {
+                    Some("sized_notional_not_positive")
+                };
             return decision;
         };
 
@@ -3570,6 +3575,15 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
             == [EntryPricingBlockReason::FairProbabilityUnavailable]
     {
         return Some("fair_probability_unavailable");
+    }
+
+    if decision.blocked_reason == Some("position_limit_reached")
+        && decision
+            .evaluation
+            .sized_notional_usdc
+            .is_some_and(|value| value <= 0.0)
+    {
+        return Some("position_limit_reached");
     }
 
     None

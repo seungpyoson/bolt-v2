@@ -117,7 +117,7 @@ pub fn evaluate_market_selection(
 
     let state = match eligible_candidates.first() {
         None => SelectionState::Idle {
-            reason: "no eligible market".to_string(),
+            reason: "no_selected_market".to_string(),
         },
         Some(market) if market.seconds_to_end <= ruleset.freeze_before_end_secs => {
             SelectionState::Freeze {

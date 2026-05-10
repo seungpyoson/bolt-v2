@@ -410,6 +410,20 @@ fn selection_snapshot_with_market_facts(
     }
 }
 
+fn idle_selection_snapshot(published_at_ms: u64) -> RuntimeSelectionSnapshot {
+    RuntimeSelectionSnapshot {
+        ruleset_id: "PRIMARY".to_string(),
+        decision: SelectionDecision {
+            ruleset_id: "PRIMARY".to_string(),
+            state: SelectionState::Idle {
+                reason: "no_selected_market".to_string(),
+            },
+        },
+        eligible_candidates: Vec::new(),
+        published_at_ms,
+    }
+}
+
 fn selection_snapshot_for(market_id: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     RuntimeSelectionSnapshot {
         ruleset_id: "PRIMARY".to_string(),
@@ -1177,6 +1191,136 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                 Some(&serde_json::Value::String(
                     "polymarket_gamma_market_anchor".to_string()
                 ))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_failed_market_selection_result_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    build_context.bolt_v3_market_selection_context = Some(BoltV3MarketSelectionContext {
+        market_selection_type: "rotating_market".to_string(),
+        rotating_market_family: Some("updown".to_string()),
+        underlying_asset: Some("ETH".to_string()),
+        cadence_seconds: Some(300),
+        market_selection_rule: Some("active_or_next".to_string()),
+        retry_interval_seconds: Some(5),
+        blocked_after_seconds: Some(60),
+    });
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    let handle = node.handle();
+    let published_at_ms = 1_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &idle_selection_snapshot(published_at_ms),
+            );
+            sleep(Duration::from_millis(50)).await;
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 0, "{submissions:?}");
+
+    let market_selection_events =
+        query_market_selection_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(market_selection_events.len(), 1);
+    match &market_selection_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3MarketSelectionDecisionEvent>()
+                .expect("BoltV3MarketSelectionDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.decision_event_type, "market_selection_result");
+            assert!(!decoded.decision_trace_id.is_empty());
+            assert_eq!(
+                decoded.event_facts.get("market_selection_type"),
+                Some(&serde_json::Value::String("rotating_market".to_string()))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("market_selection_timestamp_milliseconds"),
+                Some(&serde_json::Value::from(published_at_ms))
+            );
+            assert_eq!(
+                decoded.event_facts.get("market_selection_outcome"),
+                Some(&serde_json::Value::String("failed".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("market_selection_failure_reason"),
+                Some(&serde_json::Value::String("no_selected_market".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("rotating_market_family"),
+                Some(&serde_json::Value::String("updown".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("underlying_asset"),
+                Some(&serde_json::Value::String("ETH".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("cadence_seconds"),
+                Some(&serde_json::Value::from(300))
+            );
+            assert_eq!(
+                decoded.event_facts.get("market_selection_rule"),
+                Some(&serde_json::Value::String("active_or_next".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("retry_interval_seconds"),
+                Some(&serde_json::Value::from(5))
+            );
+            assert_eq!(
+                decoded.event_facts.get("blocked_after_seconds"),
+                Some(&serde_json::Value::from(60))
+            );
+            assert_eq!(
+                decoded.event_facts.get("polymarket_condition_id"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("price_to_beat_value"),
+                Some(&serde_json::Value::Null)
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),

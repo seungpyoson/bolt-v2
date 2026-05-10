@@ -803,7 +803,7 @@ async fn no_eligible_market_emits_idle_decision_and_keeps_running() {
     assert!(records.iter().any(|record| {
         record["kind"] == "selector_decision"
             && record["state"] == "idle"
-            && record["reason"] == "no eligible market"
+            && record["reason"] == "no_selected_market"
     }));
 }
 

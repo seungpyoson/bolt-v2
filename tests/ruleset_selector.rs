@@ -105,7 +105,7 @@ fn rejects_market_when_resolution_basis_mismatches() {
         SelectionDecision {
             ruleset_id: "btc-5m".to_string(),
             state: SelectionState::Idle {
-                reason: "no eligible market".to_string(),
+                reason: "no_selected_market".to_string(),
             },
         }
     );
@@ -255,7 +255,7 @@ fn uses_first_matching_reject_reason_for_multi_failure_candidate() {
         SelectionDecision {
             ruleset_id: "btc-5m".to_string(),
             state: SelectionState::Idle {
-                reason: "no eligible market".to_string(),
+                reason: "no_selected_market".to_string(),
             },
         }
     );
@@ -296,7 +296,7 @@ fn returns_idle_when_no_market_is_eligible() {
         SelectionDecision {
             ruleset_id: "btc-5m".to_string(),
             state: SelectionState::Idle {
-                reason: "no eligible market".to_string(),
+                reason: "no_selected_market".to_string(),
             },
         }
     );
@@ -319,7 +319,7 @@ fn rejects_nan_liquidity_candidate_from_selection() {
         SelectionDecision {
             ruleset_id: "btc-5m".to_string(),
             state: SelectionState::Idle {
-                reason: "no eligible market".to_string(),
+                reason: "no_selected_market".to_string(),
             },
         }
     );

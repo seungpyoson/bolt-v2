@@ -3954,38 +3954,66 @@ fn market_selection_result_facts(
     snapshot: &RuntimeSelectionSnapshot,
     target_context: &BoltV3MarketSelectionContext,
 ) -> Result<Option<BoltV3MarketSelectionResultFacts>> {
-    let market = match &snapshot.decision.state {
-        SelectionState::Active { market } | SelectionState::Freeze { market, .. } => market,
-        SelectionState::Idle { .. } => return Ok(None),
-    };
+    let (market, market_selection_outcome, market_selection_failure_reason) =
+        match &snapshot.decision.state {
+            SelectionState::Active { market } | SelectionState::Freeze { market, .. } => (
+                Some(market),
+                market_selection_outcome(market, snapshot.published_at_ms)?,
+                None,
+            ),
+            SelectionState::Idle { reason } => (
+                None,
+                "failed".to_string(),
+                Some(market_selection_failure_reason(reason)?),
+            ),
+        };
+
+    let up_instrument_id = market.map(|market| {
+        polymarket_instrument_id(&market.condition_id, &market.up_token_id).to_string()
+    });
+    let down_instrument_id = market.map(|market| {
+        polymarket_instrument_id(&market.condition_id, &market.down_token_id).to_string()
+    });
 
     Ok(Some(BoltV3MarketSelectionResultFacts {
         market_selection_type: target_context.market_selection_type.clone(),
         market_selection_timestamp_milliseconds: snapshot.published_at_ms,
-        market_selection_outcome: market_selection_outcome(market, snapshot.published_at_ms)?,
-        market_selection_failure_reason: None,
+        market_selection_outcome,
+        market_selection_failure_reason,
         rotating_market_family: target_context.rotating_market_family.clone(),
         underlying_asset: target_context.underlying_asset.clone(),
         cadence_seconds: target_context.cadence_seconds,
         market_selection_rule: target_context.market_selection_rule.clone(),
         retry_interval_seconds: target_context.retry_interval_seconds,
         blocked_after_seconds: target_context.blocked_after_seconds,
-        polymarket_condition_id: Some(market.condition_id.clone()),
-        polymarket_market_slug: Some(market.market_slug.clone()),
-        polymarket_question_id: Some(market.question_id.clone()),
-        up_instrument_id: Some(
-            polymarket_instrument_id(&market.condition_id, &market.up_token_id).to_string(),
-        ),
-        down_instrument_id: Some(
-            polymarket_instrument_id(&market.condition_id, &market.down_token_id).to_string(),
-        ),
-        selected_market_observed_timestamp: Some(market.selected_market_observed_ts_ms),
-        polymarket_market_start_timestamp_milliseconds: Some(market.start_ts_ms),
-        polymarket_market_end_timestamp_milliseconds: Some(market.end_ts_ms),
-        price_to_beat_value: market.price_to_beat,
-        price_to_beat_observed_timestamp: market.price_to_beat_observed_ts_ms,
-        price_to_beat_source: market.price_to_beat_source.clone(),
+        polymarket_condition_id: market.map(|market| market.condition_id.clone()),
+        polymarket_market_slug: market.map(|market| market.market_slug.clone()),
+        polymarket_question_id: market.map(|market| market.question_id.clone()),
+        up_instrument_id,
+        down_instrument_id,
+        selected_market_observed_timestamp: market
+            .map(|market| market.selected_market_observed_ts_ms),
+        polymarket_market_start_timestamp_milliseconds: market.map(|market| market.start_ts_ms),
+        polymarket_market_end_timestamp_milliseconds: market.map(|market| market.end_ts_ms),
+        price_to_beat_value: market.and_then(|market| market.price_to_beat),
+        price_to_beat_observed_timestamp: market
+            .and_then(|market| market.price_to_beat_observed_ts_ms),
+        price_to_beat_source: market.and_then(|market| market.price_to_beat_source.clone()),
     }))
+}
+
+fn market_selection_failure_reason(reason: &str) -> Result<String> {
+    match reason {
+        "request_instruments_failed"
+        | "instruments_not_in_cache"
+        | "no_selected_market"
+        | "ambiguous_selected_market"
+        | "price_to_beat_unavailable"
+        | "price_to_beat_ambiguous" => Ok(reason.to_string()),
+        value => Err(anyhow!(
+            "unsupported market selection failure reason `{value}`"
+        )),
+    }
 }
 
 fn market_selection_outcome(market: &CandidateMarket, timestamp_ms: u64) -> Result<String> {

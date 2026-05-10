@@ -1,7 +1,7 @@
 # Bolt-v3 Slice 3-10 Completion Audit
 
 Date: 2026-05-11
-Branch context: `codex/bolt-v3-slice-3-10-audit`
+Branch context: `codex/bolt-v3-decision-event-contract`
 Base chain head: `origin/codex/bolt-v3-reconciliation`
 
 This audit checks the requested F3-F10 work against actual artifacts. It is not a production-readiness approval and does not open or merge PRs.
@@ -21,7 +21,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | F4 fused-price policy | Tracker marks F4 blocked; no accepted source/weight/freshness/disagreement contract exists | met as blocker evidence |
 | F5 reference producer wiring | Tracker marks F5 blocked; existing producer is legacy `Config.reference` / `ReferenceActor`, not v3 TOML | met as blocker evidence |
 | F6 instrument readiness | `codex/bolt-v3-instrument-gate` added verified-local readiness tests; F6c remains blocked on NT `LiveNode::start` private flush/start sequence | met |
-| F7 decision-event persistence | TDD probe found pinned NT `#[custom_data]` rejects `Option<String>` fields; temporary code removed; tracker records blocker | met as blocker evidence |
+| F7 decision-event persistence | Follow-up TDD probe proves registered custom data with `event_facts: Params` preserves explicit JSON null through NT local catalog; production persistence still unverified | contract encoding unblocked, persistence incomplete |
 | F8 risk/order admission | Tracker records NT RiskEngine exists and bolt-v3 maps risk config, but bolt-owned admission lacks decision event + order-intent path | met as blocker evidence |
 | F9 order lifecycle | Tracker records NT/legacy strategy order machinery exists, but bolt-v3 has no accepted v3 run/order path | met as blocker evidence |
 | F10 reconciliation/restart | Tracker records NT reconciliation primitives and bolt-v3 config mapping, but no v3 restart proof and Polymarket external-order registration hook is empty | met as blocker evidence |
@@ -37,7 +37,7 @@ F3-F10 are not production-complete. They are classified with evidence:
 - F3-F5: blocked by missing v3 reference contract.
 - F6a-F6b: verified locally.
 - F6c: blocked by NT startup/instrument-load boundary.
-- F7: blocked by NT custom-data nullable-field mismatch.
+- F7: nullable-field encoding unblocked by NT `Params` proof; production event type, fixed key validation, bounded handoff, and submit-blocking behavior remain unverified.
 - F8: blocked until F7 and v3 order intent exist.
 - F9: blocked until F6c, F7, and F8 unblock.
 - F10: blocked until F6c-F9 unblock and Polymarket external-order tracking is proven.
@@ -46,4 +46,4 @@ F3-F10 are not production-complete. They are classified with evidence:
 
 External reviews remain pending and are intentionally not requested here. CI on these branches has not been used as acceptance evidence. Merge approval remains required.
 
-The next implementation decision should not start F9 or F10. The next credible unblocker is F7 contract revision or an NT-compatible decision-event encoding accepted by source evidence.
+The next implementation decision should not start F9 or F10. The next credible slice is one production F7 decision-event type plus canonical bounded handoff proof.

@@ -1223,12 +1223,18 @@ Fixed custom-data type contract:
 
 - each decision event type in Section 9.4 has one Rust custom-data type
 - each type must be registered with NautilusTrader before startup can trade
-- every common field from Section 9.3 is represented on every type
-- event-specific fields from Section 9.5 are represented on the corresponding type
-- required event fields are non-optional Rust fields
-- nullable event fields are `Option` fields and must serialize as explicit null when absent
+- each type uses only field types supported by the pinned NautilusTrader `#[custom_data]` macro
+- every common field from Section 9.3 is represented either as a top-level custom-data field or as a fixed `event_facts` key
+- event-specific fields from Section 9.5 are represented either as top-level custom-data fields or as fixed `event_facts` keys on the corresponding type
+- required event fields that fit supported NautilusTrader custom-data field types are non-optional Rust fields
+- nullable event facts and event-specific fact groups are represented inside a required `event_facts: Params` field
+- each event type has a fixed `event_facts` key schema derived from Section 9.3 and Section 9.5
+- every fixed `event_facts` key must be present; unavailable nullable values must be encoded as JSON null, not omitted, synthesized, or encoded with sentinel strings
+- `Params` is accepted only for fixed decision-event facts; an ad hoc JSON blob, second writer path, or unregistered payload is forbidden
 - the NautilusTrader custom-data `ts_event` field is the event timestamp
 - the NautilusTrader custom-data `ts_init` field is the timestamp when bolt constructs the custom-data value
+
+Pinned NautilusTrader evidence: `#[custom_data]` supports `Params` but not `Option<T>`, and `Params` serializes through the local catalog as JSON values. The bolt-v3 proof test `pinned_custom_data_params_preserve_explicit_nulls_through_local_catalog` verifies explicit JSON null round-trip for a registered custom-data value.
 
 Join rule:
 

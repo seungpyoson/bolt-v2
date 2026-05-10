@@ -1,7 +1,7 @@
 # Bolt-v3 Follow-Up Tracker
 
 Date: 2026-05-10
-Branch context: `codex/bolt-v3-reconciliation`
+Branch context: `codex/bolt-v3-decision-event-contract`
 
 This tracker separates accepted local idle-tracer work from remaining bolt-v3 production gates.
 It is not a broad roadmap. Each item should become one narrow issue or PR only when selected.
@@ -25,7 +25,7 @@ It is not a broad roadmap. Each item should become one narrow issue or PR only w
 | F6a | Instrument selected-market cache resolution | verified-local | `tests/bolt_v3_instrument_readiness.rs` proves v3 TOML strategy targets plan into per-client cache checks; loaded NT `BinaryOption` instruments resolve one `selected_market`; stale time windows fail closed; missing target instruments remain blocked | `request_instruments`, reference price facts, strategy activation, submit/cancel/fill |
 | F6b | Instrument readiness gate integration | verified-local | `tests/bolt_v3_instrument_gate.rs` proves a built bolt-v3 `LiveNode` stays `NodeState::Idle` while a pre-start gate reports `Blocked` for missing selected-market instruments and `Ready` for loaded selected-market instruments from NT cache | `request_instruments`, automatic start/run enforcement, submit/cancel/fill |
 | F6c | Instrument load through NT startup sequence | blocked | NT v1.226.0 `LiveNode::start` performs data-client connect, private pending-data flush, execution-client connect, reconciliation, then trader start. bolt-v3 needs a public NT-aligned pre-trader load/flush hook or an accepted start gate that checks readiness before trader activation | direct provider fetch into cache, reimplementing NT runner flush, Python, submit/cancel/fill |
-| F7 | Decision-event persistence | blocked | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. Current fixed nullable-field contract conflicts with pinned NT `#[custom_data]`, which rejects `Option<String>` fields | sentinel null encoding, JSON blob fallback, second writer path |
+| F7 | Decision-event persistence | unverified | Durable event before submit intent, with config IDs, target facts, reference facts, computed decision, and no-action reasons. The nullable-field contract is revised to use registered NT custom-data with fixed `event_facts: Params`; `tests/nt_custom_data_catalog_integration.rs` proves explicit JSON null survives local catalog round-trip. Remaining proof: production event type, fixed key schema validation, bounded canonical handoff, and submit-blocking failure behavior | sentinel null encoding, JSON blob fallback, second writer path |
 | F8 | Risk/order admission gate | blocked | Config-driven size/exposure/cooldown/kill-switch check before any order reaches NT execution. v3 maps NT `LiveRiskEngineConfig`, but bolt-owned order admission needs an accepted decision-event persistence gate and a v3 order intent path | venue-specific order lifecycle, ad hoc strategy-local submit guards |
 | F9 | Order lifecycle proof | blocked | Submit/cancel/fill/reject path proven through NT for one venue under controlled conditions. NT and the legacy strategy have order machinery, but bolt-v3 has not proven a v3 run path with accepted decision evidence and bolt-owned order admission | direct venue calls, Python, bypassing NT risk/execution, multi-client scale |
 | F10 | Reconciliation/restart proof | blocked | Restart observes external orders/fills/positions and avoids duplicate submit. bolt-v3 maps NT reconciliation config, but no v3 start/restart proof exists and the pinned Polymarket adapter's external-order registration hook is a no-op | bolt-owned portfolio, direct venue reconciliation, new strategy logic |
@@ -54,11 +54,13 @@ F3-F5 are blocked by a contract gap, not code volume. Current bolt-v3 eth tracer
 
 Do not create a bolt-v3 reference producer until the v3 reference contract names the configured stream, its input sources, freshness rules, and whether `reference_data` remains in strategy TOML or moves to root-level reference config.
 
-## Decision-Event Blocker
+## Decision-Event Status
 
-F7 is blocked by an NT serialization contract mismatch. A TDD probe for a production `BoltV3MarketSelectionDecisionEvent` custom-data type failed because pinned NT `#[custom_data]` does not support nullable `Option<String>` fields. The current runtime contract requires nullable event fields to be explicit nulls. Replacing nulls with sentinel strings or hiding the event in an ad hoc JSON blob would violate the contract and create forensic ambiguity.
+F7 is no longer blocked by the nullable-field encoding mismatch. Pinned NT `#[custom_data]` still rejects `Option<String>`, so bolt-v3 must not use nullable top-level custom-data fields. The runtime contract now uses registered NT custom-data types with a required fixed `event_facts: Params` field for nullable event facts and event-specific fact groups.
 
-Accepted unblocker: revise the decision-event contract to match pinned NT custom-data field support, or prove a pinned NT custom-data encoding that preserves explicit null semantics without a second persistence path.
+Source evidence: pinned NT `#[custom_data]` supports `Params`, `Params` stores `serde_json::Value`, and `tests/nt_custom_data_catalog_integration.rs` proves explicit JSON null survives write/read through `ParquetDataCatalog`.
+
+This does not prove decision-event persistence. The next F7 implementation slice must add one production decision-event type, fixed key validation, one bounded canonical handoff, and fail-closed submit blocking when event construction, registration, encoding, or handoff fails.
 
 ## Risk Gate Blocker
 

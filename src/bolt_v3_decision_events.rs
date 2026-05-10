@@ -13,17 +13,21 @@ use serde_json::Value;
 use crate::bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind};
 
 pub const BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE: &str = "BoltV3MarketSelectionDecisionEvent";
+pub const BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE: &str = "BoltV3EntryEvaluationDecisionEvent";
 pub const BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE: &str =
     "BoltV3EntryOrderSubmissionDecisionEvent";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE: &str =
     "BoltV3EntryPreSubmitRejectionDecisionEvent";
+pub const BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE: &str = "BoltV3ExitEvaluationDecisionEvent";
 pub const BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE: &str =
     "BoltV3ExitOrderSubmissionDecisionEvent";
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE: &str =
     "BoltV3ExitPreSubmitRejectionDecisionEvent";
 const MARKET_SELECTION_RESULT: &str = "market_selection_result";
+const ENTRY_EVALUATION: &str = "entry_evaluation";
 const ENTRY_ORDER_SUBMISSION: &str = "entry_order_submission";
 const ENTRY_PRE_SUBMIT_REJECTION: &str = "entry_pre_submit_rejection";
+const EXIT_EVALUATION: &str = "exit_evaluation";
 const EXIT_ORDER_SUBMISSION: &str = "exit_order_submission";
 const EXIT_PRE_SUBMIT_REJECTION: &str = "exit_pre_submit_rejection";
 
@@ -52,6 +56,21 @@ pub struct BoltV3MarketSelectionResultFacts {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3EntryEvaluationFacts {
+    pub updown_side: Option<String>,
+    pub entry_decision: String,
+    pub entry_no_action_reason: Option<String>,
+    pub seconds_to_market_end: u64,
+    pub has_selected_market_open_orders: bool,
+    pub updown_market_mechanical_outcome: String,
+    pub updown_market_mechanical_rejection_reason: Option<String>,
+    pub entry_filled_notional: f64,
+    pub open_entry_notional: f64,
+    pub strategy_remaining_entry_capacity: f64,
+    pub archetype_metrics: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoltV3OrderSubmissionFacts {
     pub order_type: String,
     pub time_in_force: String,
@@ -71,8 +90,41 @@ pub struct BoltV3PreSubmitRejectionFacts {
     pub rejection_reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3ExitEvaluationFacts {
+    pub authoritative_position_quantity: Option<f64>,
+    pub authoritative_sellable_quantity: Option<f64>,
+    pub open_exit_order_quantity: Option<f64>,
+    pub uncovered_position_quantity: Option<f64>,
+    pub exit_order_mechanical_outcome: String,
+    pub exit_order_mechanical_rejection_reason: Option<String>,
+    pub exit_decision: String,
+    pub exit_decision_reason: String,
+    pub archetype_metrics: Value,
+}
+
 #[custom_data]
 pub struct BoltV3MarketSelectionDecisionEvent {
+    pub schema_version: u64,
+    pub decision_event_type: String,
+    pub decision_trace_id: String,
+    pub strategy_instance_id: String,
+    pub strategy_archetype: String,
+    pub trader_id: String,
+    pub client_id: String,
+    pub venue: String,
+    pub runtime_mode: String,
+    pub release_id: String,
+    pub config_hash: String,
+    pub nautilus_trader_revision: String,
+    pub configured_target_id: String,
+    pub event_facts: Params,
+    pub ts_event: UnixNanos,
+    pub ts_init: UnixNanos,
+}
+
+#[custom_data]
+pub struct BoltV3EntryEvaluationDecisionEvent {
     pub schema_version: u64,
     pub decision_event_type: String,
     pub decision_trace_id: String,
@@ -113,6 +165,26 @@ pub struct BoltV3EntryOrderSubmissionDecisionEvent {
 
 #[custom_data]
 pub struct BoltV3EntryPreSubmitRejectionDecisionEvent {
+    pub schema_version: u64,
+    pub decision_event_type: String,
+    pub decision_trace_id: String,
+    pub strategy_instance_id: String,
+    pub strategy_archetype: String,
+    pub trader_id: String,
+    pub client_id: String,
+    pub venue: String,
+    pub runtime_mode: String,
+    pub release_id: String,
+    pub config_hash: String,
+    pub nautilus_trader_revision: String,
+    pub configured_target_id: String,
+    pub event_facts: Params,
+    pub ts_event: UnixNanos,
+    pub ts_init: UnixNanos,
+}
+
+#[custom_data]
+pub struct BoltV3ExitEvaluationDecisionEvent {
     pub schema_version: u64,
     pub decision_event_type: String,
     pub decision_trace_id: String,
@@ -201,6 +273,36 @@ impl BoltV3MarketSelectionDecisionEvent {
     }
 }
 
+impl BoltV3EntryEvaluationDecisionEvent {
+    pub fn entry_evaluation(
+        common: BoltV3DecisionEventCommonFields,
+        facts: BoltV3EntryEvaluationFacts,
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    ) -> Result<Self> {
+        validate_entry_evaluation_facts(&facts)?;
+
+        Ok(Self {
+            schema_version: common.schema_version,
+            decision_event_type: ENTRY_EVALUATION.to_string(),
+            decision_trace_id: common.decision_trace_id,
+            strategy_instance_id: common.strategy_instance_id,
+            strategy_archetype: common.strategy_archetype,
+            trader_id: common.trader_id,
+            client_id: common.client_id,
+            venue: common.venue,
+            runtime_mode: common.runtime_mode,
+            release_id: common.release_id,
+            config_hash: common.config_hash,
+            nautilus_trader_revision: common.nautilus_trader_revision,
+            configured_target_id: common.configured_target_id,
+            event_facts: entry_evaluation_facts_to_params(facts),
+            ts_event,
+            ts_init,
+        })
+    }
+}
+
 impl BoltV3EntryOrderSubmissionDecisionEvent {
     pub fn entry_order_submission(
         common: BoltV3DecisionEventCommonFields,
@@ -262,6 +364,36 @@ impl BoltV3EntryPreSubmitRejectionDecisionEvent {
                 facts,
                 "entry_pre_submit_rejection_reason",
             ),
+            ts_event,
+            ts_init,
+        })
+    }
+}
+
+impl BoltV3ExitEvaluationDecisionEvent {
+    pub fn exit_evaluation(
+        common: BoltV3DecisionEventCommonFields,
+        facts: BoltV3ExitEvaluationFacts,
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    ) -> Result<Self> {
+        validate_exit_evaluation_facts(&facts)?;
+
+        Ok(Self {
+            schema_version: common.schema_version,
+            decision_event_type: EXIT_EVALUATION.to_string(),
+            decision_trace_id: common.decision_trace_id,
+            strategy_instance_id: common.strategy_instance_id,
+            strategy_archetype: common.strategy_archetype,
+            trader_id: common.trader_id,
+            client_id: common.client_id,
+            venue: common.venue,
+            runtime_mode: common.runtime_mode,
+            release_id: common.release_id,
+            config_hash: common.config_hash,
+            nautilus_trader_revision: common.nautilus_trader_revision,
+            configured_target_id: common.configured_target_id,
+            event_facts: exit_evaluation_facts_to_params(facts),
             ts_event,
             ts_init,
         })
@@ -337,8 +469,10 @@ impl BoltV3ExitPreSubmitRejectionDecisionEvent {
 
 pub fn register_bolt_v3_decision_event_types() {
     ensure_custom_data_registered::<BoltV3MarketSelectionDecisionEvent>();
+    ensure_custom_data_registered::<BoltV3EntryEvaluationDecisionEvent>();
     ensure_custom_data_registered::<BoltV3EntryOrderSubmissionDecisionEvent>();
     ensure_custom_data_registered::<BoltV3EntryPreSubmitRejectionDecisionEvent>();
+    ensure_custom_data_registered::<BoltV3ExitEvaluationDecisionEvent>();
     ensure_custom_data_registered::<BoltV3ExitOrderSubmissionDecisionEvent>();
     ensure_custom_data_registered::<BoltV3ExitPreSubmitRejectionDecisionEvent>();
 }
@@ -379,6 +513,17 @@ impl BoltV3DecisionEventCatalogHandoff {
         )
     }
 
+    pub fn write_entry_evaluation(
+        &mut self,
+        event: BoltV3EntryEvaluationDecisionEvent,
+    ) -> Result<()> {
+        self.write_event(
+            BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+            event.configured_target_id.clone(),
+            event,
+        )
+    }
+
     pub fn write_entry_order_submission(
         &mut self,
         event: BoltV3EntryOrderSubmissionDecisionEvent,
@@ -396,6 +541,17 @@ impl BoltV3DecisionEventCatalogHandoff {
     ) -> Result<()> {
         self.write_event(
             BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+            event.configured_target_id.clone(),
+            event,
+        )
+    }
+
+    pub fn write_exit_evaluation(
+        &mut self,
+        event: BoltV3ExitEvaluationDecisionEvent,
+    ) -> Result<()> {
+        self.write_event(
+            BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
             event.configured_target_id.clone(),
             event,
         )
@@ -490,6 +646,168 @@ fn market_selection_result_facts_to_params(facts: BoltV3MarketSelectionResultFac
     params
 }
 
+fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result<()> {
+    match facts.entry_decision.as_str() {
+        "enter" => {
+            if facts.entry_no_action_reason.is_some() {
+                bail!("entry_no_action_reason must be null when entry_decision is enter");
+            }
+            match facts.updown_side.as_deref() {
+                Some("up" | "down") => {}
+                Some(value) => bail!("unsupported updown_side `{value}`"),
+                None => bail!("updown_side must be non-null when entry_decision is enter"),
+            }
+            if facts.updown_market_mechanical_outcome != "accepted" {
+                bail!("entry_decision enter requires updown_market_mechanical_outcome accepted");
+            }
+        }
+        "no_action" => {
+            if facts.entry_no_action_reason.is_none() {
+                bail!("entry_no_action_reason must be non-null when entry_decision is no_action");
+            }
+            if facts.updown_side.is_some() {
+                bail!("updown_side must be null when entry_decision is no_action");
+            }
+        }
+        value => bail!("unsupported entry_decision `{value}`"),
+    }
+
+    match facts.updown_market_mechanical_outcome.as_str() {
+        "accepted" => {
+            if facts.updown_market_mechanical_rejection_reason.is_some() {
+                bail!(
+                    "updown_market_mechanical_rejection_reason must be null when updown_market_mechanical_outcome is accepted"
+                );
+            }
+            if facts.has_selected_market_open_orders {
+                bail!(
+                    "has_selected_market_open_orders must be false when updown_market_mechanical_outcome is accepted"
+                );
+            }
+        }
+        "rejected" => {
+            match facts.updown_market_mechanical_rejection_reason.as_deref() {
+                Some(
+                    "market_not_started" | "market_ended" | "selected_market_open_orders_present",
+                ) => {}
+                Some(value) => {
+                    bail!("unsupported updown_market_mechanical_rejection_reason `{value}`");
+                }
+                None => {
+                    bail!(
+                        "updown_market_mechanical_rejection_reason must be non-null when updown_market_mechanical_outcome is rejected"
+                    );
+                }
+            }
+            if facts.entry_decision != "no_action" {
+                bail!(
+                    "updown_market_mechanical_outcome rejected requires entry_decision no_action"
+                );
+            }
+        }
+        value => bail!("unsupported updown_market_mechanical_outcome `{value}`"),
+    }
+
+    match facts.entry_no_action_reason.as_deref() {
+        Some("updown_market_mechanical_rejection") => {
+            if facts.updown_market_mechanical_outcome != "rejected"
+                || facts.updown_market_mechanical_rejection_reason.is_none()
+            {
+                bail!(
+                    "entry_no_action_reason updown_market_mechanical_rejection requires rejected mechanical outcome and non-null rejection reason"
+                );
+            }
+        }
+        Some(
+            "missing_reference_quote"
+            | "stale_reference_quote"
+            | "fee_rate_unavailable"
+            | "fair_probability_unavailable"
+            | "insufficient_edge"
+            | "position_limit_reached",
+        ) => {
+            if facts.updown_market_mechanical_outcome != "accepted"
+                || facts.updown_market_mechanical_rejection_reason.is_some()
+            {
+                bail!(
+                    "non-mechanical entry_no_action_reason requires accepted mechanical outcome and null rejection reason"
+                );
+            }
+        }
+        Some(value) => bail!("unsupported entry_no_action_reason `{value}`"),
+        None => {}
+    }
+
+    if facts.updown_market_mechanical_rejection_reason.as_deref()
+        == Some("selected_market_open_orders_present")
+        && !facts.has_selected_market_open_orders
+    {
+        bail!(
+            "has_selected_market_open_orders must be true when updown_market_mechanical_rejection_reason is selected_market_open_orders_present"
+        );
+    }
+
+    if facts.entry_no_action_reason.as_deref() == Some("position_limit_reached")
+        && facts.strategy_remaining_entry_capacity > 0.0
+    {
+        bail!(
+            "strategy_remaining_entry_capacity must be <= 0 when entry_no_action_reason is position_limit_reached"
+        );
+    }
+
+    if !facts.archetype_metrics.is_object() {
+        bail!("archetype_metrics must be an object");
+    }
+
+    Ok(())
+}
+
+fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params {
+    let mut params = Params::new();
+    params.insert(
+        "updown_side".to_string(),
+        optional_string_to_value(facts.updown_side),
+    );
+    params.insert(
+        "entry_decision".to_string(),
+        Value::String(facts.entry_decision),
+    );
+    params.insert(
+        "entry_no_action_reason".to_string(),
+        optional_string_to_value(facts.entry_no_action_reason),
+    );
+    params.insert(
+        "seconds_to_market_end".to_string(),
+        Value::from(facts.seconds_to_market_end),
+    );
+    params.insert(
+        "has_selected_market_open_orders".to_string(),
+        Value::from(facts.has_selected_market_open_orders),
+    );
+    params.insert(
+        "updown_market_mechanical_outcome".to_string(),
+        Value::String(facts.updown_market_mechanical_outcome),
+    );
+    params.insert(
+        "updown_market_mechanical_rejection_reason".to_string(),
+        optional_string_to_value(facts.updown_market_mechanical_rejection_reason),
+    );
+    params.insert(
+        "entry_filled_notional".to_string(),
+        Value::from(facts.entry_filled_notional),
+    );
+    params.insert(
+        "open_entry_notional".to_string(),
+        Value::from(facts.open_entry_notional),
+    );
+    params.insert(
+        "strategy_remaining_entry_capacity".to_string(),
+        Value::from(facts.strategy_remaining_entry_capacity),
+    );
+    params.insert("archetype_metrics".to_string(), facts.archetype_metrics);
+    params
+}
+
 fn order_submission_facts_to_params(facts: BoltV3OrderSubmissionFacts) -> Params {
     let mut params = Params::new();
     params.insert("order_type".to_string(), Value::String(facts.order_type));
@@ -523,6 +841,99 @@ fn order_submission_facts_to_params(facts: BoltV3OrderSubmissionFacts) -> Params
     params
 }
 
+fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<()> {
+    match facts.exit_order_mechanical_outcome.as_str() {
+        "accepted" => {
+            if facts.exit_order_mechanical_rejection_reason.is_some() {
+                bail!(
+                    "exit_order_mechanical_rejection_reason must be null when exit_order_mechanical_outcome is accepted"
+                );
+            }
+            if facts.exit_decision != "hold"
+                || facts.exit_decision_reason != "active_exit_not_defined"
+            {
+                bail!(
+                    "accepted exit_order_mechanical_outcome requires exit_decision hold and exit_decision_reason active_exit_not_defined"
+                );
+            }
+        }
+        "rejected" => {
+            match facts.exit_order_mechanical_rejection_reason.as_deref() {
+                Some(
+                    "position_quantity_unconfirmed"
+                    | "open_exit_order_quantity_unconfirmed"
+                    | "open_exit_order_quantity_covers_position"
+                    | "sellable_quantity_unconfirmed"
+                    | "sellable_quantity_zero"
+                    | "exit_bid_unavailable"
+                    | "exit_quantity_invalid"
+                    | "exit_price_invalid",
+                ) => {}
+                Some(value) => {
+                    bail!("unsupported exit_order_mechanical_rejection_reason `{value}`");
+                }
+                None => {
+                    bail!(
+                        "exit_order_mechanical_rejection_reason must be non-null when exit_order_mechanical_outcome is rejected"
+                    );
+                }
+            }
+            if facts.exit_decision != "hold"
+                || facts.exit_decision_reason != "exit_order_mechanical_rejection"
+            {
+                bail!(
+                    "rejected exit_order_mechanical_outcome requires exit_decision hold and exit_decision_reason exit_order_mechanical_rejection"
+                );
+            }
+        }
+        value => bail!("unsupported exit_order_mechanical_outcome `{value}`"),
+    }
+
+    if !facts.archetype_metrics.is_object() {
+        bail!("archetype_metrics must be an object");
+    }
+
+    Ok(())
+}
+
+fn exit_evaluation_facts_to_params(facts: BoltV3ExitEvaluationFacts) -> Params {
+    let mut params = Params::new();
+    params.insert(
+        "authoritative_position_quantity".to_string(),
+        optional_f64_to_value(facts.authoritative_position_quantity),
+    );
+    params.insert(
+        "authoritative_sellable_quantity".to_string(),
+        optional_f64_to_value(facts.authoritative_sellable_quantity),
+    );
+    params.insert(
+        "open_exit_order_quantity".to_string(),
+        optional_f64_to_value(facts.open_exit_order_quantity),
+    );
+    params.insert(
+        "uncovered_position_quantity".to_string(),
+        optional_f64_to_value(facts.uncovered_position_quantity),
+    );
+    params.insert(
+        "exit_order_mechanical_outcome".to_string(),
+        Value::String(facts.exit_order_mechanical_outcome),
+    );
+    params.insert(
+        "exit_order_mechanical_rejection_reason".to_string(),
+        optional_string_to_value(facts.exit_order_mechanical_rejection_reason),
+    );
+    params.insert(
+        "exit_decision".to_string(),
+        Value::String(facts.exit_decision),
+    );
+    params.insert(
+        "exit_decision_reason".to_string(),
+        Value::String(facts.exit_decision_reason),
+    );
+    params.insert("archetype_metrics".to_string(), facts.archetype_metrics);
+    params
+}
+
 fn pre_submit_rejection_facts_to_params(
     facts: BoltV3PreSubmitRejectionFacts,
     rejection_reason_key: &str,
@@ -533,4 +944,12 @@ fn pre_submit_rejection_facts_to_params(
         Value::String(facts.rejection_reason),
     );
     params
+}
+
+fn optional_string_to_value(value: Option<String>) -> Value {
+    value.map(Value::String).unwrap_or(Value::Null)
+}
+
+fn optional_f64_to_value(value: Option<f64>) -> Value {
+    value.map(Value::from).unwrap_or(Value::Null)
 }

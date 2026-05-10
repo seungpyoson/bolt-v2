@@ -1,12 +1,15 @@
 use bolt_v2::bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock};
 use bolt_v2::bolt_v3_decision_events::{
+    BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
     BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
-    BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
     BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BoltV3DecisionEventCatalogHandoff,
-    BoltV3DecisionEventCommonFields, BoltV3EntryOrderSubmissionDecisionEvent,
-    BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
+    BoltV3DecisionEventCommonFields, BoltV3EntryEvaluationDecisionEvent,
+    BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
+    BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
+    BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
     BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
     BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
     register_bolt_v3_decision_event_types,
@@ -14,7 +17,7 @@ use bolt_v2::bolt_v3_decision_events::{
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
 use tempfile::TempDir;
 
@@ -125,6 +128,73 @@ fn market_selection_result_handoff_returns_catalog_write_error() {
     let error = handoff.write_market_selection_result(event).unwrap_err();
 
     assert!(!error.to_string().is_empty());
+}
+
+#[test]
+fn entry_evaluation_event_writes_through_nt_catalog_handoff() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
+        &persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+
+    let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
+        common_fields(),
+        entry_evaluation_facts(),
+        UnixNanos::from(2_500),
+        UnixNanos::from(2_501),
+    )
+    .unwrap();
+
+    handoff.write_entry_evaluation(event).unwrap();
+
+    let loaded = query_events(
+        temp_dir.path(),
+        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+    );
+
+    assert_eq!(loaded.len(), 1);
+    match &loaded[0] {
+        Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(decoded.decision_event_type, "entry_evaluation");
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("archetype_metrics"),
+                Some(&json!({"expected_edge_basis_points": 42.0}))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn entry_evaluation_rejects_no_action_without_reason() {
+    let mut facts = entry_evaluation_facts();
+    facts.entry_decision = "no_action".to_string();
+    facts.updown_side = None;
+    facts.entry_no_action_reason = None;
+
+    let error = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
+        common_fields(),
+        facts,
+        UnixNanos::from(2_500),
+        UnixNanos::from(2_501),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("entry_no_action_reason must be non-null")
+    );
 }
 
 #[test]
@@ -334,6 +404,73 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
     }
 }
 
+#[test]
+fn exit_evaluation_event_writes_through_nt_catalog_handoff() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
+        &persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+
+    let event = BoltV3ExitEvaluationDecisionEvent::exit_evaluation(
+        common_fields(),
+        exit_evaluation_facts(),
+        UnixNanos::from(6_500),
+        UnixNanos::from(6_501),
+    )
+    .unwrap();
+
+    handoff.write_exit_evaluation(event).unwrap();
+
+    let loaded = query_events(temp_dir.path(), BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE);
+
+    assert_eq!(loaded.len(), 1);
+    match &loaded[0] {
+        Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3ExitEvaluationDecisionEvent>()
+                .expect("BoltV3ExitEvaluationDecisionEvent");
+            assert_eq!(decoded.decision_event_type, "exit_evaluation");
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("exit_order_mechanical_rejection_reason"),
+                Some(&Value::Null)
+            );
+            assert_eq!(
+                decoded.event_facts.get("archetype_metrics"),
+                Some(&json!({}))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn exit_evaluation_rejects_missing_mechanical_rejection_reason() {
+    let mut facts = exit_evaluation_facts();
+    facts.exit_order_mechanical_outcome = "rejected".to_string();
+    facts.exit_order_mechanical_rejection_reason = None;
+    facts.exit_decision = "hold".to_string();
+    facts.exit_decision_reason = "exit_order_mechanical_rejection".to_string();
+
+    let error = BoltV3ExitEvaluationDecisionEvent::exit_evaluation(
+        common_fields(),
+        facts,
+        UnixNanos::from(6_500),
+        UnixNanos::from(6_501),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("exit_order_mechanical_rejection_reason must be non-null")
+    );
+}
+
 fn common_fields() -> BoltV3DecisionEventCommonFields {
     BoltV3DecisionEventCommonFields {
         schema_version: 1,
@@ -348,6 +485,36 @@ fn common_fields() -> BoltV3DecisionEventCommonFields {
         config_hash: "config-hash".to_string(),
         nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e".to_string(),
         configured_target_id: "target-eth-updown".to_string(),
+    }
+}
+
+fn entry_evaluation_facts() -> BoltV3EntryEvaluationFacts {
+    BoltV3EntryEvaluationFacts {
+        updown_side: Some("up".to_string()),
+        entry_decision: "enter".to_string(),
+        entry_no_action_reason: None,
+        seconds_to_market_end: 240,
+        has_selected_market_open_orders: false,
+        updown_market_mechanical_outcome: "accepted".to_string(),
+        updown_market_mechanical_rejection_reason: None,
+        entry_filled_notional: 0.0,
+        open_entry_notional: 0.0,
+        strategy_remaining_entry_capacity: 100.0,
+        archetype_metrics: json!({"expected_edge_basis_points": 42.0}),
+    }
+}
+
+fn exit_evaluation_facts() -> BoltV3ExitEvaluationFacts {
+    BoltV3ExitEvaluationFacts {
+        authoritative_position_quantity: Some(10.0),
+        authoritative_sellable_quantity: Some(10.0),
+        open_exit_order_quantity: Some(0.0),
+        uncovered_position_quantity: Some(10.0),
+        exit_order_mechanical_outcome: "accepted".to_string(),
+        exit_order_mechanical_rejection_reason: None,
+        exit_decision: "hold".to_string(),
+        exit_decision_reason: "active_exit_not_defined".to_string(),
+        archetype_metrics: json!({}),
     }
 }
 

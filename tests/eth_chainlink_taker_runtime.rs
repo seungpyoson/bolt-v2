@@ -47,13 +47,13 @@ use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{BookOrder, OrderBookDelta, OrderBookDeltas},
     enums::{AssetClass, BookAction, LiquiditySide, OmsType, OrderSide, OrderType, PositionSide},
-    events::{OrderEventAny, OrderFilled},
+    events::{OrderAccepted, OrderEventAny, OrderFilled},
     identifiers::{
         AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
         TraderId, VenueOrderId,
     },
     instruments::{InstrumentAny, binary_option::BinaryOption},
-    orders::{Order, OrderAny},
+    orders::{Order, OrderAny, OrderTestBuilder},
     position::Position,
     types::{Currency, Money, Price, Quantity},
 };
@@ -720,6 +720,51 @@ fn seed_cached_position_with_entry(
     let cache_handle = node.kernel().cache();
     let mut cache = cache_handle.borrow_mut();
     cache.add_position(&position, OmsType::Netting).unwrap();
+}
+
+fn seed_cached_open_entry_order(
+    node: &LiveNode,
+    strategy_id: StrategyId,
+    instrument_id: InstrumentId,
+    quantity: Quantity,
+    price: Price,
+) {
+    let mut order = OrderTestBuilder::new(OrderType::Limit)
+        .trader_id(TraderId::from("BOLT-001"))
+        .strategy_id(strategy_id)
+        .instrument_id(instrument_id)
+        .client_order_id(ClientOrderId::from("O-RECOVERY-ENTRY-001"))
+        .side(OrderSide::Buy)
+        .quantity(quantity)
+        .price(price)
+        .submit(true)
+        .build();
+    let accepted = OrderAccepted::new(
+        order.trader_id(),
+        order.strategy_id(),
+        order.instrument_id(),
+        order.client_order_id(),
+        VenueOrderId::from("V-RECOVERY-ENTRY-001"),
+        AccountId::from("TEST-ACCOUNT"),
+        UUID4::new(),
+        UnixNanos::default(),
+        UnixNanos::default(),
+        false,
+    );
+    order.apply(OrderEventAny::Accepted(accepted)).unwrap();
+
+    let cache_handle = node.kernel().cache();
+    let mut cache = cache_handle.borrow_mut();
+    cache
+        .add_order(order.clone(), None, Some(ClientId::from("TEST")), false)
+        .unwrap();
+    cache.update_order(&order).unwrap();
+    assert_eq!(
+        cache
+            .orders_open(None, Some(&instrument_id), Some(&strategy_id), None, None)
+            .len(),
+        1
+    );
 }
 
 fn position_opened_event(
@@ -2231,6 +2276,96 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
         submission_events.is_empty(),
         "position-limit-reached entry evaluation must not persist order submission"
     );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(
+        &trader,
+        "eth_chainlink_taker",
+        &strategy_raw_config_with_max_position_usdc(45.0),
+    )
+    .unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    seed_cached_open_entry_order(
+        &node,
+        strategy_id,
+        up,
+        Quantity::from("100"),
+        Price::from("0.450"),
+    );
+    drive_eth_entry_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "open entry capacity from NT cache must not submit another order"
+    );
+
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "updown_market_mechanical_rejection".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("updown_market_mechanical_rejection_reason"),
+                Some(&serde_json::Value::String(
+                    "selected_market_open_orders_present".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("open_entry_notional")
+                    .and_then(serde_json::Value::as_f64),
+                Some(45.0)
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("strategy_remaining_entry_capacity")
+                    .and_then(serde_json::Value::as_f64),
+                Some(0.0)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
 }
 
 #[test]

@@ -19,6 +19,7 @@ use nautilus_model::{
     enums::{BookAction, OrderSide, OrderType, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
+    orders::Order,
     types::{Price, Quantity},
 };
 use nautilus_system::trader::Trader;
@@ -2145,6 +2146,7 @@ impl EthChainlinkTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<Option<BoltV3EntryEvaluationFacts>> {
+        let entry_capacity = decision.evaluation.entry_capacity;
         let has_selected_market_open_orders = self.has_selected_market_open_orders();
         let mechanical_rejection_reason = self.updown_market_mechanical_rejection_reason(
             now_ms,
@@ -2185,9 +2187,9 @@ impl EthChainlinkTaker {
                 },
                 updown_market_mechanical_rejection_reason: mechanical_rejection_reason
                     .map(str::to_string),
-                entry_filled_notional: 0.0,
-                open_entry_notional: 0.0,
-                strategy_remaining_entry_capacity: self.config.max_position_usdc,
+                entry_filled_notional: entry_capacity.entry_filled_notional,
+                open_entry_notional: entry_capacity.open_entry_notional,
+                strategy_remaining_entry_capacity: entry_capacity.strategy_remaining_entry_capacity,
                 archetype_metrics,
             }));
         }
@@ -2205,9 +2207,9 @@ impl EthChainlinkTaker {
             has_selected_market_open_orders,
             updown_market_mechanical_outcome: "accepted".to_string(),
             updown_market_mechanical_rejection_reason: None,
-            entry_filled_notional: 0.0,
-            open_entry_notional: 0.0,
-            strategy_remaining_entry_capacity: self.config.max_position_usdc,
+            entry_filled_notional: entry_capacity.entry_filled_notional,
+            open_entry_notional: entry_capacity.open_entry_notional,
+            strategy_remaining_entry_capacity: entry_capacity.strategy_remaining_entry_capacity,
             archetype_metrics,
         }))
     }
@@ -2276,6 +2278,64 @@ impl EthChainlinkTaker {
                     .orders_open(None, Some(&instrument_id), Some(&strategy_id), None, None)
                     .is_empty()
             })
+    }
+
+    fn selected_market_instrument_ids(&self) -> [Option<InstrumentId>; 2] {
+        [
+            self.active.books.up.instrument_id,
+            self.active.books.down.instrument_id,
+        ]
+    }
+
+    fn selected_market_entry_capacity_snapshot(&self) -> EntryCapacitySnapshot {
+        let selected_instruments = self.selected_market_instrument_ids();
+        let mut counted_position_ids = BTreeSet::new();
+        let mut entry_filled_notional = self
+            .tracked_observed_position()
+            .filter(|position| selected_instruments.contains(&Some(position.instrument_id)))
+            .and_then(|position| {
+                counted_position_ids.insert(position.position_id);
+                positive_notional(position.quantity.as_f64(), position.avg_px_open)
+            })
+            .unwrap_or(0.0);
+        let mut open_entry_notional = 0.0;
+
+        if self.core.trader_id().is_some() {
+            let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+            let cache = self.cache();
+            for instrument_id in selected_instruments.into_iter().flatten() {
+                entry_filled_notional += cache
+                    .positions_open(None, Some(&instrument_id), Some(&strategy_id), None, None)
+                    .into_iter()
+                    .filter(|position| counted_position_ids.insert(position.id))
+                    .filter_map(|position| {
+                        positive_notional(position.quantity.as_f64(), position.avg_px_open)
+                    })
+                    .sum::<f64>();
+
+                open_entry_notional += cache
+                    .orders_open(
+                        None,
+                        Some(&instrument_id),
+                        Some(&strategy_id),
+                        None,
+                        Some(OrderSide::Buy),
+                    )
+                    .into_iter()
+                    .filter_map(|order| {
+                        positive_notional(order.leaves_qty().as_f64(), order.price()?.as_f64())
+                    })
+                    .sum::<f64>();
+            }
+        }
+
+        EntryCapacitySnapshot {
+            entry_filled_notional,
+            open_entry_notional,
+            strategy_remaining_entry_capacity: self.config.max_position_usdc
+                - entry_filled_notional
+                - open_entry_notional,
+        }
     }
 
     fn outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
@@ -3260,12 +3320,13 @@ impl EthChainlinkTaker {
             .sized_notional_usdc
             .filter(|value| value.is_finite() && *value > 0.0)
         else {
-            decision.blocked_reason =
-                if evaluation.selected_side.is_some() && self.config.max_position_usdc <= 0.0 {
-                    Some("position_limit_reached")
-                } else {
-                    Some("sized_notional_not_positive")
-                };
+            decision.blocked_reason = if evaluation.selected_side.is_some()
+                && evaluation.entry_capacity.strategy_remaining_entry_capacity <= 0.0
+            {
+                Some("position_limit_reached")
+            } else {
+                Some("sized_notional_not_positive")
+            };
             return decision;
         };
 
@@ -3461,8 +3522,10 @@ impl EthChainlinkTaker {
 
     fn entry_evaluation_at(&self, now_ms: u64) -> EntryEvaluation {
         let gate = self.entry_gate_decision_at(now_ms);
+        let entry_capacity = self.selected_market_entry_capacity_snapshot();
         let mut evaluation = EntryEvaluation {
             gate,
+            entry_capacity,
             pricing_blocked_by: Vec::new(),
             fair_probability_up: None,
             uncertainty_band_probability: None,
@@ -3606,7 +3669,7 @@ impl EthChainlinkTaker {
                 evaluation.sized_notional_usdc = Some(choose_robust_size(&RobustSizingInputs {
                     expected_ev_per_usdc,
                     risk_lambda: self.config.risk_lambda,
-                    max_position_usdc: self.config.max_position_usdc,
+                    max_position_usdc: evaluation.entry_capacity.strategy_remaining_entry_capacity,
                     impact_cap_usdc: book_impact_cap_usdc,
                 }));
             }
@@ -4568,6 +4631,15 @@ fn sanitize_non_negative(value: f64) -> f64 {
     }
 }
 
+fn positive_notional(quantity: f64, price: f64) -> Option<f64> {
+    let notional = quantity * price;
+    if notional.is_finite() && notional > 0.0 {
+        Some(notional)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExposureOccupancy {
     PendingEntry,
@@ -4632,6 +4704,7 @@ enum EntryPricingBlockReason {
 #[derive(Debug, Clone, PartialEq)]
 struct EntryEvaluation {
     gate: EntryGateDecision,
+    entry_capacity: EntryCapacitySnapshot,
     pricing_blocked_by: Vec<EntryPricingBlockReason>,
     fair_probability_up: Option<f64>,
     uncertainty_band_probability: Option<f64>,
@@ -4642,6 +4715,13 @@ struct EntryEvaluation {
     book_impact_cap_usdc: Option<f64>,
     sized_notional_usdc: Option<f64>,
     selected_side: Option<OutcomeSide>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EntryCapacitySnapshot {
+    entry_filled_notional: f64,
+    open_entry_notional: f64,
+    strategy_remaining_entry_capacity: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

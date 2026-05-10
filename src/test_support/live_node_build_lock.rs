@@ -11,5 +11,5 @@ pub(crate) fn lock_live_node_build() -> MutexGuard<'static, ()> {
     LIVE_NODE_BUILD_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

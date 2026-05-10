@@ -199,6 +199,21 @@ def test_scan_universe_includes_required_path_groups() -> None:
         assert ".github/workflows/ci.yml" in paths
 
 
+def test_non_utf8_skips_are_rendered_as_warnings() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(root, admitted_files())
+        binary = root / "tests" / "fixtures" / "bolt_v3" / "non_utf8.bin"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"\xff")
+
+        verifier = load_verifier()
+        run = verifier.audit_root(root)
+
+        assert run.warnings == ("skipped tests/fixtures/bolt_v3/non_utf8.bin: non-UTF-8",)
+        assert "warnings:\n  - skipped tests/fixtures/bolt_v3/non_utf8.bin: non-UTF-8" in run.render()
+
+
 def test_generic_updown_plan_and_clock_in_core_are_blockers() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -333,6 +348,35 @@ def test_missing_contract_surfaces_ignore_test_only_contract_names() -> None:
                     pub struct ProviderContract;
                 """,
                 "tests/bolt_v3_contracts.rs": """
+                    pub struct DecisionEvent;
+                    pub trait CustomDataTrait {}
+                    pub fn ensure_custom_data_registered() {}
+                    pub struct ConformanceHarness;
+                    pub struct BacktestEngineLiveParityBoundary;
+                    pub fn add_strategy() {}
+                """,
+            },
+        )
+
+        verifier = load_verifier()
+        run = verifier.audit_root(root)
+
+        assert "missing-contract-surface" in blocker_classes(run)
+
+
+def test_missing_contract_surfaces_ignore_provider_owned_contract_names() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            admitted_files()
+            | {
+                "src/bolt_v3_contracts.rs": """
+                    pub struct ProviderContract;
+                    pub struct MarketFamilyContract;
+                    pub struct StrategyArchetypeContract;
+                """,
+                "src/bolt_v3_providers/polymarket.rs": """
                     pub struct DecisionEvent;
                     pub trait CustomDataTrait {}
                     pub fn ensure_custom_data_registered() {}

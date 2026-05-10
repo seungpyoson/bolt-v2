@@ -368,7 +368,7 @@ def detect_generic_contract_leaks(root: Path, universe: ScanUniverse) -> list[Ad
 def detect_missing_contract_surfaces(root: Path, universe: ScanUniverse) -> list[AdmissionBlocker]:
     searchable_parts: list[str] = []
     for path in universe.files:
-        if not rel(path, root).startswith("src/bolt_v3"):
+        if not is_generic_core_path(rel(path, root)):
             continue
         raw = path.read_text(encoding="utf-8")
         searchable_parts.append(production_text(root, path, raw))
@@ -393,7 +393,7 @@ def detect_missing_contract_surfaces(root: Path, universe: ScanUniverse) -> list
             evidence.append(
                 EvidenceRecord(
                     path="src/bolt_v3*",
-                    absence_query=f"searched=src/bolt_v3* terms={','.join(terms)}",
+                    absence_query=f"searched=generic src/bolt_v3* terms={','.join(terms)}",
                     explanation=surface,
                 )
             )
@@ -692,6 +692,7 @@ def audit_root(root: Path, mode: str = "report", waivers: list[Waiver] | tuple[W
         repo_root=root,
         scan_universe=universe,
         blockers=tuple(sorted_blockers(tuple(unwaived))),
+        warnings=tuple(f"skipped {item}" for item in universe.skipped),
     )
 
 

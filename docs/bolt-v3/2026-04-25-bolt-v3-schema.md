@@ -810,7 +810,7 @@ venue = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
-kind = "rotating_market"
+market_selection_type = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300
@@ -908,7 +908,7 @@ Nautilus strategy identity mapping for live trading:
 This is the operator-facing target identifier used for forensics.
 It is configuration, not a selected-market identifier.
 
-#### `kind`
+#### `market_selection_type`
 
 - type: string enum
 - required: yes
@@ -920,11 +920,11 @@ It is configuration, not a selected-market identifier.
 Deferred.
 Instrument targets are not part of the current frozen target-stack model.
 
-If `kind = "instrument"`, validation must fail until a future contract slice defines the configured-target shape, selected-market facts boundary, and event projection.
+If `market_selection_type = "instrument"`, validation must fail until a future contract slice defines the configured-target shape, selected-market facts boundary, and event projection.
 
 #### Rotating-market target fields
 
-If `kind = "rotating_market"`:
+If `market_selection_type = "rotating_market"`:
 
 - `configured_target_id` is required
 - `rotating_market_family` is required
@@ -1128,8 +1128,8 @@ Must fail if:
 - `signature_type` is not one of the allowed strings
 - Polymarket `signature_type = "poly_proxy"` or `signature_type = "poly_gnosis_safe"` is missing a non-zero `funder_address`
 - Polymarket `funder_address`, when present, is not a `0x`-prefixed 40-hex-character non-zero EVM address
-- `target.kind = "rotating_market"` includes fields not valid for rotating-market targets
-- `target.kind = "instrument"` is selected before instrument targets are added by a future contract slice
+- `target.market_selection_type = "rotating_market"` includes fields not valid for rotating-market targets
+- `target.market_selection_type = "instrument"` is selected before instrument targets are added by a future contract slice
 - `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
 - `target.cadence_seconds` is not positive or is not divisible by `60`
 - `target.cadence_seconds` does not have a runtime-contract-defined slug-token mapping
@@ -1315,7 +1315,7 @@ venue = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
-kind = "rotating_market"
+market_selection_type = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300

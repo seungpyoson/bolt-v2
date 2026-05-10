@@ -356,7 +356,7 @@ It contains configuration only.
 Exact fields:
 
 - `configured_target_id`
-- `target_kind`
+- `market_selection_type`
 - `venue_config_key`
 - `venue_kind`
 - `rotating_market_family`
@@ -368,7 +368,7 @@ Exact fields:
 
 Field constraints:
 
-- `target_kind = "rotating_market"`
+- `market_selection_type = "rotating_market"`
 - `venue_config_key` is the exact strategy-file `venue` reference
 - `venue_kind = "polymarket"` for the current `updown` scope
 - `rotating_market_family = "updown"`
@@ -393,13 +393,13 @@ It is not an observed-facts object and it does not include entry readiness or st
 
 Every selected market must contain:
 
-- `target_kind`
+- `market_selection_type`
 - `venue_config_key`
 - `venue_kind`
 
 #### Current updown rotating-market fields
 
-If `target_kind = "rotating_market"` and `rotating_market_family = "updown"`, the selected market must also contain:
+If `market_selection_type = "rotating_market"` and `rotating_market_family = "updown"`, the selected market must also contain:
 
 - `rotating_market_family`
 - `polymarket_condition_id`
@@ -779,7 +779,7 @@ There is a small fixed set of concrete event types.
 
 Every event includes the same common required fields.
 Each event type includes additional fixed fields specific to that event.
-Where an event may be emitted for more than one target kind, target-kind-specific fields are conditional on `target_kind`.
+Where an event may be emitted for more than one market selection type, market-selection-type-specific fields are conditional on `market_selection_type`.
 
 ### 9.3 Common required fields
 
@@ -871,7 +871,7 @@ Event-schema version is `1`.
 
 Required additional fields:
 
-- `target_kind`
+- `market_selection_type`
 - `market_selection_timestamp_milliseconds`
 - `market_selection_outcome`
 - `market_selection_failure_reason`
@@ -884,7 +884,7 @@ Allowed `market_selection_outcome` values are the variant names defined for `mar
 
 Allowed `market_selection_failure_reason` values are defined in Section 6.4.
 
-If `target_kind = "rotating_market"`, the event must also contain these configured target fields:
+If `market_selection_type = "rotating_market"`, the event must also contain these configured target fields:
 
 - `rotating_market_family`
 - `underlying_asset`
@@ -893,7 +893,7 @@ If `target_kind = "rotating_market"`, the event must also contain these configur
 - `retry_interval_seconds`
 - `blocked_after_seconds`
 
-If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and market selection succeeds, the event must also contain these selected market and selected market facts fields:
+If `market_selection_type = "rotating_market"` and `rotating_market_family = "updown"` and market selection succeeds, the event must also contain these selected market and selected market facts fields:
 
 - `polymarket_condition_id`
 - `polymarket_market_slug`
@@ -909,7 +909,7 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and
 
 #### `entry_evaluation`
 
-The current `entry_evaluation` event is defined for `target_kind = "rotating_market"` and `rotating_market_family = "updown"`.
+The current `entry_evaluation` event is defined for `market_selection_type = "rotating_market"` and `rotating_market_family = "updown"`.
 
 `entry_evaluation` is emitted only after `market_selection_result` has succeeded for the same configured target and decision trace.
 Market-selection failure is represented by `market_selection_result` only and does not emit `entry_evaluation`.

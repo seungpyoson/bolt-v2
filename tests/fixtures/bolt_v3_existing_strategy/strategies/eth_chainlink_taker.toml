@@ -7,7 +7,7 @@ adapter_instance = "polymarket_main"
 
 [target]
 configured_target_id = "eth_updown_5m"
-kind = "rotating_market"
+market_selection_type = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "ETH"
 cadence_seconds = 300

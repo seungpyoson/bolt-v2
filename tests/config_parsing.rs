@@ -691,7 +691,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         ArchetypeOrderType, ArchetypeTimeInForce, ParametersBlock,
     };
     use bolt_v2::bolt_v3_config::{RuntimeMode, load_bolt_v3_config};
-    use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
+    use bolt_v2::bolt_v3_market_families::updown::{MarketSelectionType, TargetBlock};
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
@@ -733,7 +733,10 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         .clone()
         .try_into()
         .expect("fixture target block should deserialize as updown TargetBlock");
-    assert_eq!(target.kind, TargetKind::RotatingMarket);
+    assert_eq!(
+        target.market_selection_type,
+        MarketSelectionType::RotatingMarket
+    );
     assert_eq!(target.cadence_seconds, 300);
     let parameters: ParametersBlock = strategy
         .parameters

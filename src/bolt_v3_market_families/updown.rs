@@ -61,7 +61,7 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
 #[serde(deny_unknown_fields)]
 pub struct TargetBlock {
     pub configured_target_id: String,
-    pub kind: TargetKind,
+    pub market_selection_type: MarketSelectionType,
     pub rotating_market_family: RotatingMarketFamily,
     pub underlying_asset: String,
     pub cadence_seconds: i64,
@@ -72,7 +72,7 @@ pub struct TargetBlock {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TargetKind {
+pub enum MarketSelectionType {
     RotatingMarket,
 }
 
@@ -181,13 +181,14 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
         ));
     }
 
-    // Reading `block.market_selection_rule` and `block.kind` here is a
+    // Reading `block.market_selection_rule` and
+    // `block.market_selection_type` here is a
     // no-op exhaustive match: the only allowed variants are encoded by
     // the typed enums above, so any TOML value other than
     // `active_or_next` / `rotating_market` was already rejected by
     // typed deserialization.
     let MarketSelectionRule::ActiveOrNext = block.market_selection_rule;
-    let TargetKind::RotatingMarket = block.kind;
+    let MarketSelectionType::RotatingMarket = block.market_selection_type;
     let RotatingMarketFamily::Updown = block.rotating_market_family;
 
     errors
@@ -394,7 +395,7 @@ fn plan_strategy_updown_target(
     // Exhaustive matches: when a future variant is added to either
     // enum the build breaks here, forcing a deliberate decision about
     // how the new variant is projected into market identity.
-    let TargetKind::RotatingMarket = target.kind;
+    let MarketSelectionType::RotatingMarket = target.market_selection_type;
     let RotatingMarketFamily::Updown = target.rotating_market_family;
 
     let configured_target_id = target.configured_target_id.clone();
@@ -497,6 +498,55 @@ pub fn candidates_for_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn target_value(source: &str) -> toml::Value {
+        toml::from_str(source).expect("target TOML should parse")
+    }
+
+    #[test]
+    fn updown_target_accepts_market_selection_type_field() {
+        let target = target_value(
+            r#"
+configured_target_id = "eth_updown_5m"
+market_selection_type = "rotating_market"
+rotating_market_family = "updown"
+underlying_asset = "ETH"
+cadence_seconds = 300
+market_selection_rule = "active_or_next"
+retry_interval_seconds = 5
+blocked_after_seconds = 60
+"#,
+        );
+
+        assert_eq!(
+            validate_target_block("strategy", &target),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn updown_target_rejects_legacy_kind_field() {
+        let target = target_value(
+            r#"
+configured_target_id = "eth_updown_5m"
+kind = "rotating_market"
+rotating_market_family = "updown"
+underlying_asset = "ETH"
+cadence_seconds = 300
+market_selection_rule = "active_or_next"
+retry_interval_seconds = 5
+blocked_after_seconds = 60
+"#,
+        );
+
+        let errors = validate_target_block("strategy", &target);
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("unknown field `kind`")),
+            "legacy target.kind must be rejected after market_selection_type rename: {errors:#?}"
+        );
+    }
 
     #[test]
     fn updown_period_pair_floor_examples() {

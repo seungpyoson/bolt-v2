@@ -15,7 +15,7 @@ Work F3-F10 sequentially with hard evidence, TDD discipline where implementation
 | Requirement | Evidence | Status |
 | --- | --- | --- |
 | Use fresh branches/worktrees from origin | Current branch `codex/bolt-v3-decision-event-context` was created in `.worktrees/bolt-v3-decision-event-context` from pushed origin ref `origin/codex/bolt-v3-order-intent-gate` | met |
-| Commit and push each slice | Current decision-event-context slice is local until commit/push; prior slices remain pushed separately | pending |
+| Commit and push each slice | Current decision-event-context slice is committed as `19b0ca2208d9e9d0cd271ef5793f9d37582fb262` and pushed to `origin/codex/bolt-v3-decision-event-context`; prior slices remain pushed separately | met |
 | Do not merge without approval | No merge command used; no PR opened from these branches | met |
 | F3 ETH/USD reference contract | Root TOML now defines `[reference_streams.eth_usd]`; existing strategy TOML selects it with `parameters.reference_stream_id`; validation rejects missing stream IDs and invalid stream values; strategy registration resolves selected stream to NT context `reference_publish_topic` | verified-local |
 | F4 fused-price policy | `tests/bolt_v3_reference_policy.rs` proves v3 root reference streams use the existing fusion algorithm for configured source IDs, source types, weights, freshness windows, disabled inputs, and topic; no disagreement fail-closed policy exists yet | partial |
@@ -48,4 +48,4 @@ F3-F10 are not production-complete. They are classified with evidence:
 
 External reviews remain pending and are intentionally not requested here. CI on these branches has not been used as acceptance evidence. Merge approval remains required.
 
-The next implementation decision should not start F9 or F10. After this decision-event-context slice is committed and pushed, the next credible slice remains wiring the actual v3 strategy/order-intent path through the context and gate before any production start/run wrapper, still no orders.
+The next implementation decision should not start F9 or F10. With this decision-event-context slice pushed, the next credible slice remains wiring the actual v3 strategy/order-intent path through the context and gate before any production start/run wrapper, still no orders.

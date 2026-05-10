@@ -3,7 +3,7 @@
 //! Schema rules: docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 8.
 //!
 //! This module owns common strategy-envelope validation (schema
-//! version, uniqueness of instance / order-id-tag, venue / execution
+//! version, uniqueness of instance / order-id-tag, adapter-instance / execution
 //! lookup, per-role reference-data structural validation), root-block
 //! validation, and root risk decimal syntax only. Market-family-shaped
 //! target rules
@@ -21,13 +21,14 @@
 //! root-cap comparison. `validate_strategies` dispatches into the
 //! matching archetype validator via
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
-//! Per-provider venue-block validation (provider-shaped
-//! `[venues.<id>.{data,execution,secrets}]` rules: typed
+//! Per-provider adapter-instance validation (provider-shaped
+//! `[adapter_instances.<id>.{data,execution,secrets}]` rules: typed
 //! deserialization, cross-block presence rules, provider data /
 //! execution bounds, EVM funder-address syntax, provider secret-path
 //! ownership) is owned by the per-provider binding modules under
-//! `crate::bolt_v3_providers`; `validate_venues_block` dispatches each
-//! venue block through `crate::bolt_v3_providers::validate_venue_block`.
+//! `crate::bolt_v3_providers`; `validate_adapter_instances_block`
+//! dispatches each adapter-instance block through
+//! `crate::bolt_v3_providers::validate_adapter_instance_block`.
 //! Only the genuinely provider-neutral SSM parameter-path utility
 //! (`validate_ssm_parameter_path`) stays in this module and is exposed
 //! `pub(crate)` so the per-provider secret validators can call it the
@@ -42,8 +43,8 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, RiskBlock, VenueBlock,
+    AdapterInstanceBlock, AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy,
+    NautilusBlock, PersistenceBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -100,7 +101,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
-    errors.extend(validate_venues_block(&root.venues));
+    errors.extend(validate_adapter_instances_block(&root.adapter_instances));
 
     errors
 }
@@ -385,38 +386,45 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
-fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
+fn validate_adapter_instances_block(
+    adapter_instances: &BTreeMap<String, AdapterInstanceBlock>,
+) -> Vec<String> {
     let mut errors = Vec::new();
-    if venues.is_empty() {
-        errors.push("venues must define at least one venue block".to_string());
+    if adapter_instances.is_empty() {
+        errors
+            .push("adapter_instances must define at least one adapter instance block".to_string());
         return errors;
     }
-    // The current bolt-v3 scope is one venue per provider key. Multi-venue
-    // routing (multiple keyed venues for the same provider) is not yet
+    // The current bolt-v3 scope is one adapter instance per adapter venue.
+    // Multi-instance routing (multiple keyed instances for the same
+    // adapter venue) is not yet
     // covered by the NT typed-venue routing path or by bolt-v3 strategy
     // validation. NT client registration names can differ, but engine
     // instrument subscriptions still key on typed venues such as
     // POLYMARKET/BINANCE, so we fail closed until that routing is
     // explicitly designed.
-    let mut kind_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-    for (key, venue) in venues {
-        kind_counts
-            .entry(venue.kind.as_str().to_string())
+    let mut adapter_venue_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for (key, adapter_instance) in adapter_instances {
+        adapter_venue_counts
+            .entry(adapter_instance.adapter_venue.as_str().to_string())
             .or_default()
             .push(key.as_str());
     }
-    for (kind, keys) in &kind_counts {
+    for (adapter_venue, keys) in &adapter_venue_counts {
         if keys.len() > 1 {
             errors.push(format!(
-                "venues: at most one [venues.<id>] block per kind is supported in this slice; \
-                 kind `{kind}` is declared by {} venues: {}",
+                "adapter_instances: at most one [adapter_instances.<id>] block per adapter_venue is supported in this slice; \
+                 adapter_venue `{adapter_venue}` is declared by {} adapter instances: {}",
                 keys.len(),
                 keys.join(", ")
             ));
         }
     }
-    for (key, venue) in venues {
-        errors.extend(crate::bolt_v3_providers::validate_venue_block(key, venue));
+    for (key, adapter_instance) in adapter_instances {
+        errors.extend(crate::bolt_v3_providers::validate_adapter_instance_block(
+            key,
+            adapter_instance,
+        ));
     }
     errors
 }
@@ -432,7 +440,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
     let trimmed = value.trim();
     if trimmed.is_empty() {
         errors.push(format!(
-            "venues.{key}.secrets.{field} must be a non-empty SSM path"
+            "adapter_instances.{key}.secrets.{field} must be a non-empty SSM path"
         ));
     } else if !trimmed.starts_with('/') {
         // The Rust AWS SDK accepts both `name`-style and `/name`-style
@@ -441,7 +449,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
         // like `/bolt/<venue>/<field>` is the only supported shape and
         // typos that drop the leading slash fail closed at startup.
         errors.push(format!(
-            "venues.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
+            "adapter_instances.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
         ));
     }
     errors
@@ -481,17 +489,17 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        match root.venues.get(&strategy.venue) {
+        match root.adapter_instances.get(&strategy.adapter_instance) {
             None => errors.push(format!(
-                "{context}: venue reference `{}` does not match any [venues.<id>] block",
-                strategy.venue
+                "{context}: adapter_instance reference `{}` does not match any [adapter_instances.<id>] block",
+                strategy.adapter_instance
             )),
-            Some(venue) => {
-                if venue.execution.is_none() {
+            Some(adapter_instance) => {
+                if adapter_instance.execution.is_none() {
                     errors.push(format!(
-                        "{context}: strategy venue `{}` must reference an execution-capable venue \
-                         (the referenced venue has no [execution] block)",
-                        strategy.venue
+                        "{context}: strategy adapter_instance `{}` must reference an execution-capable adapter instance \
+                         (the referenced adapter instance has no [execution] block)",
+                        strategy.adapter_instance
                     ));
                 }
             }
@@ -528,16 +536,16 @@ fn validate_reference_data(
     let mut errors = Vec::new();
 
     for (role, block) in &strategy.reference_data {
-        match root.venues.get(&block.venue) {
+        match root.adapter_instances.get(&block.venue) {
             None => errors.push(format!(
-                "{context}: reference_data.{role}.venue `{}` does not match any [venues.<id>] block",
+                "{context}: reference_data.{role}.venue `{}` does not match any [adapter_instances.<id>] block",
                 block.venue
             )),
-            Some(venue) => {
-                if venue.data.is_none() {
+            Some(adapter_instance) => {
+                if adapter_instance.data.is_none() {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.venue `{}` must reference a data-capable venue \
-                         (the referenced venue has no [data] block)",
+                        "{context}: reference_data.{role}.venue `{}` must reference a data-capable adapter instance \
+                         (the referenced adapter instance has no [data] block)",
                         block.venue
                     ));
                 }

@@ -41,7 +41,7 @@ pub enum BoltV3StartupCheckStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BoltV3StartupCheckSubject {
     Root,
-    Venue(String),
+    AdapterInstance(String),
     BlockedByStage(BoltV3StartupCheckStage),
 }
 
@@ -104,7 +104,9 @@ where
             for finding in error.findings {
                 report.push(
                     BoltV3StartupCheckStage::ForbiddenCredentialEnv,
-                    BoltV3StartupCheckSubject::Venue(finding.venue_key.clone()),
+                    BoltV3StartupCheckSubject::AdapterInstance(
+                        finding.adapter_instance_key.clone(),
+                    ),
                     BoltV3StartupCheckStatus::Failed,
                     finding.to_string(),
                 );
@@ -125,20 +127,20 @@ where
 
     let resolved = match resolve_bolt_v3_secrets_with(loaded, resolver) {
         Ok(resolved) => {
-            if resolved.venues.is_empty() {
+            if resolved.adapter_instances.is_empty() {
                 report.push(
                     BoltV3StartupCheckStage::SecretResolution,
                     BoltV3StartupCheckSubject::Root,
                     BoltV3StartupCheckStatus::Satisfied,
-                    "no venue secrets configured",
+                    "no adapter-instance secrets configured",
                 );
             } else {
-                for venue_key in resolved.venues.keys() {
+                for adapter_instance_key in resolved.adapter_instances.keys() {
                     report.push(
                         BoltV3StartupCheckStage::SecretResolution,
-                        BoltV3StartupCheckSubject::Venue(venue_key.clone()),
+                        BoltV3StartupCheckSubject::AdapterInstance(adapter_instance_key.clone()),
                         BoltV3StartupCheckStatus::Satisfied,
-                        format!("resolved secrets for venue `{venue_key}`"),
+                        format!("resolved secrets for adapter_instance `{adapter_instance_key}`"),
                     );
                 }
             }
@@ -147,7 +149,7 @@ where
         Err(error) => {
             report.push(
                 BoltV3StartupCheckStage::SecretResolution,
-                BoltV3StartupCheckSubject::Venue(error.venue_key.clone()),
+                BoltV3StartupCheckSubject::AdapterInstance(error.adapter_instance_key.clone()),
                 BoltV3StartupCheckStatus::Failed,
                 error.to_string(),
             );
@@ -166,23 +168,23 @@ where
 
     let adapters = match map_bolt_v3_adapters(loaded, &resolved) {
         Ok(adapters) => {
-            if adapters.venues.is_empty() {
+            if adapters.adapter_instances.is_empty() {
                 report.push(
                     BoltV3StartupCheckStage::AdapterMapping,
                     BoltV3StartupCheckSubject::Root,
                     BoltV3StartupCheckStatus::Satisfied,
-                    "no venue adapter configs mapped",
+                    "no adapter-instance configs mapped",
                 );
             } else {
-                for (venue_key, venue) in &adapters.venues {
+                for (adapter_instance_key, adapter_instance) in &adapters.adapter_instances {
                     report.push(
                         BoltV3StartupCheckStage::AdapterMapping,
-                        BoltV3StartupCheckSubject::Venue(venue_key.clone()),
+                        BoltV3StartupCheckSubject::AdapterInstance(adapter_instance_key.clone()),
                         BoltV3StartupCheckStatus::Satisfied,
                         format!(
-                            "mapped adapter configs for venue `{venue_key}`: data={} execution={}",
-                            venue.data.is_some(),
-                            venue.execution.is_some()
+                            "mapped adapter configs for adapter_instance `{adapter_instance_key}`: data={} execution={}",
+                            adapter_instance.data.is_some(),
+                            adapter_instance.execution.is_some()
                         ),
                     );
                 }
@@ -279,48 +281,69 @@ where
 }
 
 fn adapter_mapping_error_subject(error: &BoltV3AdapterMappingError) -> BoltV3StartupCheckSubject {
-    let venue_key = match error {
-        BoltV3AdapterMappingError::SecretKindMismatch { venue_key, .. }
-        | BoltV3AdapterMappingError::MissingResolvedSecrets { venue_key, .. }
-        | BoltV3AdapterMappingError::SchemaParse { venue_key, .. }
-        | BoltV3AdapterMappingError::NumericRange { venue_key, .. }
-        | BoltV3AdapterMappingError::ValidationInvariant { venue_key, .. } => venue_key,
+    let adapter_instance_key = match error {
+        BoltV3AdapterMappingError::SecretKindMismatch {
+            adapter_instance_key,
+            ..
+        }
+        | BoltV3AdapterMappingError::MissingResolvedSecrets {
+            adapter_instance_key,
+            ..
+        }
+        | BoltV3AdapterMappingError::SchemaParse {
+            adapter_instance_key,
+            ..
+        }
+        | BoltV3AdapterMappingError::NumericRange {
+            adapter_instance_key,
+            ..
+        }
+        | BoltV3AdapterMappingError::ValidationInvariant {
+            adapter_instance_key,
+            ..
+        } => adapter_instance_key,
     };
-    BoltV3StartupCheckSubject::Venue(venue_key.clone())
+    BoltV3StartupCheckSubject::AdapterInstance(adapter_instance_key.clone())
 }
 
 fn client_registration_error_subject(
     error: &BoltV3ClientRegistrationError,
 ) -> BoltV3StartupCheckSubject {
-    let venue_key = match error {
-        BoltV3ClientRegistrationError::AddDataClient { venue_key, .. }
-        | BoltV3ClientRegistrationError::AddExecClient { venue_key, .. } => venue_key,
+    let adapter_instance_key = match error {
+        BoltV3ClientRegistrationError::AddDataClient {
+            adapter_instance_key,
+            ..
+        }
+        | BoltV3ClientRegistrationError::AddExecClient {
+            adapter_instance_key,
+            ..
+        } => adapter_instance_key,
     };
-    BoltV3StartupCheckSubject::Venue(venue_key.clone())
+    BoltV3StartupCheckSubject::AdapterInstance(adapter_instance_key.clone())
 }
 
 fn push_registration_summary(
     report: &mut BoltV3StartupCheckReport,
     summary: &BoltV3RegistrationSummary,
 ) {
-    if summary.venues.is_empty() {
+    if summary.adapter_instances.is_empty() {
         report.push(
             BoltV3StartupCheckStage::ClientRegistration,
             BoltV3StartupCheckSubject::Root,
             BoltV3StartupCheckStatus::Satisfied,
-            "no NT clients registered because no venues are configured",
+            "no NT clients registered because no adapter instances are configured",
         );
         return;
     }
 
-    for (venue_key, venue) in &summary.venues {
+    for (adapter_instance_key, adapter_instance) in &summary.adapter_instances {
         report.push(
             BoltV3StartupCheckStage::ClientRegistration,
-            BoltV3StartupCheckSubject::Venue(venue_key.clone()),
+            BoltV3StartupCheckSubject::AdapterInstance(adapter_instance_key.clone()),
             BoltV3StartupCheckStatus::Satisfied,
             format!(
-                "registered NT clients for venue `{venue_key}`: data={} execution={}",
-                venue.data, venue.execution
+                "registered NT clients for adapter_instance `{adapter_instance_key}`: data={} execution={}",
+                adapter_instance.data, adapter_instance.execution
             ),
         );
     }
@@ -331,23 +354,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_registration_error_subject_is_venue_keyed() {
+    fn client_registration_error_subject_is_adapter_instance_keyed() {
         let data_error = BoltV3ClientRegistrationError::AddDataClient {
-            venue_key: "venue_a".to_string(),
+            adapter_instance_key: "venue_a".to_string(),
             message: "data rejected".to_string(),
         };
         assert_eq!(
             client_registration_error_subject(&data_error),
-            BoltV3StartupCheckSubject::Venue("venue_a".to_string())
+            BoltV3StartupCheckSubject::AdapterInstance("venue_a".to_string())
         );
 
         let exec_error = BoltV3ClientRegistrationError::AddExecClient {
-            venue_key: "venue_b".to_string(),
+            adapter_instance_key: "venue_b".to_string(),
             message: "execution rejected".to_string(),
         };
         assert_eq!(
             client_registration_error_subject(&exec_error),
-            BoltV3StartupCheckSubject::Venue("venue_b".to_string())
+            BoltV3StartupCheckSubject::AdapterInstance("venue_b".to_string())
         );
     }
 }

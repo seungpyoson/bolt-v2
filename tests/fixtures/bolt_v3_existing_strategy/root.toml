@@ -2,7 +2,7 @@ schema_version = 1
 trader_id = "BOLT-001"
 
 strategy_files = [
-  "strategies/binary_oracle.toml",
+  "strategies/eth_chainlink_taker.toml",
 ]
 
 [runtime]
@@ -134,17 +134,3 @@ private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
-
-[adapter_instances.binance_reference]
-adapter_venue = "binance"
-
-[adapter_instances.binance_reference.data]
-product_types = ["spot"]
-environment = "mainnet"
-base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream.binance.com:9443/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
-instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
-
-[adapter_instances.binance_reference.secrets]
-api_key_ssm_path = "/bolt/binance_reference/api_key"
-api_secret_ssm_path = "/bolt/binance_reference/api_secret"

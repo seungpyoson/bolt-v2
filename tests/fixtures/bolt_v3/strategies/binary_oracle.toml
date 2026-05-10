@@ -3,7 +3,7 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
-venue = "polymarket_main"
+adapter_instance = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"

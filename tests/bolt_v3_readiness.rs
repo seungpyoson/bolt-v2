@@ -120,19 +120,19 @@ fn startup_check_reports_success_facts_without_connecting() {
 }
 
 #[test]
-fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
+fn startup_check_reports_empty_adapter_instance_stages_as_satisfied_root_facts() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let empty_loaded = LoadedBoltV3Config {
         root_path: loaded.root_path.clone(),
         root: BoltV3RootConfig {
-            venues: BTreeMap::new(),
+            adapter_instances: BTreeMap::new(),
             ..loaded.root
         },
         strategies: Vec::new(),
     };
     let resolver = |_region: &str, _path: &str| -> Result<String, &'static str> {
-        Err("resolver must not be called when no venues are configured")
+        Err("resolver must not be called when no adapter instances are configured")
     };
 
     let report = run_bolt_v3_startup_check_with(&empty_loaded, |_| false, resolver);
@@ -148,7 +148,7 @@ fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
         assert_eq!(
             statuses_for(&report, stage),
             vec![BoltV3StartupCheckStatus::Satisfied],
-            "{stage:?} should be explicitly satisfied at root level for empty venue configs: {report:#?}"
+            "{stage:?} should be explicitly satisfied at root level for empty adapter-instance configs: {report:#?}"
         );
     }
 }
@@ -172,9 +172,10 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
     assert!(
         report.facts.iter().any(|fact| {
             fact.stage == BoltV3StartupCheckStage::ForbiddenCredentialEnv
-                && fact.subject == BoltV3StartupCheckSubject::Venue("polymarket_main".to_string())
+                && fact.subject
+                    == BoltV3StartupCheckSubject::AdapterInstance("polymarket_main".to_string())
         }),
-        "forbidden env failures should be venue-keyed: {report:#?}"
+        "forbidden env failures should be adapter-instance-keyed: {report:#?}"
     );
     assert!(
         report
@@ -184,8 +185,8 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
                 fact.stage == BoltV3StartupCheckStage::ForbiddenCredentialEnv
                     && fact.status == BoltV3StartupCheckStatus::Failed
             })
-            .all(|fact| matches!(fact.subject, BoltV3StartupCheckSubject::Venue(_))),
-        "all forbidden env failures should be venue-keyed: {report:#?}"
+            .all(|fact| matches!(fact.subject, BoltV3StartupCheckSubject::AdapterInstance(_))),
+        "all forbidden env failures should be adapter-instance-keyed: {report:#?}"
     );
     assert_eq!(
         skipped_stages(&report),
@@ -220,7 +221,7 @@ fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
         "{report:#?}"
     );
     let text = report_text(&report);
-    assert!(text.contains("venues.polymarket_main.secrets.private_key"));
+    assert!(text.contains("adapter_instances.polymarket_main.secrets.private_key"));
     assert!(text.contains("/bolt/polymarket_main/private_key"));
     assert_no_resolved_secret_values(&text);
     assert_eq!(
@@ -241,9 +242,9 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     loaded
         .root
-        .venues
+        .adapter_instances
         .get_mut("polymarket_main")
-        .expect("fixture polymarket_main venue should exist")
+        .expect("fixture polymarket_main adapter instance should exist")
         .data
         .as_mut()
         .expect("fixture polymarket_main data block should exist")
@@ -264,9 +265,10 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
     assert!(
         report.facts.iter().any(|fact| {
             fact.stage == BoltV3StartupCheckStage::AdapterMapping
-                && fact.subject == BoltV3StartupCheckSubject::Venue("polymarket_main".to_string())
+                && fact.subject
+                    == BoltV3StartupCheckSubject::AdapterInstance("polymarket_main".to_string())
         }),
-        "adapter mapping failures must be venue-keyed: {report:#?}"
+        "adapter mapping failures must be adapter-instance-keyed: {report:#?}"
     );
     assert_eq!(
         skipped_stages(&report),

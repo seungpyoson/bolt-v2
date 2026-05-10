@@ -1,16 +1,17 @@
-//! Per-provider binding root for bolt-v3 venue config block shapes
-//! and per-venue startup-validation policy.
+//! Per-provider binding root for bolt-v3 adapter-instance config
+//! block shapes and per-instance startup-validation policy.
 //!
 //! Core config in `crate::bolt_v3_config` owns the root and strategy
-//! envelopes plus raw provider keys. Concrete provider key literals and
-//! `[venues.<name>.{data,execution,secrets}]` block shapes live in
+//! envelopes plus raw adapter-venue keys. Concrete adapter-venue key
+//! literals and `[adapter_instances.<name>.{data,execution,secrets}]`
+//! block shapes live in
 //! per-provider binding modules under this root.
 //!
 //! This module also owns the family-agnostic dispatch surface that
 //! core startup validation in `crate::bolt_v3_validate` calls into:
-//! every `[venues.<id>]` block is routed here, the provider key is read
-//! once, and the matching per-provider
-//! validator owns the rest of the structural venue-shape rules.
+//! every `[adapter_instances.<id>]` block is routed here, the
+//! adapter-venue key is read once, and the matching per-provider
+//! validator owns the rest of the structural instance-shape rules.
 //! Provider-neutral helpers used by more than one provider validator
 //! (today: `crate::bolt_v3_validate::validate_ssm_parameter_path`)
 //! stay in core and are called from the per-provider modules.
@@ -21,8 +22,8 @@ pub mod polymarket;
 use std::{any::Any, fmt, sync::Arc};
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},
-    bolt_v3_config::{BoltV3RootConfig, VenueBlock},
+    bolt_v3_adapters::{BoltV3AdapterInstanceConfig, BoltV3AdapterMappingError, BoltV3UpdownNowFn},
+    bolt_v3_config::{AdapterInstanceBlock, BoltV3RootConfig},
     bolt_v3_market_families::updown::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
 };
@@ -49,15 +50,15 @@ where
 }
 
 pub struct ProviderSecretResolveContext<'a> {
-    pub venue_key: &'a str,
+    pub adapter_instance_key: &'a str,
     pub region: &'a str,
-    pub venue: &'a VenueBlock,
+    pub adapter_instance: &'a AdapterInstanceBlock,
 }
 
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
-    pub venue_key: &'a str,
-    pub venue: &'a VenueBlock,
+    pub adapter_instance_key: &'a str,
+    pub adapter_instance: &'a AdapterInstanceBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3UpdownNowFn,
@@ -77,10 +78,10 @@ impl ProviderCredentialedBlock {
         }
     }
 
-    fn is_present(self, venue: &VenueBlock) -> bool {
+    fn is_present(self, adapter_instance: &AdapterInstanceBlock) -> bool {
         match self {
-            Self::Data => venue.data.is_some(),
-            Self::Execution => venue.execution.is_some(),
+            Self::Data => adapter_instance.data.is_some(),
+            Self::Execution => adapter_instance.execution.is_some(),
         }
     }
 }
@@ -93,7 +94,7 @@ pub struct ProviderSecretRequirement {
 
 pub struct ProviderBinding {
     pub key: &'static str,
-    pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
+    pub validate_adapter_instance: fn(&str, &AdapterInstanceBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub credential_log_modules: &'static [&'static str],
@@ -105,13 +106,13 @@ pub struct ProviderBinding {
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
     )
-        -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError>,
+        -> Result<BoltV3AdapterInstanceConfig, BoltV3AdapterMappingError>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
-        validate_venue: polymarket::validate_venue,
+        validate_adapter_instance: polymarket::validate_adapter_instance,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
@@ -121,7 +122,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: binance::KEY,
-        validate_venue: binance::validate_venue,
+        validate_adapter_instance: binance::validate_adapter_instance,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
@@ -135,7 +136,7 @@ pub fn provider_bindings() -> &'static [ProviderBinding] {
     PROVIDER_BINDINGS
 }
 
-pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
+pub fn binding_for_adapter_venue(key: &str) -> Option<&'static ProviderBinding> {
     provider_bindings()
         .iter()
         .find(|binding| binding.key == key)
@@ -152,41 +153,44 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 }
 
 /// Family-agnostic surface read by core startup validation. Routes
-/// each venue block to its per-provider validator based on provider
-/// key. Returns the full error list for the venue block.
-pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
-    match binding_for_provider_key(venue.kind.as_str()) {
+/// each adapter-instance block to its per-provider validator based on
+/// adapter-venue key. Returns the full error list for the block.
+pub fn validate_adapter_instance_block(
+    key: &str,
+    adapter_instance: &AdapterInstanceBlock,
+) -> Vec<String> {
+    match binding_for_adapter_venue(adapter_instance.adapter_venue.as_str()) {
         Some(binding) => {
             let mut errors = validate_required_secret_blocks(
                 key,
                 binding.key,
-                venue,
+                adapter_instance,
                 binding.required_secret_blocks,
             );
-            errors.extend((binding.validate_venue)(key, venue));
+            errors.extend((binding.validate_adapter_instance)(key, adapter_instance));
             errors
         }
         None => vec![format!(
-            "venues.{key}.kind `{}` is not supported by this build",
-            venue.kind.as_str()
+            "adapter_instances.{key}.adapter_venue `{}` is not supported by this build",
+            adapter_instance.adapter_venue.as_str()
         )],
     }
 }
 
 fn validate_required_secret_blocks(
     key: &str,
-    provider_key: &str,
-    venue: &VenueBlock,
+    adapter_venue: &str,
+    adapter_instance: &AdapterInstanceBlock,
     requirements: &[ProviderSecretRequirement],
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    if venue.secrets.is_some() {
+    if adapter_instance.secrets.is_some() {
         return errors;
     }
     for requirement in requirements {
-        if requirement.block.is_present(venue) {
+        if requirement.block.is_present(adapter_instance) {
             errors.push(format!(
-                "venues.{key} (kind={provider_key}) declares [{}] but is missing the required [secrets] block; \
+                "adapter_instances.{key} (adapter_venue={adapter_venue}) declares [{}] but is missing the required [secrets] block; \
                  the bolt-v3 secret contract requires SSM credential resolution for every {}",
                 requirement.block.as_str(),
                 requirement.consumer
@@ -200,13 +204,13 @@ fn validate_required_secret_blocks(
 mod tests {
     use super::*;
 
-    fn venue_from_toml(text: &str) -> VenueBlock {
-        toml::from_str(text).expect("test venue should parse")
+    fn adapter_instance_from_toml(text: &str) -> AdapterInstanceBlock {
+        toml::from_str(text).expect("test adapter instance should parse")
     }
 
     #[test]
     fn credential_log_modules_are_provider_owned() {
-        let polymarket = binding_for_provider_key(polymarket::KEY)
+        let polymarket = binding_for_adapter_venue(polymarket::KEY)
             .expect("Polymarket binding must be registered");
         assert_eq!(
             polymarket.credential_log_modules,
@@ -214,7 +218,7 @@ mod tests {
         );
 
         let binance =
-            binding_for_provider_key(binance::KEY).expect("Binance binding must be registered");
+            binding_for_adapter_venue(binance::KEY).expect("Binance binding must be registered");
         assert_eq!(
             binance.credential_log_modules,
             binance::CREDENTIAL_LOG_MODULES
@@ -223,9 +227,9 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_rejects_credentialed_block_without_secrets() {
-        let venue = venue_from_toml(
+        let adapter_instance = adapter_instance_from_toml(
             r#"
-            kind = "fake"
+            adapter_venue = "fake"
 
             [data]
             "#,
@@ -235,7 +239,12 @@ mod tests {
             consumer: "fake data adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+        let errors = validate_required_secret_blocks(
+            "fake_instance",
+            "fake",
+            &adapter_instance,
+            &[requirement],
+        );
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("declares [data] but is missing the required [secrets] block"));
@@ -244,9 +253,9 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_ignores_absent_credentialed_block() {
-        let venue = venue_from_toml(
+        let adapter_instance = adapter_instance_from_toml(
             r#"
-            kind = "fake"
+            adapter_venue = "fake"
             "#,
         );
         let requirement = ProviderSecretRequirement {
@@ -254,7 +263,12 @@ mod tests {
             consumer: "fake execution adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+        let errors = validate_required_secret_blocks(
+            "fake_instance",
+            "fake",
+            &adapter_instance,
+            &[requirement],
+        );
 
         assert!(errors.is_empty());
     }

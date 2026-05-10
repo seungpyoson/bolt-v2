@@ -15,12 +15,11 @@
 //! root risk cap once and passes it in here as
 //! `default_max_notional_decimal`.
 //!
-//! Today bolt-v3 has a single archetype binding. When a second
-//! archetype is introduced, it adds its own per-archetype module and
-//! one entry in this root's binding list; core validation does not
-//! change.
+//! Each archetype adds its own per-archetype module and one entry in
+//! this root's binding list; core validation does not change.
 
 pub mod binary_oracle_edge_taker;
+pub mod eth_chainlink_taker;
 
 use rust_decimal::Decimal;
 
@@ -31,10 +30,16 @@ pub struct ArchetypeValidationBinding {
     pub validate_strategy: fn(&str, &BoltV3StrategyConfig, Option<&Decimal>) -> Vec<String>,
 }
 
-const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidationBinding {
-    key: binary_oracle_edge_taker::KEY,
-    validate_strategy: binary_oracle_edge_taker::validate_strategy,
-}];
+const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[
+    ArchetypeValidationBinding {
+        key: binary_oracle_edge_taker::KEY,
+        validate_strategy: binary_oracle_edge_taker::validate_strategy,
+    },
+    ArchetypeValidationBinding {
+        key: eth_chainlink_taker::KEY,
+        validate_strategy: eth_chainlink_taker::validate_strategy,
+    },
+];
 
 pub fn validation_bindings() -> &'static [ArchetypeValidationBinding] {
     VALIDATION_BINDINGS

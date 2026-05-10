@@ -3523,11 +3523,23 @@ nautilus_strategy!(EthChainlinkTaker, {
 #[derive(Debug)]
 pub struct EthChainlinkTakerBuilder;
 
+pub const ETH_CHAINLINK_TAKER_KIND: &str = "eth_chainlink_taker";
+
 impl EthChainlinkTakerBuilder {
     fn parse_config(raw: &Value) -> Result<EthChainlinkTakerConfig> {
         raw.clone()
             .try_into()
             .context("eth_chainlink_taker builder requires a valid config table")
+    }
+
+    pub fn build_concrete(
+        raw: &Value,
+        context: &StrategyBuildContext,
+    ) -> Result<EthChainlinkTaker> {
+        Ok(EthChainlinkTaker::new(
+            Self::parse_config(raw)?,
+            context.clone(),
+        ))
     }
 
     fn push_missing(
@@ -3591,7 +3603,7 @@ impl EthChainlinkTakerBuilder {
 
 impl StrategyBuilder for EthChainlinkTakerBuilder {
     fn kind() -> &'static str {
-        "eth_chainlink_taker"
+        ETH_CHAINLINK_TAKER_KIND
     }
 
     fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>) {
@@ -3604,10 +3616,7 @@ impl StrategyBuilder for EthChainlinkTakerBuilder {
     }
 
     fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(EthChainlinkTaker::new(
-            Self::parse_config(raw)?,
-            context.clone(),
-        )))
+        Ok(Box::new(Self::build_concrete(raw, context)?))
     }
 
     fn register(
@@ -3615,7 +3624,7 @@ impl StrategyBuilder for EthChainlinkTakerBuilder {
         context: &StrategyBuildContext,
         trader: &Rc<RefCell<Trader>>,
     ) -> Result<StrategyId> {
-        let strategy = EthChainlinkTaker::new(Self::parse_config(raw)?, context.clone());
+        let strategy = Self::build_concrete(raw, context)?;
         let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
         trader.borrow_mut().add_strategy(strategy)?;
         Ok(strategy_id)

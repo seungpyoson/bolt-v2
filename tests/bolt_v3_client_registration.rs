@@ -7,7 +7,7 @@
 //!      adapter mapping both succeed; missing or mismatched secrets
 //!      surface as the matching `BoltV3LiveNodeError` variant *before*
 //!      registration.
-//!   3. Registered NT client kinds match the configured venue blocks
+//!   3. Registered NT client kinds match the configured adapter instance blocks
 //!      (verified via `data_engine.registered_clients()` and
 //!      `exec_engine.client_ids()` after `LiveNodeBuilder::build`).
 //!   4. The registration module source itself does not introduce any
@@ -26,16 +26,21 @@ use nautilus_model::identifiers::ClientId;
 #[test]
 fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.strategies.clear();
 
     let (node, summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build through the registration boundary");
 
     // The summary records bolt-v3's intent at the registration boundary.
-    assert_eq!(summary.venues.len(), 2, "two configured venues");
+    assert_eq!(
+        summary.adapter_instances.len(),
+        2,
+        "two configured adapter_instances"
+    );
     let polymarket = summary
-        .venues
+        .adapter_instances
         .get("polymarket_main")
         .expect("polymarket_main must appear in summary");
     assert!(
@@ -47,7 +52,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         "fixture polymarket_main has an [execution] block"
     );
     let binance = summary
-        .venues
+        .adapter_instances
         .get("binance_reference")
         .expect("binance_reference must appear in summary");
     assert!(binance.data, "fixture binance_reference has a [data] block");
@@ -57,7 +62,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     );
 
     // NT-side state confirms the actual registrations happened. The
-    // bolt-v3 venue identifier is reused as the NT registration name,
+    // bolt-v3 adapter instance identifier is reused as the NT registration name,
     // so the NT engines expose ClientIds matching those keys. This
     // proves the wiring goes all the way through `factory.create` and
     // `engine.register_client` without a parallel NT mock.
@@ -163,14 +168,14 @@ fn registration_module_remains_a_no_trade_boundary() {
 }
 
 #[test]
-fn empty_venues_root_config_registers_zero_clients() {
-    // Build a synthetic root config with zero venues so registration
+fn empty_adapter_instances_root_config_registers_zero_clients() {
+    // Build a synthetic root config with zero adapter instances so registration
     // must succeed but produce an empty summary, and the resulting
     // node must expose no registered NT clients.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let empty_root = BoltV3RootConfig {
-        venues: BTreeMap::new(),
+        adapter_instances: BTreeMap::new(),
         ..loaded.root.clone()
     };
     let empty_loaded = LoadedBoltV3Config {
@@ -179,14 +184,14 @@ fn empty_venues_root_config_registers_zero_clients() {
         strategies: Vec::new(),
     };
 
-    // No venues means no SSM paths are touched; the resolver is never
+    // No adapter instances means no SSM paths are touched; the resolver is never
     // called, so the closure body cannot be reached.
     let resolver = |_region: &str, _path: &str| -> Result<String, &'static str> {
-        Err("resolver must not be called when no venues are configured")
+        Err("resolver must not be called when no adapter instances are configured")
     };
     let (node, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
-        .expect("empty venue set should still build a clean LiveNode");
-    assert!(summary.venues.is_empty());
+        .expect("empty adapter instance set should still build a clean LiveNode");
+    assert!(summary.adapter_instances.is_empty());
     assert!(
         node.kernel()
             .data_engine

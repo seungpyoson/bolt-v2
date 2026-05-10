@@ -10,7 +10,7 @@ use bolt_v2::{
         binance::ResolvedBoltV3BinanceSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
-    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
+    bolt_v3_secrets::{ResolvedBoltV3AdapterInstanceSecrets, ResolvedBoltV3Secrets},
 };
 use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
@@ -38,20 +38,21 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-    venues.insert(
+    let mut adapter_instances: BTreeMap<String, ResolvedBoltV3AdapterInstanceSecrets> =
+        BTreeMap::new();
+    adapter_instances.insert(
         "polymarket_main".to_string(),
         Arc::new(fixture_polymarket_secrets()),
     );
-    venues.insert(
+    adapter_instances.insert(
         "binance_reference".to_string(),
         Arc::new(fixture_binance_secrets()),
     );
-    ResolvedBoltV3Secrets { venues }
+    ResolvedBoltV3Secrets { adapter_instances }
 }
 
 #[test]
-fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
+fn polymarket_adapter_instance_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
@@ -59,7 +60,7 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
     let polymarket = configs
-        .venues
+        .adapter_instances
         .get("polymarket_main")
         .expect("polymarket_main must be present in mapper output");
 
@@ -146,9 +147,9 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let polymarket_data = loaded
         .root
-        .venues
+        .adapter_instances
         .get_mut("polymarket_main")
-        .and_then(|venue| venue.data.as_mut())
+        .and_then(|adapter_instance| adapter_instance.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
     polymarket_data.insert(
@@ -161,9 +162,11 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
         .expect_err("mapper must not forward subscribe_new_markets=true to NT");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key, field, ..
+            adapter_instance_key,
+            field,
+            ..
         } => {
-            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(adapter_instance_key, "polymarket_main");
             assert_eq!(field, "data.subscribe_new_markets");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -171,7 +174,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
 }
 
 #[test]
-fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
+fn binance_data_adapter_instance_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
@@ -179,7 +182,7 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
     let binance = configs
-        .venues
+        .adapter_instances
         .get("binance_reference")
         .expect("binance_reference must be present in mapper output");
     let data = binance
@@ -218,7 +221,7 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 fn missing_or_invalid_root_config_remains_caught_by_validation_not_mapper_defaults() {
     use bolt_v2::bolt_v3_validate::validate_root_only;
 
-    // Missing [secrets] for polymarket execution venue: the existing
+    // Missing [secrets] for polymarket execution adapter instance: the existing
     // validator must catch this *before* the mapper ever runs. The
     // mapper itself must not silently fall back to defaults.
     let toml_text = r#"
@@ -323,10 +326,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[adapter_instances.polymarket_main]
+adapter_venue = "polymarket"
 
-[venues.polymarket_main.execution]
+[adapter_instances.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
 funder_address = "0x1111111111111111111111111111111111111111"
@@ -359,17 +362,17 @@ ack_timeout_seconds = 5
         strategies: Vec::new(),
     };
     let empty_resolved = ResolvedBoltV3Secrets {
-        venues: BTreeMap::new(),
+        adapter_instances: BTreeMap::new(),
     };
     let error = map_bolt_v3_adapters(&loaded, &empty_resolved)
         .expect_err("mapper must not synthesize defaults for missing resolved secrets");
     match error {
         BoltV3AdapterMappingError::MissingResolvedSecrets {
-            venue_key,
-            expected_provider_key,
+            adapter_instance_key,
+            expected_adapter_venue,
         } => {
-            assert_eq!(venue_key, "polymarket_main");
-            assert_eq!(expected_provider_key, polymarket::KEY);
+            assert_eq!(adapter_instance_key, "polymarket_main");
+            assert_eq!(expected_adapter_venue, polymarket::KEY);
         }
         other => panic!("expected MissingResolvedSecrets, got {other}"),
     }
@@ -383,7 +386,8 @@ fn live_node_build_path_runs_adapter_mapping_after_secret_resolution() {
     // a successful build proves the mapper accepted the resolved
     // secrets without the build path silently bypassing it.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.strategies.clear();
     let _node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("v3 LiveNode should build through the adapter mapping boundary");
 }

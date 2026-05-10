@@ -10,7 +10,7 @@
 //! What these tests prove:
 //!   1. The new market-identity-aware mapper installs exactly one
 //!      provider filter per configured updown target on the matching
-//!      venue, and the filter yields `[current_slug, next_slug]` for
+//!      adapter instance, and the filter yields `[current_slug, next_slug]` for
 //!      the injected fixed clock.
 //!   2. Multi-target filter ordering follows declared strategy
 //!      sequence and never reorders by an accidental sort key.
@@ -45,7 +45,7 @@ use bolt_v2::{
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
-    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
+    bolt_v3_secrets::{ResolvedBoltV3AdapterInstanceSecrets, ResolvedBoltV3Secrets},
 };
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 
@@ -64,8 +64,9 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-    venues.insert(
+    let mut adapter_instances: BTreeMap<String, ResolvedBoltV3AdapterInstanceSecrets> =
+        BTreeMap::new();
+    adapter_instances.insert(
         "polymarket_main".to_string(),
         Arc::new(ResolvedBoltV3PolymarketSecrets {
             private_key: "binding-poly-private-key".to_string(),
@@ -74,14 +75,14 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             passphrase: "binding-poly-passphrase".to_string(),
         }),
     );
-    venues.insert(
+    adapter_instances.insert(
         "binance_reference".to_string(),
         Arc::new(ResolvedBoltV3BinanceSecrets {
             api_key: "binding-binance-api-key".to_string(),
             api_secret: "binding-binance-api-secret".to_string(),
         }),
     );
-    ResolvedBoltV3Secrets { venues }
+    ResolvedBoltV3Secrets { adapter_instances }
 }
 
 fn fixed_clock(now_unix_seconds: i64) -> BoltV3UpdownNowFn {
@@ -105,7 +106,7 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
         .expect("mapping with market identity should succeed");
 
     let polymarket = configs
-        .venues
+        .adapter_instances
         .get("polymarket_main")
         .expect("polymarket_main must be present in mapper output");
     let data = polymarket
@@ -203,7 +204,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         .expect("mapping should succeed");
 
     let polymarket = configs
-        .venues
+        .adapter_instances
         .get("polymarket_main")
         .expect("polymarket_main must be present");
     let data = polymarket
@@ -258,9 +259,9 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
 
     let polymarket_data = loaded
         .root
-        .venues
+        .adapter_instances
         .get_mut("polymarket_main")
-        .and_then(|venue| venue.data.as_mut())
+        .and_then(|adapter_instance| adapter_instance.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
     polymarket_data.insert(
@@ -276,9 +277,11 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
         .expect_err("mapper must not forward subscribe_new_markets=true to NT");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key, field, ..
+            adapter_instance_key,
+            field,
+            ..
         } => {
-            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(adapter_instance_key, "polymarket_main");
             assert_eq!(field, "data.subscribe_new_markets");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -305,7 +308,7 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
         .expect("mapping should succeed");
 
     let polymarket = configs
-        .venues
+        .adapter_instances
         .get("polymarket_main")
         .expect("polymarket_main must be present");
     let data = polymarket
@@ -348,7 +351,7 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
         .expect("mapping should succeed");
 
     let polymarket = configs
-        .venues
+        .adapter_instances
         .get("polymarket_main")
         .expect("polymarket_main must be present");
     let data = polymarket
@@ -386,29 +389,31 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
 #[test]
 fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
     // The binding layer must fail loud if a configured rotating-market
-    // target points at a non-Polymarket venue. Without this guard the
+    // target points at a non-Polymarket adapter instance. Without this guard the
     // target would be silently dropped, because filter installation
-    // only runs on the Polymarket branch of the venue iteration.
+    // only runs on the Polymarket branch of the adapter instance iteration.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    // Mutate the strategy to bind to the Binance reference venue.
-    loaded.strategies[0].config.venue = "binance_reference".to_string();
+    // Mutate the strategy to bind to the Binance reference adapter instance.
+    loaded.strategies[0].config.adapter_instance = "binance_reference".to_string();
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(0);
 
     let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("non-polymarket venue binding must fail loud at the adapter boundary");
+        .expect_err(
+            "non-polymarket adapter instance binding must fail loud at the adapter boundary",
+        );
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key,
+            adapter_instance_key,
             field,
             message,
         } => {
-            assert_eq!(venue_key, "binance_reference");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(adapter_instance_key, "binance_reference");
+            assert_eq!(field, "strategy.target.adapter_instance_key");
             assert!(
                 message.contains("does not support that market family"),
                 "error message should explain the family/provider compatibility boundary: {message}"
@@ -420,31 +425,31 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
 
 #[test]
 fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
-    // A target whose `venue_config_key` does not appear under
-    // `[venues]` is also a misconfiguration the binding layer must
+    // A target whose `adapter_instance_key` does not appear under
+    // `[adapter_instances]` is also a misconfiguration the binding layer must
     // reject explicitly rather than silently produce no filter.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    loaded.strategies[0].config.venue = "venue_does_not_exist".to_string();
+    loaded.strategies[0].config.adapter_instance = "venue_does_not_exist".to_string();
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(0);
 
     let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("unknown venue binding must fail loud at the adapter boundary");
+        .expect_err("unknown adapter instance binding must fail loud at the adapter boundary");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key,
+            adapter_instance_key,
             field,
             message,
         } => {
-            assert_eq!(venue_key, "venue_does_not_exist");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(adapter_instance_key, "venue_does_not_exist");
+            assert_eq!(field, "strategy.target.adapter_instance_key");
             assert!(
-                message.contains("unknown venue"),
-                "error message should describe the unknown-venue case: {message}"
+                message.contains("unknown adapter instance"),
+                "error message should describe the unknown-adapter instance case: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),

@@ -78,7 +78,8 @@ fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams()
     }
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.strategies.clear();
 
     // Build the v3 LiveNode. This is the first thing in this test
     // binary's process to call NT's logger init, so the bolt-v3

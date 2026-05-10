@@ -279,6 +279,30 @@ fn query_entry_evaluation_events(
         .unwrap()
 }
 
+fn has_selected_open_orders_no_action_event(path: &std::path::Path) -> bool {
+    query_entry_evaluation_events(path, "target-eth-updown")
+        .iter()
+        .any(|event| {
+            let nautilus_model::data::Data::Custom(custom) = event else {
+                return false;
+            };
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>();
+            decoded.is_some_and(|event| {
+                event.event_facts.get("entry_decision")
+                    == Some(&serde_json::Value::String("no_action".to_string()))
+                    && event
+                        .event_facts
+                        .get("updown_market_mechanical_rejection_reason")
+                        == Some(&serde_json::Value::String(
+                            "selected_market_open_orders_present".to_string(),
+                        ))
+            })
+        })
+}
+
 fn query_market_selection_events(
     path: &std::path::Path,
     configured_target_id: &str,
@@ -844,6 +868,85 @@ fn drive_eth_entry_submission(mut node: LiveNode, strategy_id: StrategyId) {
 
             for _ in 0..50 {
                 if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+}
+
+fn drive_eth_entry_selected_market_open_orders_no_action(
+    mut node: LiveNode,
+    strategy_id: StrategyId,
+    evidence_dir: &std::path::Path,
+) {
+    let handle = node.handle();
+    let evidence_dir = evidence_dir.to_path_buf();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+
+            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+
+            for _ in 0..50 {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+            for _ in 0..100 {
+                let evidence_dir_for_check = evidence_dir.clone();
+                let found = tokio::task::spawn_blocking(move || {
+                    has_selected_open_orders_no_action_event(&evidence_dir_for_check)
+                })
+                .await
+                .unwrap();
+                if found {
                     break;
                 }
                 sleep(Duration::from_millis(10)).await;
@@ -2292,6 +2395,85 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
         submission_events.is_empty(),
         "market-ended mechanical entry evaluation must not persist order submission"
     );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_second_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_selected_market_open_orders_no_action(node, strategy_id, temp_dir.path());
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "updown_market_mechanical_rejection".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_market_mechanical_outcome"),
+                Some(&serde_json::Value::String("rejected".to_string()))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("updown_market_mechanical_rejection_reason"),
+                Some(&serde_json::Value::String(
+                    "selected_market_open_orders_present".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("has_selected_market_open_orders"),
+                Some(&serde_json::Value::Bool(true))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_side"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(submission_events.len(), 1);
 }
 
 #[test]

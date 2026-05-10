@@ -2145,8 +2145,12 @@ impl EthChainlinkTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<Option<BoltV3EntryEvaluationFacts>> {
-        let mechanical_rejection_reason =
-            self.updown_market_mechanical_rejection_reason(now_ms, decision);
+        let has_selected_market_open_orders = self.has_selected_market_open_orders();
+        let mechanical_rejection_reason = self.updown_market_mechanical_rejection_reason(
+            now_ms,
+            decision,
+            has_selected_market_open_orders,
+        );
         let no_action_reason = mechanical_rejection_reason
             .map(|_| "updown_market_mechanical_rejection")
             .or_else(|| entry_no_action_reason(decision));
@@ -2173,7 +2177,7 @@ impl EthChainlinkTaker {
                 entry_decision: "no_action".to_string(),
                 entry_no_action_reason: Some(reason.to_string()),
                 seconds_to_market_end,
-                has_selected_market_open_orders: false,
+                has_selected_market_open_orders,
                 updown_market_mechanical_outcome: if mechanical_rejected {
                     "rejected".to_string()
                 } else {
@@ -2198,7 +2202,7 @@ impl EthChainlinkTaker {
             entry_decision: "enter".to_string(),
             entry_no_action_reason: None,
             seconds_to_market_end,
-            has_selected_market_open_orders: false,
+            has_selected_market_open_orders,
             updown_market_mechanical_outcome: "accepted".to_string(),
             updown_market_mechanical_rejection_reason: None,
             entry_filled_notional: 0.0,
@@ -2212,6 +2216,7 @@ impl EthChainlinkTaker {
         &self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
+        has_selected_market_open_orders: bool,
     ) -> Option<&'static str> {
         if decision.evaluation.gate.blocked_by.iter().any(|reason| {
             matches!(
@@ -2234,7 +2239,43 @@ impl EthChainlinkTaker {
         {
             return Some("market_not_started");
         }
+        if has_selected_market_open_orders {
+            return Some("selected_market_open_orders_present");
+        }
         None
+    }
+
+    fn has_selected_market_open_orders(&self) -> bool {
+        let selected_instruments = [
+            self.active.books.up.instrument_id,
+            self.active.books.down.instrument_id,
+        ];
+        if self
+            .current_market_id()
+            .is_some_and(|market_id| match &self.exposure {
+                ExposureState::PendingEntry(pending) => {
+                    pending.market_id.as_deref() == Some(market_id)
+                        || selected_instruments.contains(&Some(pending.instrument_id))
+                }
+                ExposureState::ExitPending(exit) => {
+                    exit.pending_exit.market_id.as_deref() == Some(market_id)
+                }
+                _ => false,
+            })
+        {
+            return true;
+        }
+
+        let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+        let cache = self.cache();
+        selected_instruments
+            .into_iter()
+            .flatten()
+            .any(|instrument_id| {
+                !cache
+                    .orders_open(None, Some(&instrument_id), Some(&strategy_id), None, None)
+                    .is_empty()
+            })
     }
 
     fn outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {

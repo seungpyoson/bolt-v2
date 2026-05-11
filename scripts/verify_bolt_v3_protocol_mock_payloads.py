@@ -13,6 +13,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENFORCED_TEST_FILES = (
     "tests/bolt_v3_polymarket_fee_provider.rs",
+    "tests/bolt_v3_order_lifecycle_tracer.rs",
 )
 RAW_STRING_PATTERN = re.compile(
     r'(?<![A-Za-z0-9_])r(?P<hashes>#*)"(?P<body>.*?)"(?P=hashes)',

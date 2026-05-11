@@ -64,11 +64,18 @@ def test_fee_provider_file_is_enforced() -> None:
         raise AssertionError("Polymarket fee provider test file must be enforced")
 
 
+def test_order_lifecycle_tracer_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_order_lifecycle_tracer.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("order lifecycle tracer test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_inline_protocol_json_body_is_a_finding,
         test_fixture_payload_read_is_clean,
         test_fee_provider_file_is_enforced,
+        test_order_lifecycle_tracer_file_is_enforced,
     ]
     for test in tests:
         test()

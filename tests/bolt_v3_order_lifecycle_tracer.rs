@@ -87,6 +87,13 @@ fn existing_strategy_root_fixture() -> PathBuf {
     support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml")
 }
 
+fn protocol_payload_fixture(filename: &str) -> String {
+    std::fs::read_to_string(support::repo_path(&format!(
+        "tests/fixtures/bolt_v3_protocol_payloads/{filename}",
+    )))
+    .unwrap_or_else(|error| panic!("protocol payload fixture {filename} should load: {error}"))
+}
+
 fn strategy_config(loaded: &LoadedBoltV3Config) -> &bolt_v2::bolt_v3_config::BoltV3StrategyConfig {
     &loaded
         .strategies
@@ -193,6 +200,7 @@ fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<St
     let listener = TcpListener::bind("127.0.0.1:0").expect("local fee server should bind");
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let (tx, rx) = mpsc::channel();
+    let body = protocol_payload_fixture("polymarket_fee_rate_zero.json");
 
     std::thread::spawn(move || {
         for _ in 0..expected_requests {
@@ -215,7 +223,6 @@ fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<St
             tx.send(request)
                 .expect("local fee server should record request");
 
-            let body = r#"{"base_fee":"0"}"#;
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -263,12 +270,26 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
             .expect("local CLOB HTTP listener should expose addr")
     );
     let recorded_http_requests = Arc::clone(&requests);
+    let balance_allowance_body = Arc::new(protocol_payload_fixture(
+        "polymarket_balance_allowance_high.json",
+    ));
+    let empty_cursor_page_body = Arc::new(protocol_payload_fixture(
+        "polymarket_empty_cursor_page.json",
+    ));
+    let fee_rate_body = Arc::new(protocol_payload_fixture("polymarket_fee_rate_zero.json"));
+    let unexpected_request_body = Arc::new(protocol_payload_fixture(
+        "polymarket_unexpected_request_error.json",
+    ));
     let http_task = tokio::spawn(async move {
         loop {
             let Ok((mut socket, _peer)) = http_listener.accept().await else {
                 return;
             };
             let recorded = Arc::clone(&recorded_http_requests);
+            let balance_allowance_body = Arc::clone(&balance_allowance_body);
+            let empty_cursor_page_body = Arc::clone(&empty_cursor_page_body);
+            let fee_rate_body = Arc::clone(&fee_rate_body);
+            let unexpected_request_body = Arc::clone(&unexpected_request_body);
             tokio::spawn(async move {
                 let Some(request) = read_http_request(&mut socket).await else {
                     return;
@@ -288,14 +309,12 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
                 });
                 let path = target.split('?').next().unwrap_or_default();
                 let response_body = match (method.as_str(), path) {
-                    ("GET", "/balance-allowance") => {
-                        r#"{"balance":"1000000000","allowance":"1000000000"}"#.to_string()
-                    }
+                    ("GET", "/balance-allowance") => balance_allowance_body.as_ref().clone(),
                     ("GET", "/data/orders") | ("GET", "/data/trades") => {
-                        r#"{"data":[],"next_cursor":"LTE="}"#.to_string()
+                        empty_cursor_page_body.as_ref().clone()
                     }
                     ("GET", "/positions") => "[]".to_string(),
-                    ("GET", "/fee-rate") => r#"{"base_fee":"0"}"#.to_string(),
+                    ("GET", "/fee-rate") => fee_rate_body.as_ref().clone(),
                     ("POST", "/order") => {
                         format!(
                             r#"{{"success":true,"orderID":"{LOCAL_POLYMARKET_ORDER_ID}","errorMsg":null}}"#
@@ -311,7 +330,7 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
                             r#"{{"canceled":["{LOCAL_POLYMARKET_ORDER_ID}"],"not_canceled":{{}}}}"#
                         )
                     }
-                    _ => r#"{"error":"unexpected local CLOB request"}"#.to_string(),
+                    _ => unexpected_request_body.as_ref().clone(),
                 };
                 let status = if response_body.contains("unexpected") {
                     "404 Not Found"

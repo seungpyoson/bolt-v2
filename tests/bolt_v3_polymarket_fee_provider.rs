@@ -94,10 +94,18 @@ fn configured_execution_http_base_url(
         .to_string()
 }
 
+fn fee_rate_zero_response_fixture() -> String {
+    std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3_protocol_payloads/polymarket_fee_rate_zero.json",
+    ))
+    .expect("Polymarket fee-rate response fixture should be readable")
+}
+
 fn spawn_fee_rate_server() -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("local fee server should bind");
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let (tx, rx) = mpsc::channel();
+    let body = fee_rate_zero_response_fixture();
 
     std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("local fee server should accept");
@@ -119,7 +127,6 @@ fn spawn_fee_rate_server() -> (String, mpsc::Receiver<String>) {
         tx.send(request)
             .expect("local fee server should record request");
 
-        let body = r#"{"base_fee":"0"}"#;
         write!(
             stream,
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",

@@ -438,6 +438,29 @@ fn entry_evaluation_accepts_freeze_no_action_reason() {
 }
 
 #[test]
+fn entry_evaluation_accepts_book_state_no_action_reasons() {
+    for reason in ["active_book_not_priced", "metadata_mismatch"] {
+        let mut facts = entry_evaluation_facts();
+        facts.entry_decision = "no_action".to_string();
+        facts.entry_no_action_reason = Some(reason.to_string());
+        facts.updown_side = None;
+
+        let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
+            common_fields(),
+            facts,
+            UnixNanos::from(TEST_ENTRY_EVALUATION_EVENT_TS_NANOS),
+            UnixNanos::from(TEST_ENTRY_EVALUATION_INIT_TS_NANOS),
+        )
+        .unwrap();
+
+        assert_eq!(
+            event.event_facts.get("entry_no_action_reason"),
+            Some(&Value::String(reason.to_string()))
+        );
+    }
+}
+
+#[test]
 fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
     let temp_dir = TempDir::new().unwrap();
     let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(

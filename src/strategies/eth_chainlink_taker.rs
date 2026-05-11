@@ -3861,6 +3861,35 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
         return Some("fee_rate_unavailable");
     }
 
+    if decision
+        .evaluation
+        .entry_capacity
+        .strategy_remaining_entry_capacity
+        <= 0.0
+    {
+        return Some("position_limit_reached");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision
+            .evaluation
+            .gate
+            .blocked_by
+            .contains(&EntryBlockReason::ActiveBookNotPriced)
+    {
+        return Some("active_book_not_priced");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision
+            .evaluation
+            .gate
+            .blocked_by
+            .contains(&EntryBlockReason::MetadataMismatch)
+    {
+        return Some("metadata_mismatch");
+    }
+
     if decision.blocked_reason == Some("entry_gate_blocked")
         && decision.evaluation.gate.blocked_by == [EntryBlockReason::MarketCoolingDown]
     {
@@ -8848,6 +8877,79 @@ mod tests {
                 EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze),
                 EntryBlockReason::OnePositionInvariant(ExposureOccupancy::EntryReconcilePending),
             ]
+        );
+    }
+
+    #[test]
+    fn metadata_mismatch_entry_gate_maps_to_no_action_reason() {
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate: EntryGateDecision {
+                    blocked_by: vec![EntryBlockReason::MetadataMismatch],
+                },
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 0.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: 1.0,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: None,
+                uncertainty_band_probability: None,
+                up_worst_case_ev_bps: None,
+                down_worst_case_ev_bps: None,
+                min_worst_case_ev_bps: None,
+                expected_ev_per_usdc: None,
+                book_impact_cap_usdc: None,
+                effective_entry_notional_cap_usdc: None,
+                sized_notional_usdc: None,
+                selected_side: None,
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("entry_gate_blocked"),
+        };
+
+        assert_eq!(entry_no_action_reason(&decision), Some("metadata_mismatch"));
+    }
+
+    #[test]
+    fn exhausted_entry_capacity_takes_precedence_over_book_state_no_action_reason() {
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate: EntryGateDecision {
+                    blocked_by: vec![EntryBlockReason::ActiveBookNotPriced],
+                },
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 1.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: 0.0,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: None,
+                uncertainty_band_probability: None,
+                up_worst_case_ev_bps: None,
+                down_worst_case_ev_bps: None,
+                min_worst_case_ev_bps: None,
+                expected_ev_per_usdc: None,
+                book_impact_cap_usdc: None,
+                effective_entry_notional_cap_usdc: None,
+                sized_notional_usdc: None,
+                selected_side: None,
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("entry_gate_blocked"),
+        };
+
+        assert_eq!(
+            entry_no_action_reason(&decision),
+            Some("position_limit_reached")
         );
     }
 

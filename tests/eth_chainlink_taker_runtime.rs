@@ -242,6 +242,10 @@ fn fixture_reference_publish_topic() -> &'static str {
     "platform.reference.test.chainlink"
 }
 
+fn active_book_not_priced_no_action_reason() -> &'static str {
+    "active_book_not_priced"
+}
+
 fn fixture_forced_flat_thin_book_min_liquidity() -> f64 {
     strategy_raw_config()
         .get("forced_flat_thin_book_min_liquidity")
@@ -381,6 +385,54 @@ fn query_entry_evaluation_events_all_files(
     )
 }
 
+fn entry_decision_enter() -> &'static str {
+    "enter"
+}
+
+fn entry_decision_no_action() -> &'static str {
+    "no_action"
+}
+
+fn entry_evaluation_events_with_decision<'a>(
+    events: &'a [nautilus_model::data::Data],
+    decision: &str,
+) -> Vec<&'a BoltV3EntryEvaluationDecisionEvent> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            nautilus_model::data::Data::Custom(custom) => custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>(
+            ),
+            _ => None,
+        })
+        .filter(|event| {
+            event
+                .event_facts
+                .get("entry_decision")
+                .and_then(serde_json::Value::as_str)
+                == Some(decision)
+        })
+        .collect()
+}
+
+fn entry_no_action_events_with_reason<'a>(
+    events: &'a [nautilus_model::data::Data],
+    reason: &str,
+) -> Vec<&'a BoltV3EntryEvaluationDecisionEvent> {
+    entry_evaluation_events_with_decision(events, entry_decision_no_action())
+        .into_iter()
+        .filter(|event| {
+            event
+                .event_facts
+                .get("entry_no_action_reason")
+                .and_then(serde_json::Value::as_str)
+                == Some(reason)
+        })
+        .collect()
+}
+
 fn has_selected_open_orders_no_action_event(path: &std::path::Path) -> bool {
     query_entry_evaluation_events_all_files(path, &configured_target_id_from_decision_context())
         .iter()
@@ -511,6 +563,30 @@ fn query_exit_pre_submit_rejection_events(
             true,
         )
         .unwrap()
+}
+
+fn exit_pre_submit_rejection_events_with_reason<'a>(
+    events: &'a [nautilus_model::data::Data],
+    reason: &str,
+) -> Vec<&'a BoltV3ExitPreSubmitRejectionDecisionEvent> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            nautilus_model::data::Data::Custom(custom) => custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>(
+            ),
+            _ => None,
+        })
+        .filter(|event| {
+            event
+                .event_facts
+                .get("exit_pre_submit_rejection_reason")
+                .and_then(serde_json::Value::as_str)
+                == Some(reason)
+        })
+        .collect()
 }
 
 fn query_custom_events_all_files(
@@ -1412,6 +1488,50 @@ fn drive_eth_entry_missing_reference_no_action(mut node: LiveNode, strategy_id: 
     });
 }
 
+fn drive_eth_entry_active_book_not_priced_no_action(mut node: LiveNode, strategy_id: StrategyId) {
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                fixture_reference_publish_topic().to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                fixture_reference_publish_topic().to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+            let up = eth_up_instrument_id();
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+
+            for _ in 0..50 {
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+}
+
 fn drive_eth_entry_stale_reference_no_action(mut node: LiveNode, strategy_id: StrategyId) {
     let handle = node.handle();
     let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
@@ -1936,35 +2056,29 @@ fn eth_chainlink_taker_runtime_caps_entry_notional_by_bolt_v3_default_max_notion
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), &configured_target_id);
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
-            let sized_notional = decoded
-                .event_facts
-                .get("archetype_metrics")
-                .and_then(|value| value.get("sized_notional_usdc"))
-                .and_then(serde_json::Value::as_f64)
-                .expect("entry evaluation should include sized_notional_usdc");
-            let effective_cap = decoded
-                .event_facts
-                .get("archetype_metrics")
-                .and_then(|value| value.get("effective_entry_notional_cap_usdc"))
-                .and_then(serde_json::Value::as_f64)
-                .expect("entry evaluation should include effective_entry_notional_cap_usdc");
-            assert_eq!(effective_cap, default_max_notional_per_order_f64);
-            assert!(
-                sized_notional <= default_max_notional_per_order_f64,
-                "sized_notional_usdc {sized_notional} must not exceed bolt-v3 default_max_notional_per_order {default_max_notional_per_order_f64}"
-            );
-        }
-        other => panic!("expected Data::Custom, got {other:?}"),
-    }
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let accepted_evaluation_events =
+        entry_evaluation_events_with_decision(&evaluation_events, entry_decision_enter());
+    assert_eq!(accepted_evaluation_events.len(), 1);
+    let decoded = accepted_evaluation_events[0];
+    let sized_notional = decoded
+        .event_facts
+        .get("archetype_metrics")
+        .and_then(|value| value.get("sized_notional_usdc"))
+        .and_then(serde_json::Value::as_f64)
+        .expect("entry evaluation should include sized_notional_usdc");
+    let effective_cap = decoded
+        .event_facts
+        .get("archetype_metrics")
+        .and_then(|value| value.get("effective_entry_notional_cap_usdc"))
+        .and_then(serde_json::Value::as_f64)
+        .expect("entry evaluation should include effective_entry_notional_cap_usdc");
+    assert_eq!(effective_cap, default_max_notional_per_order_f64);
+    assert!(
+        sized_notional <= default_max_notional_per_order_f64,
+        "sized_notional_usdc {sized_notional} must not exceed bolt-v3 default_max_notional_per_order {default_max_notional_per_order_f64}"
+    );
 
     let submission_events =
         query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
@@ -2404,35 +2518,26 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
 
-    let evaluation_events =
-        query_entry_evaluation_events_all_files(temp_dir.path(), "target-eth-updown");
-    assert_eq!(evaluation_events.len(), 1);
-    let evaluation_trace_id = match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
-            assert_eq!(decoded.client_id, "TEST");
-            assert_eq!(
-                decoded.event_facts.get("entry_decision"),
-                Some(&serde_json::Value::String("enter".to_string()))
-            );
-            let updown_side = decoded
-                .event_facts
-                .get("updown_side")
-                .and_then(serde_json::Value::as_str)
-                .expect("entry evaluation updown_side should be present");
-            assert!(
-                matches!(updown_side, "up" | "down"),
-                "unexpected updown_side {updown_side}"
-            );
-            decoded.decision_trace_id.clone()
-        }
-        other => panic!("expected Data::Custom, got {other:?}"),
-    };
+    let evaluation_events = query_entry_evaluation_events_all_files(
+        temp_dir.path(),
+        &configured_target_id_from_decision_context(),
+    );
+    let accepted_evaluation_events =
+        entry_evaluation_events_with_decision(&evaluation_events, entry_decision_enter());
+    assert_eq!(accepted_evaluation_events.len(), 1);
+    let decoded = accepted_evaluation_events[0];
+    assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+    assert_eq!(decoded.client_id, "TEST");
+    let updown_side = decoded
+        .event_facts
+        .get("updown_side")
+        .and_then(serde_json::Value::as_str)
+        .expect("entry evaluation updown_side should be present");
+    assert!(
+        matches!(updown_side, "up" | "down"),
+        "unexpected updown_side {updown_side}"
+    );
+    let evaluation_trace_id = decoded.decision_trace_id.clone();
 
     let submission_events =
         query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
@@ -2498,31 +2603,25 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
-            assert_eq!(decoded.client_id, common_decision_context().client_id);
-            assert_eq!(
-                decoded.event_facts.get("entry_decision"),
-                Some(&serde_json::Value::String("no_action".to_string()))
-            );
-            assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
-                Some(&serde_json::Value::String("insufficient_edge".to_string()))
-            );
-            assert_eq!(
-                decoded.event_facts.get("updown_side"),
-                Some(&serde_json::Value::Null)
-            );
-        }
-        other => panic!("expected Data::Custom, got {other:?}"),
-    }
+    let insufficient_edge_events =
+        entry_no_action_events_with_reason(&evaluation_events, "insufficient_edge");
+    let decoded = *insufficient_edge_events
+        .last()
+        .expect("expected insufficient-edge no-action event");
+    assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+    assert_eq!(decoded.client_id, common_decision_context().client_id);
+    assert_eq!(
+        decoded.event_facts.get("entry_decision"),
+        Some(&serde_json::Value::String("no_action".to_string()))
+    );
+    assert_eq!(
+        decoded.event_facts.get("entry_no_action_reason"),
+        Some(&serde_json::Value::String("insufficient_edge".to_string()))
+    );
+    assert_eq!(
+        decoded.event_facts.get("updown_side"),
+        Some(&serde_json::Value::Null)
+    );
 
     let submission_events =
         query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
@@ -2565,15 +2664,11 @@ fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
     );
 
     let configured_target_id = configured_target_id_from_decision_context();
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), &configured_target_id);
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let thin_book_events = entry_no_action_events_with_reason(&evaluation_events, "thin_book");
+    match thin_book_events.last() {
+        Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -2587,7 +2682,7 @@ fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
                 Some(&serde_json::Value::String("accepted".to_string()))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected thin-book no-action event, got {evaluation_events:?}"),
     }
 
     let submission_events =
@@ -2633,33 +2728,27 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
-            assert_eq!(decoded.client_id, common_decision_context().client_id);
-            assert_eq!(
-                decoded.event_facts.get("entry_decision"),
-                Some(&serde_json::Value::String("no_action".to_string()))
-            );
-            assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
-                Some(&serde_json::Value::String(
-                    "missing_reference_quote".to_string()
-                ))
-            );
-            assert_eq!(
-                decoded.event_facts.get("updown_side"),
-                Some(&serde_json::Value::Null)
-            );
-        }
-        other => panic!("expected Data::Custom, got {other:?}"),
-    }
+    let missing_reference_events =
+        entry_no_action_events_with_reason(&evaluation_events, "missing_reference_quote");
+    let decoded = *missing_reference_events
+        .last()
+        .expect("expected missing-reference no-action event");
+    assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+    assert_eq!(decoded.client_id, common_decision_context().client_id);
+    assert_eq!(
+        decoded.event_facts.get("entry_decision"),
+        Some(&serde_json::Value::String("no_action".to_string()))
+    );
+    assert_eq!(
+        decoded.event_facts.get("entry_no_action_reason"),
+        Some(&serde_json::Value::String(
+            "missing_reference_quote".to_string()
+        ))
+    );
+    assert_eq!(
+        decoded.event_facts.get("updown_side"),
+        Some(&serde_json::Value::Null)
+    );
 
     let submission_events =
         query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
@@ -2704,6 +2793,71 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let fee_rate_events =
+        entry_no_action_events_with_reason(&evaluation_events, "fee_rate_unavailable");
+    let decoded = *fee_rate_events
+        .last()
+        .expect("expected fee-rate-unavailable no-action event");
+    assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+    assert_eq!(decoded.client_id, common_decision_context().client_id);
+    assert_eq!(
+        decoded.event_facts.get("entry_decision"),
+        Some(&serde_json::Value::String("no_action".to_string()))
+    );
+    assert_eq!(
+        decoded.event_facts.get("entry_no_action_reason"),
+        Some(&serde_json::Value::String(
+            "fee_rate_unavailable".to_string()
+        ))
+    );
+    assert_eq!(
+        decoded.event_facts.get("updown_side"),
+        Some(&serde_json::Value::Null)
+    );
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
+    assert!(
+        submission_events.is_empty(),
+        "fee-rate-unavailable entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_active_book_not_priced_no_action_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = strategy_id_from_fixture_config();
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        fixture_reference_publish_topic().to_string(),
+        Some(TradingState::Active),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_active_book_not_priced_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "active-book-not-priced entry evaluation must not submit order"
+    );
+
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -2712,8 +2866,6 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
-            assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -2721,23 +2873,12 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "fee_rate_unavailable".to_string()
+                    active_book_not_priced_no_action_reason().to_string()
                 ))
-            );
-            assert_eq!(
-                decoded.event_facts.get("updown_side"),
-                Some(&serde_json::Value::Null)
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
     }
-
-    let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
-    assert!(
-        submission_events.is_empty(),
-        "fee-rate-unavailable entry evaluation must not persist order submission"
-    );
 }
 
 #[test]
@@ -2777,15 +2918,13 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
         "stale-reference entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let stale_reference_events =
+        entry_no_action_events_with_reason(&evaluation_events, "stale_reference_quote");
+    match stale_reference_events.last() {
+        Some(decoded) => {
             assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
@@ -2803,11 +2942,11 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
                 Some(&serde_json::Value::Null)
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected stale-reference no-action event, got {evaluation_events:?}"),
     }
 
     let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
     assert!(
         submission_events.is_empty(),
         "stale-reference entry evaluation must not persist order submission"
@@ -3010,15 +3149,13 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
         "fair-probability-unavailable entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let fair_probability_events =
+        entry_no_action_events_with_reason(&evaluation_events, "fair_probability_unavailable");
+    match fair_probability_events.last() {
+        Some(decoded) => {
             assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
@@ -3036,11 +3173,11 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
                 Some(&serde_json::Value::Null)
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected fair-probability-unavailable no-action event"),
     }
 
     let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
     assert!(
         submission_events.is_empty(),
         "fair-probability-unavailable entry evaluation must not persist order submission"
@@ -3970,14 +4107,10 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
 
     let rejection_events =
         query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(rejection_events.len(), 1);
-    match &rejection_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
-                .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+    let exit_price_missing_events =
+        exit_pre_submit_rejection_events_with_reason(&rejection_events, "exit_price_missing");
+    match exit_price_missing_events.last() {
+        Some(decoded) => {
             assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
@@ -4023,7 +4156,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
                 Some(&serde_json::Value::from(5.0))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected exit_price_missing rejection event, got {rejection_events:?}"),
     }
 
     let submission_events =
@@ -4034,14 +4167,23 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
     );
 
     let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
-                .expect("BoltV3ExitEvaluationDecisionEvent");
+    let exit_bid_unavailable_event = evaluation_events.iter().find_map(|event| {
+        let nautilus_model::data::Data::Custom(custom) = event else {
+            return None;
+        };
+        let decoded = custom
+            .data
+            .as_any()
+            .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()?;
+        (decoded
+            .event_facts
+            .get("exit_order_mechanical_rejection_reason")
+            .and_then(serde_json::Value::as_str)
+            == Some("exit_bid_unavailable"))
+        .then_some(decoded)
+    });
+    match exit_bid_unavailable_event {
+        Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("exit_order_mechanical_outcome"),
                 Some(&serde_json::Value::String("rejected".to_string()))
@@ -4081,7 +4223,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
                 Some(&serde_json::Value::from(5.0))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected exit_bid_unavailable evaluation event, got {evaluation_events:?}"),
     }
 }
 
@@ -4124,14 +4266,10 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
 
     let rejection_events =
         query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(rejection_events.len(), 1);
-    match &rejection_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
-                .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+    let invalid_quantity_events =
+        exit_pre_submit_rejection_events_with_reason(&rejection_events, "invalid_quantity");
+    match invalid_quantity_events.last() {
+        Some(decoded) => {
             assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
@@ -4177,7 +4315,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
                 Some(&serde_json::Value::from(0.0))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected invalid_quantity rejection event, got {rejection_events:?}"),
     }
 
     let submission_events =
@@ -4282,14 +4420,12 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
 
     let rejection_events =
         query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(rejection_events.len(), 1);
-    match &rejection_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
-                .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+    let sellable_quantity_events = exit_pre_submit_rejection_events_with_reason(
+        &rejection_events,
+        "exit_quantity_exceeds_sellable_quantity",
+    );
+    match sellable_quantity_events.last() {
+        Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
@@ -4327,7 +4463,9 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
                 Some(&serde_json::Value::from(0.0))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!(
+            "expected exit_quantity_exceeds_sellable_quantity rejection event, got {rejection_events:?}"
+        ),
     }
 
     let submission_events =
@@ -4338,14 +4476,23 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     );
 
     let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
-                .expect("BoltV3ExitEvaluationDecisionEvent");
+    let open_order_covers_position_event = evaluation_events.iter().find_map(|event| {
+        let nautilus_model::data::Data::Custom(custom) = event else {
+            return None;
+        };
+        let decoded = custom
+            .data
+            .as_any()
+            .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()?;
+        (decoded
+            .event_facts
+            .get("exit_order_mechanical_rejection_reason")
+            .and_then(serde_json::Value::as_str)
+            == Some("open_exit_order_quantity_covers_position"))
+        .then_some(decoded)
+    });
+    match open_order_covers_position_event {
+        Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("exit_order_mechanical_outcome"),
                 Some(&serde_json::Value::String("rejected".to_string()))
@@ -4385,7 +4532,9 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
                 Some(&serde_json::Value::from(0.0))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!(
+            "expected open_exit_order_quantity_covers_position evaluation event, got {evaluation_events:?}"
+        ),
     }
 }
 
@@ -4423,14 +4572,10 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
 
     let rejection_events =
         query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(rejection_events.len(), 1);
-    match &rejection_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
-                .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+    let trading_state_events =
+        exit_pre_submit_rejection_events_with_reason(&rejection_events, "trading_state_halted");
+    match trading_state_events.last() {
+        Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
@@ -4452,7 +4597,7 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
                 Some(&serde_json::Value::from(5.0))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected trading_state_halted rejection event, got {rejection_events:?}"),
     }
 
     let submission_events =

@@ -1231,6 +1231,8 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
             | "market_cooling_down"
             | "recovery_mode"
             | "one_position_invariant"
+            | "active_book_not_priced"
+            | "metadata_mismatch"
             | "thin_book"
             | "fast_venue_incoherent"
             | "freeze"

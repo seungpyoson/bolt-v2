@@ -1115,6 +1115,7 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 nt_bypass = false
+trading_state = "ACTIVE"
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
@@ -1252,6 +1253,7 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 nt_bypass = false
+trading_state = "ACTIVE"
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
@@ -1383,6 +1385,7 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 nt_bypass = false
+trading_state = "ACTIVE"
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
@@ -1673,6 +1676,18 @@ fn rejects_nt_risk_bypass_true() {
             .any(|m| m.contains("risk.nt_bypass must be false")),
         "expected nt_bypass=false validation error, got: {messages:#?}"
     );
+}
+
+#[test]
+fn parses_nt_aligned_risk_trading_state() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+    use nautilus_model::enums::TradingState;
+
+    let mutated =
+        replace_in_fixture_root("trading_state = \"ACTIVE\"", "trading_state = \"HALTED\"");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("risk.trading_state fixture should parse");
+    assert_eq!(root.risk.trading_state, TradingState::Halted);
 }
 
 #[test]

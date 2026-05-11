@@ -10,9 +10,11 @@
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
-use serde::Deserialize;
+use nautilus_model::enums::TradingState;
+use serde::{Deserialize, Deserializer};
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
@@ -140,12 +142,41 @@ pub struct NautilusExecEngineBlock {
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
     pub nt_bypass: bool,
+    #[serde(deserialize_with = "deserialize_trading_state")]
+    pub trading_state: TradingState,
     pub nt_max_order_submit_rate: String,
     pub nt_max_order_modify_rate: String,
     pub nt_max_notional_per_order: BTreeMap<String, String>,
     pub nt_debug: bool,
     pub nt_graceful_shutdown_on_error: bool,
     pub nt_qsize: u32,
+}
+
+fn deserialize_trading_state<'de, D>(deserializer: D) -> Result<TradingState, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    TradingState::from_str(&raw).map_err(serde::de::Error::custom)
+}
+
+pub const fn entry_pre_submit_rejection_reason_for_trading_state(
+    trading_state: TradingState,
+) -> Option<&'static str> {
+    match trading_state {
+        TradingState::Active => None,
+        TradingState::Reducing => Some("trading_state_reducing"),
+        TradingState::Halted => Some("trading_state_halted"),
+    }
+}
+
+pub const fn exit_pre_submit_rejection_reason_for_trading_state(
+    trading_state: TradingState,
+) -> Option<&'static str> {
+    match trading_state {
+        TradingState::Active | TradingState::Reducing => None,
+        TradingState::Halted => Some("trading_state_halted"),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

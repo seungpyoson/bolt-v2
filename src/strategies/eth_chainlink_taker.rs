@@ -30,6 +30,10 @@ use serde_json::json;
 use toml::Value;
 
 use crate::{
+    bolt_v3_config::{
+        entry_pre_submit_rejection_reason_for_trading_state,
+        exit_pre_submit_rejection_reason_for_trading_state,
+    },
     bolt_v3_decision_events::{
         BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts,
         BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
@@ -2932,6 +2936,14 @@ impl EthChainlinkTaker {
         decision.authoritative_sellable_quantity = Some(uncovered_position_quantity);
         decision.open_exit_order_quantity = Some(open_exit_order_quantity);
         decision.uncovered_position_quantity = Some(uncovered_position_quantity);
+        if let Some(reason) = self
+            .context
+            .bolt_v3_risk_trading_state
+            .and_then(exit_pre_submit_rejection_reason_for_trading_state)
+        {
+            decision.blocked_reason = Some(reason);
+            return decision;
+        }
         if !open_position.quantity.as_f64().is_finite() || open_position.quantity.as_f64() <= 0.0 {
             decision.blocked_reason = Some("exit_quantity_not_positive");
             return decision;
@@ -3467,6 +3479,15 @@ impl EthChainlinkTaker {
         let order_side = strategy_entry_order_side(selected_side);
         decision.instrument_id = Some(instrument_id);
         decision.order_side = Some(order_side);
+
+        if let Some(reason) = self
+            .context
+            .bolt_v3_risk_trading_state
+            .and_then(entry_pre_submit_rejection_reason_for_trading_state)
+        {
+            decision.blocked_reason = Some(reason);
+            return decision;
+        }
 
         let Some(instrument) = self.current_instrument(instrument_id) else {
             decision.blocked_reason = Some("instrument_missing_from_cache");
@@ -5115,6 +5136,8 @@ fn entry_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&
     match internal_reason {
         "instrument_missing_from_cache" => Some("instrument_missing_from_cache"),
         "quantity_rounding_failed" | "quantity_not_positive" => Some("invalid_quantity"),
+        "trading_state_halted" => Some("trading_state_halted"),
+        "trading_state_reducing" => Some("trading_state_reducing"),
         _ => None,
     }
 }
@@ -5174,6 +5197,7 @@ fn exit_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&'
             Some("exit_quantity_exceeds_sellable_quantity")
         }
         "exit_quantity_not_positive" => Some("invalid_quantity"),
+        "trading_state_halted" => Some("trading_state_halted"),
         _ => None,
     }
 }
@@ -5370,7 +5394,7 @@ mod tests {
         actor::registry::{get_actor_registry, get_actor_unchecked, register_actor},
         msgbus,
     };
-    use nautilus_model::types::Quantity;
+    use nautilus_model::{enums::TradingState, types::Quantity};
     use rust_decimal::Decimal;
 
     use super::*;
@@ -5499,6 +5523,7 @@ mod tests {
             StrategyBuildContext {
                 fee_provider,
                 reference_publish_topic: "platform.reference.test.chainlink".to_string(),
+                bolt_v3_risk_trading_state: Some(TradingState::Active),
                 bolt_v3_decision_evidence: None,
                 bolt_v3_market_selection_context: None,
             },

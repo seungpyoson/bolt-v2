@@ -153,6 +153,7 @@ Current contract:
 - `default_max_notional_per_order` is explicit
 - every `LiveDataEngineConfig` field is explicit under `[nautilus.data_engine]` in TOML and mapped into NautilusTrader live data config
 - every `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config
+- `risk.trading_state` uses NautilusTrader `TradingState` vocabulary and gates bolt-v3 strategy order submissions before Nautilus execution submit
 - every `LiveExecEngineConfig` field is explicit under `[nautilus.exec_engine]` in TOML and mapped into NautilusTrader live exec config
 - `[logging]` owns `stdout_level` and `fileout_level`; bolt-v3 owns the credential-log module filters and explicitly fixes the remaining pinned `LoggerConfig` fields to current accepted defaults or disabled settings before `LiveNodeBuilder::from_config`
 - unsupported or intentionally unowned top-level `LiveNodeConfig` surfaces (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`) are set explicitly to `None`, `false`, or empty maps before `LiveNodeBuilder::from_config`
@@ -172,7 +173,7 @@ Current implementation behavior:
 - Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
 - Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance
 - `scripts/verify_bolt_v3_runtime_literals.py` scans production root `src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories and requires candidate runtime-bearing literals to be classified in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
-- the baseline fixture asserts all explicit data-engine values, `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
+- the baseline fixture asserts all explicit data-engine values, `nt_bypass = false`, `trading_state = "ACTIVE"`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
 
@@ -1050,6 +1051,8 @@ Allowed `entry_pre_submit_rejection_reason` values:
 - `invalid_price`
 - `invalid_quantity`
 - `exceeds_order_notional_cap`
+- `trading_state_halted`
+- `trading_state_reducing`
 
 Pre-order states such as missing selected market or market-selection failure are not submit-rejection events.
 Market-selection failure is represented by `market_selection_result` only.
@@ -1185,6 +1188,7 @@ Allowed `exit_pre_submit_rejection_reason` values:
 - `exit_price_missing`
 - `exit_quantity_exceeds_sellable_quantity`
 - `invalid_quantity`
+- `trading_state_halted`
 
 ### 9.6 Transport
 

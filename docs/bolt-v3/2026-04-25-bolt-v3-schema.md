@@ -161,6 +161,7 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 nt_bypass = false
+trading_state = "ACTIVE"
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}
@@ -454,7 +455,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 
 ### `[risk]`
 
-This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTrader live risk-engine fields. All `nt_*` fields are required in TOML and mapped into `LiveRiskEngineConfig`; `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
+This section owns Bolt-v3 strategy-sizing limits, the initial NautilusTrader-aligned trading state, and all pinned NautilusTrader live risk-engine fields. All `nt_*` fields are required in TOML and mapped into `LiveRiskEngineConfig`; `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
 
 #### `default_max_notional_per_order`
 
@@ -470,6 +471,16 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.bypass`
 - must remain `false` for production configurations unless a separately reviewed safety exception is approved
+
+#### `trading_state`
+
+- type: enum string
+- required: yes
+- allowed values: `ACTIVE`, `REDUCING`, `HALTED`
+- follows NautilusTrader `TradingState` vocabulary
+- `ACTIVE` allows entry and exit order submissions
+- `REDUCING` blocks entry order submissions and allows exit order submissions
+- `HALTED` blocks entry and exit order submissions before Nautilus execution submit
 
 #### `nt_max_order_submit_rate`
 
@@ -1340,6 +1351,7 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 nt_bypass = false
+trading_state = "ACTIVE"
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}

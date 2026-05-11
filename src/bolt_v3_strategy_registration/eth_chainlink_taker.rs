@@ -128,6 +128,7 @@ fn build_context(
     Ok(StrategyBuildContext {
         fee_provider,
         reference_publish_topic: reference_publish_topic(context)?,
+        bolt_v3_risk_trading_state: Some(context.loaded.root.risk.trading_state),
         bolt_v3_decision_evidence: Some(decision_evidence(context)?),
         bolt_v3_market_selection_context: Some(market_selection_context(strategy).map_err(
             |source| BoltV3StrategyRegistrationError::InvalidParameters {

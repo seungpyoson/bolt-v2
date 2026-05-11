@@ -48,7 +48,10 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{BookOrder, OrderBookDelta, OrderBookDeltas},
-    enums::{AssetClass, BookAction, LiquiditySide, OmsType, OrderSide, OrderType, PositionSide},
+    enums::{
+        AssetClass, BookAction, LiquiditySide, OmsType, OrderSide, OrderType, PositionSide,
+        TradingState,
+    },
     events::{OrderAccepted, OrderEventAny, OrderFilled},
     identifiers::{
         AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
@@ -1564,6 +1567,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -1652,6 +1656,72 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_restrictive_trading_states_block_entry_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+
+    for (trading_state, expected_reason) in [
+        (TradingState::Halted, "trading_state_halted"),
+        (TradingState::Reducing, "trading_state_reducing"),
+    ] {
+        clear_mock_exec_submissions();
+
+        let temp_dir = TempDir::new().unwrap();
+        let mut node = build_test_node();
+        add_eth_entry_instruments(&mut node);
+        let trader = Rc::clone(node.kernel().trader());
+        let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+        let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+            common_decision_context(),
+            &decision_persistence_block(temp_dir.path()),
+        )
+        .unwrap();
+        let mut build_context = make_strategy_build_context(
+            Arc::new(StaticFeeProvider),
+            "platform.reference.test.chainlink".to_string(),
+            Some(trading_state),
+        );
+        build_context.bolt_v3_decision_evidence = Some(evidence);
+        let strategy_factory = registry_runtime_strategy_factory(
+            production_strategy_registry().unwrap(),
+            build_context,
+        );
+        strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+        drive_eth_entry_submission(node, strategy_id);
+
+        assert!(
+            recorded_mock_exec_submissions().is_empty(),
+            "{trading_state:?} trading state must block entry submit before NT execution"
+        );
+
+        let rejection_events =
+            query_entry_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+        assert_eq!(rejection_events.len(), 1);
+        match &rejection_events[0] {
+            nautilus_model::data::Data::Custom(custom) => {
+                let decoded = custom
+                    .data
+                    .as_any()
+                    .downcast_ref::<BoltV3EntryPreSubmitRejectionDecisionEvent>()
+                    .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
+                assert_eq!(
+                    decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                    Some(&serde_json::Value::String(expected_reason.to_string()))
+                );
+            }
+            other => panic!("expected Data::Custom, got {other:?}"),
+        }
+
+        let submission_events =
+            query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+        assert!(
+            submission_events.is_empty(),
+            "{trading_state:?} trading state must not persist entry order submission"
+        );
+    }
+}
+
+#[test]
 fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
@@ -1668,6 +1738,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     build_context.bolt_v3_market_selection_context = Some(BoltV3MarketSelectionContext {
@@ -1848,6 +1919,7 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     build_context.bolt_v3_market_selection_context = Some(BoltV3MarketSelectionContext {
@@ -1978,6 +2050,7 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2060,6 +2133,7 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2131,6 +2205,7 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2199,6 +2274,7 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     let mut build_context = make_strategy_build_context(
         Arc::new(MissingFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2267,6 +2343,7 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2340,6 +2417,7 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2413,6 +2491,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2493,6 +2572,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2583,6 +2663,7 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2664,6 +2745,7 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2746,6 +2828,7 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2828,6 +2911,7 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -2907,6 +2991,7 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3009,6 +3094,7 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3095,6 +3181,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3243,6 +3330,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3396,6 +3484,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3529,6 +3618,80 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Halted),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_exit_sellable_rejection(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "HALTED trading state must block exit submit before NT execution"
+    );
+
+    let rejection_events =
+        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(rejection_events.len(), 1);
+    match &rejection_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
+                .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                Some(&serde_json::Value::String(
+                    "trading_state_halted".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("instrument_id"),
+                Some(&serde_json::Value::String(
+                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("side"),
+                Some(&serde_json::Value::String("sell".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert!(
+        submission_events.is_empty(),
+        "HALTED trading state must not persist exit order submission"
+    );
+}
+
+#[test]
 fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit_order_open() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
@@ -3545,6 +3708,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3658,6 +3822,7 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_decision_evidence_write_
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3692,6 +3857,7 @@ fn eth_chainlink_taker_runtime_blocks_exit_submit_when_decision_evidence_write_f
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3726,6 +3892,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -3840,6 +4007,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -3963,6 +4131,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -4079,6 +4248,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -4160,7 +4330,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
 }
 
 #[test]
-fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_freeze() {
+fn eth_chainlink_taker_runtime_reducing_trading_state_allows_exit_order_submit() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
@@ -4176,6 +4346,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
         "platform.reference.test.chainlink".to_string(),
+        Some(TradingState::Reducing),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
@@ -4346,6 +4517,7 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -4441,6 +4613,7 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -4541,6 +4714,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -4673,6 +4847,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -4851,6 +5026,7 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Some(TradingState::Active),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();

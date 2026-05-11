@@ -144,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     cfg.node.timeout_connection_secs,
                                 )?,
                                 reference_publish_topic: cfg.reference.publish_topic.clone(),
+                                bolt_v3_risk_trading_state: None,
                                 bolt_v3_decision_evidence: None,
                                 bolt_v3_market_selection_context: None,
                             });

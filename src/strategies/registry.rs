@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
 use nautilus_common::{actor::DataActor, component::Component};
-use nautilus_model::identifiers::StrategyId;
+use nautilus_model::{enums::TradingState, identifiers::StrategyId};
 use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
 use toml::Value;
@@ -33,6 +33,7 @@ pub struct BoltV3MarketSelectionContext {
 pub struct StrategyBuildContext {
     pub fee_provider: Arc<dyn FeeProvider>,
     pub reference_publish_topic: String,
+    pub bolt_v3_risk_trading_state: Option<TradingState>,
     pub bolt_v3_decision_evidence: Option<BoltV3StrategyDecisionEvidence>,
     pub bolt_v3_market_selection_context: Option<BoltV3MarketSelectionContext>,
 }
@@ -303,6 +304,7 @@ mod tests {
         StrategyBuildContext {
             fee_provider: Arc::new(NoopFeeProvider),
             reference_publish_topic: "platform.reference.test".to_string(),
+            bolt_v3_risk_trading_state: None,
             bolt_v3_decision_evidence: None,
             bolt_v3_market_selection_context: None,
         }

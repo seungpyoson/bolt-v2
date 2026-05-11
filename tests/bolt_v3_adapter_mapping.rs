@@ -342,6 +342,7 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 nt_bypass = false
+trading_state = "ACTIVE"
 nt_max_order_submit_rate = "100/00:00:01"
 nt_max_order_modify_rate = "100/00:00:01"
 nt_max_notional_per_order = {}

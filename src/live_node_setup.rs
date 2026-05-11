@@ -8,7 +8,7 @@ use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_data::DataClientAdapter;
 use nautilus_execution::engine::ExecutionEngine;
 use nautilus_live::{config::LiveNodeConfig, node::LiveNode};
-use nautilus_model::identifiers::TraderId;
+use nautilus_model::{enums::TradingState, identifiers::TraderId};
 
 use crate::{clients::polymarket, config::Config, strategies::registry::StrategyBuildContext};
 
@@ -30,10 +30,12 @@ fn resolve_client_name(name: &Option<String>, factory_name: &str) -> String {
 pub fn make_strategy_build_context(
     fee_provider: Arc<dyn polymarket::FeeProvider>,
     reference_publish_topic: String,
+    bolt_v3_risk_trading_state: Option<TradingState>,
 ) -> StrategyBuildContext {
     StrategyBuildContext {
         fee_provider,
         reference_publish_topic,
+        bolt_v3_risk_trading_state,
         bolt_v3_decision_evidence: None,
         bolt_v3_market_selection_context: None,
     }
@@ -212,6 +214,7 @@ mod tests {
         let context = make_strategy_build_context(
             Arc::new(FixedFeeProvider),
             "platform.reference.test".to_string(),
+            Some(TradingState::Active),
         );
 
         assert_eq!(context.reference_publish_topic, "platform.reference.test");

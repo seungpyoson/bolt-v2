@@ -1232,6 +1232,7 @@ pub struct EthChainlinkTaker {
     book_subscriptions: OutcomeBookSubscriptions,
     market_lifecycle: BTreeMap<String, MarketLifecycleLedger>,
     exposure: ExposureState,
+    persistence_failed: bool,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
     selection_handler: Option<ShareableMessageHandler>,
@@ -1254,6 +1255,7 @@ impl EthChainlinkTaker {
             book_subscriptions: OutcomeBookSubscriptions::default(),
             market_lifecycle: BTreeMap::new(),
             exposure: ExposureState::Flat,
+            persistence_failed: false,
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
             selection_handler: None,
@@ -2098,12 +2100,19 @@ impl EthChainlinkTaker {
             return Ok(());
         };
 
-        let Some(facts) = self.entry_evaluation_decision_facts(now_ms, decision)? else {
+        let Some(facts) =
+            self.latch_persistence_failure(self.entry_evaluation_decision_facts(now_ms, decision))?
+        else {
             return Ok(());
         };
         let decision_trace_id = self.active_decision_trace_id();
-        let ts = unix_nanos_from_millis(now_ms)?;
-        evidence.write_entry_evaluation(&decision_trace_id, facts, ts, ts)
+        let ts = self.latch_persistence_failure(unix_nanos_from_millis(now_ms))?;
+        self.latch_persistence_failure(evidence.write_entry_evaluation(
+            &decision_trace_id,
+            facts,
+            ts,
+            ts,
+        ))
     }
 
     fn write_bolt_v3_market_selection_result(
@@ -2116,12 +2125,20 @@ impl EthChainlinkTaker {
         let Some(target_context) = self.context.bolt_v3_market_selection_context.as_ref() else {
             return Ok(());
         };
-        let Some(facts) = market_selection_result_facts(snapshot, target_context)? else {
+        let Some(facts) = self
+            .latch_persistence_failure(market_selection_result_facts(snapshot, target_context))?
+        else {
             return Ok(());
         };
         let decision_trace_id = self.active_decision_trace_id();
-        let ts = unix_nanos_from_millis(snapshot.published_at_ms)?;
-        evidence.write_market_selection_result(&decision_trace_id, facts, ts, ts)
+        let ts =
+            self.latch_persistence_failure(unix_nanos_from_millis(snapshot.published_at_ms))?;
+        self.latch_persistence_failure(evidence.write_market_selection_result(
+            &decision_trace_id,
+            facts,
+            ts,
+            ts,
+        ))
     }
 
     fn write_bolt_v3_entry_pre_submit_rejection(
@@ -2133,12 +2150,31 @@ impl EthChainlinkTaker {
             return Ok(());
         };
 
-        let Some(facts) = entry_pre_submit_rejection_facts(decision)? else {
+        let Some(facts) =
+            self.latch_persistence_failure(entry_pre_submit_rejection_facts(decision))?
+        else {
             return Ok(());
         };
         let decision_trace_id = self.active_decision_trace_id();
-        let ts = unix_nanos_from_millis(now_ms)?;
-        evidence.write_entry_pre_submit_rejection(&decision_trace_id, facts, ts, ts)
+        let ts = self.latch_persistence_failure(unix_nanos_from_millis(now_ms))?;
+        self.latch_persistence_failure(evidence.write_entry_pre_submit_rejection(
+            &decision_trace_id,
+            facts,
+            ts,
+            ts,
+        ))
+    }
+
+    fn latch_persistence_failure<T>(&mut self, result: Result<T>) -> Result<T> {
+        if let Err(error) = &result {
+            self.persistence_failed = true;
+            log::error!(
+                "eth_chainlink_taker persistence_failed: strategy_id={} error={:#}",
+                self.config.strategy_id,
+                error
+            );
+        }
+        result
     }
 
     fn entry_evaluation_decision_facts(
@@ -3157,12 +3193,19 @@ impl EthChainlinkTaker {
         let Some(evidence) = self.context.bolt_v3_decision_evidence.clone() else {
             return Ok(());
         };
-        let Some(facts) = self.exit_evaluation_decision_facts(decision)? else {
+        let Some(facts) =
+            self.latch_persistence_failure(self.exit_evaluation_decision_facts(decision))?
+        else {
             return Ok(());
         };
         let decision_trace_id = self.active_decision_trace_id();
-        let ts = unix_nanos_from_millis(now_ms)?;
-        evidence.write_exit_evaluation(&decision_trace_id, facts, ts, ts)
+        let ts = self.latch_persistence_failure(unix_nanos_from_millis(now_ms))?;
+        self.latch_persistence_failure(evidence.write_exit_evaluation(
+            &decision_trace_id,
+            facts,
+            ts,
+            ts,
+        ))
     }
 
     fn write_bolt_v3_exit_pre_submit_rejection(
@@ -3177,12 +3220,21 @@ impl EthChainlinkTaker {
         let position_quantity = self
             .managed_position()
             .map(|managed| managed.position.quantity.as_f64());
-        let Some(facts) = exit_pre_submit_rejection_facts(decision, position_quantity)? else {
+        let Some(facts) = self.latch_persistence_failure(exit_pre_submit_rejection_facts(
+            decision,
+            position_quantity,
+        ))?
+        else {
             return Ok(());
         };
         let decision_trace_id = self.active_decision_trace_id();
-        let ts = unix_nanos_from_millis(now_ms)?;
-        evidence.write_exit_pre_submit_rejection(&decision_trace_id, facts, ts, ts)
+        let ts = self.latch_persistence_failure(unix_nanos_from_millis(now_ms))?;
+        self.latch_persistence_failure(evidence.write_exit_pre_submit_rejection(
+            &decision_trace_id,
+            facts,
+            ts,
+            ts,
+        ))
     }
 
     fn exit_evaluation_decision_facts(
@@ -3257,6 +3309,13 @@ impl EthChainlinkTaker {
     }
 
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
+        if self.persistence_failed {
+            log::warn!(
+                "eth_chainlink_taker exit submit skipped: strategy_id={} reason=persistence_failed",
+                self.config.strategy_id
+            );
+            return Ok(None);
+        }
         let mut decision = self.exit_submission_decision_at(now_ms);
         self.write_bolt_v3_exit_evaluation(now_ms, &decision)?;
         self.write_bolt_v3_exit_pre_submit_rejection(now_ms, &decision)?;
@@ -3439,6 +3498,13 @@ impl EthChainlinkTaker {
     }
 
     fn try_submit_entry_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
+        if self.persistence_failed {
+            log::warn!(
+                "eth_chainlink_taker entry submit skipped: strategy_id={} reason=persistence_failed",
+                self.config.strategy_id
+            );
+            return Ok(None);
+        }
         let decision = self.entry_submission_decision_at(now_ms);
         self.write_bolt_v3_entry_evaluation(now_ms, &decision)?;
         self.write_bolt_v3_entry_pre_submit_rejection(now_ms, &decision)?;

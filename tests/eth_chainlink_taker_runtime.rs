@@ -3606,6 +3606,126 @@ fn eth_chainlink_taker_runtime_blocks_exit_submit_when_decision_evidence_write_f
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence_failure() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let occupied_path = temp_dir.path().join("not-a-directory");
+    std::fs::write(&occupied_path, b"occupied").unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(&occupied_path),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            sleep(Duration::from_millis(20)).await;
+
+            if let Some(mut actor) =
+                try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
+            {
+                actor.on_position_opened(position_opened_event(
+                    strategy_id,
+                    up,
+                    PositionId::from("P-RT-EXIT-PERSISTENCE-FAILED"),
+                    Quantity::new(5.0, 2),
+                    0.450,
+                ));
+            } else {
+                panic!("runtime strategy actor should be registered");
+            }
+            clear_mock_exec_submissions();
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &freeze_selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+            sleep(Duration::from_millis(50)).await;
+            assert!(recorded_mock_exec_submissions().is_empty());
+
+            std::fs::remove_file(&occupied_path).unwrap();
+            std::fs::create_dir_all(&occupied_path).unwrap();
+            clear_mock_exec_submissions();
+
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &freeze_selection_snapshot(start_ts_ms + 1),
+            );
+            publish_any(
+                "platform.reference.test.chainlink".to_string().into(),
+                &reference_snapshot(start_ts_ms + 400, 3_102.0, 3_106.0),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
+            );
+            sleep(Duration::from_millis(100)).await;
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "persistence_failed strategy must not submit again before restart"
+    );
+}
+
+#[test]
 fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_order_id() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();

@@ -42,6 +42,8 @@ F13ac note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.p
 
 F13ad note: `polymarket_gamma_market_anchor` is classified as a Polymarket-catalog-owned evidence source label, not operator policy. `src/platform/polymarket_catalog.rs` now owns it as `POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE`; decision-event and existing-strategy runtime tests use that constant, and both `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` and `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` reject repeated inline provider-source-label literals.
 
+F13ae note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline market-selection event fact keys in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests use exported decision-event contract constants for market-selection type, timestamps, outcome, failure reason, target facts, selected-market facts, and price-to-beat facts.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

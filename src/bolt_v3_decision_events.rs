@@ -35,8 +35,33 @@ pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = "entry_pre_subm
 pub const BOLT_V3_EXIT_EVALUATION_EVENT_VALUE: &str = "exit_evaluation";
 pub const BOLT_V3_EXIT_ORDER_SUBMISSION_EVENT_VALUE: &str = "exit_order_submission";
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = "exit_pre_submit_rejection";
+pub const BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY: &str = "market_selection_type";
+pub const BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY: &str =
+    "market_selection_timestamp_milliseconds";
+pub const BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY: &str = "market_selection_outcome";
 pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY: &str =
     "market_selection_failure_reason";
+pub const BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY: &str = "rotating_market_family";
+pub const BOLT_V3_UNDERLYING_ASSET_FACT_KEY: &str = "underlying_asset";
+pub const BOLT_V3_CADENCE_SECONDS_FACT_KEY: &str = "cadence_seconds";
+pub const BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY: &str = "market_selection_rule";
+pub const BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY: &str = "retry_interval_seconds";
+pub const BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY: &str = "blocked_after_seconds";
+pub const BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY: &str = "polymarket_condition_id";
+pub const BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY: &str = "polymarket_market_slug";
+pub const BOLT_V3_POLYMARKET_QUESTION_ID_FACT_KEY: &str = "polymarket_question_id";
+pub const BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY: &str = "up_instrument_id";
+pub const BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY: &str = "down_instrument_id";
+pub const BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY: &str =
+    "selected_market_observed_timestamp";
+pub const BOLT_V3_POLYMARKET_MARKET_START_TIMESTAMP_MILLISECONDS_FACT_KEY: &str =
+    "polymarket_market_start_timestamp_milliseconds";
+pub const BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY: &str =
+    "polymarket_market_end_timestamp_milliseconds";
+pub const BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY: &str = "price_to_beat_value";
+pub const BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY: &str =
+    "price_to_beat_observed_timestamp";
+pub const BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY: &str = "price_to_beat_source";
 pub const BOLT_V3_ENTRY_DECISION_FACT_KEY: &str = "entry_decision";
 pub const BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY: &str = "entry_no_action_reason";
 pub const BOLT_V3_ARCHETYPE_METRICS_FACT_KEY: &str = "archetype_metrics";
@@ -1073,15 +1098,15 @@ fn require_some<T>(value: Option<&T>, field_name: &str) -> Result<()> {
 fn market_selection_result_facts_to_params(facts: BoltV3MarketSelectionResultFacts) -> Params {
     let mut params = Params::new();
     params.insert(
-        "market_selection_type".to_string(),
+        BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY.to_string(),
         Value::String(facts.market_selection_type),
     );
     params.insert(
-        "market_selection_timestamp_milliseconds".to_string(),
+        BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY.to_string(),
         Value::from(facts.market_selection_timestamp_milliseconds),
     );
     params.insert(
-        "market_selection_outcome".to_string(),
+        BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY.to_string(),
         Value::String(facts.market_selection_outcome),
     );
     params.insert(
@@ -1092,119 +1117,119 @@ fn market_selection_result_facts_to_params(facts: BoltV3MarketSelectionResultFac
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "rotating_market_family".to_string(),
+        BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY.to_string(),
         facts
             .rotating_market_family
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "underlying_asset".to_string(),
+        BOLT_V3_UNDERLYING_ASSET_FACT_KEY.to_string(),
         facts
             .underlying_asset
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "cadence_seconds".to_string(),
+        BOLT_V3_CADENCE_SECONDS_FACT_KEY.to_string(),
         facts
             .cadence_seconds
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "market_selection_rule".to_string(),
+        BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY.to_string(),
         facts
             .market_selection_rule
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "retry_interval_seconds".to_string(),
+        BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY.to_string(),
         facts
             .retry_interval_seconds
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "blocked_after_seconds".to_string(),
+        BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY.to_string(),
         facts
             .blocked_after_seconds
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "polymarket_condition_id".to_string(),
+        BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY.to_string(),
         facts
             .polymarket_condition_id
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "polymarket_market_slug".to_string(),
+        BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY.to_string(),
         facts
             .polymarket_market_slug
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "polymarket_question_id".to_string(),
+        BOLT_V3_POLYMARKET_QUESTION_ID_FACT_KEY.to_string(),
         facts
             .polymarket_question_id
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "up_instrument_id".to_string(),
+        BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY.to_string(),
         facts
             .up_instrument_id
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "down_instrument_id".to_string(),
+        BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY.to_string(),
         facts
             .down_instrument_id
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "selected_market_observed_timestamp".to_string(),
+        BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY.to_string(),
         facts
             .selected_market_observed_timestamp
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "polymarket_market_start_timestamp_milliseconds".to_string(),
+        BOLT_V3_POLYMARKET_MARKET_START_TIMESTAMP_MILLISECONDS_FACT_KEY.to_string(),
         facts
             .polymarket_market_start_timestamp_milliseconds
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "polymarket_market_end_timestamp_milliseconds".to_string(),
+        BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY.to_string(),
         facts
             .polymarket_market_end_timestamp_milliseconds
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "price_to_beat_value".to_string(),
+        BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY.to_string(),
         facts
             .price_to_beat_value
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "price_to_beat_observed_timestamp".to_string(),
+        BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY.to_string(),
         facts
             .price_to_beat_observed_timestamp
             .map(Value::from)
             .unwrap_or(Value::Null),
     );
     params.insert(
-        "price_to_beat_source".to_string(),
+        BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY.to_string(),
         facts
             .price_to_beat_source
             .map(Value::String)

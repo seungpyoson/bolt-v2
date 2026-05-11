@@ -53,6 +53,29 @@ DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES = {
 PROVIDER_SOURCE_LABEL_FORBIDDEN_LITERAL_VALUES = {
     "polymarket_gamma_market_anchor",
 }
+MARKET_SELECTION_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
+    "blocked_after_seconds",
+    "cadence_seconds",
+    "down_instrument_id",
+    "market_selection_outcome",
+    "market_selection_failure_reason",
+    "market_selection_rule",
+    "market_selection_timestamp_milliseconds",
+    "market_selection_type",
+    "polymarket_condition_id",
+    "polymarket_market_end_timestamp_milliseconds",
+    "polymarket_market_slug",
+    "polymarket_market_start_timestamp_milliseconds",
+    "polymarket_question_id",
+    "price_to_beat_observed_timestamp",
+    "price_to_beat_source",
+    "price_to_beat_value",
+    "retry_interval_seconds",
+    "rotating_market_family",
+    "selected_market_observed_timestamp",
+    "underlying_asset",
+    "up_instrument_id",
+}
 
 @dataclass(frozen=True)
 class Finding:
@@ -199,6 +222,23 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                         "label constant"
                     ),
                     excerpt=match.group(0),
+                )
+            )
+
+    if rel == ETH_CHAINLINK_RUNTIME_TEST_FILE:
+        for match in EVENT_FACT_GET_PATTERN.finditer(text):
+            literal = match.group("literal")
+            if literal not in MARKET_SELECTION_FACT_KEY_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "inline market-selection fact key; use exported event "
+                        "contract constant"
+                    ),
+                    excerpt=literal,
                 )
             )
 

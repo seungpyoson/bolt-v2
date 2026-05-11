@@ -18,7 +18,8 @@ use bolt_v2::{
         BoltV3DecisionEventCommonContext, bolt_v3_decision_event_common_context,
     },
     bolt_v3_decision_events::{
-        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+        BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY, BOLT_V3_CADENCE_SECONDS_FACT_KEY,
+        BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY, BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
         BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON,
         BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON,
@@ -43,7 +44,19 @@ use bolt_v2::{
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
-        BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
+        BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
+        BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
+        BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY, BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY,
+        BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY,
+        BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY, BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
+        BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY,
+        BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY,
+        BOLT_V3_POLYMARKET_MARKET_START_TIMESTAMP_MILLISECONDS_FACT_KEY,
+        BOLT_V3_POLYMARKET_QUESTION_ID_FACT_KEY, BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY,
+        BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY, BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY,
+        BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY, BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY,
+        BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY, BOLT_V3_UNDERLYING_ASSET_FACT_KEY,
+        BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
         BoltV3EntryEvaluationDecisionEvent, BoltV3EntryOrderSubmissionDecisionEvent,
         BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
@@ -2580,67 +2593,87 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
             assert_eq!(decoded.decision_event_type, "market_selection_result");
             assert!(!decoded.decision_trace_id.is_empty());
             assert_eq!(
-                decoded.event_facts.get("market_selection_type"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY),
                 Some(&serde_json::Value::String("rotating_market".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("market_selection_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("current".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("market_selection_failure_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("rotating_market_family"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY),
                 Some(&serde_json::Value::String("updown".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("underlying_asset"),
+                decoded.event_facts.get(BOLT_V3_UNDERLYING_ASSET_FACT_KEY),
                 Some(&serde_json::Value::String("ETH".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("cadence_seconds"),
+                decoded.event_facts.get(BOLT_V3_CADENCE_SECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(300))
             );
             assert_eq!(
-                decoded.event_facts.get("market_selection_rule"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY),
                 Some(&serde_json::Value::String("active_or_next".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("retry_interval_seconds"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(5))
             );
             assert_eq!(
-                decoded.event_facts.get("blocked_after_seconds"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(60))
             );
             assert_eq!(
-                decoded.event_facts.get("polymarket_condition_id"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     selected_market.condition_id.clone()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("polymarket_market_slug"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY),
                 Some(&serde_json::Value::String(
                     selected_market.market_slug.clone()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("polymarket_question_id"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_POLYMARKET_QUESTION_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     selected_market.question_id.clone()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("up_instrument_id"),
+                decoded.event_facts.get(BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("down_instrument_id"),
+                decoded.event_facts.get(BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_down_instrument_id().to_string()
                 ))
@@ -2648,31 +2681,37 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("selected_market_observed_timestamp"),
+                    .get(BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY),
                 Some(&serde_json::Value::from(start_ts_ms))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("polymarket_market_start_timestamp_milliseconds"),
+                    .get(BOLT_V3_POLYMARKET_MARKET_START_TIMESTAMP_MILLISECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(start_ts_ms))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("polymarket_market_end_timestamp_milliseconds"),
+                    .get(BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(start_ts_ms + 300_000))
             );
             assert_eq!(
-                decoded.event_facts.get("price_to_beat_value"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY),
                 Some(&serde_json::Value::from(3_100.0))
             );
             assert_eq!(
-                decoded.event_facts.get("price_to_beat_observed_timestamp"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY),
                 Some(&serde_json::Value::from(price_to_beat_observed_ts_ms))
             );
             assert_eq!(
-                decoded.event_facts.get("price_to_beat_source"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY),
                 Some(&serde_json::Value::String(
                     POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string()
                 ))
@@ -2764,53 +2803,71 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
             assert_eq!(decoded.decision_event_type, "market_selection_result");
             assert!(!decoded.decision_trace_id.is_empty());
             assert_eq!(
-                decoded.event_facts.get("market_selection_type"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY),
                 Some(&serde_json::Value::String("rotating_market".to_string()))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("market_selection_timestamp_milliseconds"),
+                    .get(BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(published_at_ms))
             );
             assert_eq!(
-                decoded.event_facts.get("market_selection_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("failed".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("market_selection_failure_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(reason.to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("rotating_market_family"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY),
                 Some(&serde_json::Value::String("updown".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("underlying_asset"),
+                decoded.event_facts.get(BOLT_V3_UNDERLYING_ASSET_FACT_KEY),
                 Some(&serde_json::Value::String("ETH".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("cadence_seconds"),
+                decoded.event_facts.get(BOLT_V3_CADENCE_SECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(300))
             );
             assert_eq!(
-                decoded.event_facts.get("market_selection_rule"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY),
                 Some(&serde_json::Value::String("active_or_next".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("retry_interval_seconds"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(5))
             );
             assert_eq!(
-                decoded.event_facts.get("blocked_after_seconds"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY),
                 Some(&serde_json::Value::from(60))
             );
             assert_eq!(
-                decoded.event_facts.get("polymarket_condition_id"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("price_to_beat_value"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }

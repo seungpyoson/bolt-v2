@@ -121,7 +121,7 @@ fn cached_current_updown_pair_resolves_selected_market_identity() {
         } => {
             assert_eq!(role, UpdownSelectedMarketRole::Current);
             assert_eq!(selected_market.market_selection_type, "rotating_market");
-            assert_eq!(selected_market.client_id, "polymarket_main");
+            assert_eq!(selected_market.client_id, target.client_id_key);
             assert_eq!(selected_market.venue, "POLYMARKET");
             assert_eq!(selected_market.rotating_market_family, "updown");
             assert_eq!(selected_market.polymarket_condition_id, "0xcurrent");

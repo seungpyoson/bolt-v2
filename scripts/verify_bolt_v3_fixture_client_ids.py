@@ -19,6 +19,7 @@ ENFORCED_TEST_FILES = (
     "tests/bolt_v3_market_identity.rs",
     "tests/bolt_v3_reference_producer.rs",
     "tests/bolt_v3_decision_event_context.rs",
+    "tests/bolt_v3_instrument_readiness.rs",
 )
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 

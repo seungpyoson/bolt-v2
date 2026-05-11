@@ -18,6 +18,7 @@ use std::{
 use async_trait::async_trait;
 use bolt_v2::{
     bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_decision_events::BoltV3OrderSubmissionFacts,
     bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
 };
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
@@ -37,6 +38,7 @@ use nautilus_model::{
     instruments::InstrumentAny,
     types::{AccountBalance, MarginBalance, Price, Quantity},
 };
+use serde::Deserialize;
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -132,6 +134,48 @@ bolt_v2 = "3333333333333333333333333333333333333333333333333333333333333333"
     let catalog_dir = temp_dir.join("catalog");
     fs::create_dir_all(&catalog_dir).expect("catalog dir should create");
     loaded.root.persistence.catalog_directory = catalog_dir.to_string_lossy().into_owned();
+}
+
+#[derive(Debug, Deserialize)]
+struct BoltV3OrderSubmissionFactsFixture {
+    order_type: String,
+    time_in_force: String,
+    instrument_id: String,
+    side: String,
+    price: f64,
+    quantity: f64,
+    is_quote_quantity: bool,
+    is_post_only: bool,
+    is_reduce_only: bool,
+    client_order_id: Option<String>,
+}
+
+impl From<BoltV3OrderSubmissionFactsFixture> for BoltV3OrderSubmissionFacts {
+    fn from(fixture: BoltV3OrderSubmissionFactsFixture) -> Self {
+        Self {
+            order_type: fixture.order_type,
+            time_in_force: fixture.time_in_force,
+            instrument_id: fixture.instrument_id,
+            side: fixture.side,
+            price: fixture.price,
+            quantity: fixture.quantity,
+            is_quote_quantity: fixture.is_quote_quantity,
+            is_post_only: fixture.is_post_only,
+            is_reduce_only: fixture.is_reduce_only,
+            client_order_id: fixture.client_order_id,
+        }
+    }
+}
+
+pub fn bolt_v3_order_submission_facts_fixture(filename: &str) -> BoltV3OrderSubmissionFacts {
+    let path = repo_path(&format!(
+        "tests/fixtures/bolt_v3_decision_events/{filename}"
+    ));
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    let fixture: BoltV3OrderSubmissionFactsFixture = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
+    fixture.into()
 }
 
 pub fn runtime_toml_with_reference_venue(

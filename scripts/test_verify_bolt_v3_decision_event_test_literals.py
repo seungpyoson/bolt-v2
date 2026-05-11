@@ -51,6 +51,36 @@ fn probe(decoded: Decoded) {
         assert "inline decision-event reason value; use exported event contract constant" in messages
 
 
+def test_order_intent_gate_direct_event_fixture_construction_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_order_intent_gate.rs",
+            """
+fn probe() {
+    let _ = BoltV3DecisionEventCommonFields {
+        strategy_instance_id: "strategy-alpha".to_string(),
+    };
+    let _ = BoltV3OrderSubmissionFacts {
+        instrument_id: "ETH-UP.POLYMARKET".to_string(),
+    };
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        messages = [finding.message for finding in findings]
+        assert (
+            "direct decision-event common-field fixture construction; derive common fields from v3 TOML and release identity"
+            in messages
+        )
+        assert (
+            "direct order-submission fact fixture construction; load order fact fixture data outside Rust test code"
+            in messages
+        )
+
+
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -75,11 +105,18 @@ def test_decision_event_handoff_file_is_enforced() -> None:
         raise AssertionError("decision event handoff test file must be enforced")
 
 
+def test_order_intent_gate_file_is_enforced() -> None:
+    if "tests/bolt_v3_order_intent_gate.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("order intent gate test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_inline_event_contract_literals_are_findings,
+        test_order_intent_gate_direct_event_fixture_construction_is_a_finding,
         test_exported_constants_and_fixture_helpers_are_clean,
         test_decision_event_handoff_file_is_enforced,
+        test_order_intent_gate_file_is_enforced,
     ]
     for test in tests:
         test()

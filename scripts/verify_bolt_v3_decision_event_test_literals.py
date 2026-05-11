@@ -10,7 +10,11 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ENFORCED_TEST_FILES = ("tests/bolt_v3_decision_event_handoff.rs",)
+ORDER_INTENT_GATE_TEST_FILE = "tests/bolt_v3_order_intent_gate.rs"
+ENFORCED_TEST_FILES = (
+    "tests/bolt_v3_decision_event_handoff.rs",
+    ORDER_INTENT_GATE_TEST_FILE,
+)
 EVENT_FACT_GET_PATTERN = re.compile(
     r"event_facts\s*\.\s*get\s*\(\s*\"(?P<literal>[^\"]+)\"",
     re.DOTALL,
@@ -20,6 +24,8 @@ DECISION_EVENT_TYPE_LITERAL_PATTERN = re.compile(
 )
 JSON_OBJECT_MACRO_PATTERN = re.compile(r"json!\s*\(\s*\{")
 STRING_LITERAL_PATTERN = re.compile(r'"(?P<literal>[a-z_][a-z0-9_]*)"')
+DIRECT_COMMON_FIELDS_PATTERN = re.compile(r"=\s*BoltV3DecisionEventCommonFields\s*\{")
+DIRECT_ORDER_SUBMISSION_FACTS_PATTERN = re.compile(r"BoltV3OrderSubmissionFacts\s*\{")
 DECISION_REASON_VALUES = {
     "active_book_not_priced",
     "fast_venue_incoherent",
@@ -98,6 +104,32 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                 excerpt=literal,
             )
         )
+
+    if rel == ORDER_INTENT_GATE_TEST_FILE:
+        for match in DIRECT_COMMON_FIELDS_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "direct decision-event common-field fixture construction; "
+                        "derive common fields from v3 TOML and release identity"
+                    ),
+                    excerpt="BoltV3DecisionEventCommonFields {",
+                )
+            )
+        for match in DIRECT_ORDER_SUBMISSION_FACTS_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "direct order-submission fact fixture construction; "
+                        "load order fact fixture data outside Rust test code"
+                    ),
+                    excerpt="BoltV3OrderSubmissionFacts {",
+                )
+            )
 
     return findings
 

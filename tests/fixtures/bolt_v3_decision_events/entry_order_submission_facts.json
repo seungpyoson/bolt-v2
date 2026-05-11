@@ -1,0 +1,12 @@
+{
+  "order_type": "limit",
+  "time_in_force": "gtc",
+  "instrument_id": "ETH-UP.POLYMARKET",
+  "side": "buy",
+  "price": 0.52,
+  "quantity": 10.0,
+  "is_quote_quantity": false,
+  "is_post_only": false,
+  "is_reduce_only": false,
+  "client_order_id": "ORDER-001"
+}

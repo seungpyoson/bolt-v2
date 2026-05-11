@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Reject hardcoded Bolt-v3 reference-policy fixture literals in Rust tests."""
+
+from __future__ import annotations
+
+import re
+import sys
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+REFERENCE_POLICY_STREAM_GLOB = "tests/fixtures/bolt_v3_reference_policy/*_stream.toml"
+ROOT_FIXTURE_GLOB = "tests/fixtures/bolt_v3*/root*.toml"
+ENFORCED_TEST_FILES = ("tests/bolt_v3_reference_policy.rs",)
+STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
+
+
+@dataclass(frozen=True)
+class Finding:
+    path: str
+    line: int
+    message: str
+    excerpt: str
+
+    def render(self) -> str:
+        return f"FAIL: {self.path}:{self.line}: {self.message}: {self.excerpt}"
+
+
+def line_number(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def string_value(literal: str) -> str:
+    return bytes(literal[1:-1], "utf-8").decode("unicode_escape")
+
+
+def add_stream_literals(literals: set[str], stream_id: str, stream: dict[str, Any]) -> None:
+    if stream_id:
+        literals.add(stream_id)
+    publish_topic = stream.get("publish_topic")
+    if isinstance(publish_topic, str):
+        literals.add(publish_topic)
+    inputs = stream.get("inputs", [])
+    if not isinstance(inputs, list):
+        return
+    for input_block in inputs:
+        if not isinstance(input_block, dict):
+            continue
+        for key in ("source_id", "instrument_id"):
+            value = input_block.get(key)
+            if isinstance(value, str):
+                literals.add(value)
+
+
+def reference_policy_fixture_literals(root: Path) -> set[str]:
+    literals: set[str] = set()
+    for path in sorted(root.glob(REFERENCE_POLICY_STREAM_GLOB)):
+        if not path.is_file():
+            continue
+        stream_id = path.name.removesuffix("_stream.toml")
+        add_stream_literals(literals, stream_id, tomllib.loads(path.read_text(encoding="utf-8")))
+    for path in sorted(root.glob(ROOT_FIXTURE_GLOB)):
+        if not path.is_file():
+            continue
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        streams = data.get("reference_streams", {})
+        if not isinstance(streams, dict):
+            continue
+        for stream_id, stream in streams.items():
+            if isinstance(stream, dict):
+                add_stream_literals(literals, str(stream_id), stream)
+    return literals
+
+
+def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Finding]:
+    text = path.read_text(encoding="utf-8")
+    rel = path.relative_to(root).as_posix()
+    findings: list[Finding] = []
+    for match in STRING_PATTERN.finditer(text):
+        literal = match.group(0)
+        if string_value(literal) not in fixture_literals:
+            continue
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message="reference-policy fixture literal; derive from loaded TOML fixture instead",
+                excerpt=literal,
+            )
+        )
+    return findings
+
+
+def scan_root(root: Path) -> list[Finding]:
+    fixture_literals = reference_policy_fixture_literals(root)
+    findings: list[Finding] = []
+    for relative_path in ENFORCED_TEST_FILES:
+        path = root / relative_path
+        if path.is_file():
+            findings.extend(scan_file(root, path, fixture_literals))
+    return findings
+
+
+def main() -> int:
+    findings = scan_root(REPO_ROOT)
+    if findings:
+        for finding in findings:
+            print(finding.render(), file=sys.stderr)
+        return 1
+
+    print("OK: Bolt-v3 reference-policy fixture-literal verifier passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

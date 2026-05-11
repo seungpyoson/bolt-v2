@@ -50,6 +50,9 @@ ORDER_LIFECYCLE_FEE_REQUEST_COUNT_PATTERN = re.compile(
 )
 ORDER_LIFECYCLE_POLL_ATTEMPT_PATTERN = re.compile(r"for\s+_\s+in\s+0\.\.\d[\d_]*\s*\{")
 ORDER_LIFECYCLE_TIMESTAMP_OFFSET_PATTERN = re.compile(r"\bstart_ts_ms\s*\+\s*\d[\d_]*")
+ORDER_LIFECYCLE_SCENARIO_PRICE_LITERAL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.])(?:[2-9][\d_]{3,}\.\d[\d_]*|0\.[1-9]\d{2,})(?![A-Za-z0-9_.])"
+)
 
 
 @dataclass(frozen=True)
@@ -235,6 +238,17 @@ def scan_file(
                     path=rel,
                     line=line_number(text, match.start()),
                     message="order-lifecycle timestamp offset literal; derive from TOML fixture",
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_SCENARIO_PRICE_LITERAL_PATTERN.finditer(text):
+            if normalized_number(match.group(0)) in numeric_fixture_literals:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="order-lifecycle scenario price literal; derive from TOML fixture",
                     excerpt=match.group(0),
                 )
             )

@@ -82,6 +82,7 @@ struct OrderLifecycleTracerFixture {
     local_polymarket: LocalPolymarketFixture,
     selected_binary_option: SelectedBinaryOptionFixture,
     market_snapshot: MarketSnapshotFixture,
+    scenario_prices: ScenarioPricesFixture,
     test_timing: TestTimingFixture,
     timeline_offsets_milliseconds: TimelineOffsetsMillisecondsFixture,
 }
@@ -109,6 +110,21 @@ struct MarketSnapshotFixture {
     price_to_beat: f64,
     liquidity_num: f64,
     reference_orderbook_half_spread: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScenarioPricesFixture {
+    opening_fast_price: f64,
+    entry_fair_value: f64,
+    entry_fast_price: f64,
+    exit_fair_value: f64,
+    exit_fast_price: f64,
+    entry_up_bid: f64,
+    entry_up_ask: f64,
+    exit_up_bid: f64,
+    exit_up_ask: f64,
+    down_bid: f64,
+    down_ask: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,6 +238,10 @@ fn market_snapshot_liquidity_num() -> f64 {
 
 fn reference_orderbook_half_spread() -> f64 {
     market_snapshot_fixture().reference_orderbook_half_spread
+}
+
+fn scenario_prices() -> &'static ScenarioPricesFixture {
+    &order_lifecycle_tracer_fixture().scenario_prices
 }
 
 fn test_timing_fixture() -> &'static TestTimingFixture {
@@ -887,6 +907,33 @@ fn reference_snapshot(
     }
 }
 
+fn opening_reference_snapshot(loaded: &LoadedBoltV3Config, ts_ms: u64) -> ReferenceSnapshot {
+    reference_snapshot(
+        loaded,
+        ts_ms,
+        price_to_beat_value(),
+        scenario_prices().opening_fast_price,
+    )
+}
+
+fn entry_reference_snapshot(loaded: &LoadedBoltV3Config, ts_ms: u64) -> ReferenceSnapshot {
+    reference_snapshot(
+        loaded,
+        ts_ms,
+        scenario_prices().entry_fair_value,
+        scenario_prices().entry_fast_price,
+    )
+}
+
+fn exit_reference_snapshot(loaded: &LoadedBoltV3Config, ts_ms: u64) -> ReferenceSnapshot {
+    reference_snapshot(
+        loaded,
+        ts_ms,
+        scenario_prices().exit_fair_value,
+        scenario_prices().exit_fast_price,
+    )
+}
+
 fn instrument_id(condition_id: &str, token_id: &str, loaded: &LoadedBoltV3Config) -> InstrumentId {
     let execution_client_id = execution_client_id(loaded);
     let venue = loaded
@@ -989,6 +1036,30 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
                 UnixNanos::default(),
             ),
         ],
+    )
+}
+
+fn entry_up_book_deltas(instrument_id: InstrumentId) -> OrderBookDeltas {
+    book_deltas(
+        instrument_id,
+        scenario_prices().entry_up_bid,
+        scenario_prices().entry_up_ask,
+    )
+}
+
+fn down_book_deltas(instrument_id: InstrumentId) -> OrderBookDeltas {
+    book_deltas(
+        instrument_id,
+        scenario_prices().down_bid,
+        scenario_prices().down_ask,
+    )
+}
+
+fn exit_up_book_deltas(instrument_id: InstrumentId) -> OrderBookDeltas {
+    book_deltas(
+        instrument_id,
+        scenario_prices().exit_up_bid,
+        scenario_prices().exit_up_ask,
     )
 }
 
@@ -1233,32 +1304,25 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
-                            &loaded_for_control,
-                            start_ts_ms,
-                            price_to_beat_value(),
-                            3_102.0,
-                        ),
+                        &opening_reference_snapshot(&loaded_for_control, start_ts_ms),
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().initial_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
                     wait_for_local_clob_request_count(
                         &server,
@@ -1273,23 +1337,21 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                     );
                     publish_any(
                         reference_topic.into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().entry_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     let post_order = wait_for_local_clob_request(&server, "POST", "/order").await;
@@ -1399,32 +1461,25 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
-                            &loaded_for_control,
-                            start_ts_ms,
-                            price_to_beat_value(),
-                            3_102.0,
-                        ),
+                        &opening_reference_snapshot(&loaded_for_control, start_ts_ms),
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().initial_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
                     sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
@@ -1433,23 +1488,21 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                     );
                     publish_any(
                         reference_topic.into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().entry_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     for _ in 0..order_lifecycle_submit_poll_attempts() {
@@ -1545,32 +1598,25 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
-                            &loaded_for_control,
-                            start_ts_ms,
-                            price_to_beat_value(),
-                            3_102.0,
-                        ),
+                        &opening_reference_snapshot(&loaded_for_control, start_ts_ms),
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().initial_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
                     sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
@@ -1579,23 +1625,21 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().entry_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     for _ in 0..order_lifecycle_submit_poll_attempts() {
@@ -1626,23 +1670,21 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                     );
                     publish_any(
                         reference_topic.into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().entry_rejected_retry_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     for _ in 0..order_lifecycle_submit_poll_attempts() {
@@ -1745,32 +1787,25 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
-                            &loaded_for_control,
-                            start_ts_ms,
-                            price_to_beat_value(),
-                            3_102.0,
-                        ),
+                        &opening_reference_snapshot(&loaded_for_control, start_ts_ms),
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().initial_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
                     sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
@@ -1779,23 +1814,21 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().entry_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     let mut entry_submission = None;
@@ -1839,23 +1872,21 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                     );
                     publish_any(
                         reference_topic.into(),
-                        &reference_snapshot(
+                        &exit_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().freeze_snapshot,
                             ),
-                            3_101.0,
-                            3_094.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.500, 0.510),
+                        &exit_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     for _ in 0..order_lifecycle_submit_poll_attempts() {
@@ -1958,32 +1989,25 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
-                            &loaded_for_control,
-                            start_ts_ms,
-                            price_to_beat_value(),
-                            3_102.0,
-                        ),
+                        &opening_reference_snapshot(&loaded_for_control, start_ts_ms),
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().initial_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
                     sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
@@ -1992,23 +2016,21 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &entry_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().entry_reference_snapshot,
                             ),
-                            3_101.0,
-                            3_105.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.430, 0.450),
+                        &entry_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     let mut entry_submission = None;
@@ -2052,23 +2074,21 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     );
                     publish_any(
                         reference_topic.clone().into(),
-                        &reference_snapshot(
+                        &exit_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().freeze_snapshot,
                             ),
-                            3_101.0,
-                            3_094.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.500, 0.510),
+                        &exit_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     let mut exit_submission = None;
@@ -2112,23 +2132,21 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     );
                     publish_any(
                         reference_topic.into(),
-                        &reference_snapshot(
+                        &exit_reference_snapshot(
                             &loaded_for_control,
                             offset_ts_ms(
                                 start_ts_ms,
                                 timeline_offsets_milliseconds().replacement_freeze_snapshot,
                             ),
-                            3_101.0,
-                            3_094.0,
                         ),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(up),
-                        &book_deltas(up, 0.500, 0.510),
+                        &exit_up_book_deltas(up),
                     );
                     publish_deltas(
                         switchboard::get_book_deltas_topic(down),
-                        &book_deltas(down, 0.480, 0.490),
+                        &down_book_deltas(down),
                     );
 
                     for _ in 0..order_lifecycle_submit_poll_attempts() {

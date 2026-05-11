@@ -80,6 +80,8 @@ F13av note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13aw note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects `start_ts_ms + <literal>` timestamp offsets in `tests/bolt_v3_order_lifecycle_tracer.rs`. Order-lifecycle scenario timeline offsets now derive from `[timeline_offsets_milliseconds]` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
 
+F13ax note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects order-lifecycle scenario price literals in `tests/bolt_v3_order_lifecycle_tracer.rs`. Opening, entry, exit, and book-delta scenario prices now derive from `[scenario_prices]` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

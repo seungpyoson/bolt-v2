@@ -19,6 +19,19 @@ price_to_beat = 3100.0
 liquidity_num = 1000.0
 reference_orderbook_half_spread = 0.5
 
+[scenario_prices]
+opening_fast_price = 3102.0
+entry_fair_value = 3101.0
+entry_fast_price = 3105.0
+exit_fair_value = 3101.0
+exit_fast_price = 3094.0
+entry_up_bid = 0.430
+entry_up_ask = 0.450
+exit_up_bid = 0.500
+exit_up_ask = 0.510
+down_bid = 0.480
+down_ask = 0.490
+
 [test_timing]
 local_clob_wait_timeout_seconds = 5
 poll_interval_milliseconds = 10

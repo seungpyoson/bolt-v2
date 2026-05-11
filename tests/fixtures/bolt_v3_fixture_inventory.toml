@@ -47,3 +47,7 @@ purpose = "reference-policy scenario values for source-health, fused-reference, 
 [[fixtures]]
 path = "tests/fixtures/bolt_v3_reference_producer/orderbook_stream.toml"
 purpose = "reference producer fixture for configured order-book reference stream projection tests"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/scale_process_selection_topic_isolation.toml"
+purpose = "scale/process scenario fixture proving multi-strategy runtime selection-topic isolation without live orders"

@@ -1,0 +1,11 @@
+schema_version = 1
+event_settle_milliseconds = 50
+delay_post_stop_seconds = 0
+timeout_disconnection_seconds = 1
+condition_suffix = "condition"
+up_token_suffix = "up"
+down_token_suffix = "down"
+question_suffix = "question"
+price_to_beat = 3100.0
+accepting_orders = true
+liquidity_num = 0.0

@@ -117,6 +117,7 @@ struct TestTimingFixture {
     post_order_cancel_delay_milliseconds: u64,
     post_initial_market_delay_milliseconds: u64,
     fee_request_recv_timeout_seconds: u64,
+    submit_poll_attempts: usize,
 }
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -227,6 +228,10 @@ fn order_lifecycle_post_initial_market_delay() -> Duration {
 
 fn order_lifecycle_fee_request_recv_timeout() -> Duration {
     Duration::from_secs(test_timing_fixture().fee_request_recv_timeout_seconds)
+}
+
+fn order_lifecycle_submit_poll_attempts() -> usize {
+    test_timing_fixture().submit_poll_attempts
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -1396,7 +1401,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                         &book_deltas(down, 0.480, 0.490),
                     );
 
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         if !recorded_mock_exec_submissions().is_empty() {
                             break;
                         }
@@ -1540,7 +1545,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                         &book_deltas(down, 0.480, 0.490),
                     );
 
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         if let Some(submission) = recorded_mock_exec_submissions().first().cloned()
                         {
                             send_rejected_to_exec_engine(
@@ -1575,7 +1580,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                         &book_deltas(down, 0.480, 0.490),
                     );
 
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         if recorded_mock_exec_submissions().len() >= 2 {
                             break;
                         }
@@ -1727,7 +1732,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                     );
 
                     let mut entry_submission = None;
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         if let Some(submission) = recorded_mock_exec_submissions().first().cloned()
                         {
                             entry_submission = Some(submission);
@@ -1771,7 +1776,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                         &book_deltas(down, 0.480, 0.490),
                     );
 
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         if recorded_mock_exec_submissions().len() >= 2 {
                             break;
                         }
@@ -1923,7 +1928,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     );
 
                     let mut entry_submission = None;
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         if let Some(submission) = recorded_mock_exec_submissions().first().cloned()
                         {
                             entry_submission = Some(submission);
@@ -1968,7 +1973,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     );
 
                     let mut exit_submission = None;
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         let submissions = recorded_mock_exec_submissions();
                         if submissions.len() >= 2 {
                             exit_submission = submissions.get(1).cloned();
@@ -2012,7 +2017,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                         &book_deltas(down, 0.480, 0.490),
                     );
 
-                    for _ in 0..50 {
+                    for _ in 0..order_lifecycle_submit_poll_attempts() {
                         if recorded_mock_exec_submissions().len() >= 3 {
                             break;
                         }

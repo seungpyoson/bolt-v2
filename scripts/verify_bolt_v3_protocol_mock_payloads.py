@@ -44,6 +44,7 @@ ORDER_LIFECYCLE_DURATION_LITERAL_PATTERN = re.compile(
 ORDER_LIFECYCLE_FEE_REQUEST_COUNT_PATTERN = re.compile(
     r"spawn_fee_rate_server\(\s*\d[\d_]*\s*\)"
 )
+ORDER_LIFECYCLE_POLL_ATTEMPT_PATTERN = re.compile(r"for\s+_\s+in\s+0\.\.\d[\d_]*\s*\{")
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,15 @@ def scan_file(
                     path=rel,
                     line=line_number(text, match.start()),
                     message="order-lifecycle fee request count literal; derive from TOML fixture",
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_POLL_ATTEMPT_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="order-lifecycle poll attempt literal; derive from TOML fixture",
                     excerpt=match.group(0),
                 )
             )

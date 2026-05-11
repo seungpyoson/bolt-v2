@@ -74,6 +74,8 @@ F13as note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13at note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects `spawn_fee_rate_server(<literal>)` in `tests/bolt_v3_order_lifecycle_tracer.rs`. Fee-provider server expected request counts and fee-request receive loops now derive from `local_polymarket.fee_requests_per_binary_market` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
 
+F13au note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects literal polling loop bounds like `for _ in 0..<number>` in `tests/bolt_v3_order_lifecycle_tracer.rs`. Submit polling attempt count now derives from `test_timing.submit_poll_attempts` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

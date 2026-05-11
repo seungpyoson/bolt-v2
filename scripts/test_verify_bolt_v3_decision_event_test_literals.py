@@ -38,6 +38,7 @@ fn probe(decoded: Decoded) {
     assert_eq!(decoded.decision_event_type, "entry_evaluation");
     let _ = decoded.event_facts.get("entry_no_action_reason");
     let _ = json!({"expected_edge_basis_points": 42.0});
+    let _ = "invalid_quantity";
 }
 """,
         )
@@ -47,6 +48,7 @@ fn probe(decoded: Decoded) {
         assert "inline decision-event type value; use exported event contract constant" in messages
         assert "inline decision-event fact key; use exported event contract constant" in messages
         assert "inline decision-event JSON object fixture; move fixture data out of Rust test" in messages
+        assert "inline decision-event reason value; use exported event contract constant" in messages
 
 
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
@@ -59,6 +61,7 @@ def test_exported_constants_and_fixture_helpers_are_clean() -> None:
 fn probe(decoded: Decoded) {
     assert_eq!(decoded.decision_event_type, BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE);
     let _ = decoded.event_facts.get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY);
+    let _ = BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON;
     let _ = decision_event_json_fixture("entry_archetype_metrics.json");
 }
 """,

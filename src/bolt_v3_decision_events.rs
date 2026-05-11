@@ -46,6 +46,43 @@ pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
     "exit_pre_submit_rejection_reason";
 pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY: &str =
     "exit_order_mechanical_rejection_reason";
+pub const BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON: &str =
+    "updown_market_mechanical_rejection";
+pub const BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON: &str = "missing_reference_quote";
+pub const BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON: &str = "stale_reference_quote";
+pub const BOLT_V3_ENTRY_NO_ACTION_FEE_RATE_UNAVAILABLE_REASON: &str = "fee_rate_unavailable";
+pub const BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON: &str =
+    "fair_probability_unavailable";
+pub const BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON: &str = "insufficient_edge";
+pub const BOLT_V3_ENTRY_NO_ACTION_MARKET_COOLING_DOWN_REASON: &str = "market_cooling_down";
+pub const BOLT_V3_ENTRY_NO_ACTION_RECOVERY_MODE_REASON: &str = "recovery_mode";
+pub const BOLT_V3_ENTRY_NO_ACTION_ONE_POSITION_INVARIANT_REASON: &str = "one_position_invariant";
+pub const BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON: &str = "active_book_not_priced";
+pub const BOLT_V3_ENTRY_NO_ACTION_METADATA_MISMATCH_REASON: &str = "metadata_mismatch";
+pub const BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON: &str = "thin_book";
+pub const BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON: &str = "fast_venue_incoherent";
+pub const BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON: &str = "freeze";
+pub const BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON: &str = "position_limit_reached";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON: &str =
+    "instrument_id_missing";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON: &str =
+    "instrument_missing_from_cache";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_PRICE_REASON: &str = "invalid_price";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON: &str = "invalid_quantity";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_EXCEEDS_ORDER_NOTIONAL_CAP_REASON: &str =
+    "exceeds_order_notional_cap";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON: &str =
+    "trading_state_halted";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_REDUCING_REASON: &str =
+    "trading_state_reducing";
+pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON: &str = "exit_price_missing";
+pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON: &str =
+    "exit_quantity_exceeds_sellable_quantity";
+pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON: &str = "invalid_quantity";
+pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON: &str =
+    "trading_state_halted";
+pub const BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON: &str =
+    "exit_order_mechanical_rejection";
 pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASONS: &[&str] = &[
     "request_instruments_failed",
     "instruments_not_in_cache",
@@ -55,19 +92,19 @@ pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASONS: &[&str] = &[
     "price_to_beat_ambiguous",
 ];
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS: &[&str] = &[
-    "instrument_id_missing",
-    "instrument_missing_from_cache",
-    "invalid_price",
-    "invalid_quantity",
-    "exceeds_order_notional_cap",
-    "trading_state_halted",
-    "trading_state_reducing",
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_PRICE_REASON,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_EXCEEDS_ORDER_NOTIONAL_CAP_REASON,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_REDUCING_REASON,
 ];
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS: &[&str] = &[
-    "exit_price_missing",
-    "exit_quantity_exceeds_sellable_quantity",
-    "invalid_quantity",
-    "trading_state_halted",
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON,
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON,
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
 ];
 const MARKET_SELECTION_RESULT: &str = BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE;
 const ENTRY_EVALUATION: &str = BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE;
@@ -1232,7 +1269,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
     }
 
     match facts.entry_no_action_reason.as_deref() {
-        Some("updown_market_mechanical_rejection") => {
+        Some(BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON) => {
             if facts.updown_market_mechanical_outcome != "rejected"
                 || facts.updown_market_mechanical_rejection_reason.is_none()
             {
@@ -1242,20 +1279,20 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
             }
         }
         Some(
-            "missing_reference_quote"
-            | "stale_reference_quote"
-            | "fee_rate_unavailable"
-            | "fair_probability_unavailable"
-            | "insufficient_edge"
-            | "market_cooling_down"
-            | "recovery_mode"
-            | "one_position_invariant"
-            | "active_book_not_priced"
-            | "metadata_mismatch"
-            | "thin_book"
-            | "fast_venue_incoherent"
-            | "freeze"
-            | "position_limit_reached",
+            BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_FEE_RATE_UNAVAILABLE_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_MARKET_COOLING_DOWN_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_RECOVERY_MODE_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_ONE_POSITION_INVARIANT_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_METADATA_MISMATCH_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON
+            | BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON,
         ) => {
             if facts.updown_market_mechanical_outcome != "accepted"
                 || facts.updown_market_mechanical_rejection_reason.is_some()
@@ -1278,7 +1315,8 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
         );
     }
 
-    if facts.entry_no_action_reason.as_deref() == Some("position_limit_reached")
+    if facts.entry_no_action_reason.as_deref()
+        == Some(BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON)
         && facts.strategy_remaining_entry_capacity > 0.0
     {
         bail!(
@@ -1457,7 +1495,8 @@ fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<(
                 }
             }
             if facts.exit_decision != "hold"
-                || facts.exit_decision_reason != "exit_order_mechanical_rejection"
+                || facts.exit_decision_reason
+                    != BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON
             {
                 bail!(
                     "rejected exit_order_mechanical_outcome requires exit_decision hold and exit_decision_reason exit_order_mechanical_rejection"

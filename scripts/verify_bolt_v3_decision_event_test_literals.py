@@ -19,6 +19,21 @@ DECISION_EVENT_TYPE_LITERAL_PATTERN = re.compile(
     r"decision_event_type\s*,\s*\"(?P<literal>[a-z_]+)\"",
 )
 JSON_OBJECT_MACRO_PATTERN = re.compile(r"json!\s*\(\s*\{")
+STRING_LITERAL_PATTERN = re.compile(r'"(?P<literal>[a-z_][a-z0-9_]*)"')
+DECISION_REASON_VALUES = {
+    "active_book_not_priced",
+    "fast_venue_incoherent",
+    "freeze",
+    "insufficient_edge",
+    "instrument_id_missing",
+    "invalid_quantity",
+    "market_cooling_down",
+    "metadata_mismatch",
+    "one_position_invariant",
+    "recovery_mode",
+    "thin_book",
+    "exit_order_mechanical_rejection",
+}
 
 
 @dataclass(frozen=True)
@@ -68,6 +83,19 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                 line=line_number(text, match.start()),
                 message="inline decision-event JSON object fixture; move fixture data out of Rust test",
                 excerpt="json!({",
+            )
+        )
+
+    for match in STRING_LITERAL_PATTERN.finditer(text):
+        literal = match.group("literal")
+        if literal not in DECISION_REASON_VALUES:
+            continue
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message="inline decision-event reason value; use exported event contract constant",
+                excerpt=literal,
             )
         )
 

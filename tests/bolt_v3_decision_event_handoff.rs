@@ -2,13 +2,24 @@ use bolt_v2::bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind,
 use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_CLIENT_ORDER_ID_FACT_KEY,
     BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE,
-    BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY, BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
+    BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON, BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON,
+    BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON,
+    BOLT_V3_ENTRY_NO_ACTION_MARKET_COOLING_DOWN_REASON,
+    BOLT_V3_ENTRY_NO_ACTION_METADATA_MISMATCH_REASON,
+    BOLT_V3_ENTRY_NO_ACTION_ONE_POSITION_INVARIANT_REASON, BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY,
+    BOLT_V3_ENTRY_NO_ACTION_RECOVERY_MODE_REASON, BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON,
+    BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS,
+    BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
     BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_EXIT_EVALUATION_EVENT_VALUE,
     BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY,
     BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS,
     BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY,
     BOLT_V3_MARKET_SELECTION_FAILURE_REASONS, BoltV3DecisionEventCatalogHandoff,
@@ -281,8 +292,8 @@ fn entry_evaluation_handoff_preserves_same_timestamp_events() {
     for decision in ["enter", "no_action"] {
         let mut facts = entry_evaluation_facts();
         facts.entry_decision = decision.to_string();
-        facts.entry_no_action_reason =
-            (decision == "no_action").then(|| "insufficient_edge".to_string());
+        facts.entry_no_action_reason = (decision == "no_action")
+            .then(|| BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON.to_string());
         facts.updown_side = (decision == "enter").then(|| "up".to_string());
 
         let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
@@ -345,7 +356,8 @@ fn entry_evaluation_accepts_market_cooling_down_no_action_reason() {
     let mut facts = entry_evaluation_facts();
     facts.entry_decision = "no_action".to_string();
     facts.updown_side = None;
-    facts.entry_no_action_reason = Some("market_cooling_down".to_string());
+    facts.entry_no_action_reason =
+        Some(BOLT_V3_ENTRY_NO_ACTION_MARKET_COOLING_DOWN_REASON.to_string());
 
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
@@ -359,7 +371,9 @@ fn entry_evaluation_accepts_market_cooling_down_no_action_reason() {
         event
             .event_facts
             .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
-        Some(&Value::String("market_cooling_down".to_string()))
+        Some(&Value::String(
+            BOLT_V3_ENTRY_NO_ACTION_MARKET_COOLING_DOWN_REASON.to_string()
+        ))
     );
 }
 
@@ -368,7 +382,7 @@ fn entry_evaluation_accepts_recovery_mode_no_action_reason() {
     let mut facts = entry_evaluation_facts();
     facts.entry_decision = "no_action".to_string();
     facts.updown_side = None;
-    facts.entry_no_action_reason = Some("recovery_mode".to_string());
+    facts.entry_no_action_reason = Some(BOLT_V3_ENTRY_NO_ACTION_RECOVERY_MODE_REASON.to_string());
 
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
@@ -382,7 +396,9 @@ fn entry_evaluation_accepts_recovery_mode_no_action_reason() {
         event
             .event_facts
             .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
-        Some(&Value::String("recovery_mode".to_string()))
+        Some(&Value::String(
+            BOLT_V3_ENTRY_NO_ACTION_RECOVERY_MODE_REASON.to_string()
+        ))
     );
 }
 
@@ -391,7 +407,8 @@ fn entry_evaluation_accepts_one_position_invariant_no_action_reason() {
     let mut facts = entry_evaluation_facts();
     facts.entry_decision = "no_action".to_string();
     facts.updown_side = None;
-    facts.entry_no_action_reason = Some("one_position_invariant".to_string());
+    facts.entry_no_action_reason =
+        Some(BOLT_V3_ENTRY_NO_ACTION_ONE_POSITION_INVARIANT_REASON.to_string());
 
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
@@ -405,7 +422,9 @@ fn entry_evaluation_accepts_one_position_invariant_no_action_reason() {
         event
             .event_facts
             .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
-        Some(&Value::String("one_position_invariant".to_string()))
+        Some(&Value::String(
+            BOLT_V3_ENTRY_NO_ACTION_ONE_POSITION_INVARIANT_REASON.to_string()
+        ))
     );
 }
 
@@ -414,7 +433,7 @@ fn entry_evaluation_accepts_thin_book_no_action_reason() {
     let mut facts = entry_evaluation_facts();
     facts.entry_decision = "no_action".to_string();
     facts.updown_side = None;
-    facts.entry_no_action_reason = Some("thin_book".to_string());
+    facts.entry_no_action_reason = Some(BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON.to_string());
 
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
@@ -428,7 +447,9 @@ fn entry_evaluation_accepts_thin_book_no_action_reason() {
         event
             .event_facts
             .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
-        Some(&Value::String("thin_book".to_string()))
+        Some(&Value::String(
+            BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON.to_string()
+        ))
     );
 }
 
@@ -437,7 +458,8 @@ fn entry_evaluation_accepts_fast_venue_incoherent_no_action_reason() {
     let mut facts = entry_evaluation_facts();
     facts.entry_decision = "no_action".to_string();
     facts.updown_side = None;
-    facts.entry_no_action_reason = Some("fast_venue_incoherent".to_string());
+    facts.entry_no_action_reason =
+        Some(BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON.to_string());
 
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
@@ -451,7 +473,9 @@ fn entry_evaluation_accepts_fast_venue_incoherent_no_action_reason() {
         event
             .event_facts
             .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
-        Some(&Value::String("fast_venue_incoherent".to_string()))
+        Some(&Value::String(
+            BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON.to_string()
+        ))
     );
 }
 
@@ -460,7 +484,7 @@ fn entry_evaluation_accepts_freeze_no_action_reason() {
     let mut facts = entry_evaluation_facts();
     facts.entry_decision = "no_action".to_string();
     facts.updown_side = None;
-    facts.entry_no_action_reason = Some("freeze".to_string());
+    facts.entry_no_action_reason = Some(BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON.to_string());
 
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
@@ -474,13 +498,18 @@ fn entry_evaluation_accepts_freeze_no_action_reason() {
         event
             .event_facts
             .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
-        Some(&Value::String("freeze".to_string()))
+        Some(&Value::String(
+            BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON.to_string()
+        ))
     );
 }
 
 #[test]
 fn entry_evaluation_accepts_book_state_no_action_reasons() {
-    for reason in ["active_book_not_priced", "metadata_mismatch"] {
+    for reason in [
+        BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_METADATA_MISMATCH_REASON,
+    ] {
         let mut facts = entry_evaluation_facts();
         facts.entry_decision = "no_action".to_string();
         facts.entry_no_action_reason = Some(reason.to_string());
@@ -580,7 +609,8 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
             order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
-            rejection_reason: "invalid_quantity".to_string(),
+            rejection_reason: BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON
+                .to_string(),
             authoritative_position_quantity: None,
             authoritative_sellable_quantity: None,
             open_exit_order_quantity: None,
@@ -622,7 +652,9 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
                 decoded
                     .event_facts
                     .get(BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
-                Some(&Value::String("invalid_quantity".to_string()))
+                Some(&Value::String(
+                    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string()
+                ))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -677,7 +709,8 @@ fn entry_pre_submit_rejection_accepts_missing_instrument_id_reason() {
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
             order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
-            rejection_reason: "instrument_id_missing".to_string(),
+            rejection_reason: BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON
+                .to_string(),
             authoritative_position_quantity: None,
             authoritative_sellable_quantity: None,
             open_exit_order_quantity: None,
@@ -741,7 +774,7 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
             order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
-            rejection_reason: "invalid_quantity".to_string(),
+            rejection_reason: BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string(),
             authoritative_position_quantity: Some(10.0),
             authoritative_sellable_quantity: Some(10.0),
             open_exit_order_quantity: Some(0.0),
@@ -775,7 +808,9 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
-                Some(&Value::String("invalid_quantity".to_string()))
+                Some(&Value::String(
+                    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string()
+                ))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -877,7 +912,8 @@ fn exit_evaluation_rejects_missing_mechanical_rejection_reason() {
     facts.exit_order_mechanical_outcome = "rejected".to_string();
     facts.exit_order_mechanical_rejection_reason = None;
     facts.exit_decision = "hold".to_string();
-    facts.exit_decision_reason = "exit_order_mechanical_rejection".to_string();
+    facts.exit_decision_reason =
+        BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string();
 
     let error = BoltV3ExitEvaluationDecisionEvent::exit_evaluation(
         common_fields(),

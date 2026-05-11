@@ -1145,7 +1145,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"instrument_id_missing\""
-context = "\"instrument_id_missing\","
+context = "\"instrument_id_missing\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1153,7 +1153,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"instrument_missing_from_cache\""
-context = "\"instrument_missing_from_cache\","
+context = "\"instrument_missing_from_cache\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1161,7 +1161,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"invalid_price\""
-context = "\"invalid_price\","
+context = "pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_PRICE_REASON: &str = \"invalid_price\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1169,7 +1169,15 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"invalid_quantity\""
-context = "\"invalid_quantity\","
+context = "pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON: &str = \"invalid_quantity\";"
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"invalid_quantity\""
+context = "pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON: &str = \"invalid_quantity\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1177,7 +1185,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exceeds_order_notional_cap\""
-context = "\"exceeds_order_notional_cap\","
+context = "\"exceeds_order_notional_cap\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1185,7 +1193,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"trading_state_halted\""
-context = "\"trading_state_halted\","
+context = "\"trading_state_halted\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1193,7 +1201,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"trading_state_reducing\""
-context = "\"trading_state_reducing\","
+context = "\"trading_state_reducing\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1201,7 +1209,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_price_missing\""
-context = "\"exit_price_missing\","
+context = "pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON: &str = \"exit_price_missing\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1209,7 +1217,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_quantity_exceeds_sellable_quantity\""
-context = "\"exit_quantity_exceeds_sellable_quantity\","
+context = "\"exit_quantity_exceeds_sellable_quantity\";"
 classification = "decision_event_reason_allowlist_value"
 reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
 
@@ -1753,7 +1761,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"updown_market_mechanical_rejection\""
-context = "Some(\"updown_market_mechanical_rejection\") => {"
+context = "\"updown_market_mechanical_rejection\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1761,7 +1769,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"missing_reference_quote\""
-context = "\"missing_reference_quote\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON: &str = \"missing_reference_quote\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1769,7 +1777,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"stale_reference_quote\""
-context = "| \"stale_reference_quote\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON: &str = \"stale_reference_quote\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1777,7 +1785,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"fee_rate_unavailable\""
-context = "| \"fee_rate_unavailable\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_FEE_RATE_UNAVAILABLE_REASON: &str = \"fee_rate_unavailable\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1785,7 +1793,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"fair_probability_unavailable\""
-context = "| \"fair_probability_unavailable\""
+context = "\"fair_probability_unavailable\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1793,7 +1801,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"insufficient_edge\""
-context = "| \"insufficient_edge\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON: &str = \"insufficient_edge\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1801,7 +1809,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"market_cooling_down\""
-context = "| \"market_cooling_down\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_MARKET_COOLING_DOWN_REASON: &str = \"market_cooling_down\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1809,7 +1817,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"recovery_mode\""
-context = "| \"recovery_mode\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_RECOVERY_MODE_REASON: &str = \"recovery_mode\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1817,7 +1825,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"one_position_invariant\""
-context = "| \"one_position_invariant\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_ONE_POSITION_INVARIANT_REASON: &str = \"one_position_invariant\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1825,7 +1833,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"active_book_not_priced\""
-context = "| \"active_book_not_priced\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON: &str = \"active_book_not_priced\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1833,7 +1841,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"metadata_mismatch\""
-context = "| \"metadata_mismatch\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_METADATA_MISMATCH_REASON: &str = \"metadata_mismatch\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1841,7 +1849,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"thin_book\""
-context = "| \"thin_book\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON: &str = \"thin_book\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1849,7 +1857,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"fast_venue_incoherent\""
-context = "| \"fast_venue_incoherent\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON: &str = \"fast_venue_incoherent\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1857,7 +1865,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"freeze\""
-context = "| \"freeze\""
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON: &str = \"freeze\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1865,7 +1873,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"position_limit_reached\""
-context = "| \"position_limit_reached\","
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON: &str = \"position_limit_reached\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1889,7 +1897,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"position_limit_reached\""
-context = "if facts.entry_no_action_reason.as_deref() == Some(\"position_limit_reached\")"
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON: &str = \"position_limit_reached\";"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -2233,7 +2241,7 @@ reason = "This is a contract value or reason value checked while validating exit
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_order_mechanical_rejection\""
-context = "|| facts.exit_decision_reason != \"exit_order_mechanical_rejection\""
+context = "\"exit_order_mechanical_rejection\";"
 classification = "decision_event_exit_contract_check"
 reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
 

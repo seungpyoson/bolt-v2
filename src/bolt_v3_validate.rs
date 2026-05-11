@@ -44,7 +44,7 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, ReferenceStreamBlock, ReleaseBlock, RiskBlock,
+    PersistenceBlock, REFERENCE_STREAM_ID_PARAMETER, ReferenceStreamBlock, ReleaseBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -619,7 +619,7 @@ fn validate_reference_stream_id(
     let Some(parameters) = strategy.parameters.as_table() else {
         return errors;
     };
-    let Some(value) = parameters.get("reference_stream_id") else {
+    let Some(value) = parameters.get(REFERENCE_STREAM_ID_PARAMETER) else {
         return errors;
     };
 

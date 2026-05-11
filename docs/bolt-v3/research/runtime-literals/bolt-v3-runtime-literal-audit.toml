@@ -1030,14 +1030,6 @@ classification = "positive_float_validation_gate"
 reason = "This is the lower bound for reference-stream input weights; actual weights come from TOML."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '"reference_stream_id"'
-context = 'let Some(value) = parameters.get("reference_stream_id") else {'
-classification = "strategy_parameter_key"
-reason = "This is the v3 strategy parameter key used to validate a strategy-selected root reference stream."
-
-[[allowed]]
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"BoltV3MarketSelectionDecisionEvent\""

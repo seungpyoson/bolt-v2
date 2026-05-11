@@ -24,8 +24,12 @@ ENFORCED_TEST_FILES = (
     "tests/bolt_v3_reference_producer.rs",
     "tests/bolt_v3_strategy_registration.rs",
 )
+ENFORCED_SOURCE_FILES = ("src/bolt_v3_validate.rs",)
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
-REFERENCE_STREAM_PARAMETER_LITERALS = frozenset({"reference_stream_id"})
+REFERENCE_STREAM_PARAMETER_LITERAL_PATTERN = re.compile(r'"reference_stream_id"')
+AUTO_DISABLE_REASON_LITERAL_PATTERN = re.compile(
+    r'"auto-disabled after [^"]* without a fresh reference update"'
+)
 
 
 @dataclass(frozen=True)
@@ -92,19 +96,27 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
     findings: list[Finding] = []
+    for match in REFERENCE_STREAM_PARAMETER_LITERAL_PATTERN.finditer(text):
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message="reference stream parameter-key literal; use REFERENCE_STREAM_ID_PARAMETER",
+                excerpt=match.group(0),
+            )
+        )
+    for match in AUTO_DISABLE_REASON_LITERAL_PATTERN.finditer(text):
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message="reference auto-disable reason literal; derive with reference_auto_disable_reason",
+                excerpt=match.group(0),
+            )
+        )
     for match in STRING_PATTERN.finditer(text):
         literal = match.group(0)
         value = string_value(literal)
-        if value in REFERENCE_STREAM_PARAMETER_LITERALS:
-            findings.append(
-                Finding(
-                    path=rel,
-                    line=line_number(text, match.start()),
-                    message="reference stream parameter-key literal; use REFERENCE_STREAM_ID_PARAMETER",
-                    excerpt=literal,
-                )
-            )
-            continue
         if value not in fixture_literals:
             continue
         findings.append(
@@ -121,7 +133,7 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
 def scan_root(root: Path) -> list[Finding]:
     fixture_literals = reference_policy_fixture_literals(root)
     findings: list[Finding] = []
-    for relative_path in ENFORCED_TEST_FILES:
+    for relative_path in ENFORCED_TEST_FILES + ENFORCED_SOURCE_FILES:
         path = root / relative_path
         if path.is_file():
             findings.extend(scan_file(root, path, fixture_literals))

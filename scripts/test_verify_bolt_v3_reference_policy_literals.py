@@ -108,6 +108,38 @@ def test_reference_stream_parameter_literal_is_a_finding() -> None:
         assert "reference stream parameter-key literal" in findings[0].message
 
 
+def test_reference_stream_parameter_literal_in_source_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_validate.rs",
+            'fn probe() { let _ = "reference_stream_id"; }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "src/bolt_v3_validate.rs"
+        assert "reference stream parameter-key literal" in findings[0].message
+
+
+def test_auto_disable_reason_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_reference_policy.rs",
+            'fn probe() { let _ = "auto-disabled after 2100ms without a fresh reference update"; }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_reference_policy.rs"
+        assert "reference auto-disable reason literal" in findings[0].message
+
+
 def test_derived_reference_fixture_lookup_is_clean() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -167,17 +199,26 @@ def test_strategy_registration_file_is_enforced() -> None:
         raise AssertionError("strategy registration test file must be enforced")
 
 
+def test_validate_source_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "src/bolt_v3_validate.rs" not in verifier.ENFORCED_SOURCE_FILES:
+        raise AssertionError("bolt-v3 validate source file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_reference_source_id_literal_is_a_finding,
         test_reference_instrument_literal_is_a_finding,
         test_reference_stream_parameter_literal_is_a_finding,
+        test_reference_stream_parameter_literal_in_source_is_a_finding,
+        test_auto_disable_reason_literal_is_a_finding,
         test_derived_reference_fixture_lookup_is_clean,
         test_reference_policy_file_is_enforced,
         test_reference_producer_file_is_enforced,
         test_adapter_mapping_file_is_enforced,
         test_reference_actor_registration_file_is_enforced,
         test_strategy_registration_file_is_enforced,
+        test_validate_source_file_is_enforced,
     ]
     for test in tests:
         test()

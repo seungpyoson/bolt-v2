@@ -43,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     clients::ReferenceDataClientParts,
-    config::{ReferenceConfig, ReferenceVenueKind},
+    config::{ChainlinkSharedConfig, ReferenceConfig, ReferenceVenueEntry, ReferenceVenueKind},
     secrets::{ResolvedChainlinkSecrets, SsmResolverSession, resolve_chainlink},
 };
 
@@ -205,16 +205,23 @@ pub fn build_chainlink_reference_data_client_with_secrets(
     reference: &ReferenceConfig,
     secrets: ResolvedChainlinkSecrets,
 ) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
-    ensure_custom_data_json_registered::<ChainlinkOracleUpdate>()?;
-
     let shared = reference.chainlink.as_ref().ok_or_else(|| {
         anyhow!("missing shared chainlink config for configured chainlink reference venues")
     })?;
+    build_chainlink_reference_data_client_from_parts(shared, &reference.venues, secrets)
+}
+
+pub fn build_chainlink_reference_data_client_from_parts(
+    shared: &ChainlinkSharedConfig,
+    venues: &[ReferenceVenueEntry],
+    secrets: ResolvedChainlinkSecrets,
+) -> Result<ReferenceDataClientParts, Box<dyn std::error::Error>> {
+    ensure_custom_data_json_registered::<ChainlinkOracleUpdate>()?;
+
     let ws_reconnect_alert_threshold = usize::try_from(shared.ws_reconnect_alert_threshold)
         .context("chainlink ws_reconnect_alert_threshold does not fit in usize")?;
 
-    let feeds = reference
-        .venues
+    let feeds = venues
         .iter()
         .filter(|venue| venue.kind == ReferenceVenueKind::Chainlink)
         .map(|venue| {

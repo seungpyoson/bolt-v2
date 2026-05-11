@@ -15,10 +15,9 @@ use crate::{
         ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
-    clients::chainlink::build_chainlink_reference_data_client_with_secrets,
+    clients::chainlink::build_chainlink_reference_data_client_from_parts,
     config::{
-        ChainlinkReferenceConfig, ChainlinkSharedConfig, ReferenceConfig, ReferenceVenueEntry,
-        ReferenceVenueKind,
+        ChainlinkReferenceConfig, ChainlinkSharedConfig, ReferenceVenueEntry, ReferenceVenueKind,
     },
     secrets::ResolvedChainlinkSecrets,
 };
@@ -236,11 +235,8 @@ pub fn map_adapters(
     let data = match &context.client_id.data {
         Some(value) => {
             let secrets = secrets_for(context.client_id_key, context.resolved)?;
-            let data_config = map_data(context.client_id_key, value, context, secrets)?;
-            Some(BoltV3DataClientAdapterConfig {
-                factory: data_config.0,
-                config: data_config.1,
-            })
+            let (factory, config) = map_data(context.client_id_key, value, context, secrets)?;
+            Some(BoltV3DataClientAdapterConfig { factory, config })
         }
         None => None,
     };
@@ -263,9 +259,10 @@ fn map_data(
             message: error.to_string(),
         }
     })?;
-    let reference = reference_config_for_client(client_id_key, &cfg, context)?;
-    build_chainlink_reference_data_client_with_secrets(
-        &reference,
+    let reference = reference_client_plan_for_client(client_id_key, &cfg, context)?;
+    build_chainlink_reference_data_client_from_parts(
+        &reference.shared,
+        &reference.venues,
         ResolvedChainlinkSecrets {
             api_key: secrets.api_key.clone(),
             api_secret: secrets.api_secret.clone(),
@@ -278,11 +275,16 @@ fn map_data(
     })
 }
 
-fn reference_config_for_client(
+struct ChainlinkReferenceClientPlan {
+    shared: ChainlinkSharedConfig,
+    venues: Vec<ReferenceVenueEntry>,
+}
+
+fn reference_client_plan_for_client(
     client_id_key: &str,
     data: &ChainlinkDataConfig,
     context: ProviderAdapterMapContext<'_>,
-) -> Result<ReferenceConfig, BoltV3ClientMappingError> {
+) -> Result<ChainlinkReferenceClientPlan, BoltV3ClientMappingError> {
     let secrets: ChainlinkSecretsConfig = context
         .client_id
         .secrets
@@ -349,17 +351,14 @@ fn reference_config_for_client(
         });
     }
 
-    Ok(ReferenceConfig {
-        publish_topic: String::new(),
-        min_publish_interval_ms: 1,
-        binance: None,
-        chainlink: Some(ChainlinkSharedConfig {
+    Ok(ChainlinkReferenceClientPlan {
+        shared: ChainlinkSharedConfig {
             region: data.region.clone(),
             api_key: secrets.api_key_ssm_path,
             api_secret: secrets.api_secret_ssm_path,
             ws_url: data.ws_url.clone(),
             ws_reconnect_alert_threshold: data.ws_reconnect_alert_threshold,
-        }),
+        },
         venues,
     })
 }

@@ -130,6 +130,8 @@ fn polymarket_client_id_config_plus_resolved_secrets_maps_to_nt_native_fields() 
     assert_eq!(data.ws_max_subscriptions, 200);
     assert_eq!(data.update_instruments_interval_mins, 60);
     assert!(!data.subscribe_new_markets);
+    assert!(!data.auto_load_missing_instruments);
+    assert_eq!(data.auto_load_debounce_ms, 100);
 
     let exec = polymarket
         .execution
@@ -178,6 +180,37 @@ fn polymarket_client_id_config_plus_resolved_secrets_maps_to_nt_native_fields() 
 }
 
 #[test]
+fn adapter_mapper_uses_configured_polymarket_auto_load_debounce() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let polymarket_data = loaded
+        .root
+        .clients
+        .get_mut("polymarket_main")
+        .and_then(|client_id| client_id.data.as_mut())
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture polymarket data table should exist");
+    polymarket_data.insert(
+        "auto_load_debounce_milliseconds".to_string(),
+        toml::Value::Integer(250),
+    );
+
+    let resolved = fixture_resolved_secrets();
+    let configs = map_bolt_v3_clients(&loaded, &resolved)
+        .expect("non-default auto-load debounce should map cleanly");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .and_then(|client| client.data.as_ref())
+        .expect("polymarket data config should be mapped")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert!(!data.auto_load_missing_instruments);
+    assert_eq!(data.auto_load_debounce_ms, 250);
+}
+
+#[test]
 fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed() {
     // Root validation rejects this value. This test mutates an already
     // loaded config to ensure the client mapper also fails closed if a
@@ -207,6 +240,38 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
         } => {
             assert_eq!(client_id_key, "polymarket_main");
             assert_eq!(field, "data.subscribe_new_markets");
+        }
+        other => panic!("expected ValidationInvariant, got {other}"),
+    }
+}
+
+#[test]
+fn adapter_mapper_rejects_auto_load_missing_instruments_true_if_validation_was_bypassed() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let polymarket_data = loaded
+        .root
+        .clients
+        .get_mut("polymarket_main")
+        .and_then(|client_id| client_id.data.as_mut())
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture polymarket data table should exist");
+    polymarket_data.insert(
+        "auto_load_missing_instruments".to_string(),
+        toml::Value::Boolean(true),
+    );
+
+    let resolved = fixture_resolved_secrets();
+    let error = map_bolt_v3_clients(&loaded, &resolved)
+        .expect_err("mapper must not forward auto_load_missing_instruments=true to NT");
+    match error {
+        BoltV3ClientMappingError::ValidationInvariant {
+            client_id_key,
+            field,
+            ..
+        } => {
+            assert_eq!(client_id_key, "polymarket_main");
+            assert_eq!(field, "data.auto_load_missing_instruments");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
     }

@@ -117,6 +117,8 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_seconds = 60
 ws_timeout_seconds = 30
 subscribe_new_markets = false
+auto_load_missing_instruments = false
+auto_load_debounce_milliseconds = 100
 update_instruments_interval_minutes = 60
 websocket_max_subscriptions_per_connection = 200
 

@@ -7,11 +7,11 @@
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
-kind = "number"
-literal = "100"
-context = "auto_load_debounce_ms: 100,"
-classification = "accepted_current_residual"
-reason = "The Polymarket provider binding owns the pinned NT data config debounce residual. This is a current provider-adapter residual, not a new core runtime value."
+kind = "string"
+literal = "\"auto_load_debounce_milliseconds\""
+context = "\"auto_load_debounce_milliseconds\","
+classification = "provider_schema_field_name"
+reason = "This literal names the Polymarket provider-owned TOML field validated before mapping into NT; the value itself comes from TOML."
 
 [[allowed]]
 path = "src/bolt_v3_adapters.rs"

@@ -395,6 +395,8 @@ pub struct PolymarketDataConfig {
     pub http_timeout_seconds: u64,
     pub ws_timeout_seconds: u64,
     pub subscribe_new_markets: bool,
+    pub auto_load_missing_instruments: bool,
+    pub auto_load_debounce_milliseconds: u64,
     pub update_instruments_interval_minutes: u64,
     pub websocket_max_subscriptions_per_connection: u64,
 }
@@ -566,6 +568,10 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
         ("http_timeout_seconds", data.http_timeout_seconds),
         ("ws_timeout_seconds", data.ws_timeout_seconds),
         (
+            "auto_load_debounce_milliseconds",
+            data.auto_load_debounce_milliseconds,
+        ),
+        (
             "update_instruments_interval_minutes",
             data.update_instruments_interval_minutes,
         ),
@@ -595,6 +601,13 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
              `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
              which violates the bolt-v3 controlled-connect boundary until the \
              market-subscription slice owns it"
+        ));
+    }
+    if data.auto_load_missing_instruments {
+        errors.push(format!(
+            "clients.{key}.data.auto_load_missing_instruments must be false in the current bolt-v3 scope; \
+             missing-instrument loading must stay explicit until the pre-order readiness gate owns \
+             instrument readiness"
         ));
     }
     errors
@@ -789,6 +802,13 @@ fn map_data(
             message: "must be false before mapping to NT because pinned NT subscribes to all Polymarket markets when this flag is true".to_string(),
         });
     }
+    if cfg.auto_load_missing_instruments {
+        return Err(BoltV3ClientMappingError::ValidationInvariant {
+            client_id_key: client_id_key.to_string(),
+            field: "data.auto_load_missing_instruments",
+            message: "must be false before mapping to NT because missing-instrument loading belongs behind the pre-order readiness gate".to_string(),
+        });
+    }
     let ws_max_subscriptions = usize::try_from(cfg.websocket_max_subscriptions_per_connection)
         .map_err(|_| BoltV3ClientMappingError::NumericRange {
             client_id_key: client_id_key.to_string(),
@@ -809,8 +829,8 @@ fn map_data(
         ws_max_subscriptions,
         update_instruments_interval_mins: cfg.update_instruments_interval_minutes,
         subscribe_new_markets: cfg.subscribe_new_markets,
-        auto_load_missing_instruments: false,
-        auto_load_debounce_ms: 100,
+        auto_load_missing_instruments: cfg.auto_load_missing_instruments,
+        auto_load_debounce_ms: cfg.auto_load_debounce_milliseconds,
         transport_backend: Default::default(),
         filters,
         new_market_filter: None,

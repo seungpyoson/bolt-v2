@@ -1423,6 +1423,8 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_seconds = 0
 ws_timeout_seconds = 0
 subscribe_new_markets = false
+auto_load_missing_instruments = false
+auto_load_debounce_milliseconds = 0
 update_instruments_interval_minutes = 0
 websocket_max_subscriptions_per_connection = 0
 
@@ -1452,6 +1454,7 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
     let expected = [
         "clients.polymarket_main.data.http_timeout_seconds must be a positive integer",
         "clients.polymarket_main.data.ws_timeout_seconds must be a positive integer",
+        "clients.polymarket_main.data.auto_load_debounce_milliseconds must be a positive integer",
         "clients.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
         "clients.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
         "clients.polymarket_main.execution.http_timeout_seconds must be a positive integer",
@@ -1998,10 +2001,29 @@ fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
 }
 
 #[test]
+fn rejects_polymarket_data_auto_load_missing_instruments_true_in_current_slice() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "auto_load_missing_instruments = false",
+        "auto_load_missing_instruments = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("auto_load_missing_instruments=true fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("auto_load_missing_instruments")
+            && m.contains("must be false")),
+        "expected auto_load_missing_instruments=true validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_more_than_one_polymarket_client_id_in_current_slice() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client_id = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let extra_client_id = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_milliseconds = 100\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client_id}");

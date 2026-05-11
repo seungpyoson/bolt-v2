@@ -3572,6 +3572,40 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_decision_evidence_write_
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_blocks_exit_submit_when_decision_evidence_write_fails() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let occupied_path = temp_dir.path().join("not-a-directory");
+    std::fs::write(&occupied_path, b"occupied").unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(&occupied_path),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_exit_sellable_rejection(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "failed exit decision-evidence handoff must block NT submit"
+    );
+}
+
+#[test]
 fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_order_id() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();

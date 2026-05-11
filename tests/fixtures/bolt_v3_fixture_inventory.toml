@@ -1,0 +1,41 @@
+schema_version = 1
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3/root.toml"
+purpose = "baseline bolt-v3 binary-oracle config fixture for config, adapter, provider, readiness, and controlled-connect tests"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3/root_missing_polymarket_execution_secrets.toml"
+purpose = "negative fixture proving Polymarket execution clients require configured SSM execution secrets"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3/strategies/binary_oracle.toml"
+purpose = "baseline strategy file referenced by the baseline bolt-v3 root fixture"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/root.toml"
+purpose = "existing eth-chainlink-taker strategy root fixture for v3 strategy registration, decision evidence, readiness, and order-lifecycle tests"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/root_multi.toml"
+purpose = "multi-strategy existing-strategy root fixture for concurrent strategy config and readiness coverage"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/strategies/eth_chainlink_taker.toml"
+purpose = "primary existing eth-chainlink-taker strategy fixture selected by root.toml"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/strategies/eth_chainlink_taker_15m.toml"
+purpose = "second existing eth-chainlink-taker strategy fixture used by multi-strategy config coverage"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/strategies/eth_chainlink_taker_period_mismatch.toml"
+purpose = "negative existing-strategy fixture proving strategy period and target cadence validation"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_reference_policy/eth_usd_stream.toml"
+purpose = "isolated ETH/USD reference-stream fixture for source-health and fused-reference policy tests"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3_reference_producer/orderbook_stream.toml"
+purpose = "reference producer fixture for configured order-book reference stream projection tests"

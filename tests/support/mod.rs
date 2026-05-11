@@ -134,6 +134,51 @@ pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdownSelectedMarketLegFixture {
+    pub outcome: String,
+    pub token_id: String,
+    pub instrument_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdownSelectedMarketFixture {
+    pub name: String,
+    pub condition_id: String,
+    pub question_id: String,
+    pub market_slug: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub legs: Vec<UpdownSelectedMarketLegFixture>,
+}
+
+impl UpdownSelectedMarketFixture {
+    pub fn leg(&self, outcome: &str) -> &UpdownSelectedMarketLegFixture {
+        self.legs
+            .iter()
+            .find(|leg| leg.outcome == outcome)
+            .unwrap_or_else(|| panic!("fixture market {} should include {outcome} leg", self.name))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdownSelectedMarketsFixtureFile {
+    markets: Vec<UpdownSelectedMarketFixture>,
+}
+
+pub fn bolt_v3_updown_selected_market_fixture(name: &str) -> UpdownSelectedMarketFixture {
+    let path = repo_path("tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml");
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    let fixture: UpdownSelectedMarketsFixtureFile = toml::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
+    fixture
+        .markets
+        .into_iter()
+        .find(|market| market.name == name)
+        .unwrap_or_else(|| panic!("{} should define market fixture {name}", path.display()))
+}
+
 pub fn attach_test_release_identity_manifest(loaded: &mut LoadedBoltV3Config, temp_dir: &Path) {
     let config_hash = bolt_v3_config_hash(loaded).expect("fixture config hash should compute");
     let nt_revision = bolt_v3_compiled_nautilus_trader_revision()

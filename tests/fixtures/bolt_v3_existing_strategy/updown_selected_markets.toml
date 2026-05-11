@@ -1,0 +1,73 @@
+schema_version = 1
+
+[[markets]]
+name = "current"
+condition_id = "0xcurrent"
+question_id = "question-current"
+market_slug = "eth-updown-5m-600"
+start_ms = 600000
+end_ms = 900000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "111"
+instrument_id = "0xcurrent-111.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "222"
+instrument_id = "0xcurrent-222.POLYMARKET"
+
+[[markets]]
+name = "stale"
+condition_id = "0xstale"
+question_id = "question-stale"
+market_slug = "eth-updown-5m-600"
+start_ms = 300000
+end_ms = 600000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "111"
+instrument_id = "0xstale-111.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "222"
+instrument_id = "0xstale-222.POLYMARKET"
+
+[[markets]]
+name = "ambiguous_a"
+condition_id = "0xambiguous-a"
+question_id = "question-ambiguous"
+market_slug = "eth-updown-5m-600"
+start_ms = 600000
+end_ms = 900000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "111"
+instrument_id = "0xambiguous-a-111.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "222"
+instrument_id = "0xambiguous-a-222.POLYMARKET"
+
+[[markets]]
+name = "ambiguous_b"
+condition_id = "0xambiguous-b"
+question_id = "question-ambiguous"
+market_slug = "eth-updown-5m-600"
+start_ms = 600000
+end_ms = 900000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "333"
+instrument_id = "0xambiguous-b-333.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "444"
+instrument_id = "0xambiguous-b-444.POLYMARKET"

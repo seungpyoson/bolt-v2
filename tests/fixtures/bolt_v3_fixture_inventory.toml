@@ -37,6 +37,10 @@ path = "tests/fixtures/bolt_v3_existing_strategy/reconciliation/open_order.toml"
 purpose = "external open-order mass-status fixture for bolt-v3 startup reconciliation proof"
 
 [[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml"
+purpose = "synthetic selected updown market/instrument fixture for NT cache instrument-readiness tests"
+
+[[fixtures]]
 path = "tests/fixtures/bolt_v3_reference_policy/eth_usd_stream.toml"
 purpose = "isolated ETH/USD reference-stream fixture for source-health and fused-reference policy tests"
 

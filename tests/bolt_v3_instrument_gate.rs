@@ -165,6 +165,22 @@ fn polymarket_updown_option(
     ))
 }
 
+fn polymarket_updown_option_from_fixture(
+    market: &support::UpdownSelectedMarketFixture,
+    leg: &support::UpdownSelectedMarketLegFixture,
+) -> InstrumentAny {
+    polymarket_updown_option(
+        leg.instrument_id.as_str(),
+        leg.token_id.as_str(),
+        market.condition_id.as_str(),
+        market.question_id.as_str(),
+        market.market_slug.as_str(),
+        leg.outcome.as_str(),
+        market.start_ms,
+        market.end_ms,
+    )
+}
+
 fn unix_seconds_to_gamma_iso(seconds: i64) -> String {
     DateTime::<Utc>::from_timestamp(seconds, 0)
         .expect("test period timestamp should fit chrono")
@@ -269,32 +285,15 @@ fn live_node_instrument_gate_accepts_loaded_selected_market_before_start() {
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build and register configured strategy");
     let cache = node.kernel().cache();
-    cache
-        .borrow_mut()
-        .add_instrument(polymarket_updown_option(
-            "0xcurrent-111.POLYMARKET",
-            "111",
-            "0xcurrent",
-            "question-current",
-            "eth-updown-5m-600",
-            "Up",
-            600_000,
-            900_000,
-        ))
-        .unwrap();
-    cache
-        .borrow_mut()
-        .add_instrument(polymarket_updown_option(
-            "0xcurrent-222.POLYMARKET",
-            "222",
-            "0xcurrent",
-            "question-current",
-            "eth-updown-5m-600",
-            "Down",
-            600_000,
-            900_000,
-        ))
-        .unwrap();
+    let current_market = support::bolt_v3_updown_selected_market_fixture("current");
+    {
+        let mut cache = cache.borrow_mut();
+        for leg in &current_market.legs {
+            cache
+                .add_instrument(polymarket_updown_option_from_fixture(&current_market, leg))
+                .unwrap();
+        }
+    }
 
     let report = check_bolt_v3_instrument_readiness_for_start(&node, &loaded, 601_000)
         .expect("readiness check should not fail on identity math");
@@ -310,7 +309,11 @@ fn live_node_instrument_gate_accepts_loaded_selected_market_before_start() {
         BoltV3InstrumentReadinessStatus::Ready
     );
     assert!(report.facts[0].detail.contains("selected_market"));
-    assert!(report.facts[0].detail.contains("eth-updown-5m-600"));
+    assert!(
+        report.facts[0]
+            .detail
+            .contains(current_market.market_slug.as_str())
+    );
 }
 
 #[test]

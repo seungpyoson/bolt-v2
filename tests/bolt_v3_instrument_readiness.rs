@@ -34,36 +34,30 @@ fn existing_strategy_plan() -> MarketIdentityPlan {
 }
 
 fn polymarket_updown_option(
-    instrument_id: &str,
-    token_id: &str,
-    condition_id: &str,
-    question_id: &str,
-    market_slug: &str,
-    outcome: &str,
-    start_ms: u64,
-    end_ms: u64,
+    market: &support::UpdownSelectedMarketFixture,
+    leg: &support::UpdownSelectedMarketLegFixture,
 ) -> InstrumentAny {
-    let instrument_id = InstrumentId::from(instrument_id);
+    let instrument_id = InstrumentId::from(leg.instrument_id.as_str());
     let price_increment = Price::from("0.001");
     let size_increment = Quantity::from("0.01");
     let mut info = Params::new();
-    info.insert("token_id".to_string(), json!(token_id));
-    info.insert("condition_id".to_string(), json!(condition_id));
-    info.insert("question_id".to_string(), json!(question_id));
-    info.insert("market_slug".to_string(), json!(market_slug));
+    info.insert("token_id".to_string(), json!(leg.token_id));
+    info.insert("condition_id".to_string(), json!(market.condition_id));
+    info.insert("question_id".to_string(), json!(market.question_id));
+    info.insert("market_slug".to_string(), json!(market.market_slug));
 
     InstrumentAny::BinaryOption(BinaryOption::new(
         instrument_id,
         instrument_id.symbol,
         AssetClass::Alternative,
         Currency::USDC(),
-        UnixNanos::from(start_ms * 1_000_000),
-        UnixNanos::from(end_ms * 1_000_000),
+        UnixNanos::from(market.start_ms * 1_000_000),
+        UnixNanos::from(market.end_ms * 1_000_000),
         price_increment.precision,
         size_increment.precision,
         price_increment,
         size_increment,
-        Some(Ustr::from(outcome)),
+        Some(Ustr::from(leg.outcome.as_str())),
         None,
         None,
         None,
@@ -81,35 +75,21 @@ fn polymarket_updown_option(
     ))
 }
 
+fn add_fixture_market(cache: &mut Cache, market: &support::UpdownSelectedMarketFixture) {
+    for leg in &market.legs {
+        cache
+            .add_instrument(polymarket_updown_option(market, leg))
+            .unwrap();
+    }
+}
+
 #[test]
 fn cached_current_updown_pair_resolves_selected_market_identity() {
     let target = target_plan();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
-    cache
-        .add_instrument(polymarket_updown_option(
-            "0xcurrent-111.POLYMARKET",
-            "111",
-            "0xcurrent",
-            "question-current",
-            "eth-updown-5m-600",
-            "Up",
-            600_000,
-            900_000,
-        ))
-        .unwrap();
-    cache
-        .add_instrument(polymarket_updown_option(
-            "0xcurrent-222.POLYMARKET",
-            "222",
-            "0xcurrent",
-            "question-current",
-            "eth-updown-5m-600",
-            "Down",
-            600_000,
-            900_000,
-        ))
-        .unwrap();
+    let current_market = support::bolt_v3_updown_selected_market_fixture("current");
+    add_fixture_market(&mut cache, &current_market);
 
     let resolution = resolve_updown_selected_market_from_cache(&cache, &target, &venue, 601_000)
         .expect("selection should not fail on identity math");
@@ -119,26 +99,37 @@ fn cached_current_updown_pair_resolves_selected_market_identity() {
             role,
             selected_market,
         } => {
+            let up_leg = current_market.leg("Up");
+            let down_leg = current_market.leg("Down");
             assert_eq!(role, UpdownSelectedMarketRole::Current);
-            assert_eq!(selected_market.market_selection_type, "rotating_market");
-            assert_eq!(selected_market.client_id, target.client_id_key);
-            assert_eq!(selected_market.venue, "POLYMARKET");
-            assert_eq!(selected_market.rotating_market_family, "updown");
-            assert_eq!(selected_market.polymarket_condition_id, "0xcurrent");
-            assert_eq!(selected_market.polymarket_market_slug, "eth-updown-5m-600");
-            assert_eq!(selected_market.polymarket_question_id, "question-current");
-            assert_eq!(selected_market.up_instrument_id, "0xcurrent-111.POLYMARKET");
             assert_eq!(
-                selected_market.down_instrument_id,
-                "0xcurrent-222.POLYMARKET"
+                selected_market.market_selection_type,
+                target.market_selection_type
+            );
+            assert_eq!(selected_market.client_id, target.client_id_key);
+            assert_eq!(selected_market.venue, venue.as_str());
+            assert_eq!(selected_market.rotating_market_family, "updown");
+            assert_eq!(
+                selected_market.polymarket_condition_id,
+                current_market.condition_id
             );
             assert_eq!(
+                selected_market.polymarket_market_slug,
+                current_market.market_slug
+            );
+            assert_eq!(
+                selected_market.polymarket_question_id,
+                current_market.question_id
+            );
+            assert_eq!(selected_market.up_instrument_id, up_leg.instrument_id);
+            assert_eq!(selected_market.down_instrument_id, down_leg.instrument_id);
+            assert_eq!(
                 selected_market.polymarket_market_start_timestamp_milliseconds,
-                600_000
+                i64::try_from(current_market.start_ms).unwrap()
             );
             assert_eq!(
                 selected_market.polymarket_market_end_timestamp_milliseconds,
-                900_000
+                i64::try_from(current_market.end_ms).unwrap()
             );
         }
         other => panic!("expected selected current market; got {other:?}"),
@@ -150,30 +141,8 @@ fn current_slug_with_non_current_time_window_does_not_select_market() {
     let target = target_plan();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
-    cache
-        .add_instrument(polymarket_updown_option(
-            "0xstale-111.POLYMARKET",
-            "111",
-            "0xstale",
-            "question-stale",
-            "eth-updown-5m-600",
-            "Up",
-            300_000,
-            600_000,
-        ))
-        .unwrap();
-    cache
-        .add_instrument(polymarket_updown_option(
-            "0xstale-222.POLYMARKET",
-            "222",
-            "0xstale",
-            "question-stale",
-            "eth-updown-5m-600",
-            "Down",
-            300_000,
-            600_000,
-        ))
-        .unwrap();
+    let stale_market = support::bolt_v3_updown_selected_market_fixture("stale");
+    add_fixture_market(&mut cache, &stale_market);
 
     let resolution = resolve_updown_selected_market_from_cache(&cache, &target, &venue, 601_000)
         .expect("selection should not fail on identity math");
@@ -208,34 +177,11 @@ fn multiple_current_updown_pairs_for_same_target_fail_ambiguous() {
     let target = target_plan();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
-    for (condition_id, up_token, down_token) in [
-        ("0xambiguous-a", "111", "222"),
-        ("0xambiguous-b", "333", "444"),
+    for market in [
+        support::bolt_v3_updown_selected_market_fixture("ambiguous_a"),
+        support::bolt_v3_updown_selected_market_fixture("ambiguous_b"),
     ] {
-        cache
-            .add_instrument(polymarket_updown_option(
-                &format!("{condition_id}-{up_token}.POLYMARKET"),
-                up_token,
-                condition_id,
-                "question-ambiguous",
-                "eth-updown-5m-600",
-                "Up",
-                600_000,
-                900_000,
-            ))
-            .unwrap();
-        cache
-            .add_instrument(polymarket_updown_option(
-                &format!("{condition_id}-{down_token}.POLYMARKET"),
-                down_token,
-                condition_id,
-                "question-ambiguous",
-                "eth-updown-5m-600",
-                "Down",
-                600_000,
-                900_000,
-            ))
-            .unwrap();
+        add_fixture_market(&mut cache, &market);
     }
 
     let resolution = resolve_updown_selected_market_from_cache(&cache, &target, &venue, 601_000)
@@ -257,30 +203,8 @@ fn config_path_resolves_each_client_target_from_nt_cache() {
     let client_id = plan.updown_targets[0].client_id_key.clone();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
-    cache
-        .add_instrument(polymarket_updown_option(
-            "0xcurrent-111.POLYMARKET",
-            "111",
-            "0xcurrent",
-            "question-current",
-            "eth-updown-5m-600",
-            "Up",
-            600_000,
-            900_000,
-        ))
-        .unwrap();
-    cache
-        .add_instrument(polymarket_updown_option(
-            "0xcurrent-222.POLYMARKET",
-            "222",
-            "0xcurrent",
-            "question-current",
-            "eth-updown-5m-600",
-            "Down",
-            600_000,
-            900_000,
-        ))
-        .unwrap();
+    let current_market = support::bolt_v3_updown_selected_market_fixture("current");
+    add_fixture_market(&mut cache, &current_market);
 
     let resolutions = resolve_updown_selected_markets_for_client_from_cache(
         &cache, &plan, &client_id, &venue, 601_000,

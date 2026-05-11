@@ -101,6 +101,10 @@ ORDER_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
     "side",
     "time_in_force",
 }
+PRE_SUBMIT_REJECTION_REASON_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
+    "entry_pre_submit_rejection_reason",
+    "exit_pre_submit_rejection_reason",
+}
 
 @dataclass(frozen=True)
 class Finding:
@@ -293,6 +297,22 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     line=line_number(text, match.start()),
                     message=(
                         "inline order fact key; use exported event contract constant"
+                    ),
+                    excerpt=literal,
+                )
+            )
+
+        for match in EVENT_FACT_GET_PATTERN.finditer(text):
+            literal = match.group("literal")
+            if literal not in PRE_SUBMIT_REJECTION_REASON_FACT_KEY_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "inline pre-submit rejection reason fact key; use "
+                        "exported event contract constant"
                     ),
                     excerpt=literal,
                 )

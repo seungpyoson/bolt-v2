@@ -37,6 +37,7 @@ use bolt_v2::{
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+        BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_REDUCING_REASON,
         BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
@@ -46,6 +47,7 @@ use bolt_v2::{
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
         BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY, BOLT_V3_INSTRUMENT_ID_FACT_KEY,
         BOLT_V3_IS_POST_ONLY_FACT_KEY, BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY,
@@ -818,7 +820,7 @@ fn exit_pre_submit_rejection_events_with_reason<'a>(
         .filter(|event| {
             event
                 .event_facts
-                .get("exit_pre_submit_rejection_reason")
+                .get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY)
                 .and_then(serde_json::Value::as_str)
                 == Some(reason)
         })
@@ -2510,7 +2512,9 @@ fn eth_chainlink_taker_runtime_restrictive_trading_states_block_entry_submit() {
                     .downcast_ref::<BoltV3EntryPreSubmitRejectionDecisionEvent>()
                     .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
                 assert_eq!(
-                    decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                    decoded
+                        .event_facts
+                        .get(BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                     Some(&serde_json::Value::String(expected_reason.to_string()))
                 );
             }
@@ -4521,7 +4525,9 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON
                         .to_string()
@@ -4638,7 +4644,9 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string()
                 ))
@@ -4727,7 +4735,9 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON.to_string()
                 ))
@@ -4900,7 +4910,9 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string()
                 ))
@@ -5063,7 +5075,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     match sellable_quantity_events.last() {
         Some(decoded) => {
             assert_eq!(
-                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                decoded.event_facts.get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON
                         .to_string()
@@ -5225,7 +5237,9 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
     match trading_state_events.last() {
         Some(decoded) => {
             assert_eq!(
-                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON.to_string()
                 ))
@@ -5311,7 +5325,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
                     .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
                     .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
                 assert_ne!(
-                    decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                    decoded.event_facts.get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                     Some(&serde_json::Value::from(
                         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON
                     )),

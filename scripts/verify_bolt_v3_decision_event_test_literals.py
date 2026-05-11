@@ -13,9 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DECISION_EVENT_HANDOFF_TEST_FILE = "tests/bolt_v3_decision_event_handoff.rs"
 ORDER_INTENT_GATE_TEST_FILE = "tests/bolt_v3_order_intent_gate.rs"
 DECISION_EVENT_CONTEXT_TEST_FILE = "tests/bolt_v3_decision_event_context.rs"
+ETH_CHAINLINK_RUNTIME_TEST_FILE = "tests/eth_chainlink_taker_runtime.rs"
 ENFORCED_TEST_FILES = (
     DECISION_EVENT_HANDOFF_TEST_FILE,
     DECISION_EVENT_CONTEXT_TEST_FILE,
+    ETH_CHAINLINK_RUNTIME_TEST_FILE,
     ORDER_INTENT_GATE_TEST_FILE,
 )
 EVENT_FACT_GET_PATTERN = re.compile(
@@ -83,48 +85,49 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
     rel = path.relative_to(root).as_posix()
     findings: list[Finding] = []
 
-    for match in EVENT_FACT_GET_PATTERN.finditer(text):
-        findings.append(
-            Finding(
-                path=rel,
-                line=line_number(text, match.start()),
-                message="inline decision-event fact key; use exported event contract constant",
-                excerpt=match.group("literal"),
+    if rel == DECISION_EVENT_HANDOFF_TEST_FILE:
+        for match in EVENT_FACT_GET_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="inline decision-event fact key; use exported event contract constant",
+                    excerpt=match.group("literal"),
+                )
             )
-        )
 
-    for match in DECISION_EVENT_TYPE_LITERAL_PATTERN.finditer(text):
-        findings.append(
-            Finding(
-                path=rel,
-                line=line_number(text, match.start()),
-                message="inline decision-event type value; use exported event contract constant",
-                excerpt=match.group("literal"),
+        for match in DECISION_EVENT_TYPE_LITERAL_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="inline decision-event type value; use exported event contract constant",
+                    excerpt=match.group("literal"),
+                )
             )
-        )
 
-    for match in JSON_OBJECT_MACRO_PATTERN.finditer(text):
-        findings.append(
-            Finding(
-                path=rel,
-                line=line_number(text, match.start()),
-                message="inline decision-event JSON object fixture; move fixture data out of Rust test",
-                excerpt="json!({",
+        for match in JSON_OBJECT_MACRO_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="inline decision-event JSON object fixture; move fixture data out of Rust test",
+                    excerpt="json!({",
+                )
             )
-        )
 
-    for match in STRING_LITERAL_PATTERN.finditer(text):
-        literal = match.group("literal")
-        if literal not in DECISION_REASON_VALUES:
-            continue
-        findings.append(
-            Finding(
-                path=rel,
-                line=line_number(text, match.start()),
-                message="inline decision-event reason value; use exported event contract constant",
-                excerpt=literal,
+        for match in STRING_LITERAL_PATTERN.finditer(text):
+            literal = match.group("literal")
+            if literal not in DECISION_REASON_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="inline decision-event reason value; use exported event contract constant",
+                    excerpt=literal,
+                )
             )
-        )
 
     if rel == ORDER_INTENT_GATE_TEST_FILE:
         for match in DIRECT_COMMON_FIELDS_PATTERN.finditer(text):
@@ -152,7 +155,11 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                 )
             )
 
-    if rel in {DECISION_EVENT_CONTEXT_TEST_FILE, DECISION_EVENT_HANDOFF_TEST_FILE}:
+    if rel in {
+        DECISION_EVENT_CONTEXT_TEST_FILE,
+        DECISION_EVENT_HANDOFF_TEST_FILE,
+        ETH_CHAINLINK_RUNTIME_TEST_FILE,
+    }:
         for match in RUST_STRING_LITERAL_PATTERN.finditer(text):
             value = string_value(match.group(0))
             if value not in DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES:

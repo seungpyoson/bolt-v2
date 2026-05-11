@@ -1,0 +1,24 @@
+[weighted_fresh_sources]
+oracle_price = 100.0
+orderbook_bid = 119.0
+orderbook_ask = 121.0
+observation_ts_ms = 1000
+
+[stale_or_disabled_sources]
+oracle_price = 100.0
+orderbook_bid = 119.0
+orderbook_ask = 121.0
+observation_ts_ms = 1000
+
+[derived_disable_map]
+oracle_price = 100.0
+orderbook_bid = 119.0
+orderbook_ask = 121.0
+observation_ts_ms = 1000
+
+[manual_disable]
+reason = "reference policy fixture manual disable"
+
+[existing_strategy_observed_input]
+observed_price = 3100.0
+observation_ts_ms = 1000

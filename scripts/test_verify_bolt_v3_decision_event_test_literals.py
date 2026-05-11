@@ -134,6 +134,27 @@ fn probe() {
         )
 
 
+def test_eth_chainlink_runtime_context_literal_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/eth_chainlink_taker_runtime.rs",
+            """
+fn probe() {
+    let _ = "release-sha";
+    let _ = "target-eth-updown";
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 2
+        assert {
+            "inline decision-event context fixture literal; derive from v3 TOML, release identity, or generated trace id"
+        } == {finding.message for finding in findings}
+
+
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -168,16 +189,23 @@ def test_decision_event_context_file_is_enforced() -> None:
         raise AssertionError("decision event context test file must be enforced")
 
 
+def test_eth_chainlink_runtime_file_is_enforced() -> None:
+    if "tests/eth_chainlink_taker_runtime.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("eth chainlink runtime test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_inline_event_contract_literals_are_findings,
         test_order_intent_gate_direct_event_fixture_construction_is_a_finding,
         test_decision_event_context_identity_literal_is_a_finding,
         test_decision_event_handoff_fixture_literal_is_a_finding,
+        test_eth_chainlink_runtime_context_literal_is_a_finding,
         test_exported_constants_and_fixture_helpers_are_clean,
         test_decision_event_handoff_file_is_enforced,
         test_order_intent_gate_file_is_enforced,
         test_decision_event_context_file_is_enforced,
+        test_eth_chainlink_runtime_file_is_enforced,
     ]
     for test in tests:
         test()

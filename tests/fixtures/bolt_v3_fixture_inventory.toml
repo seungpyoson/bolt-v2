@@ -37,5 +37,9 @@ path = "tests/fixtures/bolt_v3_reference_policy/eth_usd_stream.toml"
 purpose = "isolated ETH/USD reference-stream fixture for source-health and fused-reference policy tests"
 
 [[fixtures]]
+path = "tests/fixtures/bolt_v3_reference_policy/scenarios.toml"
+purpose = "reference-policy scenario values for source-health, fused-reference, and existing-strategy stream tests"
+
+[[fixtures]]
 path = "tests/fixtures/bolt_v3_reference_producer/orderbook_stream.toml"
 purpose = "reference producer fixture for configured order-book reference stream projection tests"

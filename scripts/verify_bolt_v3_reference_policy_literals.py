@@ -30,6 +30,10 @@ REFERENCE_STREAM_PARAMETER_LITERAL_PATTERN = re.compile(r'"reference_stream_id"'
 AUTO_DISABLE_REASON_LITERAL_PATTERN = re.compile(
     r'"auto-disabled after [^"]* without a fresh reference update"'
 )
+INLINE_REFERENCE_POLICY_SCENARIO_VALUE_PATTERN = re.compile(
+    r"\blet\s+(?:oracle_price|orderbook_bid|orderbook_ask|observed_price)\s*=\s*[0-9][^;]*;"
+)
+INLINE_REFERENCE_POLICY_REASON_LITERAL_PATTERN = re.compile(r'"test disables \{\}"')
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,25 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
                 excerpt=match.group(0),
             )
         )
+    if rel == "tests/bolt_v3_reference_policy.rs":
+        for match in INLINE_REFERENCE_POLICY_SCENARIO_VALUE_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="reference-policy scenario value literal; load from test fixture",
+                    excerpt=match.group(0),
+                )
+            )
+        for match in INLINE_REFERENCE_POLICY_REASON_LITERAL_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="reference-policy manual disable reason literal; load from test fixture",
+                    excerpt=match.group(0),
+                )
+            )
     for match in STRING_PATTERN.finditer(text):
         literal = match.group(0)
         value = string_value(literal)

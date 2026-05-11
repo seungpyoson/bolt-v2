@@ -12,7 +12,9 @@ use bolt_v2::{
     bolt_v3_config::{
         CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock, load_bolt_v3_config,
     },
-    bolt_v3_decision_event_context::BoltV3DecisionEventCommonContext,
+    bolt_v3_decision_event_context::{
+        BoltV3DecisionEventCommonContext, bolt_v3_decision_event_common_context,
+    },
     bolt_v3_decision_events::{
         BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
@@ -26,6 +28,7 @@ use bolt_v2::{
         BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
         BoltV3MarketSelectionDecisionEvent,
     },
+    bolt_v3_release_identity::load_bolt_v3_release_identity,
     bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     config::Config,
     live_node_setup::{
@@ -316,24 +319,65 @@ fn strategy_raw_config_with_max_position_usdc(max_position_usdc: f64) -> Value {
 }
 
 fn common_decision_context() -> BoltV3DecisionEventCommonContext {
-    let strategy_config = strategy_raw_config();
-    BoltV3DecisionEventCommonContext {
-        schema_version: 1,
-        strategy_instance_id: strategy_id_from_raw_config(&strategy_config).to_string(),
-        strategy_archetype: ETH_CHAINLINK_TAKER_KIND.to_string(),
-        trader_id: "BOLT-001".to_string(),
-        client_id: strategy_config
-            .get("client_id")
-            .and_then(Value::as_str)
-            .expect("test strategy config must include client_id")
-            .to_string(),
-        venue: "POLYMARKET".to_string(),
-        runtime_mode: "live".to_string(),
-        release_id: "release-sha".to_string(),
-        config_hash: "config-hash".to_string(),
-        nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e".to_string(),
-        configured_target_id: "target-eth-updown".to_string(),
+    common_decision_context_from_strategy_config(&strategy_raw_config())
+}
+
+fn common_decision_context_from_strategy_config(
+    strategy_config: &Value,
+) -> BoltV3DecisionEventCommonContext {
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing-strategy root fixture should load");
+    let runtime_client_id = strategy_config
+        .get("client_id")
+        .and_then(Value::as_str)
+        .expect("test strategy config should include client_id");
+    let runtime_strategy_id = strategy_config
+        .get("strategy_id")
+        .and_then(Value::as_str)
+        .expect("test strategy config should include strategy_id");
+    let fixture_client_id = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy root fixture should load one strategy")
+        .config
+        .execution_client_id
+        .clone();
+    if runtime_client_id != fixture_client_id {
+        let fixture_client = loaded
+            .root
+            .clients
+            .get(&fixture_client_id)
+            .cloned()
+            .expect("existing-strategy root fixture should define selected client");
+        loaded
+            .root
+            .clients
+            .insert(runtime_client_id.to_string(), fixture_client);
+        loaded
+            .strategies
+            .first_mut()
+            .expect("existing-strategy root fixture should load one strategy")
+            .config
+            .execution_client_id = runtime_client_id.to_string();
     }
+    loaded
+        .strategies
+        .first_mut()
+        .expect("existing-strategy root fixture should load one strategy")
+        .config
+        .strategy_instance_id = runtime_strategy_id.to_string();
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
+    let identity = load_bolt_v3_release_identity(&loaded).expect("release identity should load");
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy root fixture should load one strategy");
+
+    bolt_v3_decision_event_common_context(&loaded, strategy, &identity)
+        .expect("decision context should derive from v3 TOML and release identity")
 }
 
 fn configured_target_id_from_decision_context() -> String {
@@ -2293,8 +2337,10 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 0, "{submissions:?}");
 
-    let market_selection_events =
-        query_market_selection_events(temp_dir.path(), "target-eth-updown");
+    let market_selection_events = query_market_selection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(market_selection_events.len(), 1);
     match &market_selection_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -2473,8 +2519,10 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 0, "{submissions:?}");
 
-    let market_selection_events =
-        query_market_selection_events(temp_dir.path(), "target-eth-updown");
+    let market_selection_events = query_market_selection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(market_selection_events.len(), 1);
     match &market_selection_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -2593,8 +2641,10 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
     );
     let evaluation_trace_id = decoded.decision_trace_id.clone();
 
-    let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_entry_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(submission_events.len(), 1);
     match &submission_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -3350,7 +3400,10 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
         "position-limit-reached entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events = query_entry_evaluation_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -3386,8 +3439,10 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
         other => panic!("expected Data::Custom, got {other:?}"),
     }
 
-    let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_entry_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "position-limit-reached entry evaluation must not persist order submission"
@@ -3439,7 +3494,10 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
         "open entry capacity from NT cache must not submit another order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events = query_entry_evaluation_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -3786,7 +3844,10 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
         "market-not-started mechanical entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events = query_entry_evaluation_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -3829,8 +3890,10 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
         other => panic!("expected Data::Custom, got {other:?}"),
     }
 
-    let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_entry_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "market-not-started mechanical entry evaluation must not persist order submission"
@@ -3869,7 +3932,10 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
         "market-ended mechanical entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events = query_entry_evaluation_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -3912,8 +3978,10 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
         other => panic!("expected Data::Custom, got {other:?}"),
     }
 
-    let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_entry_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "market-ended mechanical entry evaluation must not persist order submission"
@@ -4043,8 +4111,10 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
         "pre-submit rejection must not submit order"
     );
 
-    let rejection_events =
-        query_entry_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    let rejection_events = query_entry_pre_submit_rejection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(rejection_events.len(), 1);
     match &rejection_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -4107,8 +4177,10 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
         other => panic!("expected Data::Custom, got {other:?}"),
     }
 
-    let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_entry_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "pre-submit rejection must not persist order submission"
@@ -4152,8 +4224,10 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
         "invalid quantity rejection must not submit order"
     );
 
-    let rejection_events =
-        query_entry_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    let rejection_events = query_entry_pre_submit_rejection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(rejection_events.len(), 1);
     match &rejection_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -4194,8 +4268,10 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
         other => panic!("expected Data::Custom, got {other:?}"),
     }
 
-    let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_entry_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "invalid quantity rejection must not persist order submission"
@@ -4234,8 +4310,10 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
         "exit pre-submit rejection must not submit order"
     );
 
-    let rejection_events =
-        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    let rejection_events = query_exit_pre_submit_rejection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     let exit_price_missing_events =
         exit_pre_submit_rejection_events_with_reason(&rejection_events, "exit_price_missing");
     match exit_price_missing_events.last() {
@@ -4288,14 +4366,19 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
         None => panic!("expected exit_price_missing rejection event, got {rejection_events:?}"),
     }
 
-    let submission_events =
-        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_exit_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "exit pre-submit rejection must not persist order submission"
     );
 
-    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events = query_exit_evaluation_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     let exit_bid_unavailable_event = evaluation_events.iter().find_map(|event| {
         let nautilus_model::data::Data::Custom(custom) = event else {
             return None;
@@ -4393,8 +4476,10 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
         "exit invalid quantity rejection must not submit order"
     );
 
-    let rejection_events =
-        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    let rejection_events = query_exit_pre_submit_rejection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     let invalid_quantity_events =
         exit_pre_submit_rejection_events_with_reason(&rejection_events, "invalid_quantity");
     match invalid_quantity_events.last() {
@@ -4447,14 +4532,19 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
         None => panic!("expected invalid_quantity rejection event, got {rejection_events:?}"),
     }
 
-    let submission_events =
-        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_exit_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "exit invalid quantity rejection must not persist order submission"
     );
 
-    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events = query_exit_evaluation_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -4547,8 +4637,10 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
         "exit sellable quantity rejection must not submit another sell order"
     );
 
-    let rejection_events =
-        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    let rejection_events = query_exit_pre_submit_rejection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     let sellable_quantity_events = exit_pre_submit_rejection_events_with_reason(
         &rejection_events,
         "exit_quantity_exceeds_sellable_quantity",
@@ -4597,14 +4689,19 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
         ),
     }
 
-    let submission_events =
-        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    let submission_events = query_exit_order_submission_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     assert!(
         submission_events.is_empty(),
         "exit sellable quantity rejection must not persist order submission"
     );
 
-    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events = query_exit_evaluation_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     let open_order_covers_position_event = evaluation_events.iter().find_map(|event| {
         let nautilus_model::data::Data::Custom(custom) = event else {
             return None;
@@ -4783,8 +4880,10 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
 
-    let rejection_events =
-        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    let rejection_events = query_exit_pre_submit_rejection_events(
+        temp_dir.path(),
+        configured_target_id_from_decision_context().as_str(),
+    );
     for event in rejection_events {
         match event {
             nautilus_model::data::Data::Custom(custom) => {

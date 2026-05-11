@@ -140,6 +140,38 @@ def test_auto_disable_reason_literal_is_a_finding() -> None:
         assert "reference auto-disable reason literal" in findings[0].message
 
 
+def test_reference_policy_scenario_value_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_reference_policy.rs",
+            "fn probe() { let oracle_price = 100.0; }\n",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_reference_policy.rs"
+        assert "reference-policy scenario value literal" in findings[0].message
+
+
+def test_reference_policy_manual_disable_reason_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_reference_policy.rs",
+            'fn probe() { let _ = format!("test disables {}", "source"); }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_reference_policy.rs"
+        assert "reference-policy manual disable reason literal" in findings[0].message
+
+
 def test_derived_reference_fixture_lookup_is_clean() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -212,6 +244,8 @@ def main() -> int:
         test_reference_stream_parameter_literal_is_a_finding,
         test_reference_stream_parameter_literal_in_source_is_a_finding,
         test_auto_disable_reason_literal_is_a_finding,
+        test_reference_policy_scenario_value_literal_is_a_finding,
+        test_reference_policy_manual_disable_reason_literal_is_a_finding,
         test_derived_reference_fixture_lookup_is_clean,
         test_reference_policy_file_is_enforced,
         test_reference_producer_file_is_enforced,

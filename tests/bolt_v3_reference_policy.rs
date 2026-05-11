@@ -10,17 +10,49 @@ use bolt_v2::{
         ReferenceObservation, VenueHealth, VenueKind, reference_auto_disable_reason,
     },
 };
+use serde::Deserialize;
 
 mod support;
 
 struct PolicyFixture {
     stream_id: String,
     stream: ReferenceStreamBlock,
+    scenarios: PolicyScenariosFixture,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyScenariosFixture {
+    weighted_fresh_sources: PolicyObservationScenario,
+    stale_or_disabled_sources: PolicyObservationScenario,
+    derived_disable_map: PolicyObservationScenario,
+    manual_disable: ManualDisableScenario,
+    existing_strategy_observed_input: ObservedInputScenario,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyObservationScenario {
+    oracle_price: f64,
+    orderbook_bid: f64,
+    orderbook_ask: f64,
+    observation_ts_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManualDisableScenario {
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ObservedInputScenario {
+    observed_price: f64,
+    observation_ts_ms: u64,
 }
 
 fn policy_fixture() -> PolicyFixture {
     let fixture_path =
         support::repo_path("tests/fixtures/bolt_v3_reference_policy/eth_usd_stream.toml");
+    let scenarios_path =
+        support::repo_path("tests/fixtures/bolt_v3_reference_policy/scenarios.toml");
     let stream_id = fixture_path
         .file_name()
         .and_then(|file_name| file_name.to_str())
@@ -30,8 +62,16 @@ fn policy_fixture() -> PolicyFixture {
     let toml =
         std::fs::read_to_string(fixture_path).expect("reference policy fixture should be readable");
     let stream = toml::from_str(&toml).expect("reference policy fixture should parse");
+    let scenarios_toml = std::fs::read_to_string(scenarios_path)
+        .expect("reference policy scenarios fixture should be readable");
+    let scenarios =
+        toml::from_str(&scenarios_toml).expect("reference policy scenarios fixture should parse");
 
-    PolicyFixture { stream_id, stream }
+    PolicyFixture {
+        stream_id,
+        stream,
+        scenarios,
+    }
 }
 
 fn input_by_type(
@@ -94,11 +134,12 @@ fn observation_from_input(
 fn v3_reference_stream_policy_fuses_weighted_fresh_sources() {
     let fixture = policy_fixture();
     let stream = &fixture.stream;
+    let scenario = &fixture.scenarios.weighted_fresh_sources;
     let oracle_input = input_by_type(stream, ReferenceSourceType::Oracle);
     let orderbook_input = input_by_type(stream, ReferenceSourceType::Orderbook);
-    let oracle_price = 100.0;
-    let orderbook_bid = 119.0;
-    let orderbook_ask = 121.0;
+    let oracle_price = scenario.oracle_price;
+    let orderbook_bid = scenario.orderbook_bid;
+    let orderbook_ask = scenario.orderbook_ask;
     let orderbook_mid = (orderbook_bid + orderbook_ask) / 2.0;
     let total_weight = stream
         .inputs
@@ -110,7 +151,7 @@ fn v3_reference_stream_policy_fuses_weighted_fresh_sources() {
         / total_weight;
     let policy = BoltV3ReferenceStreamPolicy::from_stream(&fixture.stream_id, stream)
         .expect("reference stream policy should build from valid fixture");
-    let observation_ts_ms = stream.min_publish_interval_milliseconds * 10;
+    let observation_ts_ms = scenario.observation_ts_ms;
     let latest = observations_from_stream(
         stream,
         oracle_price,
@@ -137,11 +178,12 @@ fn v3_reference_stream_policy_fuses_weighted_fresh_sources() {
 fn v3_reference_stream_policy_excludes_stale_or_disabled_sources() {
     let fixture = policy_fixture();
     let stream = &fixture.stream;
+    let scenario = &fixture.scenarios.stale_or_disabled_sources;
     let oracle_input = input_by_type(stream, ReferenceSourceType::Oracle);
     let orderbook_input = input_by_type(stream, ReferenceSourceType::Orderbook);
-    let oracle_price = 100.0;
-    let orderbook_bid = 119.0;
-    let orderbook_ask = 121.0;
+    let oracle_price = scenario.oracle_price;
+    let orderbook_bid = scenario.orderbook_bid;
+    let orderbook_ask = scenario.orderbook_ask;
     let total_weight = stream
         .inputs
         .iter()
@@ -149,7 +191,7 @@ fn v3_reference_stream_policy_excludes_stale_or_disabled_sources() {
         .sum::<f64>();
     let policy = BoltV3ReferenceStreamPolicy::from_stream(&fixture.stream_id, stream)
         .expect("reference stream policy should build from valid fixture");
-    let observation_ts_ms = stream.min_publish_interval_milliseconds * 10;
+    let observation_ts_ms = scenario.observation_ts_ms;
     let latest = observations_from_stream(
         stream,
         oracle_price,
@@ -157,7 +199,7 @@ fn v3_reference_stream_policy_excludes_stale_or_disabled_sources() {
         orderbook_ask,
         observation_ts_ms,
     );
-    let manual_disable_reason = format!("test disables {}", orderbook_input.source_id);
+    let manual_disable_reason = fixture.scenarios.manual_disable.reason.clone();
     let disabled = BTreeMap::from([(
         orderbook_input.source_id.clone(),
         manual_disable_reason.clone(),
@@ -184,11 +226,12 @@ fn v3_reference_stream_policy_excludes_stale_or_disabled_sources() {
 fn v3_reference_stream_policy_derives_disable_map_before_fusion() {
     let fixture = policy_fixture();
     let stream = &fixture.stream;
+    let scenario = &fixture.scenarios.derived_disable_map;
     let oracle_input = input_by_type(stream, ReferenceSourceType::Oracle);
     let orderbook_input = input_by_type(stream, ReferenceSourceType::Orderbook);
-    let oracle_price = 100.0;
-    let orderbook_bid = 119.0;
-    let orderbook_ask = 121.0;
+    let oracle_price = scenario.oracle_price;
+    let orderbook_bid = scenario.orderbook_bid;
+    let orderbook_ask = scenario.orderbook_ask;
     let total_weight = stream
         .inputs
         .iter()
@@ -196,7 +239,7 @@ fn v3_reference_stream_policy_derives_disable_map_before_fusion() {
         .sum::<f64>();
     let policy = BoltV3ReferenceStreamPolicy::from_stream(&fixture.stream_id, stream)
         .expect("reference stream policy should build from valid fixture");
-    let orderbook_ts_ms = stream.min_publish_interval_milliseconds * 10;
+    let orderbook_ts_ms = scenario.observation_ts_ms;
     let disabled_age_ms =
         orderbook_input.disable_after_milliseconds + stream.min_publish_interval_milliseconds;
     let now_ms = orderbook_ts_ms + disabled_age_ms;
@@ -245,6 +288,8 @@ fn v3_reference_stream_policy_derives_disable_map_before_fusion() {
 
 #[test]
 fn existing_strategy_root_stream_uses_v3_reference_policy() {
+    let fixture = policy_fixture();
+    let scenario = &fixture.scenarios.existing_strategy_observed_input;
     let loaded = load_bolt_v3_config(&support::repo_path(
         "tests/fixtures/bolt_v3_existing_strategy/root.toml",
     ))
@@ -283,8 +328,8 @@ fn existing_strategy_root_stream_uses_v3_reference_policy() {
         .sum::<f64>();
     let policy = BoltV3ReferenceStreamPolicy::from_stream(stream_id, stream)
         .expect("existing strategy stream should build policy");
-    let observed_price = 3_100.0;
-    let observation_ts_ms = stream.min_publish_interval_milliseconds * 10;
+    let observed_price = scenario.observed_price;
+    let observation_ts_ms = scenario.observation_ts_ms;
     let latest = BTreeMap::from([(
         observed_input.source_id.clone(),
         ReferenceObservation::Oracle {

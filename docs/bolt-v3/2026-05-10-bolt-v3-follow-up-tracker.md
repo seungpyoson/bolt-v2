@@ -72,6 +72,8 @@ F13ar note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13as note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects literal-only `Duration::from_secs(...)` and `Duration::from_millis(...)` calls in `tests/bolt_v3_order_lifecycle_tracer.rs`. Local CLOB wait timeout, poll interval, post-order cancel delay, post-initial-market delay, and fee-request receive timeout now live in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
 
+F13at note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects `spawn_fee_rate_server(<literal>)` in `tests/bolt_v3_order_lifecycle_tracer.rs`. Fee-provider server expected request counts and fee-request receive loops now derive from `local_polymarket.fee_requests_per_binary_market` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

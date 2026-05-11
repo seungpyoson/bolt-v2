@@ -1297,7 +1297,8 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
     let temp_dir = TempDir::new().unwrap();
-    let (fee_base_url, fee_requests) = spawn_fee_rate_server(2);
+    let (fee_base_url, fee_requests) =
+        spawn_fee_rate_server(local_polymarket_fee_requests_per_binary_market());
     let mut loaded =
         load_bolt_v3_config(&existing_strategy_root_fixture()).expect("v3 fixture should load");
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
@@ -1420,7 +1421,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
     assert_eq!(entry_submission_events(&catalog_dir, &target_id), 1);
-    for _ in 0..2 {
+    for _ in 0..local_polymarket_fee_requests_per_binary_market() {
         let request = fee_requests
             .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");
@@ -1440,7 +1441,8 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
     let temp_dir = TempDir::new().unwrap();
-    let (fee_base_url, fee_requests) = spawn_fee_rate_server(2);
+    let (fee_base_url, fee_requests) =
+        spawn_fee_rate_server(local_polymarket_fee_requests_per_binary_market());
     let mut loaded =
         load_bolt_v3_config(&existing_strategy_root_fixture()).expect("v3 fixture should load");
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
@@ -1605,7 +1607,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
         "{submissions:?}"
     );
     assert_eq!(entry_submission_events(&catalog_dir, &target_id), 2);
-    for _ in 0..2 {
+    for _ in 0..local_polymarket_fee_requests_per_binary_market() {
         let request = fee_requests
             .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");
@@ -1625,7 +1627,8 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
     let temp_dir = TempDir::new().unwrap();
-    let (fee_base_url, fee_requests) = spawn_fee_rate_server(2);
+    let (fee_base_url, fee_requests) =
+        spawn_fee_rate_server(local_polymarket_fee_requests_per_binary_market());
     let mut loaded =
         load_bolt_v3_config(&existing_strategy_root_fixture()).expect("v3 fixture should load");
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
@@ -1800,7 +1803,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
     assert_eq!(submissions[1].quantity, submissions[0].quantity);
     assert_eq!(entry_submission_events(&catalog_dir, &target_id), 1);
     assert_eq!(exit_submission_events(&catalog_dir, &target_id), 1);
-    for _ in 0..2 {
+    for _ in 0..local_polymarket_fee_requests_per_binary_market() {
         let request = fee_requests
             .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");
@@ -1820,7 +1823,8 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
     let temp_dir = TempDir::new().unwrap();
-    let (fee_base_url, fee_requests) = spawn_fee_rate_server(2);
+    let (fee_base_url, fee_requests) =
+        spawn_fee_rate_server(local_polymarket_fee_requests_per_binary_market());
     let mut loaded =
         load_bolt_v3_config(&existing_strategy_root_fixture()).expect("v3 fixture should load");
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
@@ -2045,7 +2049,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
     );
     assert_eq!(entry_submission_events(&catalog_dir, &target_id), 1);
     assert_eq!(exit_submission_events(&catalog_dir, &target_id), 2);
-    for _ in 0..2 {
+    for _ in 0..local_polymarket_fee_requests_per_binary_market() {
         let request = fee_requests
             .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");

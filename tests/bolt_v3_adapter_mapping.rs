@@ -8,8 +8,8 @@ use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
     bolt_v3_providers::{
-        binance::ResolvedBoltV3BinanceSecrets,
-        chainlink::ResolvedBoltV3ChainlinkSecrets,
+        binance::{self, ResolvedBoltV3BinanceSecrets},
+        chainlink::{self, ResolvedBoltV3ChainlinkSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
@@ -46,20 +46,54 @@ fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
     }
 }
 
-fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
+fn fixture_client_id_for_venue(root: &BoltV3RootConfig, venue: &str) -> String {
+    let matches = root
+        .clients
+        .iter()
+        .filter_map(|(client_id, block)| {
+            (block.venue.as_str() == venue).then_some(client_id.clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "fixture should define exactly one {venue} client, got {matches:?}"
+    );
+    matches[0].clone()
+}
+
+fn fixture_secret_string(root: &BoltV3RootConfig, client_id: &str, field: &str) -> String {
+    root.clients
+        .get(client_id)
+        .and_then(|client| client.secrets.as_ref())
+        .and_then(toml::Value::as_table)
+        .and_then(|secrets| secrets.get(field))
+        .and_then(toml::Value::as_str)
+        .unwrap_or_else(|| panic!("fixture client {client_id} should define secrets.{field}"))
+        .to_string()
+}
+
+fn fixture_resolved_secrets(loaded: &LoadedBoltV3Config) -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
-        "polymarket_main".to_string(),
+        fixture_client_id_for_venue(&loaded.root, polymarket::KEY),
         Arc::new(fixture_polymarket_secrets()),
     );
     clients.insert(
-        "binance_reference".to_string(),
+        fixture_client_id_for_venue(&loaded.root, binance::KEY),
         Arc::new(fixture_binance_secrets()),
     );
-    clients.insert(
-        "chainlink_reference".to_string(),
-        Arc::new(fixture_chainlink_secrets()),
-    );
+    if loaded
+        .root
+        .clients
+        .values()
+        .any(|client| client.venue.as_str() == chainlink::KEY)
+    {
+        clients.insert(
+            fixture_client_id_for_venue(&loaded.root, chainlink::KEY),
+            Arc::new(fixture_chainlink_secrets()),
+        );
+    }
     ResolvedBoltV3Secrets { clients }
 }
 
@@ -67,14 +101,15 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
 fn chainlink_reference_client_maps_from_v3_stream_inputs() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("existing strategy fixture should load");
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
+    let chainlink_client_id = fixture_client_id_for_venue(&loaded.root, chainlink::KEY);
 
     let configs = map_bolt_v3_clients(&loaded, &resolved).expect("fixture should map cleanly");
 
     let chainlink = configs
         .clients
-        .get("chainlink_reference")
-        .expect("chainlink_reference must be present in mapper output");
+        .get(&chainlink_client_id)
+        .expect("chainlink client must be present in mapper output");
     let data = chainlink
         .data
         .as_ref()
@@ -94,14 +129,15 @@ fn chainlink_reference_client_maps_from_v3_stream_inputs() {
 fn polymarket_client_id_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded.root, polymarket::KEY);
 
     let configs = map_bolt_v3_clients(&loaded, &resolved).expect("fixture should map cleanly");
 
     let polymarket = configs
         .clients
-        .get("polymarket_main")
-        .expect("polymarket_main must be present in mapper output");
+        .get(&polymarket_client_id)
+        .expect("polymarket client must be present in mapper output");
 
     let data = polymarket
         .data
@@ -183,10 +219,11 @@ fn polymarket_client_id_config_plus_resolved_secrets_maps_to_nt_native_fields() 
 fn adapter_mapper_uses_configured_polymarket_auto_load_debounce() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded.root, polymarket::KEY);
     let polymarket_data = loaded
         .root
         .clients
-        .get_mut("polymarket_main")
+        .get_mut(&polymarket_client_id)
         .and_then(|client_id| client_id.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
@@ -195,12 +232,12 @@ fn adapter_mapper_uses_configured_polymarket_auto_load_debounce() {
         toml::Value::Integer(250),
     );
 
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let configs = map_bolt_v3_clients(&loaded, &resolved)
         .expect("non-default auto-load debounce should map cleanly");
     let data = configs
         .clients
-        .get("polymarket_main")
+        .get(&polymarket_client_id)
         .and_then(|client| client.data.as_ref())
         .expect("polymarket data config should be mapped")
         .config_as::<PolymarketDataClientConfig>()
@@ -217,10 +254,11 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
     // programmatic caller bypasses the canonical validation path.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded.root, polymarket::KEY);
     let polymarket_data = loaded
         .root
         .clients
-        .get_mut("polymarket_main")
+        .get_mut(&polymarket_client_id)
         .and_then(|client_id| client_id.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
@@ -229,7 +267,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
         toml::Value::Boolean(true),
     );
 
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let error = map_bolt_v3_clients(&loaded, &resolved)
         .expect_err("mapper must not forward subscribe_new_markets=true to NT");
     match error {
@@ -238,7 +276,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
             field,
             ..
         } => {
-            assert_eq!(client_id_key, "polymarket_main");
+            assert_eq!(client_id_key, polymarket_client_id);
             assert_eq!(field, "data.subscribe_new_markets");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -249,10 +287,11 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
 fn adapter_mapper_rejects_auto_load_missing_instruments_true_if_validation_was_bypassed() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded.root, polymarket::KEY);
     let polymarket_data = loaded
         .root
         .clients
-        .get_mut("polymarket_main")
+        .get_mut(&polymarket_client_id)
         .and_then(|client_id| client_id.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
@@ -261,7 +300,7 @@ fn adapter_mapper_rejects_auto_load_missing_instruments_true_if_validation_was_b
         toml::Value::Boolean(true),
     );
 
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let error = map_bolt_v3_clients(&loaded, &resolved)
         .expect_err("mapper must not forward auto_load_missing_instruments=true to NT");
     match error {
@@ -270,7 +309,7 @@ fn adapter_mapper_rejects_auto_load_missing_instruments_true_if_validation_was_b
             field,
             ..
         } => {
-            assert_eq!(client_id_key, "polymarket_main");
+            assert_eq!(client_id_key, polymarket_client_id);
             assert_eq!(field, "data.auto_load_missing_instruments");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -281,14 +320,15 @@ fn adapter_mapper_rejects_auto_load_missing_instruments_true_if_validation_was_b
 fn binance_data_client_id_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
+    let binance_client_id = fixture_client_id_for_venue(&loaded.root, binance::KEY);
 
     let configs = map_bolt_v3_clients(&loaded, &resolved).expect("fixture should map cleanly");
 
     let binance = configs
         .clients
-        .get("binance_reference")
-        .expect("binance_reference must be present in mapper output");
+        .get(&binance_client_id)
+        .expect("binance client must be present in mapper output");
     let data = binance
         .data
         .as_ref()
@@ -334,6 +374,7 @@ fn missing_or_invalid_root_config_remains_caught_by_validation_not_mapper_defaul
     .expect("missing-secret fixture should be readable");
     let root: BoltV3RootConfig =
         toml::from_str(&toml_text).expect("polymarket-execution-only TOML should parse");
+    let polymarket_client_id = fixture_client_id_for_venue(&root, polymarket::KEY);
     let messages = validate_root_only(&root);
     assert!(
         messages
@@ -361,7 +402,7 @@ fn missing_or_invalid_root_config_remains_caught_by_validation_not_mapper_defaul
             client_id_key,
             expected_venue,
         } => {
-            assert_eq!(client_id_key, "polymarket_main");
+            assert_eq!(client_id_key, polymarket_client_id);
             assert_eq!(expected_venue, polymarket::KEY);
         }
         other => panic!("expected MissingResolvedSecrets, got {other}"),
@@ -397,12 +438,15 @@ fn live_node_build_path_propagates_adapter_mapping_failures() {
     // that they fire.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let binance_client_id = fixture_client_id_for_venue(&loaded.root, binance::KEY);
+    let binance_api_secret_path =
+        fixture_secret_string(&loaded.root, &binance_client_id, "api_secret_ssm_path");
 
     // Force the binance api_secret resolution to fail; the live-node
     // builder must surface the error rather than silently skipping the
     // mapping step.
-    let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/binance_reference/api_secret" {
+    let bad_resolver = move |region: &str, path: &str| -> Result<String, &'static str> {
+        if path == binance_api_secret_path {
             Err("simulated SSM permissions denied")
         } else {
             support::fake_bolt_v3_resolver(region, path)

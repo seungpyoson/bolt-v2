@@ -12,7 +12,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_ROOT_GLOB = "tests/fixtures/bolt_v3*/root*.toml"
-ENFORCED_TEST_FILES = ("tests/bolt_v3_client_registration.rs",)
+ENFORCED_TEST_FILES = (
+    "tests/bolt_v3_client_registration.rs",
+    "tests/bolt_v3_adapter_mapping.rs",
+)
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 
 

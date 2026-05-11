@@ -1,0 +1,44 @@
+[node]
+name = "ETH-TAKER-RT"
+trader_id = "BOLT-001"
+environment = "Live"
+load_state = false
+save_state = false
+timeout_connection_secs = 1
+timeout_reconciliation_secs = 1
+timeout_portfolio_secs = 1
+timeout_disconnection_secs = 1
+delay_post_stop_secs = 0
+delay_shutdown_secs = 0
+
+[logging]
+stdout_level = "Info"
+file_level = "Debug"
+
+[[data_clients]]
+name = "TESTDATA"
+type = "polymarket"
+
+[data_clients.config]
+venue = "POLYMARKET"
+subscribe_new_markets = false
+update_instruments_interval_mins = 60
+ws_max_subscriptions = 200
+event_slugs = ["eth-updown-5m"]
+
+[[exec_clients]]
+name = "TEST"
+type = "polymarket"
+
+[exec_clients.config]
+account_id = "TEST-ACCOUNT"
+venue = "POLYMARKET"
+signature_type = 2
+funder = "0xabc"
+
+[exec_clients.secrets]
+region = "us-east-1"
+pk = "/pk"
+api_key = "/key"
+api_secret = "/secret"
+passphrase = "/pass"

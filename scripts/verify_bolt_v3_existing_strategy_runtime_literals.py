@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ETH_CHAINLINK_RUNTIME_TEST_FILE = "tests/eth_chainlink_taker_runtime.rs"
+ETH_CHAINLINK_RUNTIME_TEST_NODE_FIXTURE = (
+    "tests/fixtures/eth_chainlink_taker_runtime/test_node.toml"
+)
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 STRATEGY_CONFIG_SPAN_PATTERN = re.compile(
     r"fn\s+strategy_raw_config\s*\([^)]*\)\s*->\s*Value\s*\{.*?^\}",
@@ -72,7 +77,50 @@ def within(span: tuple[int, int] | None, offset: int) -> bool:
     return span is not None and span[0] <= offset < span[1]
 
 
-def scan_runtime_file(root: Path, path: Path) -> list[Finding]:
+def add_string(value: Any, literals: set[str]) -> None:
+    if isinstance(value, str) and value:
+        literals.add(value)
+
+
+def existing_strategy_test_node_literals(root: Path) -> set[str]:
+    path = root / ETH_CHAINLINK_RUNTIME_TEST_NODE_FIXTURE
+    if not path.is_file():
+        return set()
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    literals: set[str] = set()
+
+    node = data.get("node", {})
+    if isinstance(node, dict):
+        add_string(node.get("name"), literals)
+        add_string(node.get("trader_id"), literals)
+
+    for client in data.get("data_clients", []):
+        if not isinstance(client, dict):
+            continue
+        add_string(client.get("name"), literals)
+        config = client.get("config", {})
+        if not isinstance(config, dict):
+            continue
+        add_string(config.get("venue"), literals)
+        event_slugs = config.get("event_slugs", [])
+        if isinstance(event_slugs, list):
+            for event_slug in event_slugs:
+                add_string(event_slug, literals)
+
+    for client in data.get("exec_clients", []):
+        if not isinstance(client, dict):
+            continue
+        add_string(client.get("name"), literals)
+        config = client.get("config", {})
+        if not isinstance(config, dict):
+            continue
+        add_string(config.get("account_id"), literals)
+        add_string(config.get("venue"), literals)
+
+    return literals
+
+
+def scan_runtime_file(root: Path, path: Path, test_node_literals: set[str]) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
     strategy_config_span = span_for(STRATEGY_CONFIG_SPAN_PATTERN, text)
@@ -83,6 +131,19 @@ def scan_runtime_file(root: Path, path: Path) -> list[Finding]:
 
     for match in STRING_PATTERN.finditer(text):
         value = string_value(match.group(0))
+        if value in test_node_literals:
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "existing-strategy runtime test-node fixture literal; "
+                        "derive from test_node.toml"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
+            continue
         if value not in FORBIDDEN_LITERALS:
             continue
         if value == "ETHCHAINLINKTAKER-RT-001" and within(
@@ -117,7 +178,7 @@ def scan_root(root: Path) -> list[Finding]:
     path = root / ETH_CHAINLINK_RUNTIME_TEST_FILE
     if not path.is_file():
         return []
-    return scan_runtime_file(root, path)
+    return scan_runtime_file(root, path, existing_strategy_test_node_literals(root))
 
 
 def main() -> int:

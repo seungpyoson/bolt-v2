@@ -85,6 +85,43 @@ def test_default_instrument_literal_outside_helper_is_a_finding() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_test_node_fixture_literal_outside_fixture_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        fixture_path = root / "tests/fixtures/eth_chainlink_taker_runtime/test_node.toml"
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        fixture_path.write_text(
+            """
+[node]
+name = "ETH-TAKER-RT"
+trader_id = "BOLT-001"
+
+[[data_clients]]
+name = "TESTDATA"
+[data_clients.config]
+venue = "POLYMARKET"
+event_slugs = ["eth-updown-5m"]
+
+[[exec_clients]]
+name = "TEST"
+[exec_clients.config]
+account_id = "TEST-ACCOUNT"
+venue = "POLYMARKET"
+""",
+            encoding="utf-8",
+        )
+        write_runtime_test(root, 'fn probe() { let _ = "TESTDATA"; }\n')
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "existing-strategy runtime test-node fixture literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -131,6 +168,7 @@ def main() -> int:
         test_strategy_id_literal_outside_fixture_config_is_a_finding,
         test_reference_topic_literal_outside_helper_is_a_finding,
         test_default_instrument_literal_outside_helper_is_a_finding,
+        test_test_node_fixture_literal_outside_fixture_is_a_finding,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

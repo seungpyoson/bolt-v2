@@ -108,9 +108,80 @@ struct StaticFeeProvider;
 struct MissingFeeProvider;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+static TEST_NODE_CONFIG: OnceLock<Config> = OnceLock::new();
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
     RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
+}
+
+fn test_node_config() -> &'static Config {
+    TEST_NODE_CONFIG.get_or_init(|| {
+        let fixture_path =
+            support::repo_path("tests/fixtures/eth_chainlink_taker_runtime/test_node.toml");
+        let toml = fs::read_to_string(fixture_path).expect("test node fixture should read");
+        toml::from_str(&toml).expect("test node fixture should parse")
+    })
+}
+
+fn config_str<'a>(config: &'a Value, key: &str) -> &'a str {
+    config
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("test node fixture config must include {key}"))
+}
+
+fn test_data_client_name() -> &'static str {
+    test_node_config()
+        .data_clients
+        .first()
+        .expect("test node fixture should include data client")
+        .name
+        .as_str()
+}
+
+fn test_data_client_venue() -> &'static str {
+    let client = test_node_config()
+        .data_clients
+        .first()
+        .expect("test node fixture should include data client");
+    config_str(&client.config, "venue")
+}
+
+fn test_exec_client_name() -> &'static str {
+    test_node_config()
+        .exec_clients
+        .first()
+        .expect("test node fixture should include exec client")
+        .name
+        .as_str()
+}
+
+fn test_exec_client_venue() -> &'static str {
+    let client = test_node_config()
+        .exec_clients
+        .first()
+        .expect("test node fixture should include exec client");
+    config_str(&client.config, "venue")
+}
+
+fn test_exec_account_id_str() -> &'static str {
+    let client = test_node_config()
+        .exec_clients
+        .first()
+        .expect("test node fixture should include exec client");
+    config_str(&client.config, "account_id")
+}
+
+fn test_trader_id() -> TraderId {
+    TraderId::from(test_node_config().node.trader_id.as_str())
+}
+
+fn test_exec_client_id() -> ClientId {
+    ClientId::from(test_exec_client_name())
+}
+
+fn test_account_id() -> AccountId {
+    AccountId::from(test_exec_account_id_str())
 }
 
 impl bolt_v2::clients::polymarket::FeeProvider for StaticFeeProvider {
@@ -136,69 +207,30 @@ impl bolt_v2::clients::polymarket::FeeProvider for MissingFeeProvider {
 }
 
 fn build_test_node() -> LiveNode {
-    let trader_id = TraderId::from("BOLT-001");
-    let data_config = MockDataClientConfig::new("TESTDATA", "POLYMARKET");
-    let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "POLYMARKET");
-    let cfg: Config = toml::from_str(
-        r#"
-        [node]
-        name = "ETH-TAKER-RT"
-        trader_id = "BOLT-001"
-        environment = "Live"
-        load_state = false
-        save_state = false
-        timeout_connection_secs = 1
-        timeout_reconciliation_secs = 1
-        timeout_portfolio_secs = 1
-        timeout_disconnection_secs = 1
-        delay_post_stop_secs = 0
-        delay_shutdown_secs = 0
-
-        [logging]
-        stdout_level = "Info"
-        file_level = "Debug"
-
-        [[data_clients]]
-        name = "TESTDATA"
-        type = "polymarket"
-        [data_clients.config]
-        subscribe_new_markets = false
-        update_instruments_interval_mins = 60
-        ws_max_subscriptions = 200
-        event_slugs = ["eth-updown-5m"]
-
-        [[exec_clients]]
-        name = "TEST"
-        type = "polymarket"
-        [exec_clients.config]
-        account_id = "POLYMARKET-001"
-        signature_type = 2
-        funder = "0xabc"
-        [exec_clients.secrets]
-        region = "us-east-1"
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-        "#,
-    )
-    .unwrap();
+    let cfg = test_node_config();
+    let trader_id = test_trader_id();
+    let data_config = MockDataClientConfig::new(test_data_client_name(), test_data_client_venue());
+    let exec_config = MockExecClientConfig::new(
+        test_exec_client_name(),
+        test_exec_account_id_str(),
+        test_exec_client_venue(),
+    );
 
     let live_node_config =
-        make_live_node_config(&cfg, trader_id, Environment::Live, LoggerConfig::default());
+        make_live_node_config(cfg, trader_id, Environment::Live, LoggerConfig::default());
     let data_clients: Vec<DataClientRegistration> = vec![(
-        Some("TESTDATA".to_string()),
+        Some(test_data_client_name().to_string()),
         Box::new(MockDataClientFactory),
         Box::new(data_config),
     )];
     let exec_clients: Vec<ExecClientRegistration> = vec![(
-        Some("TEST".to_string()),
+        Some(test_exec_client_name().to_string()),
         Box::new(MockExecutionClientFactory),
         Box::new(exec_config),
     )];
 
     build_live_node(
-        "ETH-TAKER-RT".to_string(),
+        cfg.node.name.clone(),
         live_node_config,
         data_clients,
         exec_clients,
@@ -207,9 +239,8 @@ fn build_test_node() -> LiveNode {
 }
 
 fn strategy_raw_config() -> Value {
-    toml::toml! {
+    let mut config: Value = toml::toml! {
         strategy_id = "ETHCHAINLINKTAKER-RT-001"
-        client_id = "TEST"
         warmup_tick_count = 1
         period_duration_secs = 300
         reentry_cooldown_secs = 30
@@ -229,7 +260,12 @@ fn strategy_raw_config() -> Value {
         lead_agreement_min_corr = 0.8
         lead_jitter_max_ms = 250
     }
-    .into()
+    .into();
+    config.as_table_mut().unwrap().insert(
+        "client_id".to_string(),
+        Value::String(test_exec_client_name().to_string()),
+    );
+    config
 }
 
 fn strategy_id_from_raw_config(config: &Value) -> StrategyId {
@@ -1029,12 +1065,12 @@ fn seed_cached_position_with_entry_in_cache(
 ) {
     let instrument = polymarket_binary_option(instrument_id);
     let mut fill = OrderFilled::new(
-        TraderId::from("BOLT-001"),
+        test_trader_id(),
         strategy_id,
         instrument_id,
         ClientOrderId::from("O-RECOVERY-ENTRY-001"),
         VenueOrderId::from("V-RECOVERY-ENTRY-001"),
-        AccountId::from("TEST-ACCOUNT"),
+        test_account_id(),
         TradeId::from("E-RECOVERY-ENTRY-001"),
         entry_order_side,
         OrderType::Market,
@@ -1082,7 +1118,7 @@ fn seed_cached_open_order(
     price: Price,
 ) {
     let mut order = OrderTestBuilder::new(OrderType::Limit)
-        .trader_id(TraderId::from("BOLT-001"))
+        .trader_id(test_trader_id())
         .strategy_id(strategy_id)
         .instrument_id(instrument_id)
         .client_order_id(ClientOrderId::from("O-RECOVERY-ENTRY-001"))
@@ -1097,7 +1133,7 @@ fn seed_cached_open_order(
         order.instrument_id(),
         order.client_order_id(),
         VenueOrderId::from("V-RECOVERY-ENTRY-001"),
-        AccountId::from("TEST-ACCOUNT"),
+        test_account_id(),
         UUID4::new(),
         UnixNanos::default(),
         UnixNanos::default(),
@@ -1108,7 +1144,7 @@ fn seed_cached_open_order(
     let cache_handle = node.kernel().cache();
     let mut cache = cache_handle.borrow_mut();
     cache
-        .add_order(order.clone(), None, Some(ClientId::from("TEST")), false)
+        .add_order(order.clone(), None, Some(test_exec_client_id()), false)
         .unwrap();
     cache.update_order(&order).unwrap();
     assert_eq!(
@@ -1127,11 +1163,11 @@ fn position_opened_event(
     avg_px_open: f64,
 ) -> nautilus_model::events::PositionOpened {
     nautilus_model::events::PositionOpened {
-        trader_id: TraderId::from("BOLT-001"),
+        trader_id: test_trader_id(),
         strategy_id,
         instrument_id,
         position_id,
-        account_id: AccountId::from("TEST-ACCOUNT"),
+        account_id: test_account_id(),
         opening_order_id: ClientOrderId::from("ENTRY-RT-001"),
         entry: OrderSide::Buy,
         side: PositionSide::Long,
@@ -1156,12 +1192,12 @@ fn order_filled_event(
     price: Price,
 ) -> OrderFilled {
     let mut fill = OrderFilled::new(
-        TraderId::from("BOLT-001"),
+        test_trader_id(),
         strategy_id,
         instrument_id,
         client_order_id,
         VenueOrderId::from("V-ENTRY-RT-001"),
-        AccountId::from("TEST-ACCOUNT"),
+        test_account_id(),
         TradeId::from("T-ENTRY-RT-001"),
         OrderSide::Buy,
         OrderType::Limit,
@@ -1187,12 +1223,12 @@ fn entry_fill_event(
     position_id: PositionId,
 ) -> OrderEventAny {
     let mut fill = OrderFilled::new(
-        TraderId::from("BOLT-001"),
+        test_trader_id(),
         strategy_id,
         instrument_id,
         client_order_id,
         VenueOrderId::from("V-RT-ENTRY-001"),
-        AccountId::from("TEST-ACCOUNT"),
+        test_account_id(),
         TradeId::from("E-RT-ENTRY-001"),
         OrderSide::Buy,
         OrderType::Market,
@@ -2123,7 +2159,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, eth_up_instrument_id());
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
@@ -2377,7 +2413,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(decoded.decision_event_type, "market_selection_result");
             assert!(!decoded.decision_trace_id.is_empty());
             assert_eq!(
@@ -2562,7 +2598,7 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(decoded.decision_event_type, "market_selection_result");
             assert!(!decoded.decision_trace_id.is_empty());
             assert_eq!(
@@ -2662,7 +2698,7 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
         decoded.strategy_instance_id,
         strategy_id_from_fixture_config().to_string()
     );
-    assert_eq!(decoded.client_id, "TEST");
+    assert_eq!(decoded.client_id, test_exec_client_name());
     let updown_side = decoded
         .event_facts
         .get("updown_side")
@@ -2690,7 +2726,7 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
                 decoded.event_facts.get("client_order_id"),
@@ -3157,7 +3193,7 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -3397,7 +3433,7 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -3477,7 +3513,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -3926,7 +3962,7 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -4017,7 +4053,7 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -4200,7 +4236,7 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("entry_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
@@ -4317,7 +4353,7 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("entry_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
@@ -4406,7 +4442,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
@@ -4579,7 +4615,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
                 decoded.strategy_instance_id,
                 strategy_id_from_fixture_config().to_string()
             );
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
@@ -4975,7 +5011,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
 
@@ -5368,7 +5404,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
 }
@@ -5484,7 +5520,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
@@ -5571,7 +5607,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, down);
 
@@ -6204,7 +6240,7 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
@@ -6438,7 +6474,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, market_a_up);
 }
@@ -6610,7 +6646,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
 
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
-    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].client_id, Some(test_exec_client_id()));
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, market_a_down);
 

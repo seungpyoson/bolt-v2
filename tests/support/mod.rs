@@ -26,9 +26,9 @@ use nautilus_common::{
 };
 use nautilus_model::{
     accounts::AccountAny,
-    enums::OmsType,
-    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
-    types::{AccountBalance, MarginBalance},
+    enums::{OmsType, OrderSide, OrderType},
+    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue},
+    types::{AccountBalance, MarginBalance, Price, Quantity},
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -53,10 +53,15 @@ pub fn recorded_mock_data_subscriptions() -> Vec<String> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedSubmitOrder {
+    pub trader_id: TraderId,
     pub client_id: Option<ClientId>,
     pub strategy_id: StrategyId,
     pub instrument_id: InstrumentId,
     pub client_order_id: ClientOrderId,
+    pub order_side: OrderSide,
+    pub order_type: OrderType,
+    pub quantity: Quantity,
+    pub price: Option<Price>,
 }
 
 pub fn clear_mock_exec_submissions() {
@@ -605,10 +610,15 @@ impl ExecutionClient for MockExecutionClient {
             .lock()
             .unwrap()
             .push(RecordedSubmitOrder {
+                trader_id: cmd.trader_id,
                 client_id: cmd.client_id,
                 strategy_id: cmd.strategy_id,
                 instrument_id: cmd.instrument_id,
                 client_order_id: cmd.client_order_id,
+                order_side: cmd.order_init.order_side,
+                order_type: cmd.order_init.order_type,
+                quantity: cmd.order_init.quantity,
+                price: cmd.order_init.price,
             });
         Ok(())
     }

@@ -19,6 +19,10 @@ fn reference_actor_plan_uses_configured_data_client_id() {
     let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("bolt-v3 root should load");
     let stream = orderbook_stream_fixture();
+    let expected_data_client_id = stream.inputs[0]
+        .data_client_id
+        .as_deref()
+        .expect("fixture input should configure data_client_id");
 
     let plan = BoltV3ReferenceActorPlan::from_stream(&loaded.root, "eth_usd", &stream)
         .expect("orderbook stream should build reference actor plan");
@@ -32,7 +36,7 @@ fn reference_actor_plan_uses_configured_data_client_id() {
     );
     assert_eq!(
         plan.config.venue_subscriptions[0].client_id.to_string(),
-        "binance_reference"
+        expected_data_client_id
     );
     assert_eq!(plan.venue_cfgs.len(), 1);
     assert_eq!(plan.venue_cfgs[0].name, "eth_usd_orderbook_anchor");
@@ -51,6 +55,10 @@ fn existing_eth_stream_builds_chainlink_reference_actor_plan_from_toml() {
         .reference_streams
         .get("eth_usd")
         .expect("existing root should define eth_usd stream");
+    let expected_data_client_id = stream.inputs[0]
+        .data_client_id
+        .as_deref()
+        .expect("existing eth stream should configure primary data_client_id");
 
     let plan = BoltV3ReferenceActorPlan::from_stream(&loaded.root, "eth_usd", stream)
         .expect("existing eth stream should build Chainlink reference actor plan");
@@ -58,7 +66,7 @@ fn existing_eth_stream_builds_chainlink_reference_actor_plan_from_toml() {
     assert_eq!(plan.config.publish_topic, "reference.eth_usd");
     assert_eq!(
         plan.config.venue_subscriptions[0].client_id.to_string(),
-        "chainlink_reference"
+        expected_data_client_id
     );
     assert_eq!(plan.venue_cfgs[0].kind, ReferenceVenueKind::Chainlink);
     let chainlink = plan.venue_cfgs[0]

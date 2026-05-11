@@ -92,6 +92,12 @@ def test_market_identity_file_is_enforced() -> None:
         raise AssertionError("market identity test file must be enforced")
 
 
+def test_reference_producer_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_reference_producer.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("reference producer test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_fixture_client_id_literal_is_a_finding,
@@ -99,6 +105,7 @@ def main() -> int:
         test_adapter_mapping_file_is_enforced,
         test_provider_binding_file_is_enforced,
         test_market_identity_file_is_enforced,
+        test_reference_producer_file_is_enforced,
     ]
     for test in tests:
         test()

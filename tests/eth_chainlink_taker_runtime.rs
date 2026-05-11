@@ -3376,6 +3376,117 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit_order_open() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        "platform.reference.test.chainlink".to_string(),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    seed_cached_open_order(
+        &node,
+        strategy_id,
+        up,
+        OrderSide::Sell,
+        Quantity::new(2.0, 2),
+        Price::from("0.430"),
+    );
+    drive_eth_exit_sellable_rejection(node, strategy_id);
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+    assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
+    assert_eq!(submissions[0].strategy_id, strategy_id);
+    assert_eq!(submissions[0].instrument_id, up);
+
+    let rejection_events =
+        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+    for event in rejection_events {
+        match event {
+            nautilus_model::data::Data::Custom(custom) => {
+                let decoded = custom
+                    .data
+                    .as_any()
+                    .downcast_ref::<BoltV3ExitPreSubmitRejectionDecisionEvent>()
+                    .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
+                assert_ne!(
+                    decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                    Some(&serde_json::Value::from(
+                        "exit_quantity_exceeds_sellable_quantity"
+                    )),
+                    "partial open exit sell must not reject uncovered quantity"
+                );
+            }
+            other => panic!("expected Data::Custom, got {other:?}"),
+        }
+    }
+
+    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
+                .expect("BoltV3ExitEvaluationDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("authoritative_position_quantity"),
+                Some(&serde_json::Value::from(5.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("authoritative_sellable_quantity"),
+                Some(&serde_json::Value::from(3.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("open_exit_order_quantity"),
+                Some(&serde_json::Value::from(2.0))
+            );
+            assert_eq!(
+                decoded.event_facts.get("uncovered_position_quantity"),
+                Some(&serde_json::Value::from(3.0))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+    assert_eq!(submission_events.len(), 1);
+    match &submission_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3ExitOrderSubmissionDecisionEvent>()
+                .expect("BoltV3ExitOrderSubmissionDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("quantity"),
+                Some(&serde_json::Value::from(3.0))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
 fn eth_chainlink_taker_runtime_blocks_entry_submit_when_decision_evidence_write_fails() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();

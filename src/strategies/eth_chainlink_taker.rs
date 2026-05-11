@@ -2900,7 +2900,17 @@ impl EthChainlinkTaker {
             decision.blocked_reason = Some("exit_quantity_not_positive");
             return decision;
         }
-        if position_quantity > uncovered_position_quantity {
+        if open_exit_order_quantity > 0.0 && uncovered_position_quantity > 0.0 {
+            decision.quantity = Some(Quantity::new(
+                uncovered_position_quantity,
+                open_position.quantity.precision,
+            ));
+        }
+        let intended_exit_quantity = decision
+            .quantity
+            .map(|quantity| quantity.as_f64())
+            .unwrap_or(position_quantity);
+        if intended_exit_quantity > uncovered_position_quantity {
             decision.blocked_reason = Some("exit_quantity_exceeds_sellable_quantity");
             return decision;
         }

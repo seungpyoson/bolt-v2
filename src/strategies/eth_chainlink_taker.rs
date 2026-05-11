@@ -35,6 +35,7 @@ use crate::{
         exit_pre_submit_rejection_reason_for_trading_state,
     },
     bolt_v3_decision_events::{
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
         BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts,
         BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
         validate_bolt_v3_market_selection_failure_reason,
@@ -2275,7 +2276,7 @@ impl EthChainlinkTaker {
             return Some("market_not_started");
         }
         if has_selected_market_open_orders {
-            return Some("selected_market_open_orders_present");
+            return Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON);
         }
         if decision.evaluation.gate.blocked_by.iter().any(|reason| {
             matches!(
@@ -3464,6 +3465,11 @@ impl EthChainlinkTaker {
             };
             return decision;
         };
+        if self.has_selected_market_open_orders() {
+            decision.blocked_reason =
+                Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON);
+            return decision;
+        }
 
         let Some(instrument_id) = self.instrument_id_for_side(selected_side) else {
             decision.blocked_reason = Some("instrument_id_missing");

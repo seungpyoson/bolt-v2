@@ -5,9 +5,12 @@ use std::{
     env,
     fmt::Display,
     fs,
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, OnceLock, mpsc},
+    time::Duration,
 };
 
 use bolt_v2::{
@@ -16,30 +19,52 @@ use bolt_v2::{
         BoltV3ExecutionClientAdapterConfig,
     },
     bolt_v3_client_registration::register_bolt_v3_clients,
-    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{
+        LoadedBoltV3Config, REFERENCE_STREAM_ID_PARAMETER, ReferenceSourceType, load_bolt_v3_config,
+    },
+    bolt_v3_decision_events::{
+        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY,
+        BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON,
+        BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+        BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
+        BoltV3EntryEvaluationDecisionEvent,
+    },
     bolt_v3_live_node::{make_bolt_v3_live_node_builder, make_live_node_config},
     bolt_v3_reference_actor_registration::register_bolt_v3_reference_actors,
     bolt_v3_release_identity::bolt_v3_compiled_nautilus_trader_revision,
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_strategy_registration::register_bolt_v3_strategies,
+    platform::{
+        reference::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind},
+        resolution_basis::parse_ruleset_resolution_basis,
+        ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionDecision, SelectionState},
+        runtime::runtime_selection_topic,
+    },
 };
+use nautilus_common::msgbus::{publish_any, publish_deltas, switchboard};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_live::node::NodeState;
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{AccountType, AssetClass, OrderSide, OrderStatus, OrderType, TimeInForce},
+    data::{BookOrder, OrderBookDelta, OrderBookDeltas},
+    enums::{AccountType, AssetClass, BookAction, OrderSide, OrderStatus, OrderType, TimeInForce},
     events::AccountState,
-    identifiers::{AccountId, ClientId, InstrumentId, Symbol, Venue, VenueOrderId},
+    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, Symbol, Venue, VenueOrderId},
     instruments::{InstrumentAny, binary_option::BinaryOption},
     reports::{ExecutionMassStatus, OrderStatusReport},
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use serde::Deserialize;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
-    clear_mock_external_order_registrations, recorded_mock_external_order_registrations,
+    clear_mock_exec_submissions, clear_mock_external_order_registrations,
+    recorded_mock_exec_submissions, recorded_mock_external_order_registrations,
 };
 use tempfile::TempDir;
+use tokio::time::sleep;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -74,6 +99,25 @@ struct OpenOrderFixture {
     activation_ts_ns: u64,
     expiration_ts_ns: u64,
     report_ts_ns: u64,
+    question_id: String,
+    selection_liquidity_num: f64,
+    reference_initial_fair_value: f64,
+    reference_initial_orderbook_bid: f64,
+    reference_initial_orderbook_ask: f64,
+    reference_next_fair_value: f64,
+    reference_next_orderbook_bid: f64,
+    reference_next_orderbook_ask: f64,
+    signal_second_offset_ms: u64,
+    signal_final_offset_ms: u64,
+    signal_settle_milliseconds: u64,
+    signal_poll_iterations: usize,
+    signal_poll_interval_milliseconds: u64,
+    fee_expected_requests: usize,
+    up_book_bid: String,
+    up_book_ask: String,
+    down_book_bid: String,
+    down_book_ask: String,
+    book_quantity: String,
 }
 
 #[test]
@@ -186,6 +230,197 @@ fn bolt_v3_startup_reconciliation_imports_external_open_order_into_nt_cache() {
 }
 
 #[test]
+fn bolt_v3_reconciled_open_order_blocks_duplicate_entry_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_external_order_registrations();
+    clear_mock_exec_submissions();
+    let temp_dir = TempDir::new().unwrap();
+    let open_order = open_order_fixture();
+    let (fee_base_url, fee_requests) = spawn_fee_rate_server(open_order.fee_expected_requests);
+    let mut loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing-strategy v3 TOML should load");
+    point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
+    loaded.root.nautilus.load_state = open_order.load_state;
+    loaded.root.nautilus.save_state = open_order.save_state;
+    loaded.root.nautilus.delay_post_stop_seconds = open_order.delay_post_stop_seconds;
+    loaded.root.nautilus.timeout_disconnection_seconds = open_order.timeout_disconnection_seconds;
+    loaded.root.nautilus.timeout_reconciliation_seconds = open_order.timeout_reconciliation_seconds;
+    loaded
+        .root
+        .nautilus
+        .exec_engine
+        .reconciliation_startup_delay_seconds = open_order.reconciliation_startup_delay_seconds;
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
+
+    let up = instrument_id(&open_order.condition_id, &open_order.up_token_id, &loaded);
+    let down = instrument_id(&open_order.condition_id, &open_order.down_token_id, &loaded);
+    let instruments = vec![
+        binary_option(up, &open_order.up_token_id, &open_order),
+        binary_option(down, &open_order.down_token_id, &open_order),
+    ];
+    let mass_status = external_open_order_mass_status(&loaded, up, &open_order);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve through fake SSM");
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 LiveNode builder should build");
+    let (builder, _summary) = register_bolt_v3_clients(
+        builder,
+        mock_client_configs_from_loaded(&loaded, instruments, mass_status),
+    )
+    .expect("mock clients should register through v3 client boundary");
+    let mut node = builder.build().expect("mock LiveNode should build");
+    register_bolt_v3_reference_actors(&mut node, &loaded)
+        .expect("v3 reference actors should register on mock LiveNode");
+    register_bolt_v3_strategies(&mut node, &loaded, &resolved)
+        .expect("existing strategy should register from v3 TOML");
+    node.kernel()
+        .cache()
+        .borrow_mut()
+        .add_account(account_from_fixture(&loaded, &open_order))
+        .expect("mock account should seed NT cache before startup reconciliation");
+
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
+    let selection_topic = runtime_selection_topic(&strategy_id);
+    let reference_topic = reference_publish_topic(&loaded);
+    let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
+    let target_id = configured_target_id(&loaded);
+    let loaded_for_control = loaded.clone();
+    let fee_expected_requests = open_order.fee_expected_requests;
+    let fee_request_timeout = Duration::from_secs(open_order.timeout_disconnection_seconds);
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build")
+        .block_on(async {
+            node.start()
+                .await
+                .expect("mock-only LiveNode start should run startup reconciliation");
+            assert_eq!(node.state(), NodeState::Running);
+
+            publish_any(
+                selection_topic.clone().into(),
+                &selection_snapshot(&loaded_for_control, &open_order, start_ts_ms),
+            );
+            publish_any(
+                reference_topic.clone().into(),
+                &reference_snapshot(
+                    &loaded_for_control,
+                    &open_order,
+                    start_ts_ms,
+                    open_order.reference_initial_fair_value,
+                    open_order.reference_initial_orderbook_bid,
+                    open_order.reference_initial_orderbook_ask,
+                ),
+            );
+            publish_any(
+                reference_topic.clone().into(),
+                &reference_snapshot(
+                    &loaded_for_control,
+                    &open_order,
+                    start_ts_ms + open_order.signal_second_offset_ms,
+                    open_order.reference_next_fair_value,
+                    open_order.reference_next_orderbook_bid,
+                    open_order.reference_next_orderbook_ask,
+                ),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(
+                    up,
+                    &open_order.up_book_bid,
+                    &open_order.up_book_ask,
+                    &open_order.book_quantity,
+                ),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(
+                    down,
+                    &open_order.down_book_bid,
+                    &open_order.down_book_ask,
+                    &open_order.book_quantity,
+                ),
+            );
+            sleep(Duration::from_millis(open_order.signal_settle_milliseconds)).await;
+            tokio::task::spawn_blocking(move || {
+                for _ in 0..fee_expected_requests {
+                    fee_requests
+                        .recv_timeout(fee_request_timeout)
+                        .expect("local fee server should receive fee request");
+                }
+            })
+            .await
+            .expect("fee request waiter should join");
+
+            publish_any(
+                selection_topic.clone().into(),
+                &selection_snapshot(&loaded_for_control, &open_order, start_ts_ms),
+            );
+            publish_any(
+                reference_topic.clone().into(),
+                &reference_snapshot(
+                    &loaded_for_control,
+                    &open_order,
+                    start_ts_ms + open_order.signal_final_offset_ms,
+                    open_order.reference_next_fair_value,
+                    open_order.reference_next_orderbook_bid,
+                    open_order.reference_next_orderbook_ask,
+                ),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(
+                    up,
+                    &open_order.up_book_bid,
+                    &open_order.up_book_ask,
+                    &open_order.book_quantity,
+                ),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(
+                    down,
+                    &open_order.down_book_bid,
+                    &open_order.down_book_ask,
+                    &open_order.book_quantity,
+                ),
+            );
+
+            for _ in 0..open_order.signal_poll_iterations {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(
+                    open_order.signal_poll_interval_milliseconds,
+                ))
+                .await;
+            }
+
+            node.stop()
+                .await
+                .expect("mock-only LiveNode stop should succeed");
+        });
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "reconciled external open order should block duplicate entry submit"
+    );
+    assert_eq!(
+        entry_submission_events(&catalog_dir, &target_id),
+        0,
+        "reconciled external open order should block duplicate entry order-submission evidence"
+    );
+    assert!(
+        selected_open_order_entry_evaluation_events(&catalog_dir, &target_id) > 0,
+        "reconciled external open order should persist selected-open-order entry no-action evidence"
+    );
+}
+
+#[test]
 fn pinned_nt_startup_reconciliation_registers_external_orders_with_execution_clients() {
     let nt_root = pinned_nt_checkout();
     let node_source = fs::read_to_string(nt_root.join("crates/live/src/node.rs"))
@@ -268,6 +503,71 @@ fn open_order_fixture() -> OpenOrderFixture {
     toml::from_str(&text).unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()))
 }
 
+fn protocol_payload_fixture(filename: &str) -> String {
+    std::fs::read_to_string(support::repo_path(&format!(
+        "tests/fixtures/bolt_v3_protocol_payloads/{filename}",
+    )))
+    .unwrap_or_else(|error| panic!("protocol payload fixture {filename} should load: {error}"))
+}
+
+fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("local fee server should bind");
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = mpsc::channel();
+    let body = protocol_payload_fixture("polymarket_fee_rate_zero.json");
+
+    std::thread::spawn(move || {
+        for _ in 0..expected_requests {
+            let (mut stream, _) = listener.accept().expect("local fee server should accept");
+            let mut request = Vec::new();
+            loop {
+                let mut buffer = [0_u8; 512];
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("local fee server should read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request).into_owned();
+            tx.send(request_text)
+                .expect("local fee server should record request");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("local fee server should write response");
+        }
+    });
+
+    (base_url, rx)
+}
+
+fn point_execution_http_to_local_fee_server(
+    loaded: &mut LoadedBoltV3Config,
+    base_url_http: String,
+) {
+    let client_id = execution_client_id(loaded);
+    loaded
+        .root
+        .clients
+        .get_mut(&client_id)
+        .and_then(|client| client.execution.as_mut())
+        .and_then(toml::Value::as_table_mut)
+        .unwrap_or_else(|| panic!("{client_id} execution config should be a TOML table"))
+        .insert(
+            "base_url_http".to_string(),
+            toml::Value::String(base_url_http),
+        );
+}
+
 fn fixture_value<T>(field: &str, value: &str) -> T
 where
     T: FromStr,
@@ -284,6 +584,33 @@ fn strategy_config(loaded: &LoadedBoltV3Config) -> &bolt_v2::bolt_v3_config::Bol
         .first()
         .expect("fixture should load one strategy")
         .config
+}
+
+fn target_field<'a>(loaded: &'a LoadedBoltV3Config, field: &str) -> &'a str {
+    strategy_config(loaded)
+        .target
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .unwrap_or_else(|| panic!("fixture target should include {field}"))
+}
+
+fn configured_target_id(loaded: &LoadedBoltV3Config) -> String {
+    target_field(loaded, "configured_target_id").to_string()
+}
+
+fn reference_publish_topic(loaded: &LoadedBoltV3Config) -> String {
+    let stream_id = strategy_config(loaded)
+        .parameters
+        .get(REFERENCE_STREAM_ID_PARAMETER)
+        .and_then(toml::Value::as_str)
+        .expect("fixture strategy should select reference stream");
+    loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .expect("selected reference stream should exist")
+        .publish_topic
+        .clone()
 }
 
 fn execution_client_id(loaded: &LoadedBoltV3Config) -> String {
@@ -315,8 +642,292 @@ fn execution_venue(loaded: &LoadedBoltV3Config) -> String {
         .to_string()
 }
 
+fn declared_resolution_basis_key(loaded: &LoadedBoltV3Config) -> String {
+    let stream_id = strategy_config(loaded)
+        .parameters
+        .get(REFERENCE_STREAM_ID_PARAMETER)
+        .and_then(toml::Value::as_str)
+        .expect("fixture strategy should select reference stream");
+    let stream = loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .expect("selected reference stream should exist");
+    let oracle_input = stream
+        .inputs
+        .iter()
+        .find(|input| input.source_type == ReferenceSourceType::Oracle)
+        .expect("selected reference stream should include oracle input");
+    let oracle_client_id = oracle_input
+        .data_client_id
+        .as_deref()
+        .expect("oracle input should reference data client");
+    let oracle_client = loaded
+        .root
+        .clients
+        .get(oracle_client_id)
+        .expect("oracle data client should exist");
+    let symbol = oracle_input
+        .instrument_id
+        .split('.')
+        .next()
+        .expect("oracle instrument should include symbol");
+    format!(
+        "{}_{}",
+        oracle_client.venue.as_str().to_ascii_lowercase(),
+        symbol.to_ascii_lowercase()
+    )
+}
+
 fn instrument_id(condition_id: &str, token_id: &str, loaded: &LoadedBoltV3Config) -> InstrumentId {
     InstrumentId::from(format!("{condition_id}-{token_id}.{}", execution_venue(loaded)).as_str())
+}
+
+fn selected_market(
+    loaded: &LoadedBoltV3Config,
+    fixture: &OpenOrderFixture,
+    start_ts_ms: u64,
+) -> CandidateMarket {
+    let market_id = configured_target_id(loaded);
+    CandidateMarket {
+        market_id: market_id.clone(),
+        market_slug: market_id.clone(),
+        question_id: fixture.question_id.clone(),
+        instrument_id: instrument_id(&fixture.condition_id, &fixture.up_token_id, loaded)
+            .to_string(),
+        condition_id: fixture.condition_id.clone(),
+        up_token_id: fixture.up_token_id.clone(),
+        down_token_id: fixture.down_token_id.clone(),
+        selected_market_observed_ts_ms: start_ts_ms,
+        price_to_beat: Some(fixture.reference_initial_fair_value),
+        price_to_beat_source: Some(reference_publish_topic(loaded)),
+        price_to_beat_observed_ts_ms: Some(start_ts_ms),
+        start_ts_ms,
+        end_ts_ms: start_ts_ms
+            + strategy_config(loaded).target["cadence_seconds"]
+                .as_integer()
+                .expect("fixture target should include cadence_seconds") as u64
+                * 1_000,
+        declared_resolution_basis: parse_ruleset_resolution_basis(&declared_resolution_basis_key(
+            loaded,
+        ))
+        .expect("fixture resolution basis should parse"),
+        accepting_orders: true,
+        liquidity_num: fixture.selection_liquidity_num,
+        seconds_to_end: strategy_config(loaded).target["cadence_seconds"]
+            .as_integer()
+            .expect("fixture target should include cadence_seconds") as u64,
+    }
+}
+
+fn selection_snapshot(
+    loaded: &LoadedBoltV3Config,
+    fixture: &OpenOrderFixture,
+    start_ts_ms: u64,
+) -> RuntimeSelectionSnapshot {
+    let market = selected_market(loaded, fixture, start_ts_ms);
+    RuntimeSelectionSnapshot {
+        ruleset_id: configured_target_id(loaded),
+        decision: SelectionDecision {
+            ruleset_id: configured_target_id(loaded),
+            state: SelectionState::Active {
+                market: market.clone(),
+            },
+        },
+        eligible_candidates: vec![market],
+        published_at_ms: start_ts_ms,
+    }
+}
+
+fn reference_snapshot(
+    loaded: &LoadedBoltV3Config,
+    _fixture: &OpenOrderFixture,
+    ts_ms: u64,
+    fair_value: f64,
+    orderbook_bid: f64,
+    orderbook_ask: f64,
+) -> ReferenceSnapshot {
+    let stream_id = strategy_config(loaded)
+        .parameters
+        .get(REFERENCE_STREAM_ID_PARAMETER)
+        .and_then(toml::Value::as_str)
+        .expect("fixture strategy should select reference stream");
+    let stream = loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .expect("selected reference stream should exist");
+    let orderbook_mid = (orderbook_bid + orderbook_ask) / 2.0;
+    let venues = stream
+        .inputs
+        .iter()
+        .map(|input| {
+            let venue_kind = match input.source_type {
+                ReferenceSourceType::Oracle => VenueKind::Oracle,
+                ReferenceSourceType::Orderbook => VenueKind::Orderbook,
+            };
+            let observed_price = match venue_kind {
+                VenueKind::Oracle => fair_value,
+                VenueKind::Orderbook => orderbook_mid,
+            };
+            EffectiveVenueState {
+                venue_name: input.source_id.clone(),
+                base_weight: input.base_weight,
+                effective_weight: input.base_weight,
+                stale: false,
+                health: VenueHealth::Healthy,
+                observed_ts_ms: Some(ts_ms),
+                venue_kind,
+                observed_price: Some(observed_price),
+                observed_bid: (venue_kind == VenueKind::Orderbook).then_some(orderbook_bid),
+                observed_ask: (venue_kind == VenueKind::Orderbook).then_some(orderbook_ask),
+            }
+        })
+        .collect();
+    ReferenceSnapshot {
+        ts_ms,
+        topic: stream.publish_topic.clone(),
+        fair_value: Some(fair_value),
+        confidence: 1.0,
+        venues,
+    }
+}
+
+fn book_deltas(
+    instrument_id: InstrumentId,
+    bid: &str,
+    ask: &str,
+    quantity: &str,
+) -> OrderBookDeltas {
+    OrderBookDeltas::new(
+        instrument_id,
+        vec![
+            OrderBookDelta::new(
+                instrument_id,
+                BookAction::Update,
+                BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from(bid),
+                    Quantity::from(quantity),
+                    0,
+                ),
+                0,
+                1,
+                UnixNanos::default(),
+                UnixNanos::default(),
+            ),
+            OrderBookDelta::new(
+                instrument_id,
+                BookAction::Update,
+                BookOrder::new(
+                    OrderSide::Sell,
+                    Price::from(ask),
+                    Quantity::from(quantity),
+                    0,
+                ),
+                0,
+                2,
+                UnixNanos::default(),
+                UnixNanos::default(),
+            ),
+        ],
+    )
+}
+
+fn custom_events(
+    catalog_dir: &Path,
+    configured_target_id: &str,
+    event_type: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    let event_dir = catalog_dir
+        .join("data")
+        .join("custom")
+        .join(event_type)
+        .join(configured_target_id);
+    if !event_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut files = std::fs::read_dir(event_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "parquet")
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+
+    files
+        .into_iter()
+        .flat_map(|file| {
+            ParquetDataCatalog::new(catalog_dir, None, None, None, None)
+                .query_custom_data_dynamic(
+                    event_type,
+                    Some(&ids),
+                    None,
+                    None,
+                    None,
+                    Some(vec![file]),
+                    true,
+                )
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn submission_events(catalog_dir: &Path, configured_target_id: &str, event_type: &str) -> usize {
+    custom_events(catalog_dir, configured_target_id, event_type).len()
+}
+
+fn entry_submission_events(catalog_dir: &Path, configured_target_id: &str) -> usize {
+    submission_events(
+        catalog_dir,
+        configured_target_id,
+        BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    )
+}
+
+fn selected_open_order_entry_evaluation_events(
+    catalog_dir: &Path,
+    configured_target_id: &str,
+) -> usize {
+    custom_events(
+        catalog_dir,
+        configured_target_id,
+        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+    )
+    .into_iter()
+    .filter(|event| {
+        let nautilus_model::data::Data::Custom(custom) = event else {
+            return false;
+        };
+        let Some(decoded) = custom
+            .data
+            .as_any()
+            .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+        else {
+            return false;
+        };
+        decoded
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY)
+            .and_then(serde_json::Value::as_str)
+            == Some(BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON)
+            && decoded
+                .event_facts
+                .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY)
+                .and_then(serde_json::Value::as_str)
+                == Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON)
+            && decoded
+                .event_facts
+                .get(BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY)
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+    })
+    .count()
 }
 
 fn binary_option(

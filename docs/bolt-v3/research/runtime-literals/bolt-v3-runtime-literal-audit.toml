@@ -1721,7 +1721,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"market_not_started\""
-context = "\"market_not_started\" | \"market_ended\" | \"selected_market_open_orders_present\","
+context = "Some(\"market_not_started\" | \"market_ended\") => {}"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1729,15 +1729,7 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"market_ended\""
-context = "\"market_not_started\" | \"market_ended\" | \"selected_market_open_orders_present\","
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"selected_market_open_orders_present\""
-context = "\"market_not_started\" | \"market_ended\" | \"selected_market_open_orders_present\","
+context = "Some(\"market_not_started\" | \"market_ended\") => {}"
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -1880,14 +1872,6 @@ reason = "This is a contract value, reason value, or numeric gate checked while 
 [[allowed]]
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
-literal = "\"selected_market_open_orders_present\""
-context = "== Some(\"selected_market_open_orders_present\")"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
 literal = "\"position_limit_reached\""
 context = "pub const BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON: &str = \"position_limit_reached\";"
 classification = "decision_event_entry_contract_check"
@@ -1913,7 +1897,7 @@ reason = "This is a persisted entry-evaluation decision-event fact key."
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"entry_decision\""
-context = "\"entry_decision\".to_string(),"
+context = "pub const BOLT_V3_ENTRY_DECISION_FACT_KEY: &str = \"entry_decision\";"
 classification = "decision_event_entry_fact_key"
 reason = "This is a persisted entry-evaluation decision-event fact key."
 
@@ -1928,6 +1912,30 @@ reason = "This is a persisted entry-evaluation decision-event fact key."
 [[allowed]]
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
+literal = "\"has_selected_market_open_orders\""
+context = "\"has_selected_market_open_orders\";"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"updown_market_mechanical_rejection_reason\""
+context = "\"updown_market_mechanical_rejection_reason\";"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"selected_market_open_orders_present\""
+context = "\"selected_market_open_orders_present\";"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
 literal = "\"seconds_to_market_end\""
 context = "\"seconds_to_market_end\".to_string(),"
 classification = "decision_event_entry_fact_key"
@@ -1936,24 +1944,8 @@ reason = "This is a persisted entry-evaluation decision-event fact key."
 [[allowed]]
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
-literal = "\"has_selected_market_open_orders\""
-context = "\"has_selected_market_open_orders\".to_string(),"
-classification = "decision_event_entry_fact_key"
-reason = "This is a persisted entry-evaluation decision-event fact key."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
 literal = "\"updown_market_mechanical_outcome\""
 context = "\"updown_market_mechanical_outcome\".to_string(),"
-classification = "decision_event_entry_fact_key"
-reason = "This is a persisted entry-evaluation decision-event fact key."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"updown_market_mechanical_rejection_reason\""
-context = "\"updown_market_mechanical_rejection_reason\".to_string(),"
 classification = "decision_event_entry_fact_key"
 reason = "This is a persisted entry-evaluation decision-event fact key."
 

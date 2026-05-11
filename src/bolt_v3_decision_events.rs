@@ -37,8 +37,13 @@ pub const BOLT_V3_EXIT_ORDER_SUBMISSION_EVENT_VALUE: &str = "exit_order_submissi
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = "exit_pre_submit_rejection";
 pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY: &str =
     "market_selection_failure_reason";
+pub const BOLT_V3_ENTRY_DECISION_FACT_KEY: &str = "entry_decision";
 pub const BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY: &str = "entry_no_action_reason";
 pub const BOLT_V3_ARCHETYPE_METRICS_FACT_KEY: &str = "archetype_metrics";
+pub const BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY: &str =
+    "has_selected_market_open_orders";
+pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY: &str =
+    "updown_market_mechanical_rejection_reason";
 pub const BOLT_V3_CLIENT_ORDER_ID_FACT_KEY: &str = "client_order_id";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
     "entry_pre_submit_rejection_reason";
@@ -63,6 +68,8 @@ pub const BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON: &str = "thin_book";
 pub const BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON: &str = "fast_venue_incoherent";
 pub const BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON: &str = "freeze";
 pub const BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON: &str = "position_limit_reached";
+pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON: &str =
+    "selected_market_open_orders_present";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON: &str =
     "instrument_id_missing";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON: &str =
@@ -1247,9 +1254,8 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
         }
         "rejected" => {
             match facts.updown_market_mechanical_rejection_reason.as_deref() {
-                Some(
-                    "market_not_started" | "market_ended" | "selected_market_open_orders_present",
-                ) => {}
+                Some("market_not_started" | "market_ended") => {}
+                Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON) => {}
                 Some(value) => {
                     bail!("unsupported updown_market_mechanical_rejection_reason `{value}`");
                 }
@@ -1307,7 +1313,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
     }
 
     if facts.updown_market_mechanical_rejection_reason.as_deref()
-        == Some("selected_market_open_orders_present")
+        == Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON)
         && !facts.has_selected_market_open_orders
     {
         bail!(
@@ -1338,7 +1344,7 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         optional_string_to_value(facts.updown_side),
     );
     params.insert(
-        "entry_decision".to_string(),
+        BOLT_V3_ENTRY_DECISION_FACT_KEY.to_string(),
         Value::String(facts.entry_decision),
     );
     params.insert(
@@ -1350,7 +1356,7 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         Value::from(facts.seconds_to_market_end),
     );
     params.insert(
-        "has_selected_market_open_orders".to_string(),
+        BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY.to_string(),
         Value::from(facts.has_selected_market_open_orders),
     );
     params.insert(
@@ -1358,7 +1364,7 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         Value::String(facts.updown_market_mechanical_outcome),
     );
     params.insert(
-        "updown_market_mechanical_rejection_reason".to_string(),
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY.to_string(),
         optional_string_to_value(facts.updown_market_mechanical_rejection_reason),
     );
     params.insert(

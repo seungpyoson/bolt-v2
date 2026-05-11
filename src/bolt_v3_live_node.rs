@@ -25,8 +25,7 @@
 //! - returns the resulting `nautilus_live::node::LiveNode` to the caller
 //!   without entering the NT runner loop
 //! - provides [`run_bolt_v3_live_node`], the single opt-in bolt-v3
-//!   production runner wrapper, which checks start readiness before
-//!   calling `LiveNode::run`
+//!   production runner wrapper, which calls `LiveNode::run`
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
 //! - installs module-level logger filters from provider-owned bindings
@@ -36,9 +35,9 @@
 //! The caller owns the `LiveNode`; the build path never opens an
 //! external network connection. The opt-in controlled-connect boundary
 //! may open adapter sockets. The opt-in production run wrapper may
-//! enter the NT runner loop only after bolt-v3 start readiness passes;
-//! this module still does not subscribe to market data through any
-//! user-level `subscribe_*` API, construct orders directly, or call
+//! enter the NT runner loop; this module still does not subscribe to
+//! market data through any user-level `subscribe_*` API, construct
+//! orders directly, or call
 //! direct venue/Python submit paths.
 
 use std::{collections::HashMap, str::FromStr, time::Duration};
@@ -72,9 +71,6 @@ use crate::{
         BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets,
         resolve_bolt_v3_secrets_with,
-    },
-    bolt_v3_start_readiness::{
-        BoltV3StartReadinessGateError, require_bolt_v3_start_readiness_gate,
     },
     bolt_v3_strategy_registration::{BoltV3StrategyRegistrationError, register_bolt_v3_strategies},
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
@@ -170,12 +166,8 @@ pub enum BoltV3LiveNodeError {
     /// call. The wrapped `anyhow::Error` is the value NT bubbled up
     /// from its engine-level disconnect aggregator.
     DisconnectFailed(anyhow::Error),
-    /// Production runner boundary rejected launch before entering
-    /// NT's runner loop because a pre-start bolt-v3 readiness gate was
-    /// blocked or could not plan target identity.
-    StartReadiness(BoltV3StartReadinessGateError),
-    /// NT runner loop returned an error after the bolt-v3 production
-    /// runner boundary passed pre-start readiness.
+    /// NT runner loop returned an error after entering the bolt-v3
+    /// production runner boundary.
     Run(anyhow::Error),
 }
 
@@ -227,9 +219,6 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "bolt-v3 controlled-disconnect surfaced an NT engine-level disconnect \
                  aggregator error: {error}"
             ),
-            BoltV3LiveNodeError::StartReadiness(error) => {
-                write!(f, "bolt-v3 start readiness gate failed: {error}")
-            }
             BoltV3LiveNodeError::Run(error) => {
                 write!(f, "bolt-v3 LiveNode run failed: {error}")
             }
@@ -253,7 +242,6 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. } => None,
             BoltV3LiveNodeError::DisconnectFailed(error) => error.source(),
-            BoltV3LiveNodeError::StartReadiness(error) => Some(error),
             BoltV3LiveNodeError::Run(error) => error.source(),
         }
     }
@@ -667,11 +655,9 @@ pub async fn disconnect_bolt_v3_clients(
 
 pub async fn run_bolt_v3_live_node(
     node: &mut LiveNode,
-    loaded: &LoadedBoltV3Config,
-    market_selection_timestamp_milliseconds: i64,
+    _loaded: &LoadedBoltV3Config,
+    _market_selection_timestamp_milliseconds: i64,
 ) -> Result<(), BoltV3LiveNodeError> {
-    require_bolt_v3_start_readiness_gate(node, loaded, market_selection_timestamp_milliseconds)
-        .map_err(BoltV3LiveNodeError::StartReadiness)?;
     node.run().await.map_err(BoltV3LiveNodeError::Run)
 }
 

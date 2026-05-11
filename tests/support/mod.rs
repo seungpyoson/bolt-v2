@@ -25,6 +25,8 @@ use nautilus_common::{
     cache::Cache,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
+    live::runner::try_get_data_event_sender,
+    messages::DataEvent,
     messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
     messages::execution::SubmitOrder,
 };
@@ -32,6 +34,7 @@ use nautilus_model::{
     accounts::AccountAny,
     enums::{OmsType, OrderSide, OrderType},
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue},
+    instruments::InstrumentAny,
     types::{AccountBalance, MarginBalance, Price, Quantity},
 };
 
@@ -297,6 +300,7 @@ pub struct MockDataClientConfig {
     connect_failure: Option<String>,
     disconnect_delay: Duration,
     disconnect_failure: Option<String>,
+    startup_instruments: Vec<InstrumentAny>,
 }
 
 impl MockDataClientConfig {
@@ -308,6 +312,7 @@ impl MockDataClientConfig {
             connect_failure: None,
             disconnect_delay: Duration::ZERO,
             disconnect_failure: None,
+            startup_instruments: Vec::new(),
         }
     }
 
@@ -342,6 +347,11 @@ impl MockDataClientConfig {
     /// `DisconnectFailed` rather than silently swallowing it.
     pub fn with_disconnect_failure(mut self, message: &str) -> Self {
         self.disconnect_failure = Some(message.to_string());
+        self
+    }
+
+    pub fn with_startup_instruments(mut self, instruments: Vec<InstrumentAny>) -> Self {
+        self.startup_instruments = instruments;
         self
     }
 }
@@ -398,6 +408,7 @@ impl DataClientFactory for MockDataClientFactory {
             cfg.connect_failure.clone(),
             cfg.disconnect_delay,
             cfg.disconnect_failure.clone(),
+            cfg.startup_instruments.clone(),
         )))
     }
 
@@ -453,6 +464,7 @@ struct MockDataClient {
     connect_failure: Option<String>,
     disconnect_delay: Duration,
     disconnect_failure: Option<String>,
+    startup_instruments: Vec<InstrumentAny>,
 }
 
 impl MockDataClient {
@@ -463,6 +475,7 @@ impl MockDataClient {
         connect_failure: Option<String>,
         disconnect_delay: Duration,
         disconnect_failure: Option<String>,
+        startup_instruments: Vec<InstrumentAny>,
     ) -> Self {
         Self {
             client_id,
@@ -472,6 +485,7 @@ impl MockDataClient {
             connect_failure,
             disconnect_delay,
             disconnect_failure,
+            startup_instruments,
         }
     }
 }
@@ -543,6 +557,18 @@ impl DataClient for MockDataClient {
             return Err(anyhow::anyhow!(message.clone()));
         }
         self.connected = true;
+        if !self.startup_instruments.is_empty() {
+            let sender = try_get_data_event_sender().ok_or_else(|| {
+                anyhow::anyhow!("mock data client startup instruments require NT data event sender")
+            })?;
+            for instrument in self.startup_instruments.iter().cloned() {
+                sender
+                    .send(DataEvent::Instrument(instrument))
+                    .map_err(|error| {
+                        anyhow::anyhow!("failed to send startup instrument: {error}")
+                    })?;
+            }
+        }
         Ok(())
     }
 

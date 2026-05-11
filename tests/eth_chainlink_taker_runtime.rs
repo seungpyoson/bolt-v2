@@ -60,7 +60,10 @@ use bolt_v2::{
     },
     platform::{
         reference::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind},
-        ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionDecision, SelectionState},
+        ruleset::{
+            CandidateMarket, RuntimeSelectionSnapshot, SELECTION_FREEZE_WINDOW_REASON,
+            SelectionDecision, SelectionState,
+        },
         runtime::{registry_runtime_strategy_factory, runtime_selection_topic},
     },
     strategies::registry::BoltV3MarketSelectionContext,
@@ -1009,7 +1012,7 @@ fn freeze_selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> Runtim
             ruleset_id,
             state: SelectionState::Freeze {
                 market: candidate_market_from_fixture(fixture_name, start_ts_ms),
-                reason: "freeze window".to_string(),
+                reason: SELECTION_FREEZE_WINDOW_REASON.to_string(),
             },
         },
         eligible_candidates: vec![candidate_market_from_fixture(fixture_name, start_ts_ms)],
@@ -6728,7 +6731,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
                     start_ts_ms: rotation_ts_ms,
                     ..market_b.clone()
                 },
-                reason: "freeze window".to_string(),
+                reason: SELECTION_FREEZE_WINDOW_REASON.to_string(),
             },
         },
         eligible_candidates: vec![CandidateMarket {

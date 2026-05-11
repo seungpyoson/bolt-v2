@@ -5556,7 +5556,8 @@ mod tests {
             reference::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind},
             resolution_basis::parse_ruleset_resolution_basis,
             ruleset::{
-                CandidateMarket, RuntimeSelectionSnapshot, SelectionDecision, SelectionState,
+                CandidateMarket, RuntimeSelectionSnapshot, SELECTION_FREEZE_WINDOW_REASON,
+                SelectionDecision, SelectionState,
             },
         },
         strategies::{production_strategy_registry, registry::StrategyBuilder},
@@ -5906,7 +5907,7 @@ mod tests {
             interval_start_ms,
             SelectionState::Freeze {
                 market: candidate_market(market_id, interval_start_ms),
-                reason: "freeze window".to_string(),
+                reason: SELECTION_FREEZE_WINDOW_REASON.to_string(),
             },
         )
     }

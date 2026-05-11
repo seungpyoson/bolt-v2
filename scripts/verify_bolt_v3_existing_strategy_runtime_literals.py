@@ -57,6 +57,10 @@ FORBIDDEN_LITERALS = {
     "PRIMARY": (
         "existing-strategy runtime selection ruleset literal; derive from v3 strategy TOML"
     ),
+    "freeze window": (
+        "existing-strategy runtime selection freeze reason literal; use "
+        "SELECTION_FREEZE_WINDOW_REASON"
+    ),
 }
 
 

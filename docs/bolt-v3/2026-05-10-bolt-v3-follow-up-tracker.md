@@ -38,6 +38,8 @@ F13 CI note: `just fmt-check` now depends on the F13 test-hardcode verifier grou
 
 F13ab note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now also rejects existing-strategy runtime resolution-basis fixture literals. `tests/eth_chainlink_taker_runtime.rs` derives the resolution-basis key from the selected v3 root reference stream oracle input plus its configured data-client venue instead of hardcoding a `source_symbol` string.
 
+F13ac note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now rejects existing-strategy runtime selection freeze reason literals. The freeze reason string is owned by `src/platform/ruleset.rs` as `SELECTION_FREEZE_WINDOW_REASON`; the freeze threshold remains TOML/ruleset-config-driven.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

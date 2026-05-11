@@ -4,6 +4,8 @@ use crate::{
 };
 use std::cmp::Ordering;
 
+pub const SELECTION_FREEZE_WINDOW_REASON: &str = "freeze window";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateMarket {
     pub market_id: String,
@@ -122,7 +124,7 @@ pub fn evaluate_market_selection(
         Some(market) if market.seconds_to_end <= ruleset.freeze_before_end_secs => {
             SelectionState::Freeze {
                 market: market.clone(),
-                reason: "freeze window".to_string(),
+                reason: SELECTION_FREEZE_WINDOW_REASON.to_string(),
             }
         }
         Some(market) => SelectionState::Active {

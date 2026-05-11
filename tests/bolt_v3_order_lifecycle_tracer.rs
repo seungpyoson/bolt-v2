@@ -48,7 +48,7 @@ use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{BookOrder, OrderBookDelta, OrderBookDeltas},
     enums::{AssetClass, BookAction, LiquiditySide, OrderSide},
-    events::{OrderAccepted, OrderEventAny, OrderFilled, OrderRejected},
+    events::{OrderAccepted, OrderCanceled, OrderEventAny, OrderFilled, OrderRejected},
     identifiers::{
         AccountId, ClientId, InstrumentId, PositionId, StrategyId, TradeId, TraderId, VenueOrderId,
     },
@@ -595,6 +595,31 @@ fn send_filled_to_exec_engine(
     msgbus::send_order_event(
         MessagingSwitchboard::exec_engine_process(),
         OrderEventAny::Filled(event),
+    );
+}
+
+fn send_canceled_to_exec_engine(
+    loaded: &LoadedBoltV3Config,
+    submission: &RecordedSubmitOrder,
+    venue_order_id: VenueOrderId,
+    ts_event_ms: u64,
+) {
+    let account_id = execution_account_id(loaded, execution_client_id(loaded).as_str());
+    let event = OrderCanceled::new(
+        submission.trader_id,
+        submission.strategy_id,
+        submission.instrument_id,
+        submission.client_order_id,
+        UUID4::new(),
+        UnixNanos::from(ts_event_ms * 1_000_000),
+        UnixNanos::from(ts_event_ms * 1_000_000),
+        false,
+        Some(venue_order_id),
+        Some(AccountId::from(account_id.as_str())),
+    );
+    msgbus::send_order_event(
+        MessagingSwitchboard::exec_engine_process(),
+        OrderEventAny::Canceled(event),
     );
 }
 
@@ -1163,6 +1188,251 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
     assert_eq!(submissions[1].quantity, submissions[0].quantity);
     assert_eq!(entry_submission_events(&catalog_dir, &target_id), 1);
     assert_eq!(exit_submission_events(&catalog_dir, &target_id), 1);
+    for _ in 0..2 {
+        let request = fee_requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("local fee server should receive fee request");
+        assert!(
+            request
+                .split_ascii_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .starts_with("/fee-rate?token_id="),
+            "unexpected fee request path: {request:?}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+    let temp_dir = TempDir::new().unwrap();
+    let (fee_base_url, fee_requests) = spawn_fee_rate_server(2);
+    let mut loaded =
+        load_bolt_v3_config(&existing_strategy_root_fixture()).expect("v3 fixture should load");
+    point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
+    loaded.root.nautilus.load_state = false;
+    loaded.root.nautilus.save_state = false;
+    attach_release_identity_manifest(&mut loaded, &temp_dir);
+
+    let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
+    let execution_client_id = ClientId::from(execution_client_id(&loaded).as_str());
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve through fake SSM");
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 LiveNode builder should build");
+    let (builder, _summary) =
+        register_bolt_v3_clients(builder, mock_client_configs_from_loaded(&loaded))
+            .expect("mock clients should register through v3 client boundary");
+    let mut node = builder.build().expect("mock LiveNode should build");
+    register_bolt_v3_reference_actors(&mut node, &loaded)
+        .expect("v3 reference actors should register on mock LiveNode");
+    register_bolt_v3_strategies(&mut node, &loaded, &resolved)
+        .expect("existing strategy should register from v3 TOML");
+    add_selected_instruments(&mut node, &loaded);
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let reference_topic = reference_publish_topic(&loaded);
+    let (up, down) = selected_instruments(&loaded);
+    let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
+    let target_id = configured_target_id(&loaded);
+    let run_timeout = Duration::from_secs(
+        loaded.root.nautilus.delay_post_stop_seconds
+            + loaded.root.nautilus.timeout_shutdown_seconds
+            + 1,
+    );
+    let loaded_for_control = loaded.clone();
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            tokio::time::timeout(run_timeout, async move {
+                let control = async {
+                    wait_for_running(&handle).await;
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &selection_snapshot(&loaded_for_control, start_ts_ms),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms,
+                            price_to_beat_value(),
+                            3_102.0,
+                        ),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 200,
+                            3_101.0,
+                            3_105.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.430, 0.450),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+                    sleep(Duration::from_millis(200)).await;
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &selection_snapshot(&loaded_for_control, start_ts_ms),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 400,
+                            3_101.0,
+                            3_105.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.430, 0.450),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+
+                    let mut entry_submission = None;
+                    for _ in 0..50 {
+                        if let Some(submission) = recorded_mock_exec_submissions().first().cloned()
+                        {
+                            entry_submission = Some(submission);
+                            break;
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                    let entry_submission =
+                        entry_submission.expect("entry submit should happen before fill event");
+                    let entry_venue_order_id = send_accepted_to_exec_engine(
+                        &loaded_for_control,
+                        &entry_submission,
+                        start_ts_ms + 500,
+                    );
+                    send_filled_to_exec_engine(
+                        &loaded_for_control,
+                        &entry_submission,
+                        entry_venue_order_id,
+                        start_ts_ms + 600,
+                    );
+
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &freeze_selection_snapshot(&loaded_for_control, start_ts_ms + 800),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 800,
+                            3_101.0,
+                            3_094.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.500, 0.510),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+
+                    let mut exit_submission = None;
+                    for _ in 0..50 {
+                        let submissions = recorded_mock_exec_submissions();
+                        if submissions.len() >= 2 {
+                            exit_submission = submissions.get(1).cloned();
+                            break;
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                    let exit_submission =
+                        exit_submission.expect("exit submit should happen before cancel event");
+                    let exit_venue_order_id = send_accepted_to_exec_engine(
+                        &loaded_for_control,
+                        &exit_submission,
+                        start_ts_ms + 900,
+                    );
+                    send_canceled_to_exec_engine(
+                        &loaded_for_control,
+                        &exit_submission,
+                        exit_venue_order_id,
+                        start_ts_ms + 1_000,
+                    );
+
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &freeze_selection_snapshot(&loaded_for_control, start_ts_ms + 1_200),
+                    );
+                    publish_any(
+                        reference_topic.into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 1_200,
+                            3_101.0,
+                            3_094.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.500, 0.510),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+
+                    for _ in 0..50 {
+                        if recorded_mock_exec_submissions().len() >= 3 {
+                            break;
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                    handle.stop();
+                };
+
+                let runner = async {
+                    node.run().await.expect("mock node should stop cleanly");
+                };
+
+                tokio::join!(control, runner);
+            })
+            .await
+            .expect("mock LiveNode run should finish before timeout");
+        });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 3, "{submissions:?}");
+    for submission in &submissions {
+        assert_eq!(submission.client_id, Some(execution_client_id));
+        assert_eq!(submission.strategy_id, strategy_id);
+        assert_eq!(submission.instrument_id, up);
+    }
+    assert_eq!(submissions[0].order_side, OrderSide::Buy);
+    assert_eq!(submissions[1].order_side, OrderSide::Sell);
+    assert_eq!(submissions[2].order_side, OrderSide::Sell);
+    assert_eq!(submissions[1].quantity, submissions[0].quantity);
+    assert_eq!(submissions[2].quantity, submissions[0].quantity);
+    assert_ne!(
+        submissions[1].client_order_id, submissions[2].client_order_id,
+        "{submissions:?}"
+    );
+    assert_eq!(entry_submission_events(&catalog_dir, &target_id), 1);
+    assert_eq!(exit_submission_events(&catalog_dir, &target_id), 2);
     for _ in 0..2 {
         let request = fee_requests
             .recv_timeout(Duration::from_secs(1))

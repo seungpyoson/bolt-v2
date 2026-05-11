@@ -4,7 +4,7 @@ use crate::{
     bolt_v3_config::{ReferenceSourceType, ReferenceStreamBlock},
     platform::reference::{
         ReferenceFusionInput, ReferenceObservation, ReferenceSnapshot, VenueKind,
-        fuse_reference_snapshot_from_inputs,
+        derive_reference_disabled_sources_from_inputs, fuse_reference_snapshot_from_inputs,
     },
 };
 
@@ -75,5 +75,23 @@ impl BoltV3ReferenceStreamPolicy {
             latest,
             disabled,
         )
+    }
+
+    pub fn disabled_sources(
+        &self,
+        now_ms: u64,
+        latest: &BTreeMap<String, ReferenceObservation>,
+    ) -> BTreeMap<String, String> {
+        derive_reference_disabled_sources_from_inputs(now_ms, &self.inputs, latest)
+    }
+
+    pub fn fuse_snapshot_with_source_health(
+        &self,
+        now_ms: u64,
+        latest: &BTreeMap<String, ReferenceObservation>,
+    ) -> ReferenceSnapshot {
+        let disabled = self.disabled_sources(now_ms, latest);
+
+        self.fuse_snapshot(now_ms, latest, &disabled)
     }
 }

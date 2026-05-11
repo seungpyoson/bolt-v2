@@ -112,7 +112,7 @@ pub fn fuse_reference_snapshot_from_inputs(
         let age_ms = observation.map(|observation| now_ms.saturating_sub(observation.ts_ms()));
         let auto_disabled_reason = age_ms
             .filter(|age_ms| *age_ms > input.disable_after_ms)
-            .map(auto_disable_reason);
+            .map(reference_auto_disable_reason);
         let stale = missing_observation_reason.is_some()
             || age_ms
                 .map(|age_ms| age_ms > input.stale_after_ms || auto_disabled_reason.is_some())
@@ -174,7 +174,30 @@ pub fn fuse_reference_snapshot_from_inputs(
     }
 }
 
-fn auto_disable_reason(age_ms: u64) -> String {
+pub fn derive_reference_disabled_sources_from_inputs(
+    now_ms: u64,
+    inputs: &[ReferenceFusionInput],
+    latest: &BTreeMap<String, ReferenceObservation>,
+) -> BTreeMap<String, String> {
+    inputs
+        .iter()
+        .filter_map(|input| {
+            let observation = latest
+                .get(&input.source_id)
+                .filter(|observation| observation.matches_identity(input))?;
+            let age_ms = now_ms.saturating_sub(observation.ts_ms());
+
+            (age_ms > input.disable_after_ms).then(|| {
+                (
+                    input.source_id.clone(),
+                    reference_auto_disable_reason(age_ms),
+                )
+            })
+        })
+        .collect()
+}
+
+pub fn reference_auto_disable_reason(age_ms: u64) -> String {
     format!("auto-disabled after {age_ms}ms without a fresh reference update")
 }
 

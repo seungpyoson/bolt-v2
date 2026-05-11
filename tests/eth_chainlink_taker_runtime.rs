@@ -222,6 +222,22 @@ fn strategy_id_from_fixture_config() -> StrategyId {
     strategy_id_from_raw_config(&strategy_raw_config())
 }
 
+fn strategy_id_from_multi_fixture(strategy_index: usize) -> StrategyId {
+    let loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root_multi.toml",
+    ))
+    .expect("existing-strategy multi root fixture should load");
+    StrategyId::from(
+        loaded
+            .strategies
+            .get(strategy_index)
+            .expect("multi root fixture should include requested strategy")
+            .config
+            .strategy_instance_id
+            .as_str(),
+    )
+}
+
 fn fixture_reference_publish_topic() -> &'static str {
     "platform.reference.test.chainlink"
 }
@@ -814,9 +830,29 @@ fn seed_cached_open_position(
         strategy_id,
         instrument_id,
         OrderSide::Buy,
-        Price::from("0.450"),
+        cached_position_entry_price(),
         PositionId::from("P-RECOVERY-001"),
     );
+}
+
+fn cached_position_entry_quantity() -> Quantity {
+    Quantity::from("5")
+}
+
+fn cached_position_entry_price() -> Price {
+    Price::from("0.450")
+}
+
+fn cached_position_entry_notional_usdc() -> f64 {
+    cached_position_entry_quantity().as_f64() * cached_position_entry_price().as_f64()
+}
+
+fn cross_strategy_open_entry_order_quantity() -> Quantity {
+    Quantity::from("100")
+}
+
+fn fixture_notional_usdc(quantity: Quantity, price: Price) -> f64 {
+    quantity.as_f64() * price.as_f64()
 }
 
 fn seed_cached_position_with_entry(
@@ -857,7 +893,7 @@ fn seed_cached_position_with_entry_in_cache(
         TradeId::from("E-RECOVERY-ENTRY-001"),
         entry_order_side,
         OrderType::Market,
-        Quantity::from("5"),
+        cached_position_entry_quantity(),
         entry_price,
         Currency::USDC(),
         LiquiditySide::Taker,
@@ -1261,7 +1297,19 @@ fn drive_eth_entry_no_action_with_book_quantity(
     });
 }
 
-fn drive_eth_entry_after_cached_position_no_action(mut node: LiveNode, strategy_id: StrategyId) {
+fn drive_eth_entry_after_cached_position_no_action(node: LiveNode, strategy_id: StrategyId) {
+    drive_eth_entry_after_cached_position_for_position_strategy_no_action(
+        node,
+        strategy_id,
+        strategy_id,
+    );
+}
+
+fn drive_eth_entry_after_cached_position_for_position_strategy_no_action(
+    mut node: LiveNode,
+    strategy_id: StrategyId,
+    position_strategy_id: StrategyId,
+) {
     let handle = node.handle();
     let cache_handle = node.kernel().cache();
     let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
@@ -1274,13 +1322,13 @@ fn drive_eth_entry_after_cached_position_no_action(mut node: LiveNode, strategy_
         let control = async {
             wait_for_running(&handle).await;
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+            let up = eth_up_instrument_id();
             seed_cached_position_with_entry_in_cache(
                 &cache_handle,
-                strategy_id,
+                position_strategy_id,
                 up,
                 OrderSide::Buy,
-                Price::from("0.450"),
+                cached_position_entry_price(),
                 PositionId::from("P-RT-FILLED-CAPACITY"),
             );
 
@@ -1289,15 +1337,15 @@ fn drive_eth_entry_after_cached_position_no_action(mut node: LiveNode, strategy_
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -3172,14 +3220,18 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
 }
 
 #[test]
-fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
+fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt_cache() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
 
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
+    let other_strategy_id = strategy_id_from_multi_fixture(1);
+    let open_order_quantity = cross_strategy_open_entry_order_quantity();
+    let open_order_price = cached_position_entry_price();
+    let open_order_notional = fixture_notional_usdc(open_order_quantity, open_order_price);
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3187,7 +3239,7 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3195,8 +3247,101 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(
         &trader,
-        "eth_chainlink_taker",
-        &strategy_raw_config_with_max_position_usdc(2.25),
+        ETH_CHAINLINK_TAKER_KIND,
+        &strategy_raw_config_with_max_position_usdc(open_order_notional),
+    )
+    .unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    let up = eth_up_instrument_id();
+    seed_cached_open_entry_order(
+        &node,
+        other_strategy_id,
+        up,
+        open_order_quantity,
+        open_order_price,
+    );
+    drive_eth_entry_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "other-strategy open entry capacity must not submit another order"
+    );
+
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), &configured_target_id);
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "updown_market_mechanical_rejection".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("updown_market_mechanical_rejection_reason"),
+                Some(&serde_json::Value::String(
+                    "selected_market_open_orders_present".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("open_entry_notional")
+                    .and_then(serde_json::Value::as_f64),
+                Some(open_order_notional)
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("strategy_remaining_entry_capacity")
+                    .and_then(serde_json::Value::as_f64),
+                Some(0.0)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = strategy_id_from_fixture_config();
+    let filled_entry_notional = cached_position_entry_notional_usdc();
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        fixture_reference_publish_topic().to_string(),
+        Some(TradingState::Active),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(
+        &trader,
+        ETH_CHAINLINK_TAKER_KIND,
+        &strategy_raw_config_with_max_position_usdc(filled_entry_notional),
     )
     .unwrap();
 
@@ -3208,7 +3353,8 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
         "filled entry capacity from NT cache must not submit another order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), &configured_target_id);
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -3232,7 +3378,96 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
                     .event_facts
                     .get("entry_filled_notional")
                     .and_then(serde_json::Value::as_f64),
-                Some(2.25)
+                Some(filled_entry_notional)
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("open_entry_notional")
+                    .and_then(serde_json::Value::as_f64),
+                Some(0.0)
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("strategy_remaining_entry_capacity")
+                    .and_then(serde_json::Value::as_f64),
+                Some(0.0)
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_nt_cache() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = strategy_id_from_fixture_config();
+    let other_strategy_id = strategy_id_from_multi_fixture(1);
+    let filled_entry_notional = cached_position_entry_notional_usdc();
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        fixture_reference_publish_topic().to_string(),
+        Some(TradingState::Active),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(
+        &trader,
+        ETH_CHAINLINK_TAKER_KIND,
+        &strategy_raw_config_with_max_position_usdc(filled_entry_notional),
+    )
+    .unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_after_cached_position_for_position_strategy_no_action(
+        node,
+        strategy_id,
+        other_strategy_id,
+    );
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "other-strategy filled entry capacity must not submit another order"
+    );
+
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), &configured_target_id);
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "position_limit_reached".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get("entry_filled_notional")
+                    .and_then(serde_json::Value::as_f64),
+                Some(filled_entry_notional)
             );
             assert_eq!(
                 decoded

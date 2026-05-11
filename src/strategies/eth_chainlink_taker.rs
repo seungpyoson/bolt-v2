@@ -2309,14 +2309,13 @@ impl EthChainlinkTaker {
             return true;
         }
 
-        let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
         let cache = self.cache();
         selected_instruments
             .into_iter()
             .flatten()
             .any(|instrument_id| {
                 !cache
-                    .orders_open(None, Some(&instrument_id), Some(&strategy_id), None, None)
+                    .orders_open(None, Some(&instrument_id), None, None, None)
                     .is_empty()
             })
     }
@@ -2342,11 +2341,10 @@ impl EthChainlinkTaker {
         let mut open_entry_notional = 0.0;
 
         if self.core.trader_id().is_some() {
-            let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
             let cache = self.cache();
             for instrument_id in selected_instruments.into_iter().flatten() {
                 entry_filled_notional += cache
-                    .positions_open(None, Some(&instrument_id), Some(&strategy_id), None, None)
+                    .positions_open(None, Some(&instrument_id), None, None, None)
                     .into_iter()
                     .filter(|position| counted_position_ids.insert(position.id))
                     .filter_map(|position| {
@@ -2355,13 +2353,7 @@ impl EthChainlinkTaker {
                     .sum::<f64>();
 
                 open_entry_notional += cache
-                    .orders_open(
-                        None,
-                        Some(&instrument_id),
-                        Some(&strategy_id),
-                        None,
-                        Some(OrderSide::Buy),
-                    )
+                    .orders_open(None, Some(&instrument_id), None, None, Some(OrderSide::Buy))
                     .into_iter()
                     .filter_map(|order| {
                         positive_notional(order.leaves_qty().as_f64(), order.price()?.as_f64())

@@ -211,12 +211,9 @@ impl std::error::Error for BoltV3ClientMappingError {}
 /// stage.
 ///
 /// This entry point intentionally installs no provider filter and
-/// passes an empty plan into the with-identity variant. Callers that
-/// need the rotating-market filter surface MUST use
-/// [`map_bolt_v3_clients_with_market_identity`] directly with a
-/// derived [`MarketIdentityPlan`] and a real clock — copying the
-/// `Arc::new(|| 0_i64)` sentinel below into a non-empty-plan call site
-/// would produce slugs anchored to unix-second 0 every cycle.
+/// passes no market-selection clock. Callers that need rotating-market
+/// filters MUST use [`map_bolt_v3_clients_with_market_identity`]
+/// directly with a derived [`MarketIdentityPlan`] and a real clock.
 pub fn map_bolt_v3_clients(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
@@ -224,14 +221,13 @@ pub fn map_bolt_v3_clients(
     let empty_plan = MarketIdentityPlan {
         updown_targets: Vec::new(),
     };
-    // The clock here is never invoked: with no updown targets, no
-    // provider filter closure is built, so the closure body is never
-    // entered. We wire in a deterministic constant so callers cannot
-    // observe any wall-clock dependency on the no-identity entry point.
-    // Treat this constant as a sentinel for the no-filter path; do not
-    // reuse it from any call site that supplies a non-empty plan.
-    let zero_clock: BoltV3MarketSelectionNowFn = Arc::new(|| 0_i64);
-    map_bolt_v3_clients_with_market_identity(loaded, resolved, &empty_plan, zero_clock)
+    map_bolt_v3_clients_with_optional_market_identity(
+        loaded,
+        resolved,
+        &empty_plan,
+        None,
+        bolt_v3_providers::binding_for_venue,
+    )
 }
 
 /// Map a validated [`LoadedBoltV3Config`] plus resolved SSM secrets into
@@ -259,6 +255,22 @@ fn map_bolt_v3_clients_with_market_identity_and_venue_lookup(
     resolved: &ResolvedBoltV3Secrets,
     plan: &MarketIdentityPlan,
     clock: BoltV3MarketSelectionNowFn,
+    binding_for_venue: impl Fn(&str) -> Option<&'static bolt_v3_providers::ProviderBinding>,
+) -> Result<BoltV3ClientConfigs, BoltV3ClientMappingError> {
+    map_bolt_v3_clients_with_optional_market_identity(
+        loaded,
+        resolved,
+        plan,
+        Some(clock),
+        binding_for_venue,
+    )
+}
+
+fn map_bolt_v3_clients_with_optional_market_identity(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    plan: &MarketIdentityPlan,
+    clock: Option<BoltV3MarketSelectionNowFn>,
     binding_for_venue: impl Fn(&str) -> Option<&'static bolt_v3_providers::ProviderBinding>,
 ) -> Result<BoltV3ClientConfigs, BoltV3ClientMappingError> {
     validate_market_identity_target_clients(loaded, plan)?;

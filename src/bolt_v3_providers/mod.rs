@@ -65,7 +65,7 @@ pub struct ProviderAdapterMapContext<'a> {
     pub client_id: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
-    pub clock: BoltV3MarketSelectionNowFn,
+    pub clock: Option<BoltV3MarketSelectionNowFn>,
 }
 
 pub struct ProviderReferenceInputContext<'a> {

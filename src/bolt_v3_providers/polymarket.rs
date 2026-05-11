@@ -489,7 +489,7 @@ fn map_data(
     client_id_key: &str,
     value: &toml::Value,
     plan: &MarketIdentityPlan,
-    clock: BoltV3MarketSelectionNowFn,
+    clock: Option<BoltV3MarketSelectionNowFn>,
 ) -> Result<PolymarketDataClientConfig, BoltV3ClientMappingError> {
     let cfg: PolymarketDataConfig =
         value.clone().try_into().map_err(|error: toml::de::Error| {
@@ -522,12 +522,21 @@ fn map_data(
                 cfg.websocket_max_subscriptions_per_connection
             ),
         })?;
-    let filters = crate::bolt_v3_provider_family_bindings::build_polymarket_filters_for_client(
-        KEY,
-        plan,
-        client_id_key,
-        clock,
-    );
+    let filters = if plan.has_client_targets(client_id_key) {
+        let clock = clock.ok_or_else(|| BoltV3ClientMappingError::ValidationInvariant {
+            client_id_key: client_id_key.to_string(),
+            field: "market_selection_clock",
+            message: "market-selection targets require an injected NT runtime clock".to_string(),
+        })?;
+        crate::bolt_v3_provider_family_bindings::build_polymarket_filters_for_client(
+            KEY,
+            plan,
+            client_id_key,
+            clock,
+        )
+    } else {
+        Vec::new()
+    };
     Ok(PolymarketDataClientConfig {
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),

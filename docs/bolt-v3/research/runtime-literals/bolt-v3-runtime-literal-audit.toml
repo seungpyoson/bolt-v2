@@ -796,3 +796,243 @@ literal = "64"
 context = "if value.len() != 64"
 classification = "sha256_hex_length_gate"
 reason = "This is the fixed lowercase SHA-256 hex digest length enforced for release-identity manifest digests."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/eth_chainlink_taker.rs"
+kind = "string"
+literal = '"parameters"'
+context = 'EthChainlinkTakerBuilder::validate_config(&raw, "parameters", &mut strategy_errors);'
+classification = "existing_strategy_archetype_schema_field"
+reason = "This literal names the raw strategy TOML parameters table passed into the existing-strategy validator."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/eth_chainlink_taker.rs"
+kind = "string"
+literal = '"period_duration_secs"'
+context = '.and_then(|table| table.get("period_duration_secs"))'
+classification = "existing_strategy_archetype_schema_field"
+reason = "This literal names the existing strategy parameter checked for target cadence alignment."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '"reference_stream_id"'
+context = 'pub const REFERENCE_STREAM_ID_PARAMETER: &str = "reference_stream_id";'
+classification = "strategy_parameter_key"
+reason = "This is the v3 strategy parameter key used to select a root reference stream from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '"trading_state_reducing"'
+context = 'TradingState::Reducing => Some("trading_state_reducing"),'
+classification = "decision_event_rejection_reason"
+reason = "This is the decision-event rejection reason derived from NT TradingState::Reducing."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '"trading_state_halted"'
+context = 'TradingState::Halted => Some("trading_state_halted"),'
+classification = "decision_event_rejection_reason"
+reason = "This is the decision-event rejection reason derived from NT TradingState::Halted."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '"rotating_market"'
+context = 'Self::RotatingMarket => "rotating_market",'
+classification = "market_family_contract_value"
+reason = "This is the serialized target market-selection type owned by the updown market-family binding."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '"updown"'
+context = 'Self::Updown => "updown",'
+classification = "market_family_dispatch_key"
+reason = "This is the registered updown market-family key owned by the updown binding."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '"active_or_next"'
+context = 'Self::ActiveOrNext => "active_or_next",'
+classification = "market_family_contract_value"
+reason = "This is the serialized updown market-selection rule owned by the updown market-family binding."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/mod.rs"
+kind = "string"
+literal = '"venue `{}` has no instrument readiness binding for market family `{}`"'
+context = '"venue `{}` has no instrument readiness binding for market family `{}`",'
+classification = "provider_family_diagnostic_template"
+reason = "This diagnostic reports a missing provider/market-family readiness binding; venue and family values come from TOML and registries."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/mod.rs"
+kind = "string"
+literal = '"venue `{}` has no instrument readiness check for market family `{}`"'
+context = '"venue `{}` has no instrument readiness check for market family `{}`",'
+classification = "provider_family_diagnostic_template"
+reason = "This diagnostic reports a missing provider/market-family readiness check; venue and family values come from TOML and registries."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "number"
+literal = "1_000"
+context = "const MILLISECONDS_PER_SECOND: i64 = 1_000;"
+classification = "unit_conversion_constant"
+reason = "This is the fixed milliseconds-per-second unit conversion used when translating v3 millisecond selection timestamps into Unix seconds."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "number"
+literal = "1_000_000"
+context = "const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;"
+classification = "unit_conversion_constant"
+reason = "This is the fixed nanoseconds-per-millisecond unit conversion used when translating NT UnixNanos into v3 millisecond facts."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"selected_market role={} market_slug={} up_instrument_id={} down_instrument_id={}"'
+context = '"selected_market role={} market_slug={} up_instrument_id={} down_instrument_id={}",'
+classification = "provider_instrument_readiness_diagnostic_template"
+reason = "This diagnostic template records selected-market readiness details; all values are derived from NT cache instruments."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"up"'
+context = 'if outcome.eq_ignore_ascii_case("up") {'
+classification = "polymarket_binary_outcome_value"
+reason = "This is the Polymarket binary outcome label used to pair UP instruments from NT BinaryOption metadata."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"down"'
+context = '} else if outcome.eq_ignore_ascii_case("down") {'
+classification = "polymarket_binary_outcome_value"
+reason = "This is the Polymarket binary outcome label used to pair DOWN instruments from NT BinaryOption metadata."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"market_slug"'
+context = 'let market_slug = instrument_info_str(binary, "market_slug")?;'
+classification = "polymarket_binary_option_metadata_key"
+reason = "This is the NT Polymarket BinaryOption metadata key used to match configured market slugs."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"condition_id"'
+context = 'condition_id: instrument_info_str(binary, "condition_id")?.to_string(),'
+classification = "polymarket_binary_option_metadata_key"
+reason = "This is the NT Polymarket BinaryOption metadata key copied into selected-market facts."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"question_id"'
+context = 'question_id: instrument_info_str(binary, "question_id")?.to_string(),'
+classification = "polymarket_binary_option_metadata_key"
+reason = "This is the NT Polymarket BinaryOption metadata key copied into selected-market facts."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"market_slug"'
+context = 'instrument_info_str(binary, "market_slug")'
+classification = "polymarket_binary_option_metadata_key"
+reason = "This is the NT Polymarket BinaryOption metadata key used by cache readiness slug checks."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"current"'
+context = 'UpdownSelectedMarketRole::Current => "current",'
+classification = "selected_market_role_value"
+reason = "This is the serialized selected-market role emitted into readiness and decision evidence."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"next"'
+context = 'UpdownSelectedMarketRole::Next => "next",'
+classification = "selected_market_role_value"
+reason = "This is the serialized selected-market role emitted into readiness and decision evidence."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"instruments_not_in_cache"'
+context = 'UpdownSelectedMarketFailureReason::InstrumentsNotInCache => "instruments_not_in_cache",'
+classification = "selected_market_failure_reason"
+reason = "This is a contract failure reason emitted when NT cache lacks instruments for the selected updown market slugs."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"no_selected_market"'
+context = 'UpdownSelectedMarketFailureReason::NoSelectedMarket => "no_selected_market",'
+classification = "selected_market_failure_reason"
+reason = "This is a contract failure reason emitted when cache instruments exist but no current or next market matches selection rules."
+
+[[allowed]]
+path = "src/bolt_v3_provider_family_bindings/polymarket_updown.rs"
+kind = "string"
+literal = '"ambiguous_selected_market"'
+context = 'UpdownSelectedMarketFailureReason::AmbiguousSelectedMarket => "ambiguous_selected_market",'
+classification = "selected_market_failure_reason"
+reason = "This is a contract failure reason emitted when cache instruments produce multiple matching current or next markets."
+
+[[allowed]]
+path = "src/bolt_v3_start_readiness.rs"
+kind = "string"
+literal = '"bolt-v3 start readiness gate blocked production start with {} instrument readiness fact(s)"'
+context = '"bolt-v3 start readiness gate blocked production start with {} instrument readiness fact(s)",'
+classification = "start_readiness_diagnostic_template"
+reason = "This diagnostic summarizes blocked instrument-readiness facts before production start."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration/eth_chainlink_taker.rs"
+kind = "string"
+literal = '"strategy_id"'
+context = 'const STRATEGY_ID_FIELD: &str = "strategy_id";'
+classification = "existing_strategy_builder_field"
+reason = "This names the legacy existing-strategy builder field populated from v3 strategy_instance_id."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration/eth_chainlink_taker.rs"
+kind = "string"
+literal = '"client_id"'
+context = 'const CLIENT_ID_FIELD: &str = "client_id";'
+classification = "existing_strategy_builder_field"
+reason = "This names the legacy existing-strategy builder field populated from v3 execution_client_id."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '"strategy `{strategy_file}` references client_id `{client_id}`, but that client has no execution block"'
+context = '"strategy `{strategy_file}` references client_id `{client_id}`, but that client has no execution block"'
+classification = "strategy_registration_diagnostic_template"
+reason = "This diagnostic reports a strategy-to-client config mismatch before NT strategy registration."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "0.0"
+context = "if !input.base_weight.is_finite() || input.base_weight <= 0.0 {"
+classification = "positive_float_validation_gate"
+reason = "This is the lower bound for reference-stream input weights; actual weights come from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '"reference_stream_id"'
+context = 'let Some(value) = parameters.get("reference_stream_id") else {'
+classification = "strategy_parameter_key"
+reason = "This is the v3 strategy parameter key used to validate a strategy-selected root reference stream."

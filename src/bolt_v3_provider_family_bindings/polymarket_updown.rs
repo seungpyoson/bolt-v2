@@ -27,6 +27,9 @@ pub const BINDING: ProviderMarketFamilyBinding = ProviderMarketFamilyBinding {
     check_instrument_readiness: Some(check_instrument_readiness),
 };
 
+const MILLISECONDS_PER_SECOND: i64 = 1_000;
+const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdownSelectedMarketRole {
     Current,
@@ -96,11 +99,14 @@ pub fn resolve_updown_selected_market_from_cache(
 ) -> Result<UpdownSelectedMarketResolution, BoltV3MarketIdentityError> {
     if market_selection_timestamp_milliseconds < 0 {
         return Err(BoltV3MarketIdentityError::NegativeNowUnixSeconds {
-            now_unix_seconds: market_selection_timestamp_milliseconds.div_euclid(1_000),
+            now_unix_seconds: market_selection_timestamp_milliseconds
+                .div_euclid(MILLISECONDS_PER_SECOND),
         });
     }
-    let candidates =
-        candidates_for_target(target, market_selection_timestamp_milliseconds / 1_000)?;
+    let candidates = candidates_for_target(
+        target,
+        market_selection_timestamp_milliseconds / MILLISECONDS_PER_SECOND,
+    )?;
     let current = complete_updown_markets_for_slug(
         cache,
         target,
@@ -313,7 +319,7 @@ fn instrument_info_str<'a>(binary: &'a BinaryOption, key: &str) -> Option<&'a st
 }
 
 fn unix_nanos_to_millis(value: nautilus_core::UnixNanos) -> Option<i64> {
-    i64::try_from(value.as_u64() / 1_000_000).ok()
+    i64::try_from(value.as_u64() / NANOSECONDS_PER_MILLISECOND).ok()
 }
 
 fn selected_market_role_as_str(role: UpdownSelectedMarketRole) -> &'static str {

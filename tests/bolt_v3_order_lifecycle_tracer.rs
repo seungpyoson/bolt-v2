@@ -80,6 +80,7 @@ static ORDER_LIFECYCLE_TRACER_FIXTURE: OnceLock<OrderLifecycleTracerFixture> = O
 #[derive(Debug, Deserialize)]
 struct OrderLifecycleTracerFixture {
     local_polymarket: LocalPolymarketFixture,
+    selected_binary_option: SelectedBinaryOptionFixture,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +92,13 @@ struct LocalPolymarketFixture {
     http_timeout_seconds: i64,
     ack_timeout_seconds: i64,
     bind_addr: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelectedBinaryOptionFixture {
+    price_increment: String,
+    size_increment: String,
+    book_level_quantity: String,
 }
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -139,6 +147,24 @@ fn local_polymarket_ack_timeout_seconds() -> i64 {
 
 fn local_polymarket_bind_addr() -> &'static str {
     local_polymarket_fixture().bind_addr.as_str()
+}
+
+fn selected_binary_option_fixture() -> &'static SelectedBinaryOptionFixture {
+    &order_lifecycle_tracer_fixture().selected_binary_option
+}
+
+fn selected_binary_option_price_increment() -> &'static str {
+    selected_binary_option_fixture().price_increment.as_str()
+}
+
+fn selected_binary_option_size_increment() -> &'static str {
+    selected_binary_option_fixture().size_increment.as_str()
+}
+
+fn selected_binary_option_book_level_quantity() -> &'static str {
+    selected_binary_option_fixture()
+        .book_level_quantity
+        .as_str()
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -771,8 +797,8 @@ fn selected_instruments(loaded: &LoadedBoltV3Config) -> (InstrumentId, Instrumen
 }
 
 fn binary_option(instrument_id: InstrumentId) -> InstrumentAny {
-    let price_increment = Price::from("0.001");
-    let size_increment = Quantity::from("0.01");
+    let price_increment = Price::from(selected_binary_option_price_increment());
+    let size_increment = Quantity::from(selected_binary_option_size_increment());
     let token_id = instrument_id
         .symbol
         .as_str()
@@ -826,7 +852,12 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
             OrderBookDelta::new(
                 instrument_id,
                 BookAction::Update,
-                BookOrder::new(OrderSide::Buy, Price::new(bid, 3), Quantity::from("100"), 0),
+                BookOrder::new(
+                    OrderSide::Buy,
+                    Price::new(bid, 3),
+                    Quantity::from(selected_binary_option_book_level_quantity()),
+                    0,
+                ),
                 0,
                 1,
                 UnixNanos::default(),
@@ -838,7 +869,7 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
                 BookOrder::new(
                     OrderSide::Sell,
                     Price::new(ask, 3),
-                    Quantity::from("100"),
+                    Quantity::from(selected_binary_option_book_level_quantity()),
                     0,
                 ),
                 0,

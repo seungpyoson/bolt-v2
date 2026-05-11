@@ -97,7 +97,7 @@ down_token_id = "token-down-fixture"
         findings = verifier.scan_root(root)
         assert len(findings) == 1
         assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
-        assert "protocol fixture literal" in findings[0].message
+        assert "fixture-owned literal" in findings[0].message
 
 
 def test_fee_provider_protocol_fixture_literal_is_a_finding() -> None:
@@ -122,7 +122,33 @@ bind_addr = "127.0.0.1:0"
         findings = verifier.scan_root(root)
         assert len(findings) == 1
         assert findings[0].path == "tests/bolt_v3_polymarket_fee_provider.rs"
-        assert "protocol fixture literal" in findings[0].message
+        assert "fixture-owned literal" in findings[0].message
+
+
+def test_order_lifecycle_selected_binary_option_fixture_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml",
+            """
+[selected_binary_option]
+price_increment = "0.001"
+size_increment = "0.01"
+book_level_quantity = "100"
+""".lstrip(),
+        )
+        write_file(
+            root,
+            "tests/bolt_v3_order_lifecycle_tracer.rs",
+            'fn probe() { let _ = Price::from("0.001"); }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
+        assert "fixture-owned literal" in findings[0].message
 
 
 def test_fee_provider_file_is_enforced() -> None:
@@ -144,6 +170,7 @@ def main() -> int:
         test_inline_protocol_json_template_is_a_finding,
         test_order_lifecycle_protocol_fixture_literal_is_a_finding,
         test_fee_provider_protocol_fixture_literal_is_a_finding,
+        test_order_lifecycle_selected_binary_option_fixture_literal_is_a_finding,
         test_fee_provider_file_is_enforced,
         test_order_lifecycle_tracer_file_is_enforced,
     ]

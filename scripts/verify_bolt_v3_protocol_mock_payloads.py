@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject inline Bolt-v3 protocol mock payloads in selected Rust tests."""
+"""Reject inline Bolt-v3 protocol payloads and local fixture literals."""
 
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
             Finding(
                 path=rel,
                 line=line_number(text, match.start()),
-                message="protocol fixture literal; derive from TOML fixture",
+                message="fixture-owned literal; derive from TOML fixture",
                 excerpt=literal,
             )
         )

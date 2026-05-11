@@ -8,3 +8,8 @@ fee_requests_per_binary_market = 2
 http_timeout_seconds = 1
 ack_timeout_seconds = 1
 bind_addr = "127.0.0.1:0"
+
+[selected_binary_option]
+price_increment = "0.001"
+size_increment = "0.01"
+book_level_quantity = "100"

@@ -64,6 +64,8 @@ F13an note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13ao note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects local fee-provider protocol fixture string values in `tests/bolt_v3_polymarket_fee_provider.rs`. Local fee-provider bind address and fee-token suffix now live in `tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml`; order-lifecycle local bind address now lives in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
 
+F13ap note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now also rejects fixture-owned local order-lifecycle scenario values in `tests/bolt_v3_order_lifecycle_tracer.rs`. Selected binary-option price increment, size increment, and book-level quantity now live in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

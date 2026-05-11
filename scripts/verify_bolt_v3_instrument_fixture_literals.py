@@ -56,7 +56,7 @@ def instrument_fixture_literals(root: Path) -> set[str]:
 
 
 def add_market_values(values: set[str], market: dict[str, Any]) -> None:
-    for key in ("condition_id", "question_id", "market_slug"):
+    for key in ("name", "condition_id", "question_id", "market_slug"):
         value = market.get(key)
         if isinstance(value, str) and value:
             values.add(value)

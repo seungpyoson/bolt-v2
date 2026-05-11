@@ -75,3 +75,5 @@ F13aj extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` s
 F13ak extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so existing-strategy runtime target fixture values must derive from the v3 strategy TOML through `BoltV3MarketSelectionContext` instead of repeated Rust string literals.
 
 F13al extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so existing-strategy runtime selected-market fixture names must derive from each market's `runtime_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of repeated Rust string constants.
+
+F13am extends `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` so instrument gate/readiness selected-market fixture names must derive from each market's `readiness_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of Rust string literals.

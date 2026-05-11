@@ -58,6 +58,8 @@ F13ak note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.p
 
 F13al note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now rejects existing-strategy runtime selected-market fixture names. Runtime tests select default, rotation, and recovery market fixtures through each market's `runtime_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of repeated Rust string constants.
 
+F13am note: `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` now rejects selected-market fixture names in instrument gate/readiness tests. Those tests select current, stale, and ambiguous fixture markets through each market's `readiness_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of Rust string literals.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

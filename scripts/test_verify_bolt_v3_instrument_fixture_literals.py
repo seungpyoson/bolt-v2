@@ -98,6 +98,24 @@ def test_selected_market_literal_is_a_finding() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_selected_market_name_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_instrument_fixture_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        files = fixture_files()
+        files["tests/bolt_v3_instrument_gate.rs"] = 'fn probe() { let _ = "selected"; }\n'
+        write_fixture(root, files)
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert findings[0].path == "tests/bolt_v3_instrument_gate.rs"
+        assert "instrument fixture literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_derived_fixture_lookup_is_clean() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_instrument_fixture_literals"
@@ -121,6 +139,7 @@ def main() -> int:
     tests = [
         test_instrument_id_literal_is_a_finding,
         test_selected_market_literal_is_a_finding,
+        test_selected_market_name_literal_is_a_finding,
         test_derived_fixture_lookup_is_clean,
     ]
     for test in tests:

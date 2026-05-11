@@ -24,7 +24,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use serde_json::{Value, json};
-use support::{MockDataClientConfig, MockDataClientFactory};
+use support::{MockDataClientConfig, MockDataClientFactory, UpdownSelectedMarketReadinessRole};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -285,7 +285,9 @@ fn live_node_instrument_gate_accepts_loaded_selected_market_before_start() {
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build and register configured strategy");
     let cache = node.kernel().cache();
-    let current_market = support::bolt_v3_updown_selected_market_fixture("current");
+    let current_market = support::bolt_v3_updown_readiness_selected_market_fixture(
+        UpdownSelectedMarketReadinessRole::Current,
+    );
     {
         let mut cache = cache.borrow_mut();
         for leg in &current_market.legs {

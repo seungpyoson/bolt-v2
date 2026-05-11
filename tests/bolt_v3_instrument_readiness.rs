@@ -21,6 +21,7 @@ use nautilus_model::{
 };
 use nautilus_polymarket::common::consts::POLYMARKET_VENUE;
 use serde_json::json;
+use support::UpdownSelectedMarketReadinessRole;
 use ustr::Ustr;
 
 fn target_plan() -> UpdownTargetPlan {
@@ -88,7 +89,9 @@ fn cached_current_updown_pair_resolves_selected_market_identity() {
     let target = target_plan();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
-    let current_market = support::bolt_v3_updown_selected_market_fixture("current");
+    let current_market = support::bolt_v3_updown_readiness_selected_market_fixture(
+        UpdownSelectedMarketReadinessRole::Current,
+    );
     add_fixture_market(&mut cache, &current_market);
 
     let resolution = resolve_updown_selected_market_from_cache(&cache, &target, &venue, 601_000)
@@ -141,7 +144,9 @@ fn current_slug_with_non_current_time_window_does_not_select_market() {
     let target = target_plan();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
-    let stale_market = support::bolt_v3_updown_selected_market_fixture("stale");
+    let stale_market = support::bolt_v3_updown_readiness_selected_market_fixture(
+        UpdownSelectedMarketReadinessRole::Stale,
+    );
     add_fixture_market(&mut cache, &stale_market);
 
     let resolution = resolve_updown_selected_market_from_cache(&cache, &target, &venue, 601_000)
@@ -178,8 +183,12 @@ fn multiple_current_updown_pairs_for_same_target_fail_ambiguous() {
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
     for market in [
-        support::bolt_v3_updown_selected_market_fixture("ambiguous_a"),
-        support::bolt_v3_updown_selected_market_fixture("ambiguous_b"),
+        support::bolt_v3_updown_readiness_selected_market_fixture(
+            UpdownSelectedMarketReadinessRole::AmbiguousA,
+        ),
+        support::bolt_v3_updown_readiness_selected_market_fixture(
+            UpdownSelectedMarketReadinessRole::AmbiguousB,
+        ),
     ] {
         add_fixture_market(&mut cache, &market);
     }
@@ -203,7 +212,9 @@ fn config_path_resolves_each_client_target_from_nt_cache() {
     let client_id = plan.updown_targets[0].client_id_key.clone();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
-    let current_market = support::bolt_v3_updown_selected_market_fixture("current");
+    let current_market = support::bolt_v3_updown_readiness_selected_market_fixture(
+        UpdownSelectedMarketReadinessRole::Current,
+    );
     add_fixture_market(&mut cache, &current_market);
 
     let resolutions = resolve_updown_selected_markets_for_client_from_cache(

@@ -144,6 +144,7 @@ pub struct UpdownSelectedMarketLegFixture {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdownSelectedMarketFixture {
     pub name: String,
+    pub readiness_role: Option<UpdownSelectedMarketReadinessRole>,
     pub runtime_role: Option<UpdownSelectedMarketRuntimeRole>,
     pub condition_id: String,
     pub question_id: String,
@@ -151,6 +152,15 @@ pub struct UpdownSelectedMarketFixture {
     pub start_ms: u64,
     pub end_ms: u64,
     pub legs: Vec<UpdownSelectedMarketLegFixture>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdownSelectedMarketReadinessRole {
+    Current,
+    Stale,
+    AmbiguousA,
+    AmbiguousB,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -200,6 +210,22 @@ fn selected_market_fixture_by_name(
 pub fn bolt_v3_updown_selected_market_fixture(name: &str) -> UpdownSelectedMarketFixture {
     let (path, fixture) = load_updown_selected_markets_fixture_file();
     selected_market_fixture_by_name(&path, fixture, name)
+}
+
+pub fn bolt_v3_updown_readiness_selected_market_fixture(
+    role: UpdownSelectedMarketReadinessRole,
+) -> UpdownSelectedMarketFixture {
+    let (path, fixture) = load_updown_selected_markets_fixture_file();
+    fixture
+        .markets
+        .into_iter()
+        .find(|market| market.readiness_role == Some(role))
+        .unwrap_or_else(|| {
+            panic!(
+                "{} should define readiness selected-market fixture role {role:?}",
+                path.display()
+            )
+        })
 }
 
 pub fn bolt_v3_updown_runtime_selected_market_fixture(

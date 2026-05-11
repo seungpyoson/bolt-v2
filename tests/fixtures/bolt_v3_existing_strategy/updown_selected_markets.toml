@@ -2,6 +2,7 @@ schema_version = 1
 
 [[markets]]
 name = "current"
+readiness_role = "current"
 condition_id = "0xcurrent"
 question_id = "question-current"
 market_slug = "eth-updown-5m-600"
@@ -20,6 +21,7 @@ instrument_id = "0xcurrent-222.POLYMARKET"
 
 [[markets]]
 name = "stale"
+readiness_role = "stale"
 condition_id = "0xstale"
 question_id = "question-stale"
 market_slug = "eth-updown-5m-600"
@@ -38,6 +40,7 @@ instrument_id = "0xstale-222.POLYMARKET"
 
 [[markets]]
 name = "ambiguous_a"
+readiness_role = "ambiguous_a"
 condition_id = "0xambiguous-a"
 question_id = "question-ambiguous"
 market_slug = "eth-updown-5m-600"
@@ -56,6 +59,7 @@ instrument_id = "0xambiguous-a-222.POLYMARKET"
 
 [[markets]]
 name = "ambiguous_b"
+readiness_role = "ambiguous_b"
 condition_id = "0xambiguous-b"
 question_id = "question-ambiguous"
 market_slug = "eth-updown-5m-600"

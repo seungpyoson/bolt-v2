@@ -132,11 +132,20 @@ fn decision_event_context_wiring_has_no_strategy_or_venue_literal_dispatch() {
     let path = support::repo_path("src/bolt_v3_decision_event_context.rs");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()));
+    let loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
+        .expect("v3 TOML fixture should load");
+    let forbidden_client_id = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy fixture should load one strategy")
+        .config
+        .execution_client_id
+        .as_str();
 
     for forbidden in [
         "eth_chainlink_taker",
         "ETHCHAINLINKTAKER",
-        "polymarket_main",
+        forbidden_client_id,
         "eth_updown_5m",
         "ETH",
         "if strategy",

@@ -98,6 +98,12 @@ def test_reference_producer_file_is_enforced() -> None:
         raise AssertionError("reference producer test file must be enforced")
 
 
+def test_decision_event_context_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_decision_event_context.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("decision event context test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_fixture_client_id_literal_is_a_finding,
@@ -106,6 +112,7 @@ def main() -> int:
         test_provider_binding_file_is_enforced,
         test_market_identity_file_is_enforced,
         test_reference_producer_file_is_enforced,
+        test_decision_event_context_file_is_enforced,
     ]
     for test in tests:
         test()

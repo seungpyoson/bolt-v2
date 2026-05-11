@@ -59,6 +59,7 @@ use bolt_v2::{
         make_strategy_build_context,
     },
     platform::{
+        polymarket_catalog::POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE,
         reference::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind},
         ruleset::{
             CandidateMarket, RuntimeSelectionSnapshot, SELECTION_FREEZE_WINDOW_REASON,
@@ -908,7 +909,7 @@ fn selection_snapshot_with_market_facts(
     let mut market = candidate_market_from_fixture(RUNTIME_DEFAULT_SELECTED_MARKET, start_ts_ms);
     let ruleset_id = selection_ruleset_id_from_fixture_config();
     market.price_to_beat = Some(3_100.0);
-    market.price_to_beat_source = Some("polymarket_gamma_market_anchor".to_string());
+    market.price_to_beat_source = Some(POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string());
     market.price_to_beat_observed_ts_ms = Some(price_to_beat_observed_ts_ms);
     RuntimeSelectionSnapshot {
         ruleset_id: ruleset_id.clone(),
@@ -2673,7 +2674,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
             assert_eq!(
                 decoded.event_facts.get("price_to_beat_source"),
                 Some(&serde_json::Value::String(
-                    "polymarket_gamma_market_anchor".to_string()
+                    POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string()
                 ))
             );
         }

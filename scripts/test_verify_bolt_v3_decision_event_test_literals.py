@@ -198,6 +198,25 @@ fn probe() {
         assert "inline decision-event reason value" in findings[0].message
 
 
+def test_provider_source_label_literal_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_decision_event_handoff.rs",
+            """
+fn probe() {
+    let _ = "polymarket_gamma_market_anchor";
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert len(findings) == 1
+        assert "inline provider source label" in findings[0].message
+
+
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -246,6 +265,7 @@ def main() -> int:
         test_decision_event_handoff_fixture_literal_is_a_finding,
         test_eth_chainlink_runtime_context_literal_is_a_finding,
         test_eth_chainlink_runtime_decision_reason_literal_is_a_finding,
+        test_provider_source_label_literal_is_a_finding,
         test_exported_constants_and_fixture_helpers_are_clean,
         test_decision_event_handoff_file_is_enforced,
         test_order_intent_gate_file_is_enforced,

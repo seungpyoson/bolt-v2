@@ -61,6 +61,10 @@ FORBIDDEN_LITERALS = {
         "existing-strategy runtime selection freeze reason literal; use "
         "SELECTION_FREEZE_WINDOW_REASON"
     ),
+    "polymarket_gamma_market_anchor": (
+        "existing-strategy runtime price-to-beat source literal; use "
+        "POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE"
+    ),
 }
 
 

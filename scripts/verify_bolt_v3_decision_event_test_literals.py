@@ -50,6 +50,9 @@ DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES = {
     "eth_updown_5m",
     "target-eth-updown",
 }
+PROVIDER_SOURCE_LABEL_FORBIDDEN_LITERAL_VALUES = {
+    "polymarket_gamma_market_anchor",
+}
 
 @dataclass(frozen=True)
 class Finding:
@@ -177,6 +180,23 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     message=(
                         "inline decision-event context fixture literal; "
                         "derive from v3 TOML, release identity, or generated trace id"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
+
+    if rel in {DECISION_EVENT_HANDOFF_TEST_FILE, ETH_CHAINLINK_RUNTIME_TEST_FILE}:
+        for match in RUST_STRING_LITERAL_PATTERN.finditer(text):
+            value = string_value(match.group(0))
+            if value not in PROVIDER_SOURCE_LABEL_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "inline provider source label; use provider-owned source "
+                        "label constant"
                     ),
                     excerpt=match.group(0),
                 )

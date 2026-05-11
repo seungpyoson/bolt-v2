@@ -25,6 +25,8 @@ use crate::{
     platform::{resolution_basis::parse_declared_resolution_basis, ruleset::CandidateMarket},
 };
 
+pub const POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE: &str = "polymarket_gamma_market_anchor";
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawGammaEvent {
@@ -406,7 +408,8 @@ fn translate_market_result(
         down_token_id,
         selected_market_observed_ts_ms: now.timestamp_millis().max(0) as u64,
         price_to_beat,
-        price_to_beat_source: price_to_beat.map(|_| "polymarket_gamma_market_anchor".to_string()),
+        price_to_beat_source: price_to_beat
+            .map(|_| POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string()),
         price_to_beat_observed_ts_ms: price_to_beat.map(|_| now.timestamp_millis().max(0) as u64),
         start_ts_ms,
         end_ts_ms,
@@ -640,7 +643,7 @@ mod tests {
         assert_eq!(candidate.price_to_beat, Some(3100.0));
         assert_eq!(
             candidate.price_to_beat_source.as_deref(),
-            Some("polymarket_gamma_market_anchor")
+            Some(POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE)
         );
         assert_eq!(
             candidate.price_to_beat_observed_ts_ms,

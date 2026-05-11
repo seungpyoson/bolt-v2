@@ -37,6 +37,7 @@ use bolt_v2::bolt_v3_decision_events::{
     BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
 };
 use bolt_v2::bolt_v3_release_identity::load_bolt_v3_release_identity;
+use bolt_v2::platform::polymarket_catalog::POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE;
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -99,7 +100,7 @@ fn market_selection_result_event_writes_through_nt_catalog_handoff() {
             polymarket_market_end_timestamp_milliseconds: Some(301_000),
             price_to_beat_value: Some(3_100.0),
             price_to_beat_observed_timestamp: Some(995),
-            price_to_beat_source: Some("polymarket_gamma_market_anchor".to_string()),
+            price_to_beat_source: Some(POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string()),
         },
         UnixNanos::from(2_000),
         UnixNanos::from(2_001),
@@ -225,7 +226,7 @@ fn market_selection_result_handoff_returns_catalog_write_error() {
             polymarket_market_end_timestamp_milliseconds: Some(301_000),
             price_to_beat_value: Some(3_100.0),
             price_to_beat_observed_timestamp: Some(995),
-            price_to_beat_source: Some("polymarket_gamma_market_anchor".to_string()),
+            price_to_beat_source: Some(POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string()),
         },
         UnixNanos::from(2_000),
         UnixNanos::from(2_001),

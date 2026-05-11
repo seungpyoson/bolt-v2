@@ -3876,6 +3876,13 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
     }
 
     if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision.evaluation.gate.blocked_by
+            == [EntryBlockReason::ForcedFlat(ForcedFlatReason::ThinBook)]
+    {
+        return Some("thin_book");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
         && decision
             .evaluation
             .gate
@@ -8958,6 +8965,53 @@ mod tests {
             entry_no_action_reason(&decision),
             Some("one_position_invariant")
         );
+    }
+
+    #[test]
+    fn thin_book_entry_gate_maps_to_no_action_reason() {
+        let mut strategy = ready_to_trade_strategy();
+        let thin_book_liquidity = strategy.config.forced_flat_thin_book_min_liquidity / 2.0;
+        strategy.active.books.up.liquidity_available = Some(thin_book_liquidity);
+        strategy.active.books.down.liquidity_available = Some(thin_book_liquidity);
+        let gate = strategy.entry_gate_decision_at(
+            strategy
+                .active
+                .interval_start_ms
+                .expect("ready strategy must have interval start"),
+        );
+        assert_eq!(
+            gate.blocked_by,
+            vec![EntryBlockReason::ForcedFlat(ForcedFlatReason::ThinBook)]
+        );
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate,
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 0.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: strategy.config.max_position_usdc,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: None,
+                uncertainty_band_probability: None,
+                up_worst_case_ev_bps: None,
+                down_worst_case_ev_bps: None,
+                min_worst_case_ev_bps: None,
+                expected_ev_per_usdc: None,
+                book_impact_cap_usdc: None,
+                effective_entry_notional_cap_usdc: None,
+                sized_notional_usdc: None,
+                selected_side: None,
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("entry_gate_blocked"),
+        };
+
+        assert_eq!(entry_no_action_reason(&decision), Some("thin_book"));
     }
 
     #[test]

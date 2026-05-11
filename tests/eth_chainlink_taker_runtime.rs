@@ -2,6 +2,7 @@ mod support;
 
 use std::{
     cell::RefCell,
+    fs,
     rc::Rc,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
@@ -37,7 +38,10 @@ use bolt_v2::{
         runtime::{registry_runtime_strategy_factory, runtime_selection_topic},
     },
     strategies::registry::BoltV3MarketSelectionContext,
-    strategies::{eth_chainlink_taker::EthChainlinkTaker, production_strategy_registry},
+    strategies::{
+        eth_chainlink_taker::{ETH_CHAINLINK_TAKER_KIND, EthChainlinkTaker},
+        production_strategy_registry,
+    },
 };
 use nautilus_common::{
     actor::{DataActor, registry::try_get_actor_unchecked},
@@ -214,8 +218,19 @@ fn strategy_id_from_raw_config(config: &Value) -> StrategyId {
     )
 }
 
+fn strategy_id_from_fixture_config() -> StrategyId {
+    strategy_id_from_raw_config(&strategy_raw_config())
+}
+
 fn fixture_reference_publish_topic() -> &'static str {
     "platform.reference.test.chainlink"
+}
+
+fn fixture_forced_flat_thin_book_min_liquidity() -> f64 {
+    strategy_raw_config()
+        .get("forced_flat_thin_book_min_liquidity")
+        .and_then(Value::as_float)
+        .expect("test strategy config must include forced_flat_thin_book_min_liquidity")
 }
 
 fn fixture_bolt_v3_default_max_notional_per_order() -> rust_decimal::Decimal {
@@ -268,12 +283,17 @@ fn strategy_raw_config_with_max_position_usdc(max_position_usdc: f64) -> Value {
 }
 
 fn common_decision_context() -> BoltV3DecisionEventCommonContext {
+    let strategy_config = strategy_raw_config();
     BoltV3DecisionEventCommonContext {
         schema_version: 1,
-        strategy_instance_id: "ETHCHAINLINKTAKER-RT-001".to_string(),
-        strategy_archetype: "eth_chainlink_taker".to_string(),
+        strategy_instance_id: strategy_id_from_raw_config(&strategy_config).to_string(),
+        strategy_archetype: ETH_CHAINLINK_TAKER_KIND.to_string(),
         trader_id: "BOLT-001".to_string(),
-        client_id: "TEST".to_string(),
+        client_id: strategy_config
+            .get("client_id")
+            .and_then(Value::as_str)
+            .expect("test strategy config must include client_id")
+            .to_string(),
         venue: "POLYMARKET".to_string(),
         runtime_mode: "live".to_string(),
         release_id: "release-sha".to_string(),
@@ -281,6 +301,18 @@ fn common_decision_context() -> BoltV3DecisionEventCommonContext {
         nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e".to_string(),
         configured_target_id: "target-eth-updown".to_string(),
     }
+}
+
+fn configured_target_id_from_decision_context() -> String {
+    common_decision_context().configured_target_id
+}
+
+fn thin_book_fixture_quantity() -> Quantity {
+    Quantity::new(fixture_forced_flat_thin_book_min_liquidity() / 10.0, 2)
+}
+
+fn default_book_quantity() -> Quantity {
+    Quantity::new(fixture_forced_flat_thin_book_min_liquidity(), 2)
 }
 
 fn decision_persistence_block(path: impl AsRef<std::path::Path>) -> PersistenceBlock {
@@ -313,8 +345,19 @@ fn query_entry_evaluation_events(
         .unwrap()
 }
 
+fn query_entry_evaluation_events_all_files(
+    path: &std::path::Path,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    query_custom_events_all_files(
+        path,
+        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+        configured_target_id,
+    )
+}
+
 fn has_selected_open_orders_no_action_event(path: &std::path::Path) -> bool {
-    query_entry_evaluation_events(path, "target-eth-updown")
+    query_entry_evaluation_events_all_files(path, &configured_target_id_from_decision_context())
         .iter()
         .any(|event| {
             let nautilus_model::data::Data::Custom(custom) = event else {
@@ -443,6 +486,50 @@ fn query_exit_pre_submit_rejection_events(
             true,
         )
         .unwrap()
+}
+
+fn query_custom_events_all_files(
+    path: &std::path::Path,
+    event_type: &str,
+    configured_target_id: &str,
+) -> Vec<nautilus_model::data::Data> {
+    let ids = vec![configured_target_id.to_string()];
+    let event_dir = path
+        .join("data")
+        .join("custom")
+        .join(event_type)
+        .join(configured_target_id);
+    if !event_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut files = fs::read_dir(event_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "parquet")
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+
+    files
+        .into_iter()
+        .flat_map(|file| {
+            ParquetDataCatalog::new(path, None, None, None, None)
+                .query_custom_data_dynamic(
+                    event_type,
+                    Some(&ids),
+                    None,
+                    None,
+                    None,
+                    Some(vec![file]),
+                    true,
+                )
+                .unwrap()
+        })
+        .collect()
 }
 
 fn candidate_market_named(market_id: &str, start_ts_ms: u64) -> CandidateMarket {
@@ -636,18 +723,22 @@ fn reference_snapshot(ts_ms: u64, fair_value: f64, fast_price: f64) -> Reference
 }
 
 fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDeltas {
+    book_deltas_with_quantity(instrument_id, bid, ask, default_book_quantity())
+}
+
+fn book_deltas_with_quantity(
+    instrument_id: InstrumentId,
+    bid: f64,
+    ask: f64,
+    quantity: Quantity,
+) -> OrderBookDeltas {
     OrderBookDeltas::new(
         instrument_id,
         vec![
             OrderBookDelta::new(
                 instrument_id,
                 BookAction::Update,
-                BookOrder::new(
-                    OrderSide::Buy,
-                    Price::new(bid, 3),
-                    Quantity::new(100.0, 2),
-                    0,
-                ),
+                BookOrder::new(OrderSide::Buy, Price::new(bid, 3), quantity, 0),
                 0,
                 1,
                 UnixNanos::default(),
@@ -656,12 +747,7 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
             OrderBookDelta::new(
                 instrument_id,
                 BookAction::Update,
-                BookOrder::new(
-                    OrderSide::Sell,
-                    Price::new(ask, 3),
-                    Quantity::new(100.0, 2),
-                    0,
-                ),
+                BookOrder::new(OrderSide::Sell, Price::new(ask, 3), quantity, 0),
                 0,
                 2,
                 UnixNanos::default(),
@@ -988,11 +1074,11 @@ fn drive_eth_entry_submission(mut node: LiveNode, strategy_id: StrategyId) {
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -1072,6 +1158,10 @@ fn drive_eth_entry_selected_market_open_orders_no_action(
                 sleep(Duration::from_millis(10)).await;
             }
 
+            publish_any(
+                fixture_reference_publish_topic().to_string().into(),
+                &reference_snapshot(start_ts_ms + 400, 3_101.0, 3_105.0),
+            );
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1104,7 +1194,15 @@ fn drive_eth_entry_selected_market_open_orders_no_action(
     });
 }
 
-fn drive_eth_entry_no_action(mut node: LiveNode, strategy_id: StrategyId) {
+fn drive_eth_entry_no_action(node: LiveNode, strategy_id: StrategyId) {
+    drive_eth_entry_no_action_with_book_quantity(node, strategy_id, default_book_quantity());
+}
+
+fn drive_eth_entry_no_action_with_book_quantity(
+    mut node: LiveNode,
+    strategy_id: StrategyId,
+    book_quantity: Quantity,
+) {
     let handle = node.handle();
     let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1120,11 +1218,11 @@ fn drive_eth_entry_no_action(mut node: LiveNode, strategy_id: StrategyId) {
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -1132,11 +1230,11 @@ fn drive_eth_entry_no_action(mut node: LiveNode, strategy_id: StrategyId) {
             let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
-                &book_deltas(up, 0.430, 0.450),
+                &book_deltas_with_quantity(up, 0.430, 0.450, book_quantity),
             );
             publish_deltas(
                 switchboard::get_book_deltas_topic(down),
-                &book_deltas(down, 0.480, 0.490),
+                &book_deltas_with_quantity(down, 0.480, 0.490, book_quantity),
             );
 
             for _ in 0..50 {
@@ -1598,16 +1696,16 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     {
         let cache_handle = node.kernel().cache();
@@ -1865,7 +1963,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -1873,7 +1971,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -1888,7 +1986,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
     });
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let handle = node.handle();
     let start_ts_ms = 1_000;
@@ -2046,7 +2144,7 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -2054,7 +2152,7 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -2069,7 +2167,7 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
     });
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let handle = node.handle();
     let published_at_ms = 1_000;
@@ -2185,13 +2283,13 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_entry_submission(node, strategy_id);
@@ -2199,7 +2297,8 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), "target-eth-updown");
     assert_eq!(evaluation_events.len(), 1);
     let evaluation_trace_id = match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -2289,7 +2388,9 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
         "no-action entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -2298,8 +2399,8 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+            assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -2317,10 +2418,76 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     }
 
     let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
     assert!(
         submission_events.is_empty(),
         "no-action entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = strategy_id_from_fixture_config();
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        fixture_reference_publish_topic().to_string(),
+        Some(TradingState::Active),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_no_action_with_book_quantity(node, strategy_id, thin_book_fixture_quantity());
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "thin-book entry evaluation must not submit order"
+    );
+
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), &configured_target_id);
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String("thin_book".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_market_mechanical_outcome"),
+                Some(&serde_json::Value::String("accepted".to_string()))
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
+    assert!(
+        submission_events.is_empty(),
+        "thin-book entry evaluation must not persist order submission"
     );
 }
 
@@ -2356,7 +2523,9 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
         "missing-reference entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -2365,8 +2534,8 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+            assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -2386,7 +2555,7 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     }
 
     let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
     assert!(
         submission_events.is_empty(),
         "missing-reference entry evaluation must not persist order submission"
@@ -2425,7 +2594,9 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
         "fee-rate-unavailable entry evaluation must not submit order"
     );
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
     assert_eq!(evaluation_events.len(), 1);
     match &evaluation_events[0] {
         nautilus_model::data::Data::Custom(custom) => {
@@ -2434,8 +2605,8 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
-            assert_eq!(decoded.client_id, "TEST");
+            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+            assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -2455,7 +2626,7 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     }
 
     let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
     assert!(
         submission_events.is_empty(),
         "fee-rate-unavailable entry evaluation must not persist order submission"
@@ -3038,7 +3209,7 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3046,13 +3217,13 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_entry_selected_market_open_orders_no_action(node, strategy_id, temp_dir.path());
@@ -3060,17 +3231,29 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
     let submissions = recorded_mock_exec_submissions();
     assert_eq!(submissions.len(), 1, "{submissions:?}");
 
-    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
-                .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
-            assert_eq!(decoded.client_id, "TEST");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let selected_open_orders_event = evaluation_events.iter().find_map(|event| {
+        let nautilus_model::data::Data::Custom(custom) = event else {
+            return None;
+        };
+        let decoded = custom
+            .data
+            .as_any()
+            .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()?;
+        (decoded
+            .event_facts
+            .get("updown_market_mechanical_rejection_reason")
+            == Some(&serde_json::Value::String(
+                "selected_market_open_orders_present".to_string(),
+            )))
+        .then_some(decoded)
+    });
+    match selected_open_orders_event {
+        Some(decoded) => {
+            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+            assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
                 Some(&serde_json::Value::String("no_action".to_string()))
@@ -3102,11 +3285,11 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
                 Some(&serde_json::Value::Null)
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected selected-market-open-orders no-action event"),
     }
 
     let submission_events =
-        query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
     assert_eq!(submission_events.len(), 1);
 }
 
@@ -3891,15 +4074,22 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
         }
     }
 
-    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), "target-eth-updown");
-    assert_eq!(evaluation_events.len(), 1);
-    match &evaluation_events[0] {
-        nautilus_model::data::Data::Custom(custom) => {
-            let decoded = custom
-                .data
-                .as_any()
-                .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
-                .expect("BoltV3ExitEvaluationDecisionEvent");
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events = query_exit_evaluation_events(temp_dir.path(), &configured_target_id);
+    let partial_exit_event = evaluation_events.iter().find_map(|event| {
+        let nautilus_model::data::Data::Custom(custom) = event else {
+            return None;
+        };
+        let decoded = custom
+            .data
+            .as_any()
+            .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()?;
+        (decoded.event_facts.get("uncovered_position_quantity")
+            == Some(&serde_json::Value::from(3.0)))
+        .then_some(decoded)
+    });
+    match partial_exit_event {
+        Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("authoritative_position_quantity"),
                 Some(&serde_json::Value::from(5.0))
@@ -3917,11 +4107,11 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
                 Some(&serde_json::Value::from(3.0))
             );
         }
-        other => panic!("expected Data::Custom, got {other:?}"),
+        None => panic!("expected partial uncovered exit evaluation event"),
     }
 
     let submission_events =
-        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_exit_order_submission_events(temp_dir.path(), &configured_target_id);
     assert_eq!(submission_events.len(), 1);
     match &submission_events[0] {
         nautilus_model::data::Data::Custom(custom) => {

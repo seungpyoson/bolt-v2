@@ -1,11 +1,16 @@
 #![allow(unexpected_cfgs)]
 
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use nautilus_core::{Params, UnixNanos};
 use nautilus_model::data::{CustomData, CustomDataTrait, DataType};
-use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use nautilus_persistence::backend::catalog::{ParquetDataCatalog, timestamps_to_filename};
 use nautilus_persistence_macros::custom_data;
 use nautilus_serialization::ensure_custom_data_registered;
 use serde_json::Value;
@@ -38,6 +43,7 @@ const ENTRY_PRE_SUBMIT_REJECTION: &str = "entry_pre_submit_rejection";
 const EXIT_EVALUATION: &str = "exit_evaluation";
 const EXIT_ORDER_SUBMISSION: &str = "exit_order_submission";
 const EXIT_PRE_SUBMIT_REJECTION: &str = "exit_pre_submit_rejection";
+const DECISION_EVENT_REWRITE_STAGING_DIR: &str = ".bolt_v3_decision_event_rewrite";
 
 pub fn validate_bolt_v3_market_selection_failure_reason(reason: &str) -> Result<()> {
     if BOLT_V3_MARKET_SELECTION_FAILURE_REASONS.contains(&reason) {
@@ -556,7 +562,10 @@ pub fn register_bolt_v3_decision_event_types() {
 
 pub struct BoltV3DecisionEventCatalogHandoff {
     catalog: ParquetDataCatalog,
+    catalog_directory: PathBuf,
     replace_existing: bool,
+    write_batches: HashMap<DecisionEventWriterKey, Vec<DecisionEventWriteBatch>>,
+    rewrite_sequence: u64,
 }
 
 impl BoltV3DecisionEventCatalogHandoff {
@@ -573,9 +582,13 @@ impl BoltV3DecisionEventCatalogHandoff {
 
     fn new(catalog_directory: impl AsRef<Path>, replace_existing: bool) -> Result<Self> {
         register_bolt_v3_decision_event_types();
+        let catalog_directory = catalog_directory.as_ref().to_path_buf();
         Ok(Self {
-            catalog: ParquetDataCatalog::new(catalog_directory.as_ref(), None, None, None, None),
+            catalog: ParquetDataCatalog::new(&catalog_directory, None, None, None, None),
+            catalog_directory,
             replace_existing,
+            write_batches: HashMap::new(),
+            rewrite_sequence: 0,
         })
     }
 
@@ -665,16 +678,213 @@ impl BoltV3DecisionEventCatalogHandoff {
     where
         T: CustomDataTrait + 'static,
     {
-        let data_type = DataType::new(type_name, None, Some(identifier));
+        let start = event.ts_event().as_u64();
+        let end = event.ts_init().as_u64().max(start);
+        let writer_key = DecisionEventWriterKey {
+            type_name: type_name.to_string(),
+            identifier,
+        };
+        let data_type = DataType::new(type_name, None, Some(writer_key.identifier.clone()));
         let custom = CustomData::new(Arc::new(event), data_type);
-        self.catalog.write_custom_data_batch(
-            vec![custom],
-            None,
-            None,
-            Some(self.replace_existing),
+        let catalog_directory = self.catalog_directory.clone();
+
+        let plan = append_to_write_batch(
+            &catalog_directory,
+            &mut self.write_batches,
+            writer_key,
+            custom,
+            start,
+            end,
         )?;
+
+        if let Some(previous_file_path) = &plan.previous_file_path {
+            self.rewrite_sequence = self.rewrite_sequence.saturating_add(1);
+            write_replacement_batch(
+                &self.catalog_directory,
+                self.rewrite_sequence,
+                &plan,
+                &previous_file_path,
+            )?;
+        } else {
+            self.catalog.write_custom_data_batch(
+                plan.data,
+                Some(UnixNanos::from(plan.start)),
+                Some(UnixNanos::from(plan.end)),
+                Some(self.replace_existing),
+            )?;
+        }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DecisionEventWriterKey {
+    type_name: String,
+    identifier: String,
+}
+
+#[derive(Clone)]
+struct DecisionEventWriteBatch {
+    start: u64,
+    end: u64,
+    file_path: PathBuf,
+    data: Vec<CustomData>,
+}
+
+struct DecisionEventWritePlan {
+    writer_key: DecisionEventWriterKey,
+    start: u64,
+    end: u64,
+    file_path: PathBuf,
+    previous_file_path: Option<PathBuf>,
+    data: Vec<CustomData>,
+}
+
+fn append_to_write_batch(
+    catalog_directory: &Path,
+    write_batches: &mut HashMap<DecisionEventWriterKey, Vec<DecisionEventWriteBatch>>,
+    writer_key: DecisionEventWriterKey,
+    custom: CustomData,
+    start: u64,
+    end: u64,
+) -> Result<DecisionEventWritePlan> {
+    let batches = write_batches.entry(writer_key.clone()).or_default();
+    if let Some(index) = batches
+        .iter()
+        .position(|batch| intervals_overlap(batch.start, batch.end, start, end))
+    {
+        let batch = &mut batches[index];
+        let previous_file_path = batch.file_path.clone();
+        batch.start = batch.start.min(start);
+        batch.end = batch.end.max(end);
+        batch.file_path =
+            custom_data_file_path(catalog_directory, &writer_key, batch.start, batch.end);
+        batch.data.push(custom);
+        return Ok(DecisionEventWritePlan {
+            writer_key,
+            start: batch.start,
+            end: batch.end,
+            file_path: batch.file_path.clone(),
+            previous_file_path: Some(previous_file_path),
+            data: batch.data.clone(),
+        });
+    }
+
+    let file_path = custom_data_file_path(catalog_directory, &writer_key, start, end);
+    batches.push(DecisionEventWriteBatch {
+        start,
+        end,
+        file_path,
+        data: vec![custom],
+    });
+    let batch = batches.last().expect("write batch just pushed");
+    Ok(DecisionEventWritePlan {
+        writer_key,
+        start: batch.start,
+        end: batch.end,
+        file_path: batch.file_path.clone(),
+        previous_file_path: None,
+        data: batch.data.clone(),
+    })
+}
+
+fn intervals_overlap(left_start: u64, left_end: u64, right_start: u64, right_end: u64) -> bool {
+    left_start <= right_end && right_start <= left_end
+}
+
+fn write_replacement_batch(
+    catalog_directory: &Path,
+    rewrite_sequence: u64,
+    plan: &DecisionEventWritePlan,
+    previous_file_path: &Path,
+) -> Result<()> {
+    let staging_directory = catalog_directory
+        .join(DECISION_EVENT_REWRITE_STAGING_DIR)
+        .join(rewrite_sequence.to_string());
+    fs::create_dir_all(&staging_directory).with_context(|| {
+        format!(
+            "failed to create NT catalog staging directory {}",
+            staging_directory.display()
+        )
+    })?;
+    let staging_catalog = ParquetDataCatalog::new(&staging_directory, None, None, None, None);
+    staging_catalog.write_custom_data_batch(
+        plan.data.clone(),
+        Some(UnixNanos::from(plan.start)),
+        Some(UnixNanos::from(plan.end)),
+        Some(true),
+    )?;
+    let staged_file_path =
+        custom_data_file_path(&staging_directory, &plan.writer_key, plan.start, plan.end);
+
+    if plan.file_path != previous_file_path && plan.file_path.exists() {
+        bail!(
+            "cannot replace NT catalog decision-event batch because target file already exists: {}",
+            plan.file_path.display()
+        );
+    }
+
+    if let Some(parent) = plan.file_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create NT catalog directory {}", parent.display())
+        })?;
+    }
+
+    replace_catalog_file(&staged_file_path, &plan.file_path)?;
+    if previous_file_path != plan.file_path && previous_file_path.exists() {
+        fs::remove_file(previous_file_path).with_context(|| {
+            format!(
+                "failed to remove superseded NT catalog batch file {}",
+                previous_file_path.display()
+            )
+        })?;
+    }
+    let _ = fs::remove_dir_all(staging_directory);
+    Ok(())
+}
+
+fn replace_catalog_file(source: &Path, target: &Path) -> Result<()> {
+    match fs::rename(source, target) {
+        Ok(()) => Ok(()),
+        Err(rename_error) if target.exists() => {
+            fs::remove_file(target).with_context(|| {
+                format!(
+                    "failed to remove NT catalog batch file before replacement {}",
+                    target.display()
+                )
+            })?;
+            fs::rename(source, target).with_context(|| {
+                format!(
+                    "failed to replace NT catalog batch file {} after initial rename error: {rename_error}",
+                    target.display()
+                )
+            })
+        }
+        Err(rename_error) => Err(rename_error).with_context(|| {
+            format!(
+                "failed to move staged NT catalog batch file {} to {}",
+                source.display(),
+                target.display()
+            )
+        }),
+    }
+}
+
+fn custom_data_file_path(
+    catalog_directory: &Path,
+    writer_key: &DecisionEventWriterKey,
+    start: u64,
+    end: u64,
+) -> PathBuf {
+    catalog_directory
+        .join("data")
+        .join("custom")
+        .join(&writer_key.type_name)
+        .join(&writer_key.identifier)
+        .join(timestamps_to_filename(
+            UnixNanos::from(start),
+            UnixNanos::from(end),
+        ))
 }
 
 fn validate_market_selection_result_facts(facts: &BoltV3MarketSelectionResultFacts) -> Result<()> {
@@ -989,6 +1199,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
             | "market_cooling_down"
             | "recovery_mode"
             | "one_position_invariant"
+            | "thin_book"
             | "position_limit_reached",
         ) => {
             if facts.updown_market_mechanical_outcome != "accepted"

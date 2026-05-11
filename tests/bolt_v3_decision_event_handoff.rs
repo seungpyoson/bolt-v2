@@ -22,6 +22,9 @@ use serde_json::{Value, json};
 use std::fs;
 use tempfile::TempDir;
 
+const TEST_ENTRY_EVALUATION_EVENT_TS_NANOS: u64 = 2_500;
+const TEST_ENTRY_EVALUATION_INIT_TS_NANOS: u64 = 2_501;
+
 #[test]
 fn market_selection_result_event_writes_through_nt_catalog_handoff() {
     register_bolt_v3_decision_event_types();
@@ -64,7 +67,7 @@ fn market_selection_result_event_writes_through_nt_catalog_handoff() {
 
     handoff.write_market_selection_result(event).unwrap();
 
-    let ids = vec!["target-eth-updown".to_string()];
+    let ids = test_target_ids();
     let loaded = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None)
         .query_custom_data_dynamic(
             BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
@@ -89,7 +92,10 @@ fn market_selection_result_event_writes_through_nt_catalog_handoff() {
                 .as_any()
                 .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3MarketSelectionDecisionEvent>()
                 .expect("BoltV3MarketSelectionDecisionEvent");
-            assert_eq!(decoded.configured_target_id, "target-eth-updown");
+            assert_eq!(
+                decoded.configured_target_id,
+                common_fields().configured_target_id
+            );
             assert_eq!(
                 decoded.event_facts.get("market_selection_failure_reason"),
                 Some(&Value::Null)
@@ -201,8 +207,8 @@ fn entry_evaluation_event_writes_through_nt_catalog_handoff() {
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
         entry_evaluation_facts(),
-        UnixNanos::from(2_500),
-        UnixNanos::from(2_501),
+        test_entry_evaluation_event_ts(),
+        test_entry_evaluation_init_ts(),
     )
     .unwrap();
 
@@ -236,6 +242,54 @@ fn entry_evaluation_event_writes_through_nt_catalog_handoff() {
 }
 
 #[test]
+fn entry_evaluation_handoff_preserves_same_timestamp_events() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
+        &persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+
+    for decision in ["enter", "no_action"] {
+        let mut facts = entry_evaluation_facts();
+        facts.entry_decision = decision.to_string();
+        facts.entry_no_action_reason =
+            (decision == "no_action").then(|| "insufficient_edge".to_string());
+        facts.updown_side = (decision == "enter").then(|| "up".to_string());
+
+        let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
+            common_fields(),
+            facts,
+            test_entry_evaluation_event_ts(),
+            test_entry_evaluation_init_ts(),
+        )
+        .unwrap();
+
+        handoff.write_entry_evaluation(event).unwrap();
+    }
+
+    let loaded = query_events(
+        temp_dir.path(),
+        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+    );
+
+    assert_eq!(loaded.len(), 2);
+
+    let ids = test_target_ids();
+    let loaded_by_event_time = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None)
+        .query_custom_data_dynamic(
+            BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+            Some(&ids),
+            Some(test_entry_evaluation_event_ts()),
+            Some(test_entry_evaluation_init_ts()),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    assert_eq!(loaded_by_event_time.len(), 2);
+}
+
+#[test]
 fn entry_evaluation_rejects_no_action_without_reason() {
     let mut facts = entry_evaluation_facts();
     facts.entry_decision = "no_action".to_string();
@@ -245,8 +299,8 @@ fn entry_evaluation_rejects_no_action_without_reason() {
     let error = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
         facts,
-        UnixNanos::from(2_500),
-        UnixNanos::from(2_501),
+        test_entry_evaluation_event_ts(),
+        test_entry_evaluation_init_ts(),
     )
     .unwrap_err();
 
@@ -267,8 +321,8 @@ fn entry_evaluation_accepts_market_cooling_down_no_action_reason() {
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
         facts,
-        UnixNanos::from(2_500),
-        UnixNanos::from(2_501),
+        test_entry_evaluation_event_ts(),
+        test_entry_evaluation_init_ts(),
     )
     .unwrap();
 
@@ -288,8 +342,8 @@ fn entry_evaluation_accepts_recovery_mode_no_action_reason() {
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
         facts,
-        UnixNanos::from(2_500),
-        UnixNanos::from(2_501),
+        test_entry_evaluation_event_ts(),
+        test_entry_evaluation_init_ts(),
     )
     .unwrap();
 
@@ -309,14 +363,35 @@ fn entry_evaluation_accepts_one_position_invariant_no_action_reason() {
     let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
         common_fields(),
         facts,
-        UnixNanos::from(2_500),
-        UnixNanos::from(2_501),
+        test_entry_evaluation_event_ts(),
+        test_entry_evaluation_init_ts(),
     )
     .unwrap();
 
     assert_eq!(
         event.event_facts.get("entry_no_action_reason"),
         Some(&Value::String("one_position_invariant".to_string()))
+    );
+}
+
+#[test]
+fn entry_evaluation_accepts_thin_book_no_action_reason() {
+    let mut facts = entry_evaluation_facts();
+    facts.entry_decision = "no_action".to_string();
+    facts.updown_side = None;
+    facts.entry_no_action_reason = Some("thin_book".to_string());
+
+    let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
+        common_fields(),
+        facts,
+        test_entry_evaluation_event_ts(),
+        test_entry_evaluation_init_ts(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        event.event_facts.get("entry_no_action_reason"),
+        Some(&Value::String("thin_book".to_string()))
     );
 }
 
@@ -338,7 +413,7 @@ fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
 
     handoff.write_entry_order_submission(event).unwrap();
 
-    let ids = vec!["target-eth-updown".to_string()];
+    let ids = test_target_ids();
     let loaded = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None)
         .query_custom_data_dynamic(
             BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
@@ -410,7 +485,7 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
 
     handoff.write_entry_pre_submit_rejection(event).unwrap();
 
-    let ids = vec!["target-eth-updown".to_string()];
+    let ids = test_target_ids();
     let loaded = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None)
         .query_custom_data_dynamic(
             BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
@@ -619,6 +694,18 @@ fn common_fields() -> BoltV3DecisionEventCommonFields {
     }
 }
 
+fn test_target_ids() -> Vec<String> {
+    vec![common_fields().configured_target_id]
+}
+
+fn test_entry_evaluation_event_ts() -> UnixNanos {
+    UnixNanos::from(TEST_ENTRY_EVALUATION_EVENT_TS_NANOS)
+}
+
+fn test_entry_evaluation_init_ts() -> UnixNanos {
+    UnixNanos::from(TEST_ENTRY_EVALUATION_INIT_TS_NANOS)
+}
+
 fn failed_market_selection_result_facts(reason: Option<&str>) -> BoltV3MarketSelectionResultFacts {
     BoltV3MarketSelectionResultFacts {
         market_selection_type: "rotating_market".to_string(),
@@ -691,10 +778,39 @@ fn order_submission_facts(client_order_id: Option<String>) -> BoltV3OrderSubmiss
 }
 
 fn query_events(path: &std::path::Path, event_type: &str) -> Vec<Data> {
-    let ids = vec!["target-eth-updown".to_string()];
-    ParquetDataCatalog::new(path, None, None, None, None)
-        .query_custom_data_dynamic(event_type, Some(&ids), None, None, None, None, true)
+    let ids = test_target_ids();
+    let event_dir = path
+        .join("data")
+        .join("custom")
+        .join(event_type)
+        .join(&ids[0]);
+    let mut files = fs::read_dir(event_dir)
         .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "parquet")
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+
+    files
+        .into_iter()
+        .flat_map(|file| {
+            ParquetDataCatalog::new(path, None, None, None, None)
+                .query_custom_data_dynamic(
+                    event_type,
+                    Some(&ids),
+                    None,
+                    None,
+                    None,
+                    Some(vec![file]),
+                    true,
+                )
+                .unwrap()
+        })
+        .collect()
 }
 
 fn persistence_block(path: impl AsRef<std::path::Path>) -> PersistenceBlock {

@@ -627,6 +627,24 @@ fn entry_pre_submit_rejection_accepts_allowed_reasons() {
 }
 
 #[test]
+fn entry_pre_submit_rejection_accepts_missing_instrument_id_reason() {
+    BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
+        common_fields(),
+        BoltV3PreSubmitRejectionFacts {
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            rejection_reason: "instrument_id_missing".to_string(),
+            authoritative_position_quantity: None,
+            authoritative_sellable_quantity: None,
+            open_exit_order_quantity: None,
+            uncovered_position_quantity: None,
+        },
+        UnixNanos::from(4_000),
+        UnixNanos::from(4_001),
+    )
+    .unwrap();
+}
+
+#[test]
 fn exit_order_submission_event_writes_through_nt_catalog_handoff() {
     let temp_dir = TempDir::new().unwrap();
     let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(

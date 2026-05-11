@@ -37,6 +37,7 @@ pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASONS: &[&str] = &[
     "price_to_beat_ambiguous",
 ];
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS: &[&str] = &[
+    "instrument_id_missing",
     "instrument_missing_from_cache",
     "invalid_price",
     "invalid_quantity",

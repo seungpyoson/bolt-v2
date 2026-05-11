@@ -3968,6 +3968,15 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
         return Some("position_limit_reached");
     }
 
+    if decision.blocked_reason == Some("sized_notional_not_positive")
+        && decision
+            .evaluation
+            .sized_notional_usdc
+            .is_some_and(|value| value <= 0.0)
+    {
+        return Some("insufficient_edge");
+    }
+
     None
 }
 
@@ -5270,8 +5279,10 @@ fn entry_pre_submit_rejection_facts(
 
 fn entry_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&'static str> {
     match internal_reason {
+        "instrument_id_missing" => Some("instrument_id_missing"),
         "instrument_missing_from_cache" => Some("instrument_missing_from_cache"),
         "quantity_rounding_failed" | "quantity_not_positive" => Some("invalid_quantity"),
+        "entry_price_missing" | "entry_cost_missing" => Some("invalid_price"),
         "trading_state_halted" => Some("trading_state_halted"),
         "trading_state_reducing" => Some("trading_state_reducing"),
         _ => None,
@@ -9076,6 +9087,59 @@ mod tests {
 
             assert_eq!(entry_no_action_reason(&decision), Some(expected_reason));
         }
+    }
+
+    #[test]
+    fn nonpositive_sized_notional_maps_to_insufficient_edge_no_action_reason() {
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate: EntryGateDecision {
+                    blocked_by: Vec::new(),
+                },
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 0.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: 1.0,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: Some(0.5),
+                uncertainty_band_probability: Some(0.0),
+                up_worst_case_ev_bps: Some(-1.0),
+                down_worst_case_ev_bps: Some(-2.0),
+                min_worst_case_ev_bps: Some(-20.0),
+                expected_ev_per_usdc: Some(-0.0001),
+                book_impact_cap_usdc: Some(1.0),
+                effective_entry_notional_cap_usdc: Some(1.0),
+                sized_notional_usdc: Some(0.0),
+                selected_side: Some(OutcomeSide::Up),
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("sized_notional_not_positive"),
+        };
+
+        assert_eq!(entry_no_action_reason(&decision), Some("insufficient_edge"));
+    }
+
+    #[test]
+    fn entry_price_missing_paths_map_to_invalid_price_rejection_reason() {
+        for internal_reason in ["entry_price_missing", "entry_cost_missing"] {
+            assert_eq!(
+                entry_pre_submit_rejection_contract_reason(internal_reason),
+                Some("invalid_price")
+            );
+        }
+    }
+
+    #[test]
+    fn missing_entry_instrument_id_maps_to_contract_rejection_reason() {
+        assert_eq!(
+            entry_pre_submit_rejection_contract_reason("instrument_id_missing"),
+            Some("instrument_id_missing")
+        );
     }
 
     #[test]

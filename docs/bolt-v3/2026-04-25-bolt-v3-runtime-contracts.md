@@ -1055,6 +1055,7 @@ For `entry_pre_submit_rejection`, order fact keys are required, but `order_type`
 
 Allowed `entry_pre_submit_rejection_reason` values:
 
+- `instrument_id_missing`
 - `instrument_missing_from_cache`
 - `invalid_price`
 - `invalid_quantity`

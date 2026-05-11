@@ -10,7 +10,9 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_config::{
-        CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock, load_bolt_v3_config,
+        CatalogFsProtocol, LoadedBoltV3Config, PersistenceBlock, REFERENCE_STREAM_ID_PARAMETER,
+        ReferenceSourceType, ReferenceStreamBlock, RotationKind, StreamingBlock,
+        load_bolt_v3_config,
     },
     bolt_v3_decision_event_context::{
         BoltV3DecisionEventCommonContext, bolt_v3_decision_event_common_context,
@@ -302,8 +304,35 @@ fn strategy_id_from_multi_fixture(strategy_index: usize) -> StrategyId {
     )
 }
 
-fn fixture_reference_publish_topic() -> &'static str {
-    "platform.reference.test.chainlink"
+fn existing_strategy_loaded_config() -> LoadedBoltV3Config {
+    load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing-strategy root fixture should load")
+}
+
+fn fixture_reference_stream() -> ReferenceStreamBlock {
+    let loaded = existing_strategy_loaded_config();
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy root fixture should include strategy");
+    let stream_id = strategy
+        .config
+        .parameters
+        .get(REFERENCE_STREAM_ID_PARAMETER)
+        .and_then(toml::Value::as_str)
+        .expect("existing strategy should select reference stream from TOML");
+    loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .cloned()
+        .expect("selected reference stream should exist")
+}
+
+fn fixture_reference_publish_topic() -> String {
+    fixture_reference_stream().publish_topic
 }
 
 fn active_book_not_priced_no_action_reason() -> &'static str {
@@ -944,37 +973,78 @@ fn freeze_selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> Runtim
 }
 
 fn reference_snapshot(ts_ms: u64, fair_value: f64, fast_price: f64) -> ReferenceSnapshot {
+    let stream = fixture_reference_stream();
+    let venues = stream
+        .inputs
+        .iter()
+        .map(|input| {
+            let venue_kind = match input.source_type {
+                ReferenceSourceType::Oracle => VenueKind::Oracle,
+                ReferenceSourceType::Orderbook => VenueKind::Orderbook,
+            };
+            let observed_price = match venue_kind {
+                VenueKind::Oracle => fair_value,
+                VenueKind::Orderbook => fast_price,
+            };
+            EffectiveVenueState {
+                venue_name: input.source_id.clone(),
+                base_weight: input.base_weight,
+                effective_weight: input.base_weight,
+                stale: false,
+                health: VenueHealth::Healthy,
+                observed_ts_ms: Some(ts_ms),
+                venue_kind,
+                observed_price: Some(observed_price),
+                observed_bid: (venue_kind == VenueKind::Orderbook).then_some(fast_price - 0.5),
+                observed_ask: (venue_kind == VenueKind::Orderbook).then_some(fast_price + 0.5),
+            }
+        })
+        .collect();
+
     ReferenceSnapshot {
         ts_ms,
-        topic: fixture_reference_publish_topic().to_string(),
+        topic: stream.publish_topic,
         fair_value: Some(fair_value),
         confidence: 1.0,
-        venues: vec![
-            EffectiveVenueState {
-                venue_name: "chainlink".to_string(),
-                base_weight: 1.0,
-                effective_weight: 1.0,
-                stale: false,
-                health: VenueHealth::Healthy,
-                observed_ts_ms: Some(ts_ms),
-                venue_kind: VenueKind::Oracle,
-                observed_price: Some(fair_value),
-                observed_bid: None,
-                observed_ask: None,
-            },
-            EffectiveVenueState {
-                venue_name: "bybit".to_string(),
-                base_weight: 0.9,
-                effective_weight: 0.9,
-                stale: false,
-                health: VenueHealth::Healthy,
-                observed_ts_ms: Some(ts_ms),
-                venue_kind: VenueKind::Orderbook,
-                observed_price: Some(fast_price),
-                observed_bid: Some(fast_price - 0.5),
-                observed_ask: Some(fast_price + 0.5),
-            },
-        ],
+        venues,
+    }
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_reference_snapshot_uses_fixture_reference_stream_inputs() {
+    let loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing-strategy root fixture should load");
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy root fixture should include strategy");
+    let stream_id = strategy
+        .config
+        .parameters
+        .get(REFERENCE_STREAM_ID_PARAMETER)
+        .and_then(toml::Value::as_str)
+        .expect("existing strategy should select reference stream from TOML");
+    let stream = loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .expect("selected reference stream should exist");
+
+    let snapshot = reference_snapshot(1_000, 3_100.0, 3_102.0);
+
+    assert_eq!(snapshot.topic, stream.publish_topic);
+    assert_eq!(snapshot.venues.len(), stream.inputs.len());
+    for (venue, input) in snapshot.venues.iter().zip(stream.inputs.iter()) {
+        let expected_kind = match input.source_type {
+            ReferenceSourceType::Oracle => VenueKind::Oracle,
+            ReferenceSourceType::Orderbook => VenueKind::Orderbook,
+        };
+        assert_eq!(venue.venue_name, input.source_id);
+        assert_eq!(venue.base_weight, input.base_weight);
+        assert_eq!(venue.effective_weight, input.base_weight);
+        assert_eq!(venue.venue_kind, expected_kind);
     }
 }
 

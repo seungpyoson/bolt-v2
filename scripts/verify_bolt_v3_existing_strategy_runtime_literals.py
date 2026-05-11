@@ -16,16 +16,13 @@ ETH_CHAINLINK_RUNTIME_TEST_FILE = "tests/eth_chainlink_taker_runtime.rs"
 ETH_CHAINLINK_RUNTIME_TEST_NODE_FIXTURE = (
     "tests/fixtures/eth_chainlink_taker_runtime/test_node.toml"
 )
+EXISTING_STRATEGY_ROOT_FIXTURE = "tests/fixtures/bolt_v3_existing_strategy/root.toml"
 UPDOWN_SELECTED_MARKETS_FIXTURE = (
     "tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml"
 )
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 STRATEGY_CONFIG_SPAN_PATTERN = re.compile(
     r"fn\s+strategy_raw_config\s*\([^)]*\)\s*->\s*Value\s*\{.*?^\}",
-    re.MULTILINE | re.DOTALL,
-)
-REFERENCE_TOPIC_HELPER_SPAN_PATTERN = re.compile(
-    r"fn\s+fixture_reference_publish_topic\s*\([^)]*\)\s*->\s*&'static\s+str\s*\{.*?^\}",
     re.MULTILINE | re.DOTALL,
 )
 UP_INSTRUMENT_HELPER_SPAN_PATTERN = re.compile(
@@ -163,16 +160,42 @@ def selected_market_fixture_literals(root: Path) -> set[str]:
     return literals
 
 
+def existing_strategy_reference_stream_literals(root: Path) -> set[str]:
+    path = root / EXISTING_STRATEGY_ROOT_FIXTURE
+    if not path.is_file():
+        return set()
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    literals: set[str] = set()
+    streams = data.get("reference_streams", {})
+    if not isinstance(streams, dict):
+        return literals
+
+    for stream in streams.values():
+        if not isinstance(stream, dict):
+            continue
+        add_string(stream.get("publish_topic"), literals)
+        inputs = stream.get("inputs", [])
+        if not isinstance(inputs, list):
+            continue
+        for input_block in inputs:
+            if not isinstance(input_block, dict):
+                continue
+            add_string(input_block.get("source_id"), literals)
+            add_string(input_block.get("instrument_id"), literals)
+
+    return literals
+
+
 def scan_runtime_file(
     root: Path,
     path: Path,
     test_node_literals: set[str],
     selected_market_literals: set[str],
+    reference_stream_literals: set[str],
 ) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
     strategy_config_span = span_for(STRATEGY_CONFIG_SPAN_PATTERN, text)
-    reference_topic_helper_span = span_for(REFERENCE_TOPIC_HELPER_SPAN_PATTERN, text)
     up_instrument_helper_span = span_for(UP_INSTRUMENT_HELPER_SPAN_PATTERN, text)
     down_instrument_helper_span = span_for(DOWN_INSTRUMENT_HELPER_SPAN_PATTERN, text)
     findings: list[Finding] = []
@@ -205,14 +228,23 @@ def scan_runtime_file(
                 )
             )
             continue
+        if value in reference_stream_literals:
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "existing-strategy runtime reference stream fixture literal; "
+                        "derive from v3 root TOML"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
+            continue
         if value not in FORBIDDEN_LITERALS:
             continue
         if value == "ETHCHAINLINKTAKER-RT-001" and within(
             strategy_config_span, match.start()
-        ):
-            continue
-        if value == "platform.reference.test.chainlink" and within(
-            reference_topic_helper_span, match.start()
         ):
             continue
         if value == "condition-eth-MKT-ETH-1-UP.POLYMARKET" and within(
@@ -261,6 +293,7 @@ def scan_root(root: Path) -> list[Finding]:
         path,
         existing_strategy_test_node_literals(root),
         selected_market_fixture_literals(root),
+        existing_strategy_reference_stream_literals(root),
     )
 
 

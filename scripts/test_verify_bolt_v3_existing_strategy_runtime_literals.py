@@ -222,6 +222,39 @@ def test_selection_ruleset_literal_is_a_finding() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_reference_stream_fixture_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        root_fixture = root / "tests/fixtures/bolt_v3_existing_strategy/root.toml"
+        root_fixture.parent.mkdir(parents=True, exist_ok=True)
+        root_fixture.write_text(
+            """
+[reference_streams.eth_usd]
+publish_topic = "reference.fixture"
+min_publish_interval_milliseconds = 100
+
+[[reference_streams.eth_usd.inputs]]
+source_id = "reference_fixture_oracle"
+source_type = "oracle"
+instrument_id = "FIXTURE.CHAINLINK"
+base_weight = 1.0
+stale_after_milliseconds = 1500
+disable_after_milliseconds = 5000
+""",
+            encoding="utf-8",
+        )
+        write_runtime_test(root, 'fn probe() { let _ = "reference.fixture"; }\n')
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "reference stream fixture literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -237,8 +270,8 @@ fn strategy_raw_config() -> Value {
     .into()
 }
 
-fn fixture_reference_publish_topic() -> &'static str {
-    "platform.reference.test.chainlink"
+fn fixture_reference_publish_topic() -> String {
+    fixture_reference_stream().publish_topic
 }
 
 fn eth_up_instrument_id() -> InstrumentId {
@@ -273,6 +306,7 @@ def main() -> int:
         test_market_selection_context_literal_fields_are_findings,
         test_selected_market_fixture_literal_is_a_finding,
         test_selection_ruleset_literal_is_a_finding,
+        test_reference_stream_fixture_literal_is_a_finding,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

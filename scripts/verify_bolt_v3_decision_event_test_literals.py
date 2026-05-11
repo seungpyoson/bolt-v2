@@ -100,6 +100,7 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                 )
             )
 
+    if rel == DECISION_EVENT_HANDOFF_TEST_FILE:
         for match in DECISION_EVENT_TYPE_LITERAL_PATTERN.finditer(text):
             findings.append(
                 Finding(

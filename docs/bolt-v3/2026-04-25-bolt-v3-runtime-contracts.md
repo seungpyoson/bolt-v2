@@ -941,7 +941,7 @@ Required additional fields:
 `entry_decision` must be `no_action` when `updown_market_mechanical_outcome = "rejected"`.
 `entry_decision = "enter"` requires `updown_market_mechanical_outcome = "accepted"`.
 If `entry_no_action_reason = "updown_market_mechanical_rejection"`, `updown_market_mechanical_outcome` must be `rejected` and `updown_market_mechanical_rejection_reason` must be non-null.
-If `entry_no_action_reason` is `missing_reference_quote`, `stale_reference_quote`, `fee_rate_unavailable`, `fair_probability_unavailable`, `insufficient_edge`, or `position_limit_reached`, `updown_market_mechanical_outcome` must be `accepted` and `updown_market_mechanical_rejection_reason` must be null.
+If `entry_no_action_reason` is `missing_reference_quote`, `stale_reference_quote`, `fee_rate_unavailable`, `fair_probability_unavailable`, `insufficient_edge`, `market_cooling_down`, or `position_limit_reached`, `updown_market_mechanical_outcome` must be `accepted` and `updown_market_mechanical_rejection_reason` must be null.
 If `entry_no_action_reason = "position_limit_reached"`, `strategy_remaining_entry_capacity <= 0`.
 `entry_filled_notional`, `open_entry_notional`, and `strategy_remaining_entry_capacity` are gross collateral entry-cost terms before fees. The current CLOB V2 pin-change slice has not yet renamed the external schema fields from their historical USDC wording to pUSD collateral wording.
 `entry_filled_notional` and `open_entry_notional` are summed across both Up and Down NautilusTrader instruments of the selected market.
@@ -959,6 +959,7 @@ Allowed `entry_no_action_reason` values:
 - `fee_rate_unavailable`
 - `fair_probability_unavailable`
 - `insufficient_edge`
+- `market_cooling_down`
 - `position_limit_reached`
 
 Allowed `updown_market_mechanical_outcome` values are defined in Section 6.5.

@@ -592,6 +592,72 @@ fn market_selection_context_from_fixture_config() -> BoltV3MarketSelectionContex
     }
 }
 
+fn assert_market_selection_context_event_facts(
+    decoded: &BoltV3MarketSelectionDecisionEvent,
+    context: &BoltV3MarketSelectionContext,
+) {
+    assert_eq!(
+        decoded
+            .event_facts
+            .get(BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY)
+            .cloned(),
+        Some(serde_json::Value::String(
+            context.market_selection_type.clone(),
+        ))
+    );
+    assert_eq!(
+        decoded
+            .event_facts
+            .get(BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY)
+            .cloned(),
+        context
+            .rotating_market_family
+            .as_ref()
+            .map(|value| serde_json::Value::String(value.clone()))
+    );
+    assert_eq!(
+        decoded
+            .event_facts
+            .get(BOLT_V3_UNDERLYING_ASSET_FACT_KEY)
+            .cloned(),
+        context
+            .underlying_asset
+            .as_ref()
+            .map(|value| serde_json::Value::String(value.clone()))
+    );
+    assert_eq!(
+        decoded
+            .event_facts
+            .get(BOLT_V3_CADENCE_SECONDS_FACT_KEY)
+            .cloned(),
+        context.cadence_seconds.map(serde_json::Value::from)
+    );
+    assert_eq!(
+        decoded
+            .event_facts
+            .get(BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY)
+            .cloned(),
+        context
+            .market_selection_rule
+            .as_ref()
+            .map(|value| serde_json::Value::String(value.clone()))
+    );
+    assert_eq!(
+        decoded
+            .event_facts
+            .get(BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY)
+            .cloned(),
+        context.retry_interval_seconds.map(serde_json::Value::from)
+    );
+    assert_eq!(
+        decoded
+            .event_facts
+            .get(BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY)
+            .cloned(),
+        context.blocked_after_seconds.map(serde_json::Value::from)
+    );
+}
+
 fn thin_book_fixture_quantity() -> Quantity {
     Quantity::new(fixture_forced_flat_thin_book_min_liquidity() / 10.0, 2)
 }
@@ -2571,8 +2637,8 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
-    build_context.bolt_v3_market_selection_context =
-        Some(market_selection_context_from_fixture_config());
+    let market_selection_context = market_selection_context_from_fixture_config();
+    build_context.bolt_v3_market_selection_context = Some(market_selection_context.clone());
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
@@ -2630,12 +2696,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                 BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE
             );
             assert!(!decoded.decision_trace_id.is_empty());
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY),
-                Some(&serde_json::Value::String("rotating_market".to_string()))
-            );
+            assert_market_selection_context_event_facts(decoded, &market_selection_context);
             assert_eq!(
                 decoded
                     .event_facts
@@ -2649,38 +2710,6 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                     .event_facts
                     .get(BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY),
                 Some(&serde_json::Value::Null)
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY),
-                Some(&serde_json::Value::String("updown".to_string()))
-            );
-            assert_eq!(
-                decoded.event_facts.get(BOLT_V3_UNDERLYING_ASSET_FACT_KEY),
-                Some(&serde_json::Value::String("ETH".to_string()))
-            );
-            assert_eq!(
-                decoded.event_facts.get(BOLT_V3_CADENCE_SECONDS_FACT_KEY),
-                Some(&serde_json::Value::from(300))
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY),
-                Some(&serde_json::Value::String("active_or_next".to_string()))
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY),
-                Some(&serde_json::Value::from(5))
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY),
-                Some(&serde_json::Value::from(60))
             );
             assert_eq!(
                 decoded
@@ -2788,8 +2817,8 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
-    build_context.bolt_v3_market_selection_context =
-        Some(market_selection_context_from_fixture_config());
+    let market_selection_context = market_selection_context_from_fixture_config();
+    build_context.bolt_v3_market_selection_context = Some(market_selection_context.clone());
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
@@ -2845,12 +2874,7 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
                 BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE
             );
             assert!(!decoded.decision_trace_id.is_empty());
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY),
-                Some(&serde_json::Value::String("rotating_market".to_string()))
-            );
+            assert_market_selection_context_event_facts(decoded, &market_selection_context);
             assert_eq!(
                 decoded
                     .event_facts
@@ -2870,38 +2894,6 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
                     .event_facts
                     .get(BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(reason.to_string()))
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY),
-                Some(&serde_json::Value::String("updown".to_string()))
-            );
-            assert_eq!(
-                decoded.event_facts.get(BOLT_V3_UNDERLYING_ASSET_FACT_KEY),
-                Some(&serde_json::Value::String("ETH".to_string()))
-            );
-            assert_eq!(
-                decoded.event_facts.get(BOLT_V3_CADENCE_SECONDS_FACT_KEY),
-                Some(&serde_json::Value::from(300))
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY),
-                Some(&serde_json::Value::String("active_or_next".to_string()))
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY),
-                Some(&serde_json::Value::from(5))
-            );
-            assert_eq!(
-                decoded
-                    .event_facts
-                    .get(BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY),
-                Some(&serde_json::Value::from(60))
             );
             assert_eq!(
                 decoded

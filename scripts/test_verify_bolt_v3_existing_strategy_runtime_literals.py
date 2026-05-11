@@ -170,6 +170,40 @@ fn probe() {
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_target_fixture_literal_value_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        strategy_dir = root / "tests/fixtures/bolt_v3_existing_strategy/strategies"
+        strategy_dir.mkdir(parents=True)
+        (root / "tests/fixtures/bolt_v3_existing_strategy/root.toml").write_text(
+            'strategy_files = ["strategies/eth_chainlink_taker.toml"]\n',
+            encoding="utf-8",
+        )
+        (strategy_dir / "eth_chainlink_taker.toml").write_text(
+            """
+[target]
+market_selection_type = "rotating_market"
+rotating_market_family = "updown"
+underlying_asset = "ETH"
+market_selection_rule = "active_or_next"
+""".lstrip(),
+            encoding="utf-8",
+        )
+        write_runtime_test(
+            root,
+            'fn probe() { let _ = serde_json::Value::String("rotating_market".to_string()); }\n',
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "target fixture literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_selected_market_fixture_literal_is_a_finding() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -372,6 +406,7 @@ def main() -> int:
         test_test_node_fixture_literal_outside_fixture_is_a_finding,
         test_strategy_archetype_literal_outside_constant_is_a_finding,
         test_market_selection_context_literal_fields_are_findings,
+        test_target_fixture_literal_value_is_a_finding,
         test_selected_market_fixture_literal_is_a_finding,
         test_selection_ruleset_literal_is_a_finding,
         test_reference_stream_fixture_literal_is_a_finding,

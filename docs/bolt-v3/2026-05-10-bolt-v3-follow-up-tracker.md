@@ -54,6 +54,8 @@ F13ai note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13aj note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline decision-event value literals in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests and source validation use exported decision-event contract constants for market-selection outcomes, entry/exit decisions, mechanical outcomes, order side/type/time-in-force values, up/down side values, and exit-evaluation reason values.
 
+F13ak note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now rejects existing-strategy runtime target fixture values in `tests/eth_chainlink_taker_runtime.rs`. Market-selection decision-event target facts now derive from the v3 strategy TOML through `BoltV3MarketSelectionContext` instead of repeated Rust literals.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

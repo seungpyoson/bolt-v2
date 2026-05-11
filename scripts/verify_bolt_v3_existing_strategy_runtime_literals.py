@@ -194,6 +194,38 @@ def existing_strategy_reference_stream_literals(root: Path) -> set[str]:
     return literals
 
 
+def existing_strategy_target_literals(root: Path) -> set[str]:
+    path = root / EXISTING_STRATEGY_ROOT_FIXTURE
+    if not path.is_file():
+        return set()
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    strategy_files = data.get("strategy_files", [])
+    if not isinstance(strategy_files, list):
+        return set()
+
+    literals: set[str] = set()
+    strategy_base = path.parent
+    for strategy_file in strategy_files:
+        if not isinstance(strategy_file, str):
+            continue
+        strategy_path = strategy_base / strategy_file
+        if not strategy_path.is_file():
+            continue
+        strategy = tomllib.loads(strategy_path.read_text(encoding="utf-8"))
+        target = strategy.get("target", {})
+        if not isinstance(target, dict):
+            continue
+        for key in (
+            "market_selection_type",
+            "rotating_market_family",
+            "underlying_asset",
+            "market_selection_rule",
+        ):
+            add_string(target.get(key), literals)
+
+    return literals
+
+
 def existing_strategy_resolution_basis_literals(root: Path) -> set[str]:
     path = root / EXISTING_STRATEGY_ROOT_FIXTURE
     if not path.is_file():
@@ -238,6 +270,7 @@ def scan_runtime_file(
     test_node_literals: set[str],
     selected_market_literals: set[str],
     reference_stream_literals: set[str],
+    target_literals: set[str],
     resolution_basis_literals: set[str],
 ) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
@@ -283,6 +316,19 @@ def scan_runtime_file(
                     message=(
                         "existing-strategy runtime reference stream fixture literal; "
                         "derive from v3 root TOML"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
+            continue
+        if value in target_literals:
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "existing-strategy runtime target fixture literal; "
+                        "derive from v3 strategy TOML"
                     ),
                     excerpt=match.group(0),
                 )
@@ -354,6 +400,7 @@ def scan_root(root: Path) -> list[Finding]:
         existing_strategy_test_node_literals(root),
         selected_market_fixture_literals(root),
         existing_strategy_reference_stream_literals(root),
+        existing_strategy_target_literals(root),
         existing_strategy_resolution_basis_literals(root),
     )
 

@@ -80,11 +80,18 @@ def test_adapter_mapping_file_is_enforced() -> None:
         raise AssertionError("adapter mapping test file must be enforced")
 
 
+def test_provider_binding_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_provider_binding.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("provider binding test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_fixture_client_id_literal_is_a_finding,
         test_derived_fixture_lookup_is_clean,
         test_adapter_mapping_file_is_enforced,
+        test_provider_binding_file_is_enforced,
     ]
     for test in tests:
         test()

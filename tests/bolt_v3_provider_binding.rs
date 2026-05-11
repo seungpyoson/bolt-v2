@@ -41,10 +41,11 @@ use bolt_v2::{
         BoltV3ClientMappingError, BoltV3MarketSelectionNowFn,
         map_bolt_v3_clients_with_market_identity,
     },
-    bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
+    bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
     bolt_v3_providers::{
-        binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+        binance::{self, ResolvedBoltV3BinanceSecrets},
+        polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
@@ -64,10 +65,42 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
         .insert(key.to_string(), value);
 }
 
-fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
+fn fixture_client_id_for_venue(loaded: &LoadedBoltV3Config, venue: &str) -> String {
+    let matches = loaded
+        .root
+        .clients
+        .iter()
+        .filter_map(|(client_id, block)| {
+            (block.venue.as_str() == venue).then_some(client_id.clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "fixture should define exactly one {venue} client, got {matches:?}"
+    );
+    matches[0].clone()
+}
+
+fn fixture_unknown_client_id(loaded: &LoadedBoltV3Config) -> String {
+    let first_client_id = loaded
+        .root
+        .clients
+        .keys()
+        .next()
+        .expect("fixture should define at least one client");
+    let candidate = format!("{first_client_id}_missing");
+    assert!(
+        !loaded.root.clients.contains_key(&candidate),
+        "generated unknown client id must not collide with fixture clients"
+    );
+    candidate
+}
+
+fn fixture_resolved_secrets(loaded: &LoadedBoltV3Config) -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
-        "polymarket_main".to_string(),
+        fixture_client_id_for_venue(loaded, polymarket::KEY),
         Arc::new(ResolvedBoltV3PolymarketSecrets {
             private_key: "binding-poly-private-key".to_string(),
             api_key: "binding-poly-api-key".to_string(),
@@ -76,7 +109,7 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         }),
     );
     clients.insert(
-        "binance_reference".to_string(),
+        fixture_client_id_for_venue(loaded, binance::KEY),
         Arc::new(ResolvedBoltV3BinanceSecrets {
             api_key: "binding-binance-api-key".to_string(),
             api_secret: "binding-binance-api-secret".to_string(),
@@ -93,7 +126,7 @@ fn fixed_clock(now_unix_seconds: i64) -> BoltV3MarketSelectionNowFn {
 fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
 
     // Fixed `now_unix_seconds = 601` puts the planner inside the
@@ -105,10 +138,11 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     let configs = map_bolt_v3_clients_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping with market identity should succeed");
 
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
     let polymarket = configs
         .clients
-        .get("polymarket_main")
-        .expect("polymarket_main must be present in mapper output");
+        .get(&polymarket_client_id)
+        .expect("polymarket client must be present in mapper output");
     let data = polymarket
         .data
         .as_ref()
@@ -191,7 +225,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     loaded.strategies.push(second);
     loaded.strategies.push(third);
 
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
 
     // Pick now=7300:
@@ -203,10 +237,11 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     let configs = map_bolt_v3_clients_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping should succeed");
 
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
     let polymarket = configs
         .clients
-        .get("polymarket_main")
-        .expect("polymarket_main must be present");
+        .get(&polymarket_client_id)
+        .expect("polymarket client must be present");
     let data = polymarket
         .data
         .as_ref()
@@ -256,11 +291,12 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
     // subscription path under the cover of "we have a filter now".
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
 
     let polymarket_data = loaded
         .root
         .clients
-        .get_mut("polymarket_main")
+        .get_mut(&polymarket_client_id)
         .and_then(|client_id| client_id.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
@@ -269,7 +305,7 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
         toml::Value::Boolean(true),
     );
 
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(0);
 
@@ -281,7 +317,7 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
             field,
             ..
         } => {
-            assert_eq!(client_id_key, "polymarket_main");
+            assert_eq!(client_id_key, polymarket_client_id);
             assert_eq!(field, "data.subscribe_new_markets");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -297,7 +333,7 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
     // invisible to the single-target test above.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
 
     let empty_plan = MarketIdentityPlan {
         updown_targets: Vec::new(),
@@ -307,10 +343,11 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
     let configs = map_bolt_v3_clients_with_market_identity(&loaded, &resolved, &empty_plan, clock)
         .expect("mapping should succeed");
 
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
     let polymarket = configs
         .clients
-        .get("polymarket_main")
-        .expect("polymarket_main must be present");
+        .get(&polymarket_client_id)
+        .expect("polymarket client must be present");
     let data = polymarket
         .data
         .as_ref()
@@ -340,7 +377,7 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     // assertion below.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
 
     let counter = Arc::new(AtomicI64::new(601));
@@ -350,10 +387,11 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     let configs = map_bolt_v3_clients_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping should succeed");
 
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
     let polymarket = configs
         .clients
-        .get("polymarket_main")
-        .expect("polymarket_main must be present");
+        .get(&polymarket_client_id)
+        .expect("polymarket client must be present");
     let data = polymarket
         .data
         .as_ref()
@@ -394,11 +432,12 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_client_id() {
     // only runs on the Polymarket branch of the client iteration.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let non_polymarket_client_id = fixture_client_id_for_venue(&loaded, binance::KEY);
 
     // Mutate the strategy to bind to the Binance reference client.
-    loaded.strategies[0].config.execution_client_id = "binance_reference".to_string();
+    loaded.strategies[0].config.execution_client_id = non_polymarket_client_id.clone();
 
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(0);
 
@@ -410,7 +449,7 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_client_id() {
             field,
             message,
         } => {
-            assert_eq!(client_id_key, "binance_reference");
+            assert_eq!(client_id_key, non_polymarket_client_id);
             assert_eq!(field, "strategy.execution_client_id");
             assert!(
                 message.contains("does not support that market family"),
@@ -428,10 +467,11 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_client_id() {
     // reject explicitly rather than silently produce no filter.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let unknown_client_id = fixture_unknown_client_id(&loaded);
 
-    loaded.strategies[0].config.execution_client_id = "venue_does_not_exist".to_string();
+    loaded.strategies[0].config.execution_client_id = unknown_client_id.clone();
 
-    let resolved = fixture_resolved_secrets();
+    let resolved = fixture_resolved_secrets(&loaded);
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(0);
 
@@ -443,7 +483,7 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_client_id() {
             field,
             message,
         } => {
-            assert_eq!(client_id_key, "venue_does_not_exist");
+            assert_eq!(client_id_key, unknown_client_id);
             assert_eq!(field, "strategy.execution_client_id");
             assert!(
                 message.contains("unknown client"),

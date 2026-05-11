@@ -15,6 +15,7 @@ FIXTURE_ROOT_GLOB = "tests/fixtures/bolt_v3*/root*.toml"
 ENFORCED_TEST_FILES = (
     "tests/bolt_v3_client_registration.rs",
     "tests/bolt_v3_adapter_mapping.rs",
+    "tests/bolt_v3_provider_binding.rs",
 )
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 

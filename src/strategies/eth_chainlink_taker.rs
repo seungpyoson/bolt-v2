@@ -5198,6 +5198,7 @@ fn exit_order_mechanical_rejection_reason(
         {
             Some("open_exit_order_quantity_covers_position")
         }
+        "exit_quantity_not_positive" => Some("exit_quantity_invalid"),
         _ => None,
     }
 }

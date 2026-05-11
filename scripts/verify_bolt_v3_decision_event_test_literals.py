@@ -14,6 +14,7 @@ DECISION_EVENT_HANDOFF_TEST_FILE = "tests/bolt_v3_decision_event_handoff.rs"
 ORDER_INTENT_GATE_TEST_FILE = "tests/bolt_v3_order_intent_gate.rs"
 DECISION_EVENT_CONTEXT_TEST_FILE = "tests/bolt_v3_decision_event_context.rs"
 ETH_CHAINLINK_RUNTIME_TEST_FILE = "tests/eth_chainlink_taker_runtime.rs"
+DECISION_EVENT_SOURCE_FILE = "src/bolt_v3_decision_events.rs"
 ENFORCED_TEST_FILES = (
     DECISION_EVENT_HANDOFF_TEST_FILE,
     DECISION_EVENT_CONTEXT_TEST_FILE,
@@ -30,6 +31,10 @@ DECISION_EVENT_TYPE_LITERAL_PATTERN = re.compile(
 JSON_OBJECT_MACRO_PATTERN = re.compile(r"json!\s*\(\s*\{")
 STRING_LITERAL_PATTERN = re.compile(r'"(?P<literal>[a-z_][a-z0-9_]*)"')
 RUST_STRING_LITERAL_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
+REASON_CONST_PATTERN = re.compile(
+    r"pub\s+const\s+(?P<name>[A-Z0-9_]*REASONS?[A-Z0-9_]*)\s*:[^=]+=\s*(?P<body>.*?);",
+    re.DOTALL,
+)
 DIRECT_COMMON_FIELDS_PATTERN = re.compile(r"=\s*BoltV3DecisionEventCommonFields\s*\{")
 DIRECT_ORDER_SUBMISSION_FACTS_PATTERN = re.compile(
     r"(?:=|,|\()\s*BoltV3OrderSubmissionFacts\s*\{|^\s*BoltV3OrderSubmissionFacts\s*\{",
@@ -45,21 +50,6 @@ DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES = {
     "eth_updown_5m",
     "target-eth-updown",
 }
-DECISION_REASON_VALUES = {
-    "active_book_not_priced",
-    "fast_venue_incoherent",
-    "freeze",
-    "insufficient_edge",
-    "instrument_id_missing",
-    "invalid_quantity",
-    "market_cooling_down",
-    "metadata_mismatch",
-    "one_position_invariant",
-    "recovery_mode",
-    "thin_book",
-    "exit_order_mechanical_rejection",
-}
-
 
 @dataclass(frozen=True)
 class Finding:
@@ -80,7 +70,21 @@ def string_value(literal: str) -> str:
     return bytes(literal[1:-1], "utf-8").decode("unicode_escape")
 
 
-def scan_file(root: Path, path: Path) -> list[Finding]:
+def decision_reason_values(root: Path) -> set[str]:
+    path = root / DECISION_EVENT_SOURCE_FILE
+    if not path.is_file():
+        return set()
+    text = path.read_text(encoding="utf-8")
+    values: set[str] = set()
+    for match in REASON_CONST_PATTERN.finditer(text):
+        if match.group("name").endswith("_FACT_KEY"):
+            continue
+        for literal_match in STRING_LITERAL_PATTERN.finditer(match.group("body")):
+            values.add(literal_match.group("literal"))
+    return values
+
+
+def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
     findings: list[Finding] = []
@@ -116,9 +120,10 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                 )
             )
 
+    if rel in {DECISION_EVENT_HANDOFF_TEST_FILE, ETH_CHAINLINK_RUNTIME_TEST_FILE}:
         for match in STRING_LITERAL_PATTERN.finditer(text):
             literal = match.group("literal")
-            if literal not in DECISION_REASON_VALUES:
+            if literal not in reason_values:
                 continue
             findings.append(
                 Finding(
@@ -194,11 +199,12 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
 
 
 def scan_root(root: Path) -> list[Finding]:
+    reason_values = decision_reason_values(root)
     findings: list[Finding] = []
     for relative_path in ENFORCED_TEST_FILES:
         path = root / relative_path
         if path.is_file():
-            findings.extend(scan_file(root, path))
+            findings.extend(scan_file(root, path, reason_values))
     return findings
 
 

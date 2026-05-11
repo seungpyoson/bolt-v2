@@ -27,9 +27,33 @@ def write_file(root: Path, relative_path: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def write_decision_event_source(root: Path) -> None:
+    write_file(
+        root,
+        "src/bolt_v3_decision_events.rs",
+        """
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON: &str = "invalid_quantity";
+pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON: &str =
+    "selected_market_open_orders_present";
+""",
+    )
+
+
+def test_decision_reason_values_are_loaded_from_source_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_decision_event_source(root)
+
+        assert verifier.decision_reason_values(root) == {
+            "invalid_quantity",
+            "selected_market_open_orders_present",
+        }
+
+
 def test_inline_event_contract_literals_are_findings() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        write_decision_event_source(root)
         write_file(
             root,
             "tests/bolt_v3_decision_event_handoff.rs",
@@ -155,6 +179,25 @@ fn probe() {
         } == {finding.message for finding in findings}
 
 
+def test_eth_chainlink_runtime_decision_reason_literal_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_decision_event_source(root)
+        write_file(
+            root,
+            "tests/eth_chainlink_taker_runtime.rs",
+            """
+fn probe() {
+    let _ = "selected_market_open_orders_present";
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert "inline decision-event reason value" in findings[0].message
+
+
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -196,11 +239,13 @@ def test_eth_chainlink_runtime_file_is_enforced() -> None:
 
 def main() -> int:
     tests = [
+        test_decision_reason_values_are_loaded_from_source_contract,
         test_inline_event_contract_literals_are_findings,
         test_order_intent_gate_direct_event_fixture_construction_is_a_finding,
         test_decision_event_context_identity_literal_is_a_finding,
         test_decision_event_handoff_fixture_literal_is_a_finding,
         test_eth_chainlink_runtime_context_literal_is_a_finding,
+        test_eth_chainlink_runtime_decision_reason_literal_is_a_finding,
         test_exported_constants_and_fixture_helpers_are_clean,
         test_decision_event_handoff_file_is_enforced,
         test_order_intent_gate_file_is_enforced,

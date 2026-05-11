@@ -17,12 +17,32 @@ use bolt_v2::{
     },
     bolt_v3_decision_events::{
         BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+        BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_FEE_RATE_UNAVAILABLE_REASON, BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON,
         BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+        BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON,
+        BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+        BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
+        BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_REDUCING_REASON,
+        BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
         BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
         BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
         BoltV3EntryEvaluationDecisionEvent, BoltV3EntryOrderSubmissionDecisionEvent,
         BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
         BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
@@ -246,11 +266,11 @@ fn fixture_reference_publish_topic() -> &'static str {
 }
 
 fn active_book_not_priced_no_action_reason() -> &'static str {
-    "active_book_not_priced"
+    BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON
 }
 
 fn fair_probability_unavailable_no_action_reason() -> &'static str {
-    "fair_probability_unavailable"
+    BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON
 }
 
 fn fixture_forced_flat_thin_book_min_liquidity() -> f64 {
@@ -499,7 +519,8 @@ fn has_selected_open_orders_no_action_event(path: &std::path::Path) -> bool {
                         .event_facts
                         .get("updown_market_mechanical_rejection_reason")
                         == Some(&serde_json::Value::String(
-                            "selected_market_open_orders_present".to_string(),
+                            BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
+                                .to_string(),
                         ))
             })
         })
@@ -2206,8 +2227,14 @@ fn eth_chainlink_taker_runtime_restrictive_trading_states_block_entry_submit() {
     let _guard = runtime_test_mutex().lock().unwrap();
 
     for (trading_state, expected_reason) in [
-        (TradingState::Halted, "trading_state_halted"),
-        (TradingState::Reducing, "trading_state_reducing"),
+        (
+            TradingState::Halted,
+            BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
+        ),
+        (
+            TradingState::Reducing,
+            BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_REDUCING_REASON,
+        ),
     ] {
         clear_mock_exec_submissions();
 
@@ -2716,8 +2743,10 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    let insufficient_edge_events =
-        entry_no_action_events_with_reason(&evaluation_events, "insufficient_edge");
+    let insufficient_edge_events = entry_no_action_events_with_reason(
+        &evaluation_events,
+        BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON,
+    );
     let decoded = *insufficient_edge_events
         .last()
         .expect("expected insufficient-edge no-action event");
@@ -2729,7 +2758,9 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     );
     assert_eq!(
         decoded.event_facts.get("entry_no_action_reason"),
-        Some(&serde_json::Value::String("insufficient_edge".to_string()))
+        Some(&serde_json::Value::String(
+            BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON.to_string()
+        ))
     );
     assert_eq!(
         decoded.event_facts.get("updown_side"),
@@ -2779,7 +2810,10 @@ fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    let thin_book_events = entry_no_action_events_with_reason(&evaluation_events, "thin_book");
+    let thin_book_events = entry_no_action_events_with_reason(
+        &evaluation_events,
+        BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON,
+    );
     match thin_book_events.last() {
         Some(decoded) => {
             assert_eq!(
@@ -2788,7 +2822,9 @@ fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
             );
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
-                Some(&serde_json::Value::String("thin_book".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("updown_market_mechanical_outcome"),
@@ -2841,8 +2877,10 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    let missing_reference_events =
-        entry_no_action_events_with_reason(&evaluation_events, "missing_reference_quote");
+    let missing_reference_events = entry_no_action_events_with_reason(
+        &evaluation_events,
+        BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON,
+    );
     let decoded = *missing_reference_events
         .last()
         .expect("expected missing-reference no-action event");
@@ -2855,7 +2893,7 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     assert_eq!(
         decoded.event_facts.get("entry_no_action_reason"),
         Some(&serde_json::Value::String(
-            "missing_reference_quote".to_string()
+            BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON.to_string()
         ))
     );
     assert_eq!(
@@ -2906,8 +2944,10 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    let fee_rate_events =
-        entry_no_action_events_with_reason(&evaluation_events, "fee_rate_unavailable");
+    let fee_rate_events = entry_no_action_events_with_reason(
+        &evaluation_events,
+        BOLT_V3_ENTRY_NO_ACTION_FEE_RATE_UNAVAILABLE_REASON,
+    );
     let decoded = *fee_rate_events
         .last()
         .expect("expected fee-rate-unavailable no-action event");
@@ -2920,7 +2960,7 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     assert_eq!(
         decoded.event_facts.get("entry_no_action_reason"),
         Some(&serde_json::Value::String(
-            "fee_rate_unavailable".to_string()
+            BOLT_V3_ENTRY_NO_ACTION_FEE_RATE_UNAVAILABLE_REASON.to_string()
         ))
     );
     assert_eq!(
@@ -3107,8 +3147,10 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    let stale_reference_events =
-        entry_no_action_events_with_reason(&evaluation_events, "stale_reference_quote");
+    let stale_reference_events = entry_no_action_events_with_reason(
+        &evaluation_events,
+        BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON,
+    );
     match stale_reference_events.last() {
         Some(decoded) => {
             assert_eq!(
@@ -3123,7 +3165,7 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "stale_reference_quote".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3192,7 +3234,7 @@ fn eth_chainlink_taker_runtime_writes_fast_venue_incoherent_no_action_without_su
             .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()?;
         (decoded.event_facts.get("entry_no_action_reason")
             == Some(&serde_json::Value::String(
-                "fast_venue_incoherent".to_string(),
+                BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON.to_string(),
             )))
         .then_some(decoded)
     });
@@ -3207,7 +3249,7 @@ fn eth_chainlink_taker_runtime_writes_fast_venue_incoherent_no_action_without_su
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "fast_venue_incoherent".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3270,7 +3312,9 @@ fn eth_chainlink_taker_runtime_writes_freeze_no_action_without_submit() {
             .as_any()
             .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()?;
         (decoded.event_facts.get("entry_no_action_reason")
-            == Some(&serde_json::Value::String("freeze".to_string())))
+            == Some(&serde_json::Value::String(
+                BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON.to_string(),
+            )))
         .then_some(decoded)
     });
     match freeze_event {
@@ -3283,7 +3327,9 @@ fn eth_chainlink_taker_runtime_writes_freeze_no_action_without_submit() {
             );
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
-                Some(&serde_json::Value::String("freeze".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("updown_side"),
@@ -3439,7 +3485,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "position_limit_reached".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3531,7 +3577,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "updown_market_mechanical_rejection".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3539,7 +3585,8 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
                     .event_facts
                     .get("updown_market_mechanical_rejection_reason"),
                 Some(&serde_json::Value::String(
-                    "selected_market_open_orders_present".to_string()
+                    BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
+                        .to_string()
                 ))
             );
             assert_eq!(
@@ -3627,7 +3674,7 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "updown_market_mechanical_rejection".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3635,7 +3682,8 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
                     .event_facts
                     .get("updown_market_mechanical_rejection_reason"),
                 Some(&serde_json::Value::String(
-                    "selected_market_open_orders_present".to_string()
+                    BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
+                        .to_string()
                 ))
             );
             assert_eq!(
@@ -3712,7 +3760,7 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "position_limit_reached".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3801,7 +3849,7 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "position_limit_reached".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3886,7 +3934,7 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "updown_market_mechanical_rejection".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -3977,7 +4025,7 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "updown_market_mechanical_rejection".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -4057,7 +4105,7 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
             .event_facts
             .get("updown_market_mechanical_rejection_reason")
             == Some(&serde_json::Value::String(
-                "selected_market_open_orders_present".to_string(),
+                BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON.to_string(),
             )))
         .then_some(decoded)
     });
@@ -4072,7 +4120,7 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "updown_market_mechanical_rejection".to_string()
+                    BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -4084,7 +4132,8 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
                     .event_facts
                     .get("updown_market_mechanical_rejection_reason"),
                 Some(&serde_json::Value::String(
-                    "selected_market_open_orders_present".to_string()
+                    BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
+                        .to_string()
                 ))
             );
             assert_eq!(
@@ -4155,7 +4204,8 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
             assert_eq!(
                 decoded.event_facts.get("entry_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
-                    "instrument_missing_from_cache".to_string()
+                    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON
+                        .to_string()
                 ))
             );
             assert_eq!(
@@ -4270,7 +4320,9 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_pre_submit_rejection_reason"),
-                Some(&serde_json::Value::String("invalid_quantity".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
@@ -4344,8 +4396,10 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
         temp_dir.path(),
         configured_target_id_from_decision_context().as_str(),
     );
-    let exit_price_missing_events =
-        exit_pre_submit_rejection_events_with_reason(&rejection_events, "exit_price_missing");
+    let exit_price_missing_events = exit_pre_submit_rejection_events_with_reason(
+        &rejection_events,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON,
+    );
     match exit_price_missing_events.last() {
         Some(decoded) => {
             assert_eq!(
@@ -4355,7 +4409,9 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
-                Some(&serde_json::Value::String("exit_price_missing".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
@@ -4448,7 +4504,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
             assert_eq!(
                 decoded.event_facts.get("exit_decision_reason"),
                 Some(&serde_json::Value::String(
-                    "exit_order_mechanical_rejection".to_string()
+                    BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -4513,8 +4569,10 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
         temp_dir.path(),
         configured_target_id_from_decision_context().as_str(),
     );
-    let invalid_quantity_events =
-        exit_pre_submit_rejection_events_with_reason(&rejection_events, "invalid_quantity");
+    let invalid_quantity_events = exit_pre_submit_rejection_events_with_reason(
+        &rejection_events,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+    );
     match invalid_quantity_events.last() {
         Some(decoded) => {
             assert_eq!(
@@ -4524,7 +4582,9 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
-                Some(&serde_json::Value::String("invalid_quantity".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
@@ -4608,7 +4668,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
             assert_eq!(
                 decoded.event_facts.get("exit_decision_reason"),
                 Some(&serde_json::Value::String(
-                    "exit_order_mechanical_rejection".to_string()
+                    BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -4679,14 +4739,15 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     );
     let sellable_quantity_events = exit_pre_submit_rejection_events_with_reason(
         &rejection_events,
-        "exit_quantity_exceeds_sellable_quantity",
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON,
     );
     match sellable_quantity_events.last() {
         Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
-                    "exit_quantity_exceeds_sellable_quantity".to_string()
+                    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON
+                        .to_string()
                 ))
             );
             assert_eq!(
@@ -4774,7 +4835,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
             assert_eq!(
                 decoded.event_facts.get("exit_decision_reason"),
                 Some(&serde_json::Value::String(
-                    "exit_order_mechanical_rejection".to_string()
+                    BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -4838,14 +4899,16 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
 
     let rejection_events =
         query_exit_pre_submit_rejection_events(temp_dir.path(), &configured_target_id);
-    let trading_state_events =
-        exit_pre_submit_rejection_events_with_reason(&rejection_events, "trading_state_halted");
+    let trading_state_events = exit_pre_submit_rejection_events_with_reason(
+        &rejection_events,
+        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
+    );
     match trading_state_events.last() {
         Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
                 Some(&serde_json::Value::String(
-                    "trading_state_halted".to_string()
+                    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON.to_string()
                 ))
             );
             assert_eq!(
@@ -4931,7 +4994,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
                 assert_ne!(
                     decoded.event_facts.get("exit_pre_submit_rejection_reason"),
                     Some(&serde_json::Value::from(
-                        "exit_quantity_exceeds_sellable_quantity"
+                        BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON
                     )),
                     "partial open exit sell must not reject uncovered quantity"
                 );

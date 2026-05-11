@@ -1985,7 +1985,7 @@ reason = "This is a persisted entry-evaluation decision-event fact key."
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"order_type\""
-context = "params.insert(\"order_type\".to_string(), Value::String(facts.order_type));"
+context = "pub const BOLT_V3_ORDER_TYPE_FACT_KEY: &str = \"order_type\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -1993,7 +1993,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"time_in_force\""
-context = "\"time_in_force\".to_string(),"
+context = "pub const BOLT_V3_TIME_IN_FORCE_FACT_KEY: &str = \"time_in_force\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2001,7 +2001,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"instrument_id\""
-context = "\"instrument_id\".to_string(),"
+context = "pub const BOLT_V3_INSTRUMENT_ID_FACT_KEY: &str = \"instrument_id\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2009,7 +2009,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"side\""
-context = "params.insert(\"side\".to_string(), Value::String(facts.side));"
+context = "pub const BOLT_V3_SIDE_FACT_KEY: &str = \"side\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2017,7 +2017,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"price\""
-context = "params.insert(\"price\".to_string(), Value::from(facts.price));"
+context = "pub const BOLT_V3_PRICE_FACT_KEY: &str = \"price\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2025,7 +2025,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"quantity\""
-context = "params.insert(\"quantity\".to_string(), Value::from(facts.quantity));"
+context = "pub const BOLT_V3_QUANTITY_FACT_KEY: &str = \"quantity\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2033,7 +2033,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"is_quote_quantity\""
-context = "\"is_quote_quantity\".to_string(),"
+context = "pub const BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY: &str = \"is_quote_quantity\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2041,7 +2041,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"is_post_only\""
-context = "params.insert(\"is_post_only\".to_string(), Value::from(facts.is_post_only));"
+context = "pub const BOLT_V3_IS_POST_ONLY_FACT_KEY: &str = \"is_post_only\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2049,7 +2049,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"is_reduce_only\""
-context = "\"is_reduce_only\".to_string(),"
+context = "pub const BOLT_V3_IS_REDUCE_ONLY_FACT_KEY: &str = \"is_reduce_only\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2058,46 +2058,6 @@ path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"client_order_id\""
 context = "pub const BOLT_V3_CLIENT_ORDER_ID_FACT_KEY: &str = \"client_order_id\";"
-classification = "decision_event_order_fact_key"
-reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"order_type\""
-context = "\"order_type\".to_string(),"
-classification = "decision_event_order_fact_key"
-reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"side\""
-context = "params.insert(\"side\".to_string(), optional_string_to_value(facts.side));"
-classification = "decision_event_order_fact_key"
-reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"price\""
-context = "params.insert(\"price\".to_string(), optional_f64_to_value(facts.price));"
-classification = "decision_event_order_fact_key"
-reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"quantity\""
-context = "\"quantity\".to_string(),"
-classification = "decision_event_order_fact_key"
-reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"is_post_only\""
-context = "\"is_post_only\".to_string(),"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 

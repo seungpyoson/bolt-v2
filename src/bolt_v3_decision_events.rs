@@ -77,6 +77,15 @@ pub const BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY: &str = "entry_filled_notional"
 pub const BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY: &str = "open_entry_notional";
 pub const BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY: &str =
     "strategy_remaining_entry_capacity";
+pub const BOLT_V3_ORDER_TYPE_FACT_KEY: &str = "order_type";
+pub const BOLT_V3_TIME_IN_FORCE_FACT_KEY: &str = "time_in_force";
+pub const BOLT_V3_INSTRUMENT_ID_FACT_KEY: &str = "instrument_id";
+pub const BOLT_V3_SIDE_FACT_KEY: &str = "side";
+pub const BOLT_V3_PRICE_FACT_KEY: &str = "price";
+pub const BOLT_V3_QUANTITY_FACT_KEY: &str = "quantity";
+pub const BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY: &str = "is_quote_quantity";
+pub const BOLT_V3_IS_POST_ONLY_FACT_KEY: &str = "is_post_only";
+pub const BOLT_V3_IS_REDUCE_ONLY_FACT_KEY: &str = "is_reduce_only";
 pub const BOLT_V3_CLIENT_ORDER_ID_FACT_KEY: &str = "client_order_id";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
     "entry_pre_submit_rejection_reason";
@@ -1421,25 +1430,34 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
 
 fn order_submission_facts_to_params(facts: BoltV3OrderSubmissionFacts) -> Params {
     let mut params = Params::new();
-    params.insert("order_type".to_string(), Value::String(facts.order_type));
     params.insert(
-        "time_in_force".to_string(),
+        BOLT_V3_ORDER_TYPE_FACT_KEY.to_string(),
+        Value::String(facts.order_type),
+    );
+    params.insert(
+        BOLT_V3_TIME_IN_FORCE_FACT_KEY.to_string(),
         Value::String(facts.time_in_force),
     );
     params.insert(
-        "instrument_id".to_string(),
+        BOLT_V3_INSTRUMENT_ID_FACT_KEY.to_string(),
         Value::String(facts.instrument_id),
     );
-    params.insert("side".to_string(), Value::String(facts.side));
-    params.insert("price".to_string(), Value::from(facts.price));
-    params.insert("quantity".to_string(), Value::from(facts.quantity));
+    params.insert(BOLT_V3_SIDE_FACT_KEY.to_string(), Value::String(facts.side));
+    params.insert(BOLT_V3_PRICE_FACT_KEY.to_string(), Value::from(facts.price));
     params.insert(
-        "is_quote_quantity".to_string(),
+        BOLT_V3_QUANTITY_FACT_KEY.to_string(),
+        Value::from(facts.quantity),
+    );
+    params.insert(
+        BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY.to_string(),
         Value::from(facts.is_quote_quantity),
     );
-    params.insert("is_post_only".to_string(), Value::from(facts.is_post_only));
     params.insert(
-        "is_reduce_only".to_string(),
+        BOLT_V3_IS_POST_ONLY_FACT_KEY.to_string(),
+        Value::from(facts.is_post_only),
+    );
+    params.insert(
+        BOLT_V3_IS_REDUCE_ONLY_FACT_KEY.to_string(),
         Value::from(facts.is_reduce_only),
     );
     params.insert(
@@ -1455,33 +1473,39 @@ fn order_submission_facts_to_params(facts: BoltV3OrderSubmissionFacts) -> Params
 fn rejected_order_facts_to_params(facts: BoltV3RejectedOrderFacts) -> Params {
     let mut params = Params::new();
     params.insert(
-        "order_type".to_string(),
+        BOLT_V3_ORDER_TYPE_FACT_KEY.to_string(),
         optional_string_to_value(facts.order_type),
     );
     params.insert(
-        "time_in_force".to_string(),
+        BOLT_V3_TIME_IN_FORCE_FACT_KEY.to_string(),
         optional_string_to_value(facts.time_in_force),
     );
     params.insert(
-        "instrument_id".to_string(),
+        BOLT_V3_INSTRUMENT_ID_FACT_KEY.to_string(),
         optional_string_to_value(facts.instrument_id),
     );
-    params.insert("side".to_string(), optional_string_to_value(facts.side));
-    params.insert("price".to_string(), optional_f64_to_value(facts.price));
     params.insert(
-        "quantity".to_string(),
+        BOLT_V3_SIDE_FACT_KEY.to_string(),
+        optional_string_to_value(facts.side),
+    );
+    params.insert(
+        BOLT_V3_PRICE_FACT_KEY.to_string(),
+        optional_f64_to_value(facts.price),
+    );
+    params.insert(
+        BOLT_V3_QUANTITY_FACT_KEY.to_string(),
         optional_f64_to_value(facts.quantity),
     );
     params.insert(
-        "is_quote_quantity".to_string(),
+        BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY.to_string(),
         optional_bool_to_value(facts.is_quote_quantity),
     );
     params.insert(
-        "is_post_only".to_string(),
+        BOLT_V3_IS_POST_ONLY_FACT_KEY.to_string(),
         optional_bool_to_value(facts.is_post_only),
     );
     params.insert(
-        "is_reduce_only".to_string(),
+        BOLT_V3_IS_REDUCE_ONLY_FACT_KEY.to_string(),
         optional_bool_to_value(facts.is_reduce_only),
     );
     params.insert(

@@ -46,6 +46,8 @@ F13ae note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13af note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline entry-evaluation event fact keys in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests use exported decision-event contract constants for entry decision, no-action reason, up/down side, mechanical outcome/rejection, capacity facts, selected-open-order facts, and archetype metrics.
 
+F13ag note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline order fact keys in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests use exported decision-event contract constants for order type, time-in-force, instrument ID, side, price, quantity, quote/post/reduce flags, and client order ID.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

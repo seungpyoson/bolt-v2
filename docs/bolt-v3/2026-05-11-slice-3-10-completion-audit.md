@@ -63,3 +63,5 @@ F13ad classifies `polymarket_gamma_market_anchor` as a Polymarket-catalog-owned 
 F13ae extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime market-selection event fact keys must use exported decision-event contract constants instead of repeated Rust string literals.
 
 F13af extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime entry-evaluation event fact keys must use exported decision-event contract constants instead of repeated Rust string literals.
+
+F13ag extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime order-submission and pre-submit order fact keys must use exported decision-event contract constants instead of repeated Rust string literals.

@@ -89,6 +89,18 @@ ENTRY_EVALUATION_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
     "updown_market_mechanical_rejection_reason",
     "updown_side",
 }
+ORDER_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
+    "client_order_id",
+    "instrument_id",
+    "is_post_only",
+    "is_quote_quantity",
+    "is_reduce_only",
+    "order_type",
+    "price",
+    "quantity",
+    "side",
+    "time_in_force",
+}
 
 @dataclass(frozen=True)
 class Finding:
@@ -266,6 +278,21 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     message=(
                         "inline entry-evaluation fact key; use exported event "
                         "contract constant"
+                    ),
+                    excerpt=literal,
+                )
+            )
+
+        for match in EVENT_FACT_GET_PATTERN.finditer(text):
+            literal = match.group("literal")
+            if literal not in ORDER_FACT_KEY_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "inline order fact key; use exported event contract constant"
                     ),
                     excerpt=literal,
                 )

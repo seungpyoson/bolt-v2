@@ -19,9 +19,9 @@ use bolt_v2::{
     },
     bolt_v3_decision_events::{
         BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY,
-        BOLT_V3_CADENCE_SECONDS_FACT_KEY, BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY,
-        BOLT_V3_ENTRY_DECISION_FACT_KEY, BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
-        BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY,
+        BOLT_V3_CADENCE_SECONDS_FACT_KEY, BOLT_V3_CLIENT_ORDER_ID_FACT_KEY,
+        BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY, BOLT_V3_ENTRY_DECISION_FACT_KEY,
+        BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY,
         BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
         BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON,
         BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON,
@@ -47,22 +47,25 @@ use bolt_v2::{
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
-        BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY,
-        BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
+        BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY, BOLT_V3_INSTRUMENT_ID_FACT_KEY,
+        BOLT_V3_IS_POST_ONLY_FACT_KEY, BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY,
+        BOLT_V3_IS_REDUCE_ONLY_FACT_KEY, BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
         BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
         BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY, BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY,
         BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY,
         BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY, BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY,
-        BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
+        BOLT_V3_ORDER_TYPE_FACT_KEY, BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_START_TIMESTAMP_MILLISECONDS_FACT_KEY,
-        BOLT_V3_POLYMARKET_QUESTION_ID_FACT_KEY, BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY,
-        BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY, BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY,
+        BOLT_V3_POLYMARKET_QUESTION_ID_FACT_KEY, BOLT_V3_PRICE_FACT_KEY,
+        BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY, BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY,
+        BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY, BOLT_V3_QUANTITY_FACT_KEY,
         BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY, BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY,
-        BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY,
-        BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY, BOLT_V3_UNDERLYING_ASSET_FACT_KEY,
-        BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY, BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY,
+        BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY, BOLT_V3_SIDE_FACT_KEY,
+        BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY, BOLT_V3_TIME_IN_FORCE_FACT_KEY,
+        BOLT_V3_UNDERLYING_ASSET_FACT_KEY, BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
         BOLT_V3_UPDOWN_SIDE_FACT_KEY, BoltV3EntryEvaluationDecisionEvent,
@@ -2429,12 +2432,12 @@ fn eth_chainlink_taker_runtime_caps_entry_notional_by_bolt_v3_default_max_notion
                 .expect("BoltV3EntryOrderSubmissionDecisionEvent");
             let price = decoded
                 .event_facts
-                .get("price")
+                .get(BOLT_V3_PRICE_FACT_KEY)
                 .and_then(serde_json::Value::as_f64)
                 .expect("entry order submission should include price");
             let quantity = decoded
                 .event_facts
-                .get("quantity")
+                .get(BOLT_V3_QUANTITY_FACT_KEY)
                 .and_then(serde_json::Value::as_f64)
                 .expect("entry order submission should include quantity");
             let submitted_notional = price * quantity;
@@ -2955,7 +2958,7 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     submissions[0].client_order_id.to_string()
                 ))
@@ -4525,45 +4528,45 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("instrument_id"),
+                decoded.event_facts.get(BOLT_V3_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("order_type"),
+                decoded.event_facts.get(BOLT_V3_ORDER_TYPE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("time_in_force"),
+                decoded.event_facts.get(BOLT_V3_TIME_IN_FORCE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("side"),
+                decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
                 Some(&serde_json::Value::String("buy".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("price"),
+                decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("quantity"),
+                decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("is_quote_quantity"),
+                decoded.event_facts.get(BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("is_post_only"),
+                decoded.event_facts.get(BOLT_V3_IS_POST_ONLY_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("is_reduce_only"),
+                decoded.event_facts.get(BOLT_V3_IS_REDUCE_ONLY_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -4641,25 +4644,25 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("instrument_id"),
+                decoded.event_facts.get(BOLT_V3_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("side"),
+                decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
                 Some(&serde_json::Value::String("buy".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("price"),
+                decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("quantity"),
+                decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -4730,25 +4733,25 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("instrument_id"),
+                decoded.event_facts.get(BOLT_V3_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("side"),
+                decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
                 Some(&serde_json::Value::String("sell".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("price"),
+                decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("quantity"),
+                decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
@@ -4903,25 +4906,25 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("instrument_id"),
+                decoded.event_facts.get(BOLT_V3_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("side"),
+                decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
                 Some(&serde_json::Value::String("sell".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("price"),
+                decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("quantity"),
+                decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
@@ -5067,17 +5070,17 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("instrument_id"),
+                decoded.event_facts.get(BOLT_V3_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("side"),
+                decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
                 Some(&serde_json::Value::String("sell".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("quantity"),
+                decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
@@ -5228,17 +5231,17 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("instrument_id"),
+                decoded.event_facts.get(BOLT_V3_INSTRUMENT_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("side"),
+                decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
                 Some(&serde_json::Value::String("sell".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("quantity"),
+                decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
         }
@@ -5366,7 +5369,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
                 .downcast_ref::<BoltV3ExitOrderSubmissionDecisionEvent>()
                 .expect("BoltV3ExitOrderSubmissionDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("quantity"),
+                decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(3.0))
             );
         }
@@ -6064,7 +6067,7 @@ fn eth_chainlink_taker_runtime_reducing_trading_state_allows_exit_order_submit()
             assert_eq!(decoded.client_id, expected_client_id);
             assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     submissions[0].client_order_id.to_string()
                 ))
@@ -6233,7 +6236,7 @@ fn eth_chainlink_taker_runtime_writes_fail_closed_exit_evaluation_before_submit(
                 .expect("BoltV3ExitOrderSubmissionDecisionEvent");
             assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     submissions[0].client_order_id.to_string()
                 ))
@@ -6420,7 +6423,7 @@ fn eth_chainlink_taker_runtime_writes_ev_hysteresis_exit_evaluation_before_submi
                 .expect("BoltV3ExitOrderSubmissionDecisionEvent");
             assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&serde_json::Value::String(
                     submissions[0].client_order_id.to_string()
                 ))

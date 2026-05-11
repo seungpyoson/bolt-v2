@@ -1,13 +1,20 @@
 mod support;
 
+use std::{collections::BTreeMap, sync::Arc};
+
 use bolt_v2::{
+    bolt_v3_adapters::{BoltV3UpdownNowFn, map_bolt_v3_clients_with_market_identity},
+    bolt_v3_client_registration::register_bolt_v3_clients,
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_instrument_readiness::{
         BoltV3InstrumentReadinessStatus, check_bolt_v3_instrument_readiness_for_start,
     },
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_market_families::updown::{candidates_for_target, plan_market_identity},
+    bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
+use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use nautilus_core::{Params, UnixNanos};
 use nautilus_live::node::NodeState;
 use nautilus_model::{
@@ -16,10 +23,99 @@ use nautilus_model::{
     instruments::{InstrumentAny, binary_option::BinaryOption},
     types::{Currency, Price, Quantity},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use support::{MockDataClientConfig, MockDataClientFactory};
 use tempfile::TempDir;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    task::JoinHandle,
+};
+use tokio_tungstenite::accept_async;
 use ustr::Ustr;
+
+struct LocalPolymarketInstrumentServer {
+    http_base_url: String,
+    ws_market_url: String,
+    observed_http_requests: Arc<tokio::sync::Mutex<Vec<String>>>,
+    http_task: JoinHandle<()>,
+    ws_task: JoinHandle<()>,
+}
+
+impl Drop for LocalPolymarketInstrumentServer {
+    fn drop(&mut self) {
+        self.http_task.abort();
+        self.ws_task.abort();
+    }
+}
+
+async fn start_local_polymarket_instrument_server(
+    selected_market_slug: String,
+    selected_market: Value,
+) -> LocalPolymarketInstrumentServer {
+    let observed_http_requests = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let http_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local Gamma listener should bind");
+    let http_addr = http_listener
+        .local_addr()
+        .expect("local Gamma listener should expose addr");
+    let http_requests = Arc::clone(&observed_http_requests);
+    let http_task = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _peer)) = http_listener.accept().await else {
+                return;
+            };
+            let slug = selected_market_slug.clone();
+            let market = selected_market.clone();
+            let requests = Arc::clone(&http_requests);
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 4096];
+                let Ok(read) = socket.read(&mut buffer).await else {
+                    return;
+                };
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let request_line = request.lines().next().unwrap_or_default().to_string();
+                requests.lock().await.push(request_line.clone());
+                let body = if request_line.contains(&format!("slug={slug}")) {
+                    serde_json::to_string(&vec![market]).expect("selected market should encode")
+                } else {
+                    "[]".to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+
+    let ws_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local Polymarket WS listener should bind");
+    let ws_addr = ws_listener
+        .local_addr()
+        .expect("local Polymarket WS listener should expose addr");
+    let ws_task = tokio::spawn(async move {
+        let Ok((stream, _peer)) = ws_listener.accept().await else {
+            return;
+        };
+        let Ok(mut websocket) = accept_async(stream).await else {
+            return;
+        };
+        while websocket.next().await.is_some() {}
+    });
+
+    LocalPolymarketInstrumentServer {
+        http_base_url: format!("http://{http_addr}"),
+        ws_market_url: format!("ws://{ws_addr}/ws/market"),
+        observed_http_requests,
+        http_task,
+        ws_task,
+    }
+}
 
 fn polymarket_updown_option(
     instrument_id: &str,
@@ -67,6 +163,42 @@ fn polymarket_updown_option(
         UnixNanos::default(),
         UnixNanos::default(),
     ))
+}
+
+fn unix_seconds_to_gamma_iso(seconds: i64) -> String {
+    DateTime::<Utc>::from_timestamp(seconds, 0)
+        .expect("test period timestamp should fit chrono")
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
+fn selected_gamma_market(
+    market_slug: &str,
+    current_start_unix_seconds: i64,
+    next_start_unix_seconds: i64,
+) -> Value {
+    json!({
+        "id": format!("gamma-{current_start_unix_seconds}"),
+        "conditionId": format!("0x{:064x}", current_start_unix_seconds),
+        "questionID": format!("question-{market_slug}"),
+        "clobTokenIds": format!("[\"{}01\", \"{}02\"]", current_start_unix_seconds, current_start_unix_seconds),
+        "outcomes": "[\"Up\", \"Down\"]",
+        "outcomePrices": "[\"0.50\", \"0.50\"]",
+        "question": format!("Test market for {market_slug}"),
+        "description": "local test market",
+        "startDate": unix_seconds_to_gamma_iso(current_start_unix_seconds),
+        "endDate": unix_seconds_to_gamma_iso(next_start_unix_seconds),
+        "active": true,
+        "closed": false,
+        "acceptingOrders": true,
+        "enableOrderBook": true,
+        "orderPriceMinTickSize": 0.001,
+        "orderMinSize": 5.0,
+        "makerBaseFee": 0,
+        "takerBaseFee": 0,
+        "slug": market_slug,
+        "negRisk": false
+    })
 }
 
 #[test]
@@ -270,6 +402,147 @@ fn live_node_start_loads_selected_market_instruments_through_nt_data_events() {
         node.stop()
             .await
             .expect("mock-only LiveNode stop should succeed");
+    });
+}
+
+#[test]
+fn live_node_start_loads_selected_market_instruments_through_real_polymarket_data_client() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build for real Polymarket data-client proof");
+
+    runtime.block_on(async {
+        let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml");
+        let mut loaded = load_bolt_v3_config(&root_path).expect("strategy fixture should load");
+        loaded.root.nautilus.delay_post_stop_seconds = 0;
+        loaded.root.nautilus.timeout_disconnection_seconds = 1;
+
+        let plan = plan_market_identity(&loaded).expect("strategy target should plan from TOML");
+        let target = plan
+            .updown_targets
+            .first()
+            .expect("fixture should define one updown target");
+        let data_client_id = target.client_id_key.clone();
+        let market_selection_timestamp_seconds = target
+            .cadence_seconds
+            .checked_mul(2)
+            .and_then(|timestamp| timestamp.checked_add(1))
+            .expect("test market-selection timestamp should fit i64");
+        let market_selection_timestamp_milliseconds = market_selection_timestamp_seconds * 1_000;
+        loaded
+            .root
+            .clients
+            .retain(|client_id, _client| client_id == &data_client_id);
+        {
+            let client = loaded
+                .root
+                .clients
+                .get_mut(&data_client_id)
+                .expect("strategy data client should exist in root TOML");
+            client.execution = None;
+            client.secrets = None;
+        }
+
+        let candidates = candidates_for_target(target, market_selection_timestamp_seconds)
+            .expect("target candidates should derive from TOML");
+        let server = start_local_polymarket_instrument_server(
+            candidates.current_market_slug.clone(),
+            selected_gamma_market(
+                candidates.current_market_slug.as_str(),
+                candidates.current_period_start_unix_seconds,
+                candidates.next_period_start_unix_seconds,
+            ),
+        )
+        .await;
+
+        {
+            let client = loaded
+                .root
+                .clients
+                .get_mut(&data_client_id)
+                .expect("strategy data client should exist in root TOML");
+            let data = client
+                .data
+                .as_mut()
+                .and_then(toml::Value::as_table_mut)
+                .expect("Polymarket data block should be a TOML table");
+            data.insert(
+                "base_url_http".to_string(),
+                toml::Value::String(server.http_base_url.clone()),
+            );
+            data.insert(
+                "base_url_gamma".to_string(),
+                toml::Value::String(server.http_base_url.clone()),
+            );
+            data.insert(
+                "base_url_data_api".to_string(),
+                toml::Value::String(server.http_base_url.clone()),
+            );
+            data.insert(
+                "base_url_ws".to_string(),
+                toml::Value::String(server.ws_market_url.clone()),
+            );
+            data.insert("http_timeout_seconds".to_string(), toml::Value::Integer(1));
+            data.insert("ws_timeout_seconds".to_string(), toml::Value::Integer(1));
+        }
+
+        let clock: BoltV3UpdownNowFn = Arc::new(move || market_selection_timestamp_seconds);
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = map_bolt_v3_clients_with_market_identity(&loaded, &resolved, &plan, clock)
+            .expect("Polymarket data client should map with market-identity filters");
+        let builder =
+            make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct");
+        let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
+            .expect("real Polymarket data client should register");
+        let mut node = builder
+            .build()
+            .expect("LiveNode should build with real Polymarket data client");
+
+        let before_start = check_bolt_v3_instrument_readiness_for_start(
+            &node,
+            &loaded,
+            market_selection_timestamp_milliseconds,
+        )
+        .expect("readiness check before start should not fail");
+        assert!(!before_start.is_ready());
+
+        node.start()
+            .await
+            .expect("local Polymarket-data-only LiveNode start should succeed");
+        assert_eq!(node.state(), NodeState::Running);
+
+        let after_start = check_bolt_v3_instrument_readiness_for_start(
+            &node,
+            &loaded,
+            market_selection_timestamp_milliseconds,
+        )
+        .expect("readiness check after real Polymarket data-client start should not fail");
+        assert!(
+            after_start.is_ready(),
+            "real NT Polymarket data-client startup should populate selected-market instruments: {after_start:#?}"
+        );
+
+        let observed = server.observed_http_requests.lock().await.clone();
+        assert!(
+            observed.iter().any(|line| line.contains(&format!(
+                "slug={}",
+                candidates.current_market_slug
+            ))),
+            "Polymarket provider should request current slug through local Gamma: {observed:#?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .any(|line| line.contains(&format!("slug={}", candidates.next_market_slug))),
+            "Polymarket provider should request next slug through local Gamma: {observed:#?}"
+        );
+
+        node.stop()
+            .await
+            .expect("local Polymarket-data-only LiveNode stop should succeed");
     });
 }
 

@@ -3,17 +3,18 @@ use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
     BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
-    BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS, BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
+    BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
-    BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
-    BoltV3DecisionEventCatalogHandoff, BoltV3DecisionEventCommonFields,
-    BoltV3EntryEvaluationDecisionEvent, BoltV3EntryEvaluationFacts,
-    BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
-    BoltV3ExitEvaluationDecisionEvent, BoltV3ExitEvaluationFacts,
-    BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
-    BoltV3MarketSelectionDecisionEvent, BoltV3MarketSelectionResultFacts,
-    BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
-    register_bolt_v3_decision_event_types,
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS, BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
+    BOLT_V3_MARKET_SELECTION_FAILURE_REASONS, BoltV3DecisionEventCatalogHandoff,
+    BoltV3DecisionEventCommonFields, BoltV3EntryEvaluationDecisionEvent,
+    BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
+    BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
+    BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
+    BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
+    BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
+    BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
@@ -24,6 +25,7 @@ use tempfile::TempDir;
 
 const TEST_ENTRY_EVALUATION_EVENT_TS_NANOS: u64 = 2_500;
 const TEST_ENTRY_EVALUATION_INIT_TS_NANOS: u64 = 2_501;
+const TEST_UNSUPPORTED_DECISION_REASON: &str = "some_new_reason";
 
 #[test]
 fn market_selection_result_event_writes_through_nt_catalog_handoff() {
@@ -126,17 +128,15 @@ fn market_selection_result_rejects_missing_failure_reason_for_failed_outcome() {
 fn market_selection_result_rejects_unknown_failure_reason() {
     let error = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
-        failed_market_selection_result_facts(Some("some_new_reason")),
+        failed_market_selection_result_facts(Some(TEST_UNSUPPORTED_DECISION_REASON)),
         UnixNanos::from(2_000),
         UnixNanos::from(2_001),
     )
     .unwrap_err();
 
-    assert!(
-        error
-            .to_string()
-            .contains("unsupported market_selection_failure_reason `some_new_reason`")
-    );
+    assert!(error.to_string().contains(&format!(
+        "unsupported market_selection_failure_reason `{TEST_UNSUPPORTED_DECISION_REASON}`"
+    )));
 }
 
 #[test]
@@ -562,6 +562,48 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
 }
 
 #[test]
+fn entry_pre_submit_rejection_rejects_unknown_reason() {
+    let error = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
+        common_fields(),
+        BoltV3PreSubmitRejectionFacts {
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            rejection_reason: TEST_UNSUPPORTED_DECISION_REASON.to_string(),
+            authoritative_position_quantity: None,
+            authoritative_sellable_quantity: None,
+            open_exit_order_quantity: None,
+            uncovered_position_quantity: None,
+        },
+        UnixNanos::from(4_000),
+        UnixNanos::from(4_001),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains(&format!(
+        "unsupported entry_pre_submit_rejection_reason `{TEST_UNSUPPORTED_DECISION_REASON}`"
+    )));
+}
+
+#[test]
+fn entry_pre_submit_rejection_accepts_allowed_reasons() {
+    for reason in BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS {
+        BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
+            common_fields(),
+            BoltV3PreSubmitRejectionFacts {
+                order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+                rejection_reason: (*reason).to_string(),
+                authoritative_position_quantity: None,
+                authoritative_sellable_quantity: None,
+                open_exit_order_quantity: None,
+                uncovered_position_quantity: None,
+            },
+            UnixNanos::from(4_000),
+            UnixNanos::from(4_001),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn exit_order_submission_event_writes_through_nt_catalog_handoff() {
     let temp_dir = TempDir::new().unwrap();
     let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(
@@ -649,6 +691,48 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
+    }
+}
+
+#[test]
+fn exit_pre_submit_rejection_rejects_unknown_reason() {
+    let error = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
+        common_fields(),
+        BoltV3PreSubmitRejectionFacts {
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            rejection_reason: TEST_UNSUPPORTED_DECISION_REASON.to_string(),
+            authoritative_position_quantity: Some(10.0),
+            authoritative_sellable_quantity: Some(10.0),
+            open_exit_order_quantity: Some(0.0),
+            uncovered_position_quantity: Some(10.0),
+        },
+        UnixNanos::from(6_000),
+        UnixNanos::from(6_001),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains(&format!(
+        "unsupported exit_pre_submit_rejection_reason `{TEST_UNSUPPORTED_DECISION_REASON}`"
+    )));
+}
+
+#[test]
+fn exit_pre_submit_rejection_accepts_allowed_reasons() {
+    for reason in BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS {
+        BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
+            common_fields(),
+            BoltV3PreSubmitRejectionFacts {
+                order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+                rejection_reason: (*reason).to_string(),
+                authoritative_position_quantity: Some(10.0),
+                authoritative_sellable_quantity: Some(10.0),
+                open_exit_order_quantity: Some(0.0),
+                uncovered_position_quantity: Some(10.0),
+            },
+            UnixNanos::from(6_000),
+            UnixNanos::from(6_001),
+        )
+        .unwrap();
     }
 }
 

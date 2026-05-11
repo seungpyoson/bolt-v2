@@ -36,6 +36,20 @@ pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASONS: &[&str] = &[
     "price_to_beat_unavailable",
     "price_to_beat_ambiguous",
 ];
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS: &[&str] = &[
+    "instrument_missing_from_cache",
+    "invalid_price",
+    "invalid_quantity",
+    "exceeds_order_notional_cap",
+    "trading_state_halted",
+    "trading_state_reducing",
+];
+pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS: &[&str] = &[
+    "exit_price_missing",
+    "exit_quantity_exceeds_sellable_quantity",
+    "invalid_quantity",
+    "trading_state_halted",
+];
 const MARKET_SELECTION_RESULT: &str = "market_selection_result";
 const ENTRY_EVALUATION: &str = "entry_evaluation";
 const ENTRY_ORDER_SUBMISSION: &str = "entry_order_submission";
@@ -51,6 +65,22 @@ pub fn validate_bolt_v3_market_selection_failure_reason(reason: &str) -> Result<
     }
 
     bail!("unsupported market_selection_failure_reason `{reason}`")
+}
+
+pub fn validate_bolt_v3_entry_pre_submit_rejection_reason(reason: &str) -> Result<()> {
+    if BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS.contains(&reason) {
+        return Ok(());
+    }
+
+    bail!("unsupported entry_pre_submit_rejection_reason `{reason}`")
+}
+
+pub fn validate_bolt_v3_exit_pre_submit_rejection_reason(reason: &str) -> Result<()> {
+    if BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS.contains(&reason) {
+        return Ok(());
+    }
+
+    bail!("unsupported exit_pre_submit_rejection_reason `{reason}`")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,6 +449,7 @@ impl BoltV3EntryPreSubmitRejectionDecisionEvent {
         if facts.rejection_reason.is_empty() {
             bail!("entry_pre_submit_rejection_reason must be non-empty");
         }
+        validate_bolt_v3_entry_pre_submit_rejection_reason(&facts.rejection_reason)?;
 
         Ok(Self {
             schema_version: common.schema_version,
@@ -517,6 +548,7 @@ impl BoltV3ExitPreSubmitRejectionDecisionEvent {
         if facts.rejection_reason.is_empty() {
             bail!("exit_pre_submit_rejection_reason must be non-empty");
         }
+        validate_bolt_v3_exit_pre_submit_rejection_reason(&facts.rejection_reason)?;
         if facts.authoritative_position_quantity.is_none()
             || facts.authoritative_sellable_quantity.is_none()
             || facts.open_exit_order_quantity.is_none()

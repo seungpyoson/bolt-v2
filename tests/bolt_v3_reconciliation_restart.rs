@@ -45,7 +45,7 @@ use bolt_v2::{
 };
 use nautilus_common::msgbus::{publish_any, publish_deltas, switchboard};
 use nautilus_core::{UUID4, UnixNanos};
-use nautilus_live::node::NodeState;
+use nautilus_live::node::{LiveNode, NodeState};
 use nautilus_model::{
     accounts::AccountAny,
     data::{BookOrder, OrderBookDelta, OrderBookDeltas},
@@ -67,6 +67,7 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
 
 #[derive(Debug, Deserialize)]
 struct OpenOrderFixture {
@@ -281,7 +282,7 @@ fn bolt_v3_reconciled_open_order_blocks_duplicate_entry_submit() {
         .add_account(account_from_fixture(&loaded, &open_order))
         .expect("mock account should seed NT cache before startup reconciliation");
 
-    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let start_ts_ms = node_clock_timestamp_ms(&node);
     let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
     let selection_topic = runtime_selection_topic(&strategy_id);
     let reference_topic = reference_publish_topic(&loaded);
@@ -421,6 +422,134 @@ fn bolt_v3_reconciled_open_order_blocks_duplicate_entry_submit() {
 }
 
 #[test]
+fn bolt_v3_restarted_node_blocks_duplicate_entry_after_reconciliation() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_external_order_registrations();
+    clear_mock_exec_submissions();
+    let temp_dir = TempDir::new().unwrap();
+    let open_order = open_order_fixture();
+    let (fee_base_url, fee_requests) = spawn_fee_rate_server(open_order.fee_expected_requests);
+    let loaded = load_reconciliation_config(temp_dir.path(), &open_order, Some(fee_base_url));
+
+    let up = instrument_id(&open_order.condition_id, &open_order.up_token_id, &loaded);
+    let down = instrument_id(&open_order.condition_id, &open_order.down_token_id, &loaded);
+    let mut first_node = build_reconciliation_node(&loaded, &open_order, up, down);
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build")
+        .block_on(async {
+            first_node
+                .start()
+                .await
+                .expect("first mock-only LiveNode start should run startup reconciliation");
+            assert_eq!(first_node.state(), NodeState::Running);
+            assert_reconciled_open_order(&first_node, up, &open_order);
+            first_node
+                .stop()
+                .await
+                .expect("first mock-only LiveNode stop should succeed");
+        });
+    drop(first_node);
+    clear_mock_external_order_registrations();
+
+    let mut restarted_node = build_reconciliation_node(&loaded, &open_order, up, down);
+    let start_ts_ms = node_clock_timestamp_ms(&restarted_node);
+    let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
+    let selection_topic = runtime_selection_topic(&strategy_id);
+    let reference_topic = reference_publish_topic(&loaded);
+    let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
+    let target_id = configured_target_id(&loaded);
+    let loaded_for_control = loaded.clone();
+    let fee_expected_requests = open_order.fee_expected_requests;
+    let fee_request_timeout = Duration::from_secs(open_order.timeout_disconnection_seconds);
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build")
+        .block_on(async {
+            restarted_node
+                .start()
+                .await
+                .expect("restarted mock-only LiveNode start should run startup reconciliation");
+            assert_eq!(restarted_node.state(), NodeState::Running);
+            assert_reconciled_open_order(&restarted_node, up, &open_order);
+            let registrations = recorded_mock_external_order_registrations();
+            assert_eq!(
+                registrations.len(),
+                1,
+                "restarted node should register the reconciled external order once"
+            );
+
+            publish_entry_signal(
+                &loaded_for_control,
+                &open_order,
+                start_ts_ms,
+                up,
+                down,
+                &selection_topic,
+                &reference_topic,
+                open_order.reference_initial_fair_value,
+                open_order.reference_initial_orderbook_bid,
+                open_order.reference_initial_orderbook_ask,
+            );
+            sleep(Duration::from_millis(open_order.signal_settle_milliseconds)).await;
+            tokio::task::spawn_blocking(move || {
+                for _ in 0..fee_expected_requests {
+                    fee_requests
+                        .recv_timeout(fee_request_timeout)
+                        .expect("local fee server should receive fee request");
+                }
+            })
+            .await
+            .expect("fee request waiter should join");
+            publish_entry_signal(
+                &loaded_for_control,
+                &open_order,
+                start_ts_ms + open_order.signal_final_offset_ms,
+                up,
+                down,
+                &selection_topic,
+                &reference_topic,
+                open_order.reference_next_fair_value,
+                open_order.reference_next_orderbook_bid,
+                open_order.reference_next_orderbook_ask,
+            );
+
+            for _ in 0..open_order.signal_poll_iterations {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(
+                    open_order.signal_poll_interval_milliseconds,
+                ))
+                .await;
+            }
+
+            restarted_node
+                .stop()
+                .await
+                .expect("restarted mock-only LiveNode stop should succeed");
+        });
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "restarted reconciled external open order should block duplicate entry submit"
+    );
+    assert_eq!(
+        entry_submission_events(&catalog_dir, &target_id),
+        0,
+        "restarted reconciled external open order should block duplicate entry order-submission evidence"
+    );
+    assert!(
+        selected_open_order_entry_evaluation_events(&catalog_dir, &target_id) > 0,
+        "restarted reconciled external open order should persist selected-open-order entry no-action evidence"
+    );
+}
+
+#[test]
 fn pinned_nt_startup_reconciliation_registers_external_orders_with_execution_clients() {
     let nt_root = pinned_nt_checkout();
     let node_source = fs::read_to_string(nt_root.join("crates/live/src/node.rs"))
@@ -501,6 +630,131 @@ fn open_order_fixture() -> OpenOrderFixture {
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
     toml::from_str(&text).unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()))
+}
+
+fn node_clock_timestamp_ms(node: &LiveNode) -> u64 {
+    node.kernel().clock().borrow().timestamp_ns().as_u64() / NANOSECONDS_PER_MILLISECOND
+}
+
+fn load_reconciliation_config(
+    temp_dir: &Path,
+    open_order: &OpenOrderFixture,
+    fee_base_url: Option<String>,
+) -> LoadedBoltV3Config {
+    let mut loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing-strategy v3 TOML should load");
+    if let Some(base_url) = fee_base_url {
+        point_execution_http_to_local_fee_server(&mut loaded, base_url);
+    }
+    loaded.root.nautilus.load_state = open_order.load_state;
+    loaded.root.nautilus.save_state = open_order.save_state;
+    loaded.root.nautilus.delay_post_stop_seconds = open_order.delay_post_stop_seconds;
+    loaded.root.nautilus.timeout_disconnection_seconds = open_order.timeout_disconnection_seconds;
+    loaded.root.nautilus.timeout_reconciliation_seconds = open_order.timeout_reconciliation_seconds;
+    loaded
+        .root
+        .nautilus
+        .exec_engine
+        .reconciliation_startup_delay_seconds = open_order.reconciliation_startup_delay_seconds;
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir);
+    loaded
+}
+
+fn build_reconciliation_node(
+    loaded: &LoadedBoltV3Config,
+    open_order: &OpenOrderFixture,
+    up: InstrumentId,
+    down: InstrumentId,
+) -> LiveNode {
+    let instruments = vec![
+        binary_option(up, &open_order.up_token_id, open_order),
+        binary_option(down, &open_order.down_token_id, open_order),
+    ];
+    let mass_status = external_open_order_mass_status(loaded, up, open_order);
+    let resolved = resolve_bolt_v3_secrets_with(loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve through fake SSM");
+    let builder = make_bolt_v3_live_node_builder(loaded).expect("v3 LiveNode builder should build");
+    let (builder, _summary) = register_bolt_v3_clients(
+        builder,
+        mock_client_configs_from_loaded(loaded, instruments, mass_status),
+    )
+    .expect("mock clients should register through v3 client boundary");
+    let mut node = builder.build().expect("mock LiveNode should build");
+    register_bolt_v3_reference_actors(&mut node, loaded)
+        .expect("v3 reference actors should register on mock LiveNode");
+    register_bolt_v3_strategies(&mut node, loaded, &resolved)
+        .expect("existing strategy should register from v3 TOML");
+    node.kernel()
+        .cache()
+        .borrow_mut()
+        .add_account(account_from_fixture(loaded, open_order))
+        .expect("mock account should seed NT cache before startup reconciliation");
+    node
+}
+
+fn assert_reconciled_open_order(
+    node: &LiveNode,
+    instrument_id: InstrumentId,
+    open_order: &OpenOrderFixture,
+) {
+    let cache_handle = node.kernel().cache();
+    let cache = cache_handle.borrow();
+    let order_side = fixture_value("order_side", &open_order.order_side);
+    let open_orders = cache.orders_open(None, Some(&instrument_id), None, None, Some(order_side));
+    assert_eq!(
+        open_orders.len(),
+        1,
+        "startup reconciliation should import external open order into NT cache"
+    );
+}
+
+fn publish_entry_signal(
+    loaded: &LoadedBoltV3Config,
+    open_order: &OpenOrderFixture,
+    ts_ms: u64,
+    up: InstrumentId,
+    down: InstrumentId,
+    selection_topic: &str,
+    reference_topic: &str,
+    fair_value: f64,
+    orderbook_bid: f64,
+    orderbook_ask: f64,
+) {
+    publish_any(
+        selection_topic.to_string().into(),
+        &selection_snapshot(loaded, open_order, ts_ms),
+    );
+    publish_any(
+        reference_topic.to_string().into(),
+        &reference_snapshot(
+            loaded,
+            open_order,
+            ts_ms,
+            fair_value,
+            orderbook_bid,
+            orderbook_ask,
+        ),
+    );
+    publish_deltas(
+        switchboard::get_book_deltas_topic(up),
+        &book_deltas(
+            up,
+            &open_order.up_book_bid,
+            &open_order.up_book_ask,
+            &open_order.book_quantity,
+        ),
+    );
+    publish_deltas(
+        switchboard::get_book_deltas_topic(down),
+        &book_deltas(
+            down,
+            &open_order.down_book_bid,
+            &open_order.down_book_ask,
+            &open_order.book_quantity,
+        ),
+    );
 }
 
 fn protocol_payload_fixture(filename: &str) -> String {

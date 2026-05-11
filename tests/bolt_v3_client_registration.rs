@@ -23,11 +23,57 @@ use bolt_v2::{
 };
 use nautilus_model::identifiers::ClientId;
 
+fn single_client_id_matching(
+    loaded: &LoadedBoltV3Config,
+    label: &str,
+    predicate: impl Fn(&bolt_v2::bolt_v3_config::ClientBlock) -> bool,
+) -> String {
+    let matches = loaded
+        .root
+        .clients
+        .iter()
+        .filter_map(|(client_id, block)| predicate(block).then_some(client_id.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "fixture should define exactly one {label} client, got {matches:?}"
+    );
+    matches[0].clone()
+}
+
+fn fixture_data_and_execution_client_id(loaded: &LoadedBoltV3Config) -> String {
+    single_client_id_matching(loaded, "data+execution", |block| {
+        block.data.is_some() && block.execution.is_some()
+    })
+}
+
+fn fixture_data_only_client_id(loaded: &LoadedBoltV3Config) -> String {
+    single_client_id_matching(loaded, "data-only", |block| {
+        block.data.is_some() && block.execution.is_none()
+    })
+}
+
+fn fixture_secret_string(loaded: &LoadedBoltV3Config, client_id: &str, field: &str) -> String {
+    loaded
+        .root
+        .clients
+        .get(client_id)
+        .and_then(|client| client.secrets.as_ref())
+        .and_then(toml::Value::as_table)
+        .and_then(|secrets| secrets.get(field))
+        .and_then(toml::Value::as_str)
+        .unwrap_or_else(|| panic!("fixture client {client_id} should define secrets.{field}"))
+        .to_string()
+}
+
 #[test]
 fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     loaded.strategies.clear();
+    let data_and_execution_client_id = fixture_data_and_execution_client_id(&loaded);
+    let data_only_client_id = fixture_data_only_client_id(&loaded);
 
     let (node, summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
@@ -35,26 +81,29 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
 
     // The summary records bolt-v3's intent at the registration boundary.
     assert_eq!(summary.clients.len(), 2, "two configured clients");
-    let polymarket = summary
+    let data_and_execution = summary
         .clients
-        .get("polymarket_main")
-        .expect("polymarket_main must appear in summary");
+        .get(&data_and_execution_client_id)
+        .expect("data+execution client must appear in summary");
     assert!(
-        polymarket.data,
-        "fixture polymarket_main has a [data] block"
+        data_and_execution.data,
+        "fixture {data_and_execution_client_id} has a [data] block"
     );
     assert!(
-        polymarket.execution,
-        "fixture polymarket_main has an [execution] block"
+        data_and_execution.execution,
+        "fixture {data_and_execution_client_id} has an [execution] block"
     );
-    let binance = summary
+    let data_only = summary
         .clients
-        .get("binance_reference")
-        .expect("binance_reference must appear in summary");
-    assert!(binance.data, "fixture binance_reference has a [data] block");
+        .get(&data_only_client_id)
+        .expect("data-only client must appear in summary");
     assert!(
-        !binance.execution,
-        "fixture binance_reference has no [execution] block"
+        data_only.data,
+        "fixture {data_only_client_id} has a [data] block"
+    );
+    assert!(
+        !data_only.execution,
+        "fixture {data_only_client_id} has no [execution] block"
     );
 
     // NT-side state confirms the actual registrations happened. The
@@ -64,22 +113,22 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     // `engine.register_client` without a parallel NT mock.
     let registered_data: Vec<ClientId> = node.kernel().data_engine.borrow().registered_clients();
     assert!(
-        registered_data.contains(&ClientId::from("polymarket_main")),
-        "data engine should expose polymarket_main; got {registered_data:?}"
+        registered_data.contains(&ClientId::from(data_and_execution_client_id.as_str())),
+        "data engine should expose {data_and_execution_client_id}; got {registered_data:?}"
     );
     assert!(
-        registered_data.contains(&ClientId::from("binance_reference")),
-        "data engine should expose binance_reference; got {registered_data:?}"
+        registered_data.contains(&ClientId::from(data_only_client_id.as_str())),
+        "data engine should expose {data_only_client_id}; got {registered_data:?}"
     );
 
     let registered_exec: Vec<ClientId> = node.kernel().exec_engine.borrow().client_ids();
     assert!(
-        registered_exec.contains(&ClientId::from("polymarket_main")),
-        "exec engine should expose polymarket_main; got {registered_exec:?}"
+        registered_exec.contains(&ClientId::from(data_and_execution_client_id.as_str())),
+        "exec engine should expose {data_and_execution_client_id}; got {registered_exec:?}"
     );
     assert!(
-        !registered_exec.contains(&ClientId::from("binance_reference")),
-        "binance_reference has no [execution] block, must not be on the exec engine; got {registered_exec:?}"
+        !registered_exec.contains(&ClientId::from(data_only_client_id.as_str())),
+        "{data_only_client_id} has no [execution] block, must not be on the exec engine; got {registered_exec:?}"
     );
 }
 
@@ -87,12 +136,15 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
 fn missing_polymarket_private_key_secret_fails_before_registration() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let execution_client_id = fixture_data_and_execution_client_id(&loaded);
+    let private_key_path =
+        fixture_secret_string(&loaded, &execution_client_id, "private_key_ssm_path");
 
     // Inject a resolver that fails on the polymarket private_key SSM
     // path. This must surface as `SecretResolution`, never reaching
     // registration.
-    let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/polymarket_main/private_key" {
+    let bad_resolver = move |region: &str, path: &str| -> Result<String, &'static str> {
+        if path == private_key_path {
             Err("simulated SSM permissions denied for polymarket private key")
         } else {
             support::fake_bolt_v3_resolver(region, path)

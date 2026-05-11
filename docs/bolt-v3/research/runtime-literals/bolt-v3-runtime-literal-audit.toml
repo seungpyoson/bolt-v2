@@ -540,3 +540,259 @@ literal = "\"registered NT clients for client_id `{client_id_key}`: data={} exec
 context = "\"registered NT clients for client_id `{client_id_key}`: data={} execution={}\","
 classification = "startup_readiness_diagnostic_template"
 reason = "This template renders the client-registration fact with client instance key and registered client presence booleans; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "number"
+literal = "1"
+context = "const DECISION_EVENT_SCHEMA_VERSION: u64 = 1;"
+classification = "decision_event_schema_version"
+reason = "This is the durable bolt-v3 decision-event schema version emitted with every event, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"configured_target_id"'
+context = 'const CONFIGURED_TARGET_ID_FIELD: &str = "configured_target_id";'
+classification = "decision_event_field_label"
+reason = "This literal names the configured-target field required in decision-event common context validation."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"decision_trace_id"'
+context = 'validate_non_empty("decision_trace_id", decision_trace_id)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from the caller."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"strategy_instance_id"'
+context = 'validate_non_empty("strategy_instance_id", &self.strategy_instance_id)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from v3 strategy TOML."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"strategy_archetype"'
+context = 'validate_non_empty("strategy_archetype", &self.strategy_archetype)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from v3 strategy TOML."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"trader_id"'
+context = 'validate_non_empty("trader_id", &self.trader_id)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"client_id"'
+context = 'validate_non_empty("client_id", &self.client_id)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from strategy TOML client selection."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"venue"'
+context = 'validate_non_empty("venue", &self.venue)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from the configured client venue key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"runtime_mode"'
+context = 'validate_non_empty("runtime_mode", &self.runtime_mode)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from root TOML runtime mode."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"release_id"'
+context = 'validate_non_empty("release_id", &self.release_id)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from the configured release manifest."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"config_hash"'
+context = 'validate_non_empty("config_hash", &self.config_hash)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from the configured release manifest."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"nautilus_trader_revision"'
+context = 'validate_non_empty("nautilus_trader_revision", &self.nautilus_trader_revision)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from the configured release manifest and compiled NT pin."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"configured_target_id"'
+context = 'validate_non_empty("configured_target_id", &self.configured_target_id)?;'
+classification = "decision_event_field_label"
+reason = "This literal names a decision-event common field for validation diagnostics; the value comes from v3 strategy target TOML."
+
+[[allowed]]
+path = "src/bolt_v3_decision_event_context.rs"
+kind = "string"
+literal = '"live"'
+context = 'RuntimeMode::Live => "live",'
+classification = "decision_event_runtime_mode_value"
+reason = "This is the serialized value for the only current v3 runtime-mode enum variant; it is derived from typed config, not a separate runtime selector."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"release identity manifest nautilus_trader_revision mismatch: manifest `{}` != Cargo.toml `{}`"'
+context = '"release identity manifest nautilus_trader_revision mismatch: manifest `{}` != Cargo.toml `{}`",'
+classification = "release_identity_diagnostic_template"
+reason = "This is a mismatch diagnostic comparing configured release identity to the compiled NT pin."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"release identity manifest config_hash mismatch: manifest `{}` != computed `{}`"'
+context = '"release identity manifest config_hash mismatch: manifest `{}` != computed `{}`",'
+classification = "release_identity_diagnostic_template"
+reason = "This is a mismatch diagnostic comparing configured release identity to the loaded TOML hash."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"../Cargo.toml"'
+context = 'toml::from_str(include_str!("../Cargo.toml")).context("failed to parse Cargo.toml")?;'
+classification = "release_identity_cargo_manifest_parser"
+reason = "This compile-time path reads the repository Cargo manifest to verify the pinned NT revision."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"dependencies"'
+context = '.get("dependencies")'
+classification = "release_identity_cargo_manifest_parser"
+reason = "This literal names the Cargo manifest table inspected to verify all Nautilus dependencies use one pinned revision."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"nautilus-"'
+context = 'if !name.starts_with("nautilus-") {'
+classification = "release_identity_cargo_manifest_parser"
+reason = "This prefix selects Nautilus dependencies from Cargo.toml for release-identity NT revision verification."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"rev"'
+context = 'let Some(revision) = dependency.get("rev").and_then(Value::as_str) else {'
+classification = "release_identity_cargo_manifest_parser"
+reason = "This literal names the Cargo git dependency revision field used to verify the compiled NT pin."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"Cargo.toml has no nautilus-* git dependencies"'
+context = 'bail!("Cargo.toml has no nautilus-* git dependencies");'
+classification = "release_identity_diagnostic_template"
+reason = "This is a diagnostic for an invalid build manifest shape, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"\r\n"'
+context = '''let mut normalized = text.replace("\r\n", "\n").replace('\r', "\n");'''
+classification = "release_identity_line_ending_normalization"
+reason = "This literal normalizes config files before hashing so release identity is stable across line endings."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"\n"'
+context = '''let mut normalized = text.replace("\r\n", "\n").replace('\r', "\n");'''
+classification = "release_identity_line_ending_normalization"
+reason = "This literal normalizes config files before hashing so release identity is stable across line endings."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"release_id"'
+context = 'validate_non_empty("release_id", &manifest.release_id)?;'
+classification = "release_identity_manifest_field_label"
+reason = "This literal names a release-identity manifest field for validation diagnostics; the value comes from the manifest."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"git_commit_sha"'
+context = 'validate_non_empty("git_commit_sha", &manifest.git_commit_sha)?;'
+classification = "release_identity_manifest_field_label"
+reason = "This literal names a release-identity manifest field for validation diagnostics; the value comes from the manifest."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"nautilus_trader_revision"'
+context = '"nautilus_trader_revision",'
+classification = "release_identity_manifest_field_label"
+reason = "This literal names a release-identity manifest field for validation diagnostics; the value comes from the manifest."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"build_profile"'
+context = 'validate_non_empty("build_profile", &manifest.build_profile)?;'
+classification = "release_identity_manifest_field_label"
+reason = "This literal names a release-identity manifest field for validation diagnostics; the value comes from the manifest."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"binary_sha256"'
+context = 'validate_sha256("binary_sha256", &manifest.binary_sha256)?;'
+classification = "release_identity_manifest_field_label"
+reason = "This literal names a release-identity manifest digest field for SHA-256 validation; the value comes from the manifest."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"cargo_lock_sha256"'
+context = 'validate_sha256("cargo_lock_sha256", &manifest.cargo_lock_sha256)?;'
+classification = "release_identity_manifest_field_label"
+reason = "This literal names a release-identity manifest digest field for SHA-256 validation; the value comes from the manifest."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"config_hash"'
+context = 'validate_sha256("config_hash", &manifest.config_hash)?;'
+classification = "release_identity_manifest_field_label"
+reason = "This literal names a release-identity manifest digest field for SHA-256 validation; the value comes from the manifest."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "string"
+literal = '"artifact_sha256 artifact name"'
+context = 'validate_non_empty("artifact_sha256 artifact name", name)?;'
+classification = "release_identity_manifest_field_label"
+reason = "This literal labels an artifact-name validation diagnostic for the release-identity manifest artifact digest map."
+
+[[allowed]]
+path = "src/bolt_v3_release_identity.rs"
+kind = "number"
+literal = "64"
+context = "if value.len() != 64"
+classification = "sha256_hex_length_gate"
+reason = "This is the fixed lowercase SHA-256 hex digest length enforced for release-identity manifest digests."

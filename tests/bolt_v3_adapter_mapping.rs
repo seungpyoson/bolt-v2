@@ -5,7 +5,9 @@ use std::{collections::BTreeMap, sync::Arc};
 use bolt_v2::clients::chainlink::ChainlinkReferenceClientConfig;
 use bolt_v2::{
     bolt_v3_adapters::{BoltV3ClientMappingError, map_bolt_v3_clients},
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{
+        BoltV3RootConfig, LoadedBoltV3Config, REFERENCE_STREAM_ID_PARAMETER, load_bolt_v3_config,
+    },
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
     bolt_v3_providers::{
         binance::{self, ResolvedBoltV3BinanceSecrets},
@@ -103,6 +105,53 @@ fn chainlink_reference_client_maps_from_v3_stream_inputs() {
     let loaded = load_bolt_v3_config(&root_path).expect("existing strategy fixture should load");
     let resolved = fixture_resolved_secrets(&loaded);
     let chainlink_client_id = fixture_client_id_for_venue(&loaded.root, chainlink::KEY);
+    let chainlink_client = loaded
+        .root
+        .clients
+        .get(&chainlink_client_id)
+        .expect("fixture should define selected Chainlink client");
+    let chainlink_data = chainlink_client
+        .data
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("fixture Chainlink client should define data table");
+    let expected_ws_url = chainlink_data
+        .get("ws_url")
+        .and_then(toml::Value::as_str)
+        .expect("fixture Chainlink data should define ws_url");
+    let expected_ws_reconnect_alert_threshold = chainlink_data
+        .get("ws_reconnect_alert_threshold")
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| usize::try_from(value).ok())
+        .expect("fixture Chainlink data should define usize reconnect threshold");
+    let stream_id = loaded
+        .strategies
+        .first()
+        .and_then(|strategy| {
+            strategy
+                .config
+                .parameters
+                .get(REFERENCE_STREAM_ID_PARAMETER)
+        })
+        .and_then(toml::Value::as_str)
+        .expect("existing strategy should select reference stream from TOML");
+    let stream = loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .expect("existing root should define selected reference stream");
+    let expected_feed_input = stream
+        .inputs
+        .iter()
+        .find(|input| input.data_client_id.as_deref() == Some(chainlink_client_id.as_str()))
+        .expect("selected reference stream should define Chainlink input");
+    let expected_price_scale = expected_feed_input
+        .provider_config
+        .as_ref()
+        .and_then(|provider_config| provider_config.get("price_scale"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u8::try_from(value).ok())
+        .expect("Chainlink provider config should define u8 price_scale");
 
     let configs = map_bolt_v3_clients(&loaded, &resolved).expect("fixture should map cleanly");
 
@@ -117,12 +166,18 @@ fn chainlink_reference_client_maps_from_v3_stream_inputs() {
         .config_as::<ChainlinkReferenceClientConfig>()
         .expect("chainlink [data] should downcast to ChainlinkReferenceClientConfig");
 
-    assert_eq!(data.shared.ws_url, "wss://ws.test.chain.link");
-    assert_eq!(data.shared.ws_reconnect_alert_threshold, 3);
+    assert_eq!(data.shared.ws_url, expected_ws_url);
+    assert_eq!(
+        data.shared.ws_reconnect_alert_threshold,
+        expected_ws_reconnect_alert_threshold
+    );
     assert_eq!(data.feeds.len(), 1);
-    assert_eq!(data.feeds[0].venue_name, "eth_usd_oracle_anchor");
-    assert_eq!(data.feeds[0].instrument_id, "ETHUSD.CHAINLINK");
-    assert_eq!(data.feeds[0].price_scale, 8);
+    assert_eq!(data.feeds[0].venue_name, expected_feed_input.source_id);
+    assert_eq!(
+        data.feeds[0].instrument_id,
+        expected_feed_input.instrument_id
+    );
+    assert_eq!(data.feeds[0].price_scale, expected_price_scale);
 }
 
 #[test]

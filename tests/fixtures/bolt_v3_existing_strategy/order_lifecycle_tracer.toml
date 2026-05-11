@@ -26,3 +26,5 @@ post_order_cancel_delay_milliseconds = 50
 post_initial_market_delay_milliseconds = 200
 fee_request_recv_timeout_seconds = 1
 submit_poll_attempts = 50
+real_execution_run_timeout_margin_seconds = 5
+mock_lifecycle_run_timeout_margin_seconds = 1

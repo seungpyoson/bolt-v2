@@ -76,6 +76,8 @@ F13at note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13au note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects literal polling loop bounds like `for _ in 0..<number>` in `tests/bolt_v3_order_lifecycle_tracer.rs`. Submit polling attempt count now derives from `test_timing.submit_poll_attempts` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
 
+F13av note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects literal timeout margins inside `Duration::from_secs(...)` / `Duration::from_millis(...)` expressions in `tests/bolt_v3_order_lifecycle_tracer.rs`. Real-adapter and mock lifecycle run-timeout margins now derive from `test_timing.real_execution_run_timeout_margin_seconds` and `test_timing.mock_lifecycle_run_timeout_margin_seconds` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

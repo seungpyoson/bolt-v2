@@ -41,6 +41,10 @@ ORDER_LIFECYCLE_PRICE_PRECISION_PATTERN = re.compile(
 ORDER_LIFECYCLE_DURATION_LITERAL_PATTERN = re.compile(
     r"Duration::from_(?:secs|millis)\(\s*\d[\d_]*\s*\)"
 )
+ORDER_LIFECYCLE_DURATION_MARGIN_LITERAL_PATTERN = re.compile(
+    r"Duration::from_(?:secs|millis)\(\s*[^)]*?\+\s*\d[\d_]*\s*,?\s*\)",
+    re.DOTALL,
+)
 ORDER_LIFECYCLE_FEE_REQUEST_COUNT_PATTERN = re.compile(
     r"spawn_fee_rate_server\(\s*\d[\d_]*\s*\)"
 )
@@ -195,6 +199,15 @@ def scan_file(
                     line=line_number(text, match.start()),
                     message="order-lifecycle duration literal; derive from TOML fixture",
                     excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_DURATION_MARGIN_LITERAL_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="order-lifecycle duration margin literal; derive from TOML fixture",
+                    excerpt=first_nonblank_line(match.group(0)),
                 )
             )
         for match in ORDER_LIFECYCLE_FEE_REQUEST_COUNT_PATTERN.finditer(text):

@@ -118,6 +118,8 @@ struct TestTimingFixture {
     post_initial_market_delay_milliseconds: u64,
     fee_request_recv_timeout_seconds: u64,
     submit_poll_attempts: usize,
+    real_execution_run_timeout_margin_seconds: u64,
+    mock_lifecycle_run_timeout_margin_seconds: u64,
 }
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -232,6 +234,22 @@ fn order_lifecycle_fee_request_recv_timeout() -> Duration {
 
 fn order_lifecycle_submit_poll_attempts() -> usize {
     test_timing_fixture().submit_poll_attempts
+}
+
+fn order_lifecycle_real_execution_run_timeout(loaded: &LoadedBoltV3Config) -> Duration {
+    Duration::from_secs(
+        loaded.root.nautilus.timeout_shutdown_seconds
+            + loaded.root.nautilus.timeout_disconnection_seconds
+            + test_timing_fixture().real_execution_run_timeout_margin_seconds,
+    )
+}
+
+fn order_lifecycle_mock_run_timeout(loaded: &LoadedBoltV3Config) -> Duration {
+    Duration::from_secs(
+        loaded.root.nautilus.delay_post_stop_seconds
+            + loaded.root.nautilus.timeout_shutdown_seconds
+            + test_timing_fixture().mock_lifecycle_run_timeout_margin_seconds,
+    )
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -1180,11 +1198,7 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
             let reference_topic = reference_publish_topic(&loaded);
             let (up, down) = selected_instruments(&loaded);
             let loaded_for_control = loaded.clone();
-            let run_timeout = Duration::from_secs(
-                loaded.root.nautilus.timeout_shutdown_seconds
-                    + loaded.root.nautilus.timeout_disconnection_seconds
-                    + 5,
-            );
+            let run_timeout = order_lifecycle_real_execution_run_timeout(&loaded);
 
             let (post_order, cancel_orders) = tokio::time::timeout(run_timeout, async move {
                 let control = async {
@@ -1333,11 +1347,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
     let target_id = configured_target_id(&loaded);
-    let run_timeout = Duration::from_secs(
-        loaded.root.nautilus.delay_post_stop_seconds
-            + loaded.root.nautilus.timeout_shutdown_seconds
-            + 1,
-    );
+    let run_timeout = order_lifecycle_mock_run_timeout(&loaded);
     let loaded_for_control = loaded.clone();
 
     tokio::runtime::Builder::new_current_thread()
@@ -1477,11 +1487,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
     let target_id = configured_target_id(&loaded);
-    let run_timeout = Duration::from_secs(
-        loaded.root.nautilus.delay_post_stop_seconds
-            + loaded.root.nautilus.timeout_shutdown_seconds
-            + 1,
-    );
+    let run_timeout = order_lifecycle_mock_run_timeout(&loaded);
     let loaded_for_control = loaded.clone();
 
     tokio::runtime::Builder::new_current_thread()
@@ -1663,11 +1669,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
     let target_id = configured_target_id(&loaded);
-    let run_timeout = Duration::from_secs(
-        loaded.root.nautilus.delay_post_stop_seconds
-            + loaded.root.nautilus.timeout_shutdown_seconds
-            + 1,
-    );
+    let run_timeout = order_lifecycle_mock_run_timeout(&loaded);
     let loaded_for_control = loaded.clone();
 
     tokio::runtime::Builder::new_current_thread()
@@ -1859,11 +1861,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
     let target_id = configured_target_id(&loaded);
-    let run_timeout = Duration::from_secs(
-        loaded.root.nautilus.delay_post_stop_seconds
-            + loaded.root.nautilus.timeout_shutdown_seconds
-            + 1,
-    );
+    let run_timeout = order_lifecycle_mock_run_timeout(&loaded);
     let loaded_for_control = loaded.clone();
 
     tokio::runtime::Builder::new_current_thread()

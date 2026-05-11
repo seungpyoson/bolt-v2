@@ -207,6 +207,30 @@ def test_order_lifecycle_duration_literal_is_a_finding() -> None:
         assert "duration literal" in findings[0].message
 
 
+def test_order_lifecycle_duration_margin_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_order_lifecycle_tracer.rs",
+            """
+fn probe(loaded: LoadedBoltV3Config) {
+    let _ = Duration::from_secs(
+        loaded.root.nautilus.timeout_shutdown_seconds
+            + loaded.root.nautilus.timeout_disconnection_seconds
+            + 5,
+    );
+}
+""".lstrip(),
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
+        assert "duration margin literal" in findings[0].message
+
+
 def test_order_lifecycle_fee_request_count_literal_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -262,6 +286,7 @@ def main() -> int:
         test_order_lifecycle_numeric_scenario_fixture_literal_is_a_finding,
         test_order_lifecycle_price_precision_literal_is_a_finding,
         test_order_lifecycle_duration_literal_is_a_finding,
+        test_order_lifecycle_duration_margin_literal_is_a_finding,
         test_order_lifecycle_fee_request_count_literal_is_a_finding,
         test_order_lifecycle_poll_attempt_literal_is_a_finding,
         test_fee_provider_file_is_enforced,

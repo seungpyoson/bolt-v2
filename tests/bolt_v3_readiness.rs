@@ -4,11 +4,47 @@ use std::collections::BTreeMap;
 
 use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_providers::{binance, polymarket},
     bolt_v3_readiness::{
         BoltV3StartupCheckReport, BoltV3StartupCheckStage, BoltV3StartupCheckStatus,
         BoltV3StartupCheckSubject, run_bolt_v3_startup_check_with,
     },
 };
+
+fn load_fixture_config() -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    load_bolt_v3_config(&root_path).expect("fixture v3 config should load")
+}
+
+fn fixture_client_id_for_venue(loaded: &LoadedBoltV3Config, venue: &str) -> String {
+    let matches = loaded
+        .root
+        .clients
+        .iter()
+        .filter_map(|(client_id, block)| {
+            (block.venue.as_str() == venue).then_some(client_id.clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "fixture should define exactly one {venue} client, got {matches:?}"
+    );
+    matches[0].clone()
+}
+
+fn fixture_secret_path(loaded: &LoadedBoltV3Config, client_id: &str, field: &str) -> String {
+    loaded
+        .root
+        .clients
+        .get(client_id)
+        .and_then(|client| client.secrets.as_ref())
+        .and_then(toml::Value::as_table)
+        .and_then(|secrets| secrets.get(field))
+        .and_then(toml::Value::as_str)
+        .unwrap_or_else(|| panic!("fixture {client_id} should define secrets.{field}"))
+        .to_string()
+}
 
 fn statuses_for(
     report: &BoltV3StartupCheckReport,
@@ -59,8 +95,9 @@ fn assert_no_resolved_secret_values(text: &str) {
 
 #[test]
 fn startup_check_reports_success_facts_without_connecting() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = load_fixture_config();
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
+    let binance_client_id = fixture_client_id_for_venue(&loaded, binance::KEY);
 
     let report = run_bolt_v3_startup_check_with(&loaded, |_| false, support::fake_bolt_v3_resolver);
 
@@ -99,9 +136,9 @@ fn startup_check_reports_success_facts_without_connecting() {
         .iter()
         .find(|fact| {
             fact.stage == BoltV3StartupCheckStage::ClientRegistration
-                && fact.detail.contains("polymarket_main")
+                && fact.detail.contains(&polymarket_client_id)
         })
-        .expect("polymarket_main registration fact should exist");
+        .expect("polymarket registration fact should exist");
     assert!(polymarket.detail.contains("data=true"));
     assert!(polymarket.detail.contains("execution=true"));
 
@@ -110,9 +147,9 @@ fn startup_check_reports_success_facts_without_connecting() {
         .iter()
         .find(|fact| {
             fact.stage == BoltV3StartupCheckStage::ClientRegistration
-                && fact.detail.contains("binance_reference")
+                && fact.detail.contains(&binance_client_id)
         })
-        .expect("binance_reference registration fact should exist");
+        .expect("binance registration fact should exist");
     assert!(binance.detail.contains("data=true"));
     assert!(binance.detail.contains("execution=false"));
 
@@ -121,8 +158,7 @@ fn startup_check_reports_success_facts_without_connecting() {
 
 #[test]
 fn startup_check_reports_empty_client_id_stages_as_satisfied_root_facts() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = load_fixture_config();
     let empty_loaded = LoadedBoltV3Config {
         root_path: loaded.root_path.clone(),
         root: BoltV3RootConfig {
@@ -155,8 +191,8 @@ fn startup_check_reports_empty_client_id_stages_as_satisfied_root_facts() {
 
 #[test]
 fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = load_fixture_config();
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
 
     let report = run_bolt_v3_startup_check_with(
         &loaded,
@@ -172,7 +208,7 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
     assert!(
         report.facts.iter().any(|fact| {
             fact.stage == BoltV3StartupCheckStage::ForbiddenCredentialEnv
-                && fact.subject == BoltV3StartupCheckSubject::Client("polymarket_main".to_string())
+                && fact.subject == BoltV3StartupCheckSubject::Client(polymarket_client_id.clone())
         }),
         "forbidden env failures should be client-keyed: {report:#?}"
     );
@@ -202,10 +238,14 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
 
 #[test]
 fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/polymarket_main/private_key" {
+    let loaded = load_fixture_config();
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
+    let private_key_ssm_path =
+        fixture_secret_path(&loaded, &polymarket_client_id, "private_key_ssm_path");
+    let failed_secret_context = format!("clients.{polymarket_client_id}.secrets.private_key");
+    let bad_path = private_key_ssm_path.clone();
+    let bad_resolver = move |region: &str, path: &str| -> Result<String, &'static str> {
+        if path == bad_path {
             Err("simulated SSM permissions denied for private key")
         } else {
             support::fake_bolt_v3_resolver(region, path)
@@ -220,8 +260,8 @@ fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
         "{report:#?}"
     );
     let text = report_text(&report);
-    assert!(text.contains("clients.polymarket_main.secrets.private_key"));
-    assert!(text.contains("/bolt/polymarket_main/private_key"));
+    assert!(text.contains(&failed_secret_context));
+    assert!(text.contains(&private_key_ssm_path));
     assert_no_resolved_secret_values(&text);
     assert_eq!(
         skipped_stages(&report),
@@ -237,16 +277,16 @@ fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
 
 #[test]
 fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_fixture_config();
+    let polymarket_client_id = fixture_client_id_for_venue(&loaded, polymarket::KEY);
     loaded
         .root
         .clients
-        .get_mut("polymarket_main")
-        .expect("fixture polymarket_main client should exist")
+        .get_mut(&polymarket_client_id)
+        .expect("fixture polymarket client should exist")
         .data
         .as_mut()
-        .expect("fixture polymarket_main data block should exist")
+        .expect("fixture polymarket data block should exist")
         .as_table_mut()
         .expect("fixture data block should be a TOML table")
         .insert(
@@ -264,7 +304,7 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
     assert!(
         report.facts.iter().any(|fact| {
             fact.stage == BoltV3StartupCheckStage::AdapterMapping
-                && fact.subject == BoltV3StartupCheckSubject::Client("polymarket_main".to_string())
+                && fact.subject == BoltV3StartupCheckSubject::Client(polymarket_client_id.clone())
         }),
         "adapter mapping failures must be client-keyed: {report:#?}"
     );

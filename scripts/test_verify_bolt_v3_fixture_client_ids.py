@@ -110,6 +110,12 @@ def test_instrument_readiness_file_is_enforced() -> None:
         raise AssertionError("instrument readiness test file must be enforced")
 
 
+def test_readiness_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_readiness.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("readiness test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_fixture_client_id_literal_is_a_finding,
@@ -120,6 +126,7 @@ def main() -> int:
         test_reference_producer_file_is_enforced,
         test_decision_event_context_file_is_enforced,
         test_instrument_readiness_file_is_enforced,
+        test_readiness_file_is_enforced,
     ]
     for test in tests:
         test()

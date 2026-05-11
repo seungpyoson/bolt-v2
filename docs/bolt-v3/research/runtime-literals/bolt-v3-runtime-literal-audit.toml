@@ -1036,3 +1036,1267 @@ literal = '"reference_stream_id"'
 context = 'let Some(value) = parameters.get("reference_stream_id") else {'
 classification = "strategy_parameter_key"
 reason = "This is the v3 strategy parameter key used to validate a strategy-selected root reference stream."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"BoltV3MarketSelectionDecisionEvent\""
+context = "pub const BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE: &str = \"BoltV3MarketSelectionDecisionEvent\";"
+classification = "decision_event_type_name"
+reason = "This is the NT custom-data type name used for durable bolt-v3 decision-event catalog records."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"BoltV3EntryEvaluationDecisionEvent\""
+context = "pub const BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE: &str = \"BoltV3EntryEvaluationDecisionEvent\";"
+classification = "decision_event_type_name"
+reason = "This is the NT custom-data type name used for durable bolt-v3 decision-event catalog records."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"BoltV3EntryOrderSubmissionDecisionEvent\""
+context = "\"BoltV3EntryOrderSubmissionDecisionEvent\";"
+classification = "decision_event_type_name"
+reason = "This is the NT custom-data type name used for durable bolt-v3 decision-event catalog records."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"BoltV3EntryPreSubmitRejectionDecisionEvent\""
+context = "\"BoltV3EntryPreSubmitRejectionDecisionEvent\";"
+classification = "decision_event_type_name"
+reason = "This is the NT custom-data type name used for durable bolt-v3 decision-event catalog records."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"BoltV3ExitEvaluationDecisionEvent\""
+context = "pub const BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE: &str = \"BoltV3ExitEvaluationDecisionEvent\";"
+classification = "decision_event_type_name"
+reason = "This is the NT custom-data type name used for durable bolt-v3 decision-event catalog records."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"BoltV3ExitOrderSubmissionDecisionEvent\""
+context = "\"BoltV3ExitOrderSubmissionDecisionEvent\";"
+classification = "decision_event_type_name"
+reason = "This is the NT custom-data type name used for durable bolt-v3 decision-event catalog records."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"BoltV3ExitPreSubmitRejectionDecisionEvent\""
+context = "\"BoltV3ExitPreSubmitRejectionDecisionEvent\";"
+classification = "decision_event_type_name"
+reason = "This is the NT custom-data type name used for durable bolt-v3 decision-event catalog records."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"request_instruments_failed\""
+context = "\"request_instruments_failed\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"instruments_not_in_cache\""
+context = "\"instruments_not_in_cache\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"no_selected_market\""
+context = "\"no_selected_market\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"ambiguous_selected_market\""
+context = "\"ambiguous_selected_market\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_unavailable\""
+context = "\"price_to_beat_unavailable\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_ambiguous\""
+context = "\"price_to_beat_ambiguous\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"instrument_id_missing\""
+context = "\"instrument_id_missing\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"instrument_missing_from_cache\""
+context = "\"instrument_missing_from_cache\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"invalid_price\""
+context = "\"invalid_price\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"invalid_quantity\""
+context = "\"invalid_quantity\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exceeds_order_notional_cap\""
+context = "\"exceeds_order_notional_cap\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"trading_state_halted\""
+context = "\"trading_state_halted\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"trading_state_reducing\""
+context = "\"trading_state_reducing\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_price_missing\""
+context = "\"exit_price_missing\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_quantity_exceeds_sellable_quantity\""
+context = "\"exit_quantity_exceeds_sellable_quantity\","
+classification = "decision_event_reason_allowlist_value"
+reason = "This is an explicit contract value in a bolt-v3 decision-event reason allowlist."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_selection_result\""
+context = "const MARKET_SELECTION_RESULT: &str = \"market_selection_result\";"
+classification = "decision_event_dataset_key"
+reason = "This is the durable decision-event dataset key used for NT catalog routing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"entry_evaluation\""
+context = "const ENTRY_EVALUATION: &str = \"entry_evaluation\";"
+classification = "decision_event_dataset_key"
+reason = "This is the durable decision-event dataset key used for NT catalog routing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"entry_order_submission\""
+context = "const ENTRY_ORDER_SUBMISSION: &str = \"entry_order_submission\";"
+classification = "decision_event_dataset_key"
+reason = "This is the durable decision-event dataset key used for NT catalog routing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"entry_pre_submit_rejection\""
+context = "const ENTRY_PRE_SUBMIT_REJECTION: &str = \"entry_pre_submit_rejection\";"
+classification = "decision_event_dataset_key"
+reason = "This is the durable decision-event dataset key used for NT catalog routing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_evaluation\""
+context = "const EXIT_EVALUATION: &str = \"exit_evaluation\";"
+classification = "decision_event_dataset_key"
+reason = "This is the durable decision-event dataset key used for NT catalog routing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_order_submission\""
+context = "const EXIT_ORDER_SUBMISSION: &str = \"exit_order_submission\";"
+classification = "decision_event_dataset_key"
+reason = "This is the durable decision-event dataset key used for NT catalog routing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_pre_submit_rejection\""
+context = "const EXIT_PRE_SUBMIT_REJECTION: &str = \"exit_pre_submit_rejection\";"
+classification = "decision_event_dataset_key"
+reason = "This is the durable decision-event dataset key used for NT catalog routing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\".bolt_v3_decision_event_rewrite\""
+context = "const DECISION_EVENT_REWRITE_STAGING_DIR: &str = \".bolt_v3_decision_event_rewrite\";"
+classification = "decision_event_catalog_staging_dir"
+reason = "This is the local staging directory name used when rewriting overlapping NT custom-data catalog files."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"entry_pre_submit_rejection_reason\""
+context = "\"entry_pre_submit_rejection_reason\","
+classification = "decision_event_reason_field_key"
+reason = "This is a decision-event fact key used to persist the pre-submit rejection reason."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_pre_submit_rejection_reason\""
+context = "\"exit_pre_submit_rejection_reason\","
+classification = "decision_event_reason_field_key"
+reason = "This is a decision-event fact key used to persist the pre-submit rejection reason."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "number"
+literal = "0"
+context = "rewrite_sequence: 0,"
+classification = "decision_event_rewrite_sequence_counter"
+reason = "This is the internal starting/increment value for deterministic same-timestamp catalog rewrite sequencing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "number"
+literal = "1"
+context = "self.rewrite_sequence = self.rewrite_sequence.saturating_add(1);"
+classification = "decision_event_rewrite_sequence_counter"
+reason = "This is the internal starting/increment value for deterministic same-timestamp catalog rewrite sequencing."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"data\""
+context = ".join(\"data\")"
+classification = "nt_catalog_path_segment"
+reason = "This is the NT catalog path segment used to locate custom-data files for rewrite-safe event persistence."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"custom\""
+context = ".join(\"custom\")"
+classification = "nt_catalog_path_segment"
+reason = "This is the NT catalog path segment used to locate custom-data files for rewrite-safe event persistence."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"current\""
+context = "\"current\" | \"next\" => {"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"next\""
+context = "\"current\" | \"next\" => {"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"rotating_market\""
+context = "if facts.market_selection_type == \"rotating_market\" {"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"rotating_market_family\""
+context = "\"rotating_market_family\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"underlying_asset\""
+context = "require_some(facts.underlying_asset.as_ref(), \"underlying_asset\")?;"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"cadence_seconds\""
+context = "require_some(facts.cadence_seconds.as_ref(), \"cadence_seconds\")?;"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_selection_rule\""
+context = "\"market_selection_rule\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"retry_interval_seconds\""
+context = "\"retry_interval_seconds\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"blocked_after_seconds\""
+context = "\"blocked_after_seconds\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"current\""
+context = "if matches!(facts.market_selection_outcome.as_str(), \"current\" | \"next\") {"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"next\""
+context = "if matches!(facts.market_selection_outcome.as_str(), \"current\" | \"next\") {"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_condition_id\""
+context = "\"polymarket_condition_id\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_market_slug\""
+context = "\"polymarket_market_slug\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_question_id\""
+context = "\"polymarket_question_id\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"up_instrument_id\""
+context = "require_some(facts.up_instrument_id.as_ref(), \"up_instrument_id\")?;"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"down_instrument_id\""
+context = "require_some(facts.down_instrument_id.as_ref(), \"down_instrument_id\")?;"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"selected_market_observed_timestamp\""
+context = "\"selected_market_observed_timestamp\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_market_start_timestamp_milliseconds\""
+context = "\"polymarket_market_start_timestamp_milliseconds\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_market_end_timestamp_milliseconds\""
+context = "\"polymarket_market_end_timestamp_milliseconds\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_value\""
+context = "require_some(facts.price_to_beat_value.as_ref(), \"price_to_beat_value\")?;"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_observed_timestamp\""
+context = "\"price_to_beat_observed_timestamp\","
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_source\""
+context = "require_some(facts.price_to_beat_source.as_ref(), \"price_to_beat_source\")?;"
+classification = "decision_event_market_selection_contract_check"
+reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_selection_type\""
+context = "\"market_selection_type\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_selection_timestamp_milliseconds\""
+context = "\"market_selection_timestamp_milliseconds\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_selection_outcome\""
+context = "\"market_selection_outcome\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_selection_failure_reason\""
+context = "\"market_selection_failure_reason\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"rotating_market_family\""
+context = "\"rotating_market_family\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"underlying_asset\""
+context = "\"underlying_asset\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"cadence_seconds\""
+context = "\"cadence_seconds\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_selection_rule\""
+context = "\"market_selection_rule\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"retry_interval_seconds\""
+context = "\"retry_interval_seconds\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"blocked_after_seconds\""
+context = "\"blocked_after_seconds\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_condition_id\""
+context = "\"polymarket_condition_id\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_market_slug\""
+context = "\"polymarket_market_slug\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_question_id\""
+context = "\"polymarket_question_id\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"up_instrument_id\""
+context = "\"up_instrument_id\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"down_instrument_id\""
+context = "\"down_instrument_id\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"selected_market_observed_timestamp\""
+context = "\"selected_market_observed_timestamp\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_market_start_timestamp_milliseconds\""
+context = "\"polymarket_market_start_timestamp_milliseconds\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"polymarket_market_end_timestamp_milliseconds\""
+context = "\"polymarket_market_end_timestamp_milliseconds\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_value\""
+context = "\"price_to_beat_value\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_observed_timestamp\""
+context = "\"price_to_beat_observed_timestamp\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price_to_beat_source\""
+context = "\"price_to_beat_source\".to_string(),"
+classification = "decision_event_market_selection_fact_key"
+reason = "This is a persisted market-selection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"enter\""
+context = "\"enter\" => {"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"up\""
+context = "Some(\"up\" | \"down\") => {}"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"down\""
+context = "Some(\"up\" | \"down\") => {}"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"accepted\""
+context = "if facts.updown_market_mechanical_outcome != \"accepted\" {"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"no_action\""
+context = "\"no_action\" => {"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"accepted\""
+context = "\"accepted\" => {"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_not_started\""
+context = "\"market_not_started\" | \"market_ended\" | \"selected_market_open_orders_present\","
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_ended\""
+context = "\"market_not_started\" | \"market_ended\" | \"selected_market_open_orders_present\","
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"selected_market_open_orders_present\""
+context = "\"market_not_started\" | \"market_ended\" | \"selected_market_open_orders_present\","
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"no_action\""
+context = "if facts.entry_decision != \"no_action\" {"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"updown_market_mechanical_rejection\""
+context = "Some(\"updown_market_mechanical_rejection\") => {"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"missing_reference_quote\""
+context = "\"missing_reference_quote\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"stale_reference_quote\""
+context = "| \"stale_reference_quote\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"fee_rate_unavailable\""
+context = "| \"fee_rate_unavailable\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"fair_probability_unavailable\""
+context = "| \"fair_probability_unavailable\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"insufficient_edge\""
+context = "| \"insufficient_edge\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_cooling_down\""
+context = "| \"market_cooling_down\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"recovery_mode\""
+context = "| \"recovery_mode\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"one_position_invariant\""
+context = "| \"one_position_invariant\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"active_book_not_priced\""
+context = "| \"active_book_not_priced\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"metadata_mismatch\""
+context = "| \"metadata_mismatch\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"thin_book\""
+context = "| \"thin_book\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"fast_venue_incoherent\""
+context = "| \"fast_venue_incoherent\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"freeze\""
+context = "| \"freeze\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"position_limit_reached\""
+context = "| \"position_limit_reached\","
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"accepted\""
+context = "if facts.updown_market_mechanical_outcome != \"accepted\""
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"selected_market_open_orders_present\""
+context = "== Some(\"selected_market_open_orders_present\")"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"position_limit_reached\""
+context = "if facts.entry_no_action_reason.as_deref() == Some(\"position_limit_reached\")"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "number"
+literal = "0.0"
+context = "&& facts.strategy_remaining_entry_capacity > 0.0"
+classification = "decision_event_entry_contract_check"
+reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"updown_side\""
+context = "\"updown_side\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"entry_decision\""
+context = "\"entry_decision\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"entry_no_action_reason\""
+context = "\"entry_no_action_reason\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"seconds_to_market_end\""
+context = "\"seconds_to_market_end\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"has_selected_market_open_orders\""
+context = "\"has_selected_market_open_orders\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"updown_market_mechanical_outcome\""
+context = "\"updown_market_mechanical_outcome\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"updown_market_mechanical_rejection_reason\""
+context = "\"updown_market_mechanical_rejection_reason\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"entry_filled_notional\""
+context = "\"entry_filled_notional\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"open_entry_notional\""
+context = "\"open_entry_notional\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"strategy_remaining_entry_capacity\""
+context = "\"strategy_remaining_entry_capacity\".to_string(),"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"archetype_metrics\""
+context = "params.insert(\"archetype_metrics\".to_string(), facts.archetype_metrics);"
+classification = "decision_event_entry_fact_key"
+reason = "This is a persisted entry-evaluation decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"order_type\""
+context = "params.insert(\"order_type\".to_string(), Value::String(facts.order_type));"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"time_in_force\""
+context = "\"time_in_force\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"instrument_id\""
+context = "\"instrument_id\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"side\""
+context = "params.insert(\"side\".to_string(), Value::String(facts.side));"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price\""
+context = "params.insert(\"price\".to_string(), Value::from(facts.price));"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"quantity\""
+context = "params.insert(\"quantity\".to_string(), Value::from(facts.quantity));"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"is_quote_quantity\""
+context = "\"is_quote_quantity\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"is_post_only\""
+context = "params.insert(\"is_post_only\".to_string(), Value::from(facts.is_post_only));"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"is_reduce_only\""
+context = "\"is_reduce_only\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"client_order_id\""
+context = "\"client_order_id\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"order_type\""
+context = "\"order_type\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"side\""
+context = "params.insert(\"side\".to_string(), optional_string_to_value(facts.side));"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"price\""
+context = "params.insert(\"price\".to_string(), optional_f64_to_value(facts.price));"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"quantity\""
+context = "\"quantity\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"is_post_only\""
+context = "\"is_post_only\".to_string(),"
+classification = "decision_event_order_fact_key"
+reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"hold\""
+context = "(\"hold\", \"active_exit_not_defined\") => {}"
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"active_exit_not_defined\""
+context = "(\"hold\", \"active_exit_not_defined\") => {}"
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit\""
+context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"forced_flat\""
+context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"ev_hysteresis\""
+context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"fail_closed\""
+context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"position_quantity_unconfirmed\""
+context = "\"position_quantity_unconfirmed\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"open_exit_order_quantity_unconfirmed\""
+context = "| \"open_exit_order_quantity_unconfirmed\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"open_exit_order_quantity_covers_position\""
+context = "| \"open_exit_order_quantity_covers_position\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"sellable_quantity_unconfirmed\""
+context = "| \"sellable_quantity_unconfirmed\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"sellable_quantity_zero\""
+context = "| \"sellable_quantity_zero\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_bid_unavailable\""
+context = "| \"exit_bid_unavailable\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_quantity_invalid\""
+context = "| \"exit_quantity_invalid\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_price_invalid\""
+context = "| \"exit_price_invalid\","
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"hold\""
+context = "if facts.exit_decision != \"hold\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_order_mechanical_rejection\""
+context = "|| facts.exit_decision_reason != \"exit_order_mechanical_rejection\""
+classification = "decision_event_exit_contract_check"
+reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"authoritative_position_quantity\""
+context = "\"authoritative_position_quantity\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"authoritative_sellable_quantity\""
+context = "\"authoritative_sellable_quantity\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"open_exit_order_quantity\""
+context = "\"open_exit_order_quantity\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"uncovered_position_quantity\""
+context = "\"uncovered_position_quantity\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_order_mechanical_outcome\""
+context = "\"exit_order_mechanical_outcome\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_order_mechanical_rejection_reason\""
+context = "\"exit_order_mechanical_rejection_reason\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_decision\""
+context = "\"exit_decision\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_decision_reason\""
+context = "\"exit_decision_reason\".to_string(),"
+classification = "decision_event_exit_fact_key"
+reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."

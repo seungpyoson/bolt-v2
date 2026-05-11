@@ -25,7 +25,7 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
+    bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::updown::{
         BoltV3MarketIdentityError, UpdownSlugCandidates, UpdownTargetPlan, candidates_for_target,
         plan_market_identity, updown_market_slug, updown_period_pair,
@@ -47,10 +47,32 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
         .insert(key.to_string(), value);
 }
 
+fn load_fixture_config() -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    load_bolt_v3_config(&root_path).expect("fixture v3 config should load")
+}
+
+fn fixture_execution_client_id(loaded: &LoadedBoltV3Config) -> String {
+    loaded
+        .strategies
+        .first()
+        .expect("fixture should define one strategy")
+        .config
+        .execution_client_id
+        .clone()
+}
+
+fn fixture_updown_target_plan() -> UpdownTargetPlan {
+    let loaded = load_fixture_config();
+    let plan = plan_market_identity(&loaded).expect("fixture target plan should derive cleanly");
+    assert_eq!(plan.updown_targets.len(), 1, "one fixture updown target");
+    plan.updown_targets[0].clone()
+}
+
 #[test]
 fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = load_fixture_config();
+    let expected_client_id = fixture_execution_client_id(&loaded);
 
     let plan = plan_market_identity(&loaded).expect("planner should succeed for valid fixture");
     assert_eq!(plan.updown_targets.len(), 1, "one updown target plan");
@@ -58,7 +80,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     assert_eq!(target.strategy_instance_id, "bitcoin_updown_main");
     assert_eq!(target.configured_target_id, "btc_updown_5m");
     assert_eq!(target.market_selection_type, "rotating_market");
-    assert_eq!(target.client_id_key, "polymarket_main");
+    assert_eq!(target.client_id_key, expected_client_id);
     assert_eq!(target.underlying_asset, "BTC");
     assert_eq!(target.cadence_seconds, 300);
     assert_eq!(target.cadence_slug_token, "5m");
@@ -143,15 +165,7 @@ fn updown_market_slug_table_matches_runtime_contract() {
 
 #[test]
 fn candidates_for_target_btc_5m_yields_current_and_next_slugs() {
-    let target = UpdownTargetPlan {
-        strategy_instance_id: "bitcoin_updown_main".to_string(),
-        configured_target_id: "btc_updown_5m".to_string(),
-        market_selection_type: "rotating_market".to_string(),
-        client_id_key: "polymarket_main".to_string(),
-        underlying_asset: "BTC".to_string(),
-        cadence_seconds: 300,
-        cadence_slug_token: "5m".to_string(),
-    };
+    let target = fixture_updown_target_plan();
     let UpdownSlugCandidates {
         current_period_start_unix_seconds,
         next_period_start_unix_seconds,
@@ -166,15 +180,7 @@ fn candidates_for_target_btc_5m_yields_current_and_next_slugs() {
 
 #[test]
 fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
-    let target = UpdownTargetPlan {
-        strategy_instance_id: "bitcoin_updown_main".to_string(),
-        configured_target_id: "btc_updown_5m".to_string(),
-        market_selection_type: "rotating_market".to_string(),
-        client_id_key: "polymarket_main".to_string(),
-        underlying_asset: "BTC".to_string(),
-        cadence_seconds: 300,
-        cadence_slug_token: "5m".to_string(),
-    };
+    let target = fixture_updown_target_plan();
     assert!(matches!(
         candidates_for_target(&target, -1),
         Err(BoltV3MarketIdentityError::NegativeNowUnixSeconds { .. })
@@ -183,8 +189,7 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
 
 #[test]
 fn plan_market_identity_rejects_unsupported_cadence_seconds_after_mutation() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_fixture_config();
 
     // Direct struct mutation: cadence=120 has no slug-token mapping in
     // the runtime-contract table.
@@ -210,8 +215,7 @@ fn plan_market_identity_rejects_unsupported_cadence_seconds_after_mutation() {
 
 #[test]
 fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_fixture_config();
 
     set_target_field(
         &mut loaded.strategies[0],
@@ -232,7 +236,7 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
         other => panic!("expected NonPositiveCadenceSeconds; got {other:?}"),
     }
 
-    let mut loaded_neg = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded_neg = load_fixture_config();
     set_target_field(
         &mut loaded_neg.strategies[0],
         "cadence_seconds",
@@ -254,8 +258,8 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
 
 #[test]
 fn plan_market_identity_projects_strategies_in_declaration_order() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_fixture_config();
+    let expected_client_id = fixture_execution_client_id(&loaded);
 
     // Construct three strategies whose declaration order is
     // deliberately NON-MONOTONIC across every likely accidental sort
@@ -331,7 +335,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let zero = &plan.updown_targets[0];
     assert_eq!(zero.strategy_instance_id, "zeta_strategy_main");
     assert_eq!(zero.configured_target_id, "ltc_updown_15m");
-    assert_eq!(zero.client_id_key, "polymarket_main");
+    assert_eq!(zero.client_id_key, expected_client_id);
     assert_eq!(zero.underlying_asset, "LTC");
     assert_eq!(zero.cadence_seconds, 900);
     assert_eq!(zero.cadence_slug_token, "15m");
@@ -339,7 +343,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let one = &plan.updown_targets[1];
     assert_eq!(one.strategy_instance_id, "alpha_strategy_main");
     assert_eq!(one.configured_target_id, "xrp_updown_5m");
-    assert_eq!(one.client_id_key, "polymarket_main");
+    assert_eq!(one.client_id_key, expected_client_id);
     assert_eq!(one.underlying_asset, "XRP");
     assert_eq!(one.cadence_seconds, 300);
     assert_eq!(one.cadence_slug_token, "5m");
@@ -347,7 +351,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     let two = &plan.updown_targets[2];
     assert_eq!(two.strategy_instance_id, "mike_strategy_main");
     assert_eq!(two.configured_target_id, "btc_updown_1h");
-    assert_eq!(two.client_id_key, "polymarket_main");
+    assert_eq!(two.client_id_key, expected_client_id);
     assert_eq!(two.underlying_asset, "BTC");
     assert_eq!(two.cadence_seconds, 3600);
     assert_eq!(two.cadence_slug_token, "1h");
@@ -427,15 +431,7 @@ fn updown_period_pair_rejects_overflow_at_i64_max_with_supported_cadence() {
 
 #[test]
 fn candidates_for_target_propagates_period_pair_overflow() {
-    let target = UpdownTargetPlan {
-        strategy_instance_id: "bitcoin_updown_main".to_string(),
-        configured_target_id: "btc_updown_5m".to_string(),
-        market_selection_type: "rotating_market".to_string(),
-        client_id_key: "polymarket_main".to_string(),
-        underlying_asset: "BTC".to_string(),
-        cadence_seconds: 300,
-        cadence_slug_token: "5m".to_string(),
-    };
+    let target = fixture_updown_target_plan();
     assert!(matches!(
         candidates_for_target(&target, i64::MAX),
         Err(BoltV3MarketIdentityError::PeriodPairOverflow { .. })

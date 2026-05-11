@@ -8,7 +8,9 @@ use std::{
 };
 
 use bolt_v2::{
-    bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock},
+    bolt_v3_config::{
+        CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock, load_bolt_v3_config,
+    },
     bolt_v3_decision_event_context::BoltV3DecisionEventCommonContext,
     bolt_v3_decision_events::{
         BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
@@ -64,6 +66,7 @@ use nautilus_model::{
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_trading::Strategy;
+use rust_decimal::prelude::ToPrimitive;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     clear_mock_exec_submissions, recorded_mock_exec_submissions,
@@ -213,6 +216,19 @@ fn strategy_id_from_raw_config(config: &Value) -> StrategyId {
 
 fn fixture_reference_publish_topic() -> &'static str {
     "platform.reference.test.chainlink"
+}
+
+fn fixture_bolt_v3_default_max_notional_per_order() -> rust_decimal::Decimal {
+    let loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing-strategy root fixture should load");
+    loaded
+        .root
+        .risk
+        .default_max_notional_per_order
+        .parse()
+        .expect("fixture default_max_notional_per_order should be decimal")
 }
 
 fn strategy_raw_config_with_min_edge(min_edge_bps: i64) -> Value {
@@ -1674,6 +1690,105 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
         InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
     );
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_caps_entry_notional_by_bolt_v3_default_max_notional_per_order() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_config = strategy_raw_config();
+    let decision_context = common_decision_context();
+    let configured_target_id = decision_context.configured_target_id.clone();
+    let strategy_archetype = decision_context.strategy_archetype.clone();
+    let strategy_id = strategy_id_from_raw_config(&strategy_config);
+    let default_max_notional_per_order = fixture_bolt_v3_default_max_notional_per_order();
+    let default_max_notional_per_order_f64 = default_max_notional_per_order
+        .to_f64()
+        .expect("fixture default_max_notional_per_order should fit f64");
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        decision_context,
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        fixture_reference_publish_topic().to_string(),
+        Some(TradingState::Active),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    build_context.bolt_v3_default_max_notional_per_order = Some(default_max_notional_per_order);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, strategy_archetype.as_str(), &strategy_config).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_submission(node, strategy_id);
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 1, "{submissions:?}");
+
+    let evaluation_events = query_entry_evaluation_events(temp_dir.path(), &configured_target_id);
+    assert_eq!(evaluation_events.len(), 1);
+    match &evaluation_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
+                .expect("BoltV3EntryEvaluationDecisionEvent");
+            let sized_notional = decoded
+                .event_facts
+                .get("archetype_metrics")
+                .and_then(|value| value.get("sized_notional_usdc"))
+                .and_then(serde_json::Value::as_f64)
+                .expect("entry evaluation should include sized_notional_usdc");
+            let effective_cap = decoded
+                .event_facts
+                .get("archetype_metrics")
+                .and_then(|value| value.get("effective_entry_notional_cap_usdc"))
+                .and_then(serde_json::Value::as_f64)
+                .expect("entry evaluation should include effective_entry_notional_cap_usdc");
+            assert_eq!(effective_cap, default_max_notional_per_order_f64);
+            assert!(
+                sized_notional <= default_max_notional_per_order_f64,
+                "sized_notional_usdc {sized_notional} must not exceed bolt-v3 default_max_notional_per_order {default_max_notional_per_order_f64}"
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
+    assert_eq!(submission_events.len(), 1);
+    match &submission_events[0] {
+        nautilus_model::data::Data::Custom(custom) => {
+            let decoded = custom
+                .data
+                .as_any()
+                .downcast_ref::<BoltV3EntryOrderSubmissionDecisionEvent>()
+                .expect("BoltV3EntryOrderSubmissionDecisionEvent");
+            let price = decoded
+                .event_facts
+                .get("price")
+                .and_then(serde_json::Value::as_f64)
+                .expect("entry order submission should include price");
+            let quantity = decoded
+                .event_facts
+                .get("quantity")
+                .and_then(serde_json::Value::as_f64)
+                .expect("entry order submission should include quantity");
+            let submitted_notional = price * quantity;
+            assert!(
+                submitted_notional <= default_max_notional_per_order_f64,
+                "submitted notional {submitted_notional} must not exceed bolt-v3 default_max_notional_per_order {default_max_notional_per_order_f64}"
+            );
+        }
+        other => panic!("expected Data::Custom, got {other:?}"),
+    }
 }
 
 #[test]

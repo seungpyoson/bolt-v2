@@ -5,6 +5,7 @@ use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::{enums::TradingState, identifiers::StrategyId};
 use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
+use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::{
@@ -34,6 +35,7 @@ pub struct StrategyBuildContext {
     pub fee_provider: Arc<dyn FeeProvider>,
     pub reference_publish_topic: String,
     pub bolt_v3_risk_trading_state: Option<TradingState>,
+    pub bolt_v3_default_max_notional_per_order: Option<Decimal>,
     pub bolt_v3_decision_evidence: Option<BoltV3StrategyDecisionEvidence>,
     pub bolt_v3_market_selection_context: Option<BoltV3MarketSelectionContext>,
 }
@@ -305,6 +307,7 @@ mod tests {
             fee_provider: Arc::new(NoopFeeProvider),
             reference_publish_topic: "platform.reference.test".to_string(),
             bolt_v3_risk_trading_state: None,
+            bolt_v3_default_max_notional_per_order: None,
             bolt_v3_decision_evidence: None,
             bolt_v3_market_selection_context: None,
         }

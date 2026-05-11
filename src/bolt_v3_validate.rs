@@ -264,11 +264,20 @@ fn validate_exec_engine_block(
 
 fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    if let Err(reason) = parse_decimal_string(&block.default_max_notional_per_order) {
-        errors.push(format!(
-            "risk.default_max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
-            value = block.default_max_notional_per_order
-        ));
+    match parse_decimal_string(&block.default_max_notional_per_order) {
+        Ok(value) if value <= Decimal::ZERO => {
+            errors.push(format!(
+                "risk.default_max_notional_per_order must be a positive decimal string: `{value}`",
+                value = block.default_max_notional_per_order
+            ));
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            errors.push(format!(
+                "risk.default_max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
+                value = block.default_max_notional_per_order
+            ));
+        }
     }
     if block.nt_bypass {
         errors.push("risk.nt_bypass must be false".to_string());

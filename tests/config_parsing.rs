@@ -1808,6 +1808,26 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
 }
 
 #[test]
+fn rejects_non_positive_default_max_notional_per_order() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    for notional in ["0", "-1.00"] {
+        let mut root: BoltV3RootConfig =
+            toml::from_str(&fixture).expect("default max-notional fixture should parse");
+        root.risk.default_max_notional_per_order = notional.to_string();
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| {
+                m.contains("risk.default_max_notional_per_order must be a positive decimal string")
+            }),
+            "expected positive default-notional validation error for `{notional}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

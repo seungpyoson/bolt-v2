@@ -145,6 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 )?,
                                 reference_publish_topic: cfg.reference.publish_topic.clone(),
                                 bolt_v3_risk_trading_state: None,
+                                bolt_v3_default_max_notional_per_order: None,
                                 bolt_v3_decision_evidence: None,
                                 bolt_v3_market_selection_context: None,
                             });

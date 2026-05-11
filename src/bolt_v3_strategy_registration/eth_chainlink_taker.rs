@@ -129,6 +129,7 @@ fn build_context(
         fee_provider,
         reference_publish_topic: reference_publish_topic(context)?,
         bolt_v3_risk_trading_state: Some(context.loaded.root.risk.trading_state),
+        bolt_v3_default_max_notional_per_order: Some(default_max_notional_per_order(context)?),
         bolt_v3_decision_evidence: Some(decision_evidence(context)?),
         bolt_v3_market_selection_context: Some(market_selection_context(strategy).map_err(
             |source| BoltV3StrategyRegistrationError::InvalidParameters {
@@ -139,6 +140,22 @@ fn build_context(
             },
         )?),
     })
+}
+
+fn default_max_notional_per_order(
+    context: &StrategyRegistrationContext<'_>,
+) -> Result<rust_decimal::Decimal, BoltV3StrategyRegistrationError> {
+    crate::bolt_v3_validate::parse_decimal_string(
+        &context.loaded.root.risk.default_max_notional_per_order,
+    )
+    .map_err(
+        |source| BoltV3StrategyRegistrationError::InvalidParameters {
+            reason: format!(
+                "strategy `{}` failed to parse root risk.default_max_notional_per_order: {source}",
+                context.strategy.relative_path
+            ),
+        },
+    )
 }
 
 fn market_selection_context(

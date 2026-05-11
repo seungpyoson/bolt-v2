@@ -36,6 +36,7 @@ pub fn make_strategy_build_context(
         fee_provider,
         reference_publish_topic,
         bolt_v3_risk_trading_state,
+        bolt_v3_default_max_notional_per_order: None,
         bolt_v3_decision_evidence: None,
         bolt_v3_market_selection_context: None,
     }

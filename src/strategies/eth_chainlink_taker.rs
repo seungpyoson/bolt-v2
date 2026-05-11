@@ -24,7 +24,7 @@ use nautilus_model::{
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
 use serde_json::json;
 use toml::Value;
@@ -2210,6 +2210,7 @@ impl EthChainlinkTaker {
             "down_worst_case_ev_bps": decision.evaluation.down_worst_case_ev_bps,
             "sized_notional_usdc": decision.evaluation.sized_notional_usdc,
             "book_impact_cap_usdc": decision.evaluation.book_impact_cap_usdc,
+            "effective_entry_notional_cap_usdc": decision.evaluation.effective_entry_notional_cap_usdc,
         });
 
         if let Some(reason) = no_action_reason {
@@ -3692,6 +3693,7 @@ impl EthChainlinkTaker {
             min_worst_case_ev_bps: None,
             expected_ev_per_usdc: None,
             book_impact_cap_usdc: None,
+            effective_entry_notional_cap_usdc: None,
             sized_notional_usdc: None,
             selected_side: None,
         };
@@ -3824,10 +3826,15 @@ impl EthChainlinkTaker {
             if let (Some(expected_ev_per_usdc), Some(book_impact_cap_usdc)) =
                 (expected_ev_per_usdc, book_impact_cap_usdc)
             {
+                let max_position_usdc = effective_entry_notional_cap_usdc(
+                    self.context.bolt_v3_default_max_notional_per_order,
+                    evaluation.entry_capacity.strategy_remaining_entry_capacity,
+                );
+                evaluation.effective_entry_notional_cap_usdc = Some(max_position_usdc);
                 evaluation.sized_notional_usdc = Some(choose_robust_size(&RobustSizingInputs {
                     expected_ev_per_usdc,
                     risk_lambda: self.config.risk_lambda,
-                    max_position_usdc: evaluation.entry_capacity.strategy_remaining_entry_capacity,
+                    max_position_usdc,
                     impact_cap_usdc: book_impact_cap_usdc,
                 }));
             }
@@ -4773,6 +4780,22 @@ fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     (inputs.expected_ev_per_usdc / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda)).min(cap)
 }
 
+fn effective_entry_notional_cap_usdc(
+    default_max_notional_per_order: Option<Decimal>,
+    strategy_remaining_entry_capacity: f64,
+) -> f64 {
+    match default_max_notional_per_order {
+        Some(default_max_notional_per_order) => default_max_notional_per_order
+            .to_f64()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|default_max_notional_per_order| {
+                strategy_remaining_entry_capacity.min(default_max_notional_per_order)
+            })
+            .unwrap_or(0.0),
+        None => strategy_remaining_entry_capacity,
+    }
+}
+
 fn sanitize_probability(value: f64) -> Option<f64> {
     if value.is_finite() && (0.0..=1.0).contains(&value) {
         Some(value)
@@ -4871,6 +4894,7 @@ struct EntryEvaluation {
     min_worst_case_ev_bps: Option<f64>,
     expected_ev_per_usdc: Option<f64>,
     book_impact_cap_usdc: Option<f64>,
+    effective_entry_notional_cap_usdc: Option<f64>,
     sized_notional_usdc: Option<f64>,
     selected_side: Option<OutcomeSide>,
 }
@@ -5524,6 +5548,7 @@ mod tests {
                 fee_provider,
                 reference_publish_topic: "platform.reference.test.chainlink".to_string(),
                 bolt_v3_risk_trading_state: Some(TradingState::Active),
+                bolt_v3_default_max_notional_per_order: None,
                 bolt_v3_decision_evidence: None,
                 bolt_v3_market_selection_context: None,
             },
@@ -8715,6 +8740,19 @@ mod tests {
             }),
             0.0
         );
+    }
+
+    #[test]
+    fn effective_entry_notional_cap_uses_bolt_v3_default_and_fails_closed() {
+        assert_eq!(
+            effective_entry_notional_cap_usdc(Some(Decimal::new(1000, 2)), 45.0),
+            10.0
+        );
+        assert_eq!(
+            effective_entry_notional_cap_usdc(Some(Decimal::ZERO), 45.0),
+            0.0
+        );
+        assert_eq!(effective_entry_notional_cap_usdc(None, 45.0), 45.0);
     }
 
     #[test]

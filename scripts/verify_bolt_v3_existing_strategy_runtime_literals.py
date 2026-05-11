@@ -186,12 +186,51 @@ def existing_strategy_reference_stream_literals(root: Path) -> set[str]:
     return literals
 
 
+def existing_strategy_resolution_basis_literals(root: Path) -> set[str]:
+    path = root / EXISTING_STRATEGY_ROOT_FIXTURE
+    if not path.is_file():
+        return set()
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    clients = data.get("clients", {})
+    streams = data.get("reference_streams", {})
+    if not isinstance(clients, dict) or not isinstance(streams, dict):
+        return set()
+
+    literals: set[str] = set()
+    for stream in streams.values():
+        if not isinstance(stream, dict):
+            continue
+        inputs = stream.get("inputs", [])
+        if not isinstance(inputs, list):
+            continue
+        for input_block in inputs:
+            if not isinstance(input_block, dict):
+                continue
+            if input_block.get("source_type") != "oracle":
+                continue
+            client_id = input_block.get("data_client_id")
+            instrument_id = input_block.get("instrument_id")
+            if not isinstance(client_id, str) or not isinstance(instrument_id, str):
+                continue
+            client = clients.get(client_id)
+            if not isinstance(client, dict):
+                continue
+            venue = client.get("venue")
+            if not isinstance(venue, str) or "." not in instrument_id:
+                continue
+            symbol = instrument_id.split(".", maxsplit=1)[0]
+            literals.add(f"{venue.lower()}_{symbol.lower()}")
+
+    return literals
+
+
 def scan_runtime_file(
     root: Path,
     path: Path,
     test_node_literals: set[str],
     selected_market_literals: set[str],
     reference_stream_literals: set[str],
+    resolution_basis_literals: set[str],
 ) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
@@ -235,6 +274,19 @@ def scan_runtime_file(
                     line=line_number(text, match.start()),
                     message=(
                         "existing-strategy runtime reference stream fixture literal; "
+                        "derive from v3 root TOML"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
+            continue
+        if value in resolution_basis_literals:
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "existing-strategy runtime resolution-basis fixture literal; "
                         "derive from v3 root TOML"
                     ),
                     excerpt=match.group(0),
@@ -294,6 +346,7 @@ def scan_root(root: Path) -> list[Finding]:
         existing_strategy_test_node_literals(root),
         selected_market_fixture_literals(root),
         existing_strategy_reference_stream_literals(root),
+        existing_strategy_resolution_basis_literals(root),
     )
 
 

@@ -255,6 +255,44 @@ disable_after_milliseconds = 5000
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_resolution_basis_fixture_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        root_fixture = root / "tests/fixtures/bolt_v3_existing_strategy/root.toml"
+        root_fixture.parent.mkdir(parents=True, exist_ok=True)
+        root_fixture.write_text(
+            """
+[clients.fixture_oracle]
+adapter_type = "chainlink"
+venue = "fixturevenue"
+
+[reference_streams.fixture_usd]
+publish_topic = "reference.fixture"
+min_publish_interval_milliseconds = 100
+
+[[reference_streams.fixture_usd.inputs]]
+source_id = "fixture_oracle_anchor"
+source_type = "oracle"
+data_client_id = "fixture_oracle"
+instrument_id = "FIXTUREUSD.CHAINLINK"
+base_weight = 1.0
+stale_after_milliseconds = 1500
+disable_after_milliseconds = 5000
+""",
+            encoding="utf-8",
+        )
+        write_runtime_test(root, 'fn probe() { let _ = "fixturevenue_fixtureusd"; }\n')
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "resolution-basis fixture literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -307,6 +345,7 @@ def main() -> int:
         test_selected_market_fixture_literal_is_a_finding,
         test_selection_ruleset_literal_is_a_finding,
         test_reference_stream_fixture_literal_is_a_finding,
+        test_resolution_basis_fixture_literal_is_a_finding,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

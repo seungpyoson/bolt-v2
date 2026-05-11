@@ -335,6 +335,49 @@ fn fixture_reference_publish_topic() -> String {
     fixture_reference_stream().publish_topic
 }
 
+fn fixture_resolution_basis_key() -> String {
+    let loaded = existing_strategy_loaded_config();
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy root fixture should include strategy");
+    let stream_id = strategy
+        .config
+        .parameters
+        .get(REFERENCE_STREAM_ID_PARAMETER)
+        .and_then(toml::Value::as_str)
+        .expect("existing strategy should select reference stream from TOML");
+    let stream = loaded
+        .root
+        .reference_streams
+        .get(stream_id)
+        .expect("selected reference stream should exist");
+    let oracle_input = stream
+        .inputs
+        .iter()
+        .find(|input| input.source_type == ReferenceSourceType::Oracle)
+        .expect("selected reference stream should include oracle input");
+    let oracle_client_id = oracle_input
+        .data_client_id
+        .as_deref()
+        .expect("oracle input should reference data client");
+    let oracle_client = loaded
+        .root
+        .clients
+        .get(oracle_client_id)
+        .expect("oracle data client should exist");
+    let symbol = oracle_input
+        .instrument_id
+        .split('.')
+        .next()
+        .expect("oracle instrument should include symbol");
+    format!(
+        "{}_{}",
+        oracle_client.venue.as_str().to_ascii_lowercase(),
+        symbol.to_ascii_lowercase()
+    )
+}
+
 fn active_book_not_priced_no_action_reason() -> &'static str {
     BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON
 }
@@ -841,8 +884,10 @@ fn candidate_market_from_fixture(fixture_name: &str, start_ts_ms: u64) -> Candid
         start_ts_ms,
         end_ts_ms: start_ts_ms + 300_000,
         declared_resolution_basis:
-            bolt_v2::platform::resolution_basis::parse_ruleset_resolution_basis("chainlink_ethusd")
-                .unwrap(),
+            bolt_v2::platform::resolution_basis::parse_ruleset_resolution_basis(
+                &fixture_resolution_basis_key(),
+            )
+            .unwrap(),
         accepting_orders: true,
         liquidity_num: 1000.0,
         seconds_to_end: 300,

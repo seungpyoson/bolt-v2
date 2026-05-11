@@ -547,6 +547,86 @@ fn live_node_start_loads_selected_market_instruments_through_real_polymarket_dat
 }
 
 #[test]
+#[ignore = "external Polymarket public-data canary; no secrets, no execution client, no live orders"]
+fn external_polymarket_start_loads_selected_market_instruments_through_nt_data_events() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build for external Polymarket data-client canary");
+
+    runtime.block_on(async {
+        let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml");
+        let mut loaded = load_bolt_v3_config(&root_path).expect("strategy fixture should load");
+        loaded.root.nautilus.delay_post_stop_seconds = 0;
+
+        let plan = plan_market_identity(&loaded).expect("strategy target should plan from TOML");
+        let target = plan
+            .updown_targets
+            .first()
+            .expect("fixture should define one updown target");
+        let data_client_id = target.client_id_key.clone();
+        let market_selection_time = Utc::now();
+        let market_selection_timestamp_seconds = market_selection_time.timestamp();
+        let market_selection_timestamp_milliseconds = market_selection_time.timestamp_millis();
+        loaded
+            .root
+            .clients
+            .retain(|client_id, _client| client_id == &data_client_id);
+        {
+            let client = loaded
+                .root
+                .clients
+                .get_mut(&data_client_id)
+                .expect("strategy data client should exist in root TOML");
+            client.execution = None;
+            client.secrets = None;
+        }
+
+        let clock: BoltV3UpdownNowFn = Arc::new(move || market_selection_timestamp_seconds);
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = map_bolt_v3_clients_with_market_identity(&loaded, &resolved, &plan, clock)
+            .expect("Polymarket data client should map with TOML endpoints and market filters");
+        let builder =
+            make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct");
+        let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
+            .expect("real Polymarket data client should register");
+        let mut node = builder
+            .build()
+            .expect("LiveNode should build with external Polymarket data client");
+
+        let before_start = check_bolt_v3_instrument_readiness_for_start(
+            &node,
+            &loaded,
+            market_selection_timestamp_milliseconds,
+        )
+        .expect("readiness check before external start should not fail");
+        assert!(!before_start.is_ready());
+
+        node.start()
+            .await
+            .expect("external Polymarket-data-only LiveNode start should succeed");
+        assert_eq!(node.state(), NodeState::Running);
+
+        let after_start = check_bolt_v3_instrument_readiness_for_start(
+            &node,
+            &loaded,
+            market_selection_timestamp_milliseconds,
+        )
+        .expect("readiness check after external Polymarket data-client start should not fail");
+        assert!(
+            after_start.is_ready(),
+            "external NT Polymarket data-client startup should populate selected-market instruments: {after_start:#?}"
+        );
+
+        node.stop()
+            .await
+            .expect("external Polymarket-data-only LiveNode stop should succeed");
+    });
+}
+
+#[test]
 fn instrument_gate_wiring_has_no_start_run_order_or_subscription_calls() {
     let sources = [
         support::repo_path("src/bolt_v3_instrument_readiness.rs"),

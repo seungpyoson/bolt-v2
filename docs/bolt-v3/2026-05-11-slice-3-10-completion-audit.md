@@ -85,3 +85,5 @@ F13ao extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so loca
 F13ap extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so fixture-owned local order-lifecycle scenario values must derive from `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml` instead of Rust string constants. The fixture owns selected binary-option price increment, size increment, and book-level quantity.
 
 F13aq extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so selected numeric order-lifecycle scenario values must derive from `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml` instead of Rust numeric constants. The fixture owns selected-market price-to-beat, liquidity, and reference-orderbook half-spread; numeric matching is lexical-normalized to avoid catching unrelated unit multipliers or prices.
+
+F13ar extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so order-lifecycle `Price::new(..., <literal precision>)` calls in `tests/bolt_v3_order_lifecycle_tracer.rs` are rejected. Book-delta price precision now derives from the selected binary-option `price_increment` fixture value.

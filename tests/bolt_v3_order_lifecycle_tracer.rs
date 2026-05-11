@@ -165,6 +165,10 @@ fn selected_binary_option_price_increment() -> &'static str {
     selected_binary_option_fixture().price_increment.as_str()
 }
 
+fn selected_binary_option_price_precision() -> u8 {
+    Price::from(selected_binary_option_price_increment()).precision
+}
+
 fn selected_binary_option_size_increment() -> &'static str {
     selected_binary_option_fixture().size_increment.as_str()
 }
@@ -880,7 +884,7 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
                 BookAction::Update,
                 BookOrder::new(
                     OrderSide::Buy,
-                    Price::new(bid, 3),
+                    Price::new(bid, selected_binary_option_price_precision()),
                     Quantity::from(selected_binary_option_book_level_quantity()),
                     0,
                 ),
@@ -894,7 +898,7 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
                 BookAction::Update,
                 BookOrder::new(
                     OrderSide::Sell,
-                    Price::new(ask, 3),
+                    Price::new(ask, selected_binary_option_price_precision()),
                     Quantity::from(selected_binary_option_book_level_quantity()),
                     0,
                 ),

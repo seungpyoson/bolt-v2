@@ -68,6 +68,8 @@ F13ap note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now also 
 
 F13aq note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects selected numeric order-lifecycle scenario values in `tests/bolt_v3_order_lifecycle_tracer.rs`. Selected-market price-to-beat, liquidity, and reference-orderbook half-spread now live in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`; numeric matching is lexical-normalized to avoid catching unrelated unit multipliers or prices.
 
+F13ar note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects order-lifecycle `Price::new(..., <literal precision>)` calls in `tests/bolt_v3_order_lifecycle_tracer.rs`. Book-delta price precision now derives from the selected binary-option `price_increment` fixture value.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

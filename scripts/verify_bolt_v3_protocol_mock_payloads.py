@@ -35,6 +35,9 @@ RAW_STRING_PATTERN = re.compile(
 )
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])\d[\d_]*(?:\.\d[\d_]*)?(?![A-Za-z0-9_.])")
+ORDER_LIFECYCLE_PRICE_PRECISION_PATTERN = re.compile(
+    r"Price::new\(\s*[^,\n]+,\s*\d+\s*\)"
+)
 
 
 @dataclass(frozen=True)
@@ -165,6 +168,19 @@ def scan_file(
                 excerpt=match.group(0),
             )
         )
+    if rel == "tests/bolt_v3_order_lifecycle_tracer.rs":
+        for match in ORDER_LIFECYCLE_PRICE_PRECISION_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "order-lifecycle price precision literal; derive from "
+                        "selected binary option price increment"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
     return findings
 
 

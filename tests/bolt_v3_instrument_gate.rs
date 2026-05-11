@@ -207,6 +207,18 @@ fn live_node_instrument_gate_blocks_missing_cache_targets_before_start() {
     let temp_dir = TempDir::new().unwrap();
     let mut loaded = load_bolt_v3_config(&root_path).expect("multi-strategy fixture should load");
     support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
+    let expected_targets = loaded
+        .strategies
+        .iter()
+        .map(|strategy| {
+            (
+                strategy.config.strategy_instance_id.as_str(),
+                strategy.config.target["configured_target_id"]
+                    .as_str()
+                    .expect("fixture target should define configured_target_id"),
+            )
+        })
+        .collect::<Vec<_>>();
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build and register configured strategies");
@@ -226,20 +238,22 @@ fn live_node_instrument_gate_blocks_missing_cache_targets_before_start() {
         report.facts
     );
     assert!(
-        report.facts.iter().any(
-            |fact| fact.strategy_instance_id == "ETHCHAINLINKTAKER-V3-001"
-                && fact.configured_target_id == "eth_updown_5m"
-                && fact.detail.contains("instruments_not_in_cache")
-        ),
+        report
+            .facts
+            .iter()
+            .any(|fact| fact.strategy_instance_id == expected_targets[0].0
+                && fact.configured_target_id == expected_targets[0].1
+                && fact.detail.contains("instruments_not_in_cache")),
         "5m target should block on missing NT cache instruments: {:#?}",
         report.facts
     );
     assert!(
-        report.facts.iter().any(
-            |fact| fact.strategy_instance_id == "ETHCHAINLINKTAKER-V3-015"
-                && fact.configured_target_id == "eth_updown_15m"
-                && fact.detail.contains("instruments_not_in_cache")
-        ),
+        report
+            .facts
+            .iter()
+            .any(|fact| fact.strategy_instance_id == expected_targets[1].0
+                && fact.configured_target_id == expected_targets[1].1
+                && fact.detail.contains("instruments_not_in_cache")),
         "15m target should block on missing NT cache instruments: {:#?}",
         report.facts
     );

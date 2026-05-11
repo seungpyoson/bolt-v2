@@ -252,6 +252,8 @@ fn multiple_current_updown_pairs_for_same_target_fail_ambiguous() {
 #[test]
 fn config_path_resolves_each_client_target_from_nt_cache() {
     let plan = existing_strategy_plan();
+    let first_target = &plan.updown_targets[0];
+    let second_target = &plan.updown_targets[1];
     let client_id = plan.updown_targets[0].client_id_key.clone();
     let venue = *POLYMARKET_VENUE;
     let mut cache = Cache::new(None, None);
@@ -287,10 +289,13 @@ fn config_path_resolves_each_client_target_from_nt_cache() {
 
     assert_eq!(resolutions.len(), 2);
     assert_eq!(
-        resolutions[0].strategy_instance_id,
-        "ETHCHAINLINKTAKER-V3-001"
+        resolutions[0].strategy_instance_id.as_str(),
+        first_target.strategy_instance_id.as_str()
     );
-    assert_eq!(resolutions[0].configured_target_id, "eth_updown_5m");
+    assert_eq!(
+        resolutions[0].configured_target_id.as_str(),
+        first_target.configured_target_id.as_str()
+    );
     assert!(matches!(
         resolutions[0].resolution,
         UpdownSelectedMarketResolution::Selected {
@@ -299,10 +304,13 @@ fn config_path_resolves_each_client_target_from_nt_cache() {
         }
     ));
     assert_eq!(
-        resolutions[1].strategy_instance_id,
-        "ETHCHAINLINKTAKER-V3-015"
+        resolutions[1].strategy_instance_id.as_str(),
+        second_target.strategy_instance_id.as_str()
     );
-    assert_eq!(resolutions[1].configured_target_id, "eth_updown_15m");
+    assert_eq!(
+        resolutions[1].configured_target_id.as_str(),
+        second_target.configured_target_id.as_str()
+    );
     assert_eq!(
         resolutions[1].resolution,
         UpdownSelectedMarketResolution::Failed {

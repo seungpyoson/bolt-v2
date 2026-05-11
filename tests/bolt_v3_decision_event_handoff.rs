@@ -300,6 +300,27 @@ fn entry_evaluation_accepts_recovery_mode_no_action_reason() {
 }
 
 #[test]
+fn entry_evaluation_accepts_one_position_invariant_no_action_reason() {
+    let mut facts = entry_evaluation_facts();
+    facts.entry_decision = "no_action".to_string();
+    facts.updown_side = None;
+    facts.entry_no_action_reason = Some("one_position_invariant".to_string());
+
+    let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
+        common_fields(),
+        facts,
+        UnixNanos::from(2_500),
+        UnixNanos::from(2_501),
+    )
+    .unwrap();
+
+    assert_eq!(
+        event.event_facts.get("entry_no_action_reason"),
+        Some(&Value::String("one_position_invariant".to_string()))
+    );
+}
+
+#[test]
 fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
     let temp_dir = TempDir::new().unwrap();
     let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(

@@ -2261,14 +2261,6 @@ impl EthChainlinkTaker {
         decision: &EntrySubmissionDecision,
         has_selected_market_open_orders: bool,
     ) -> Option<&'static str> {
-        if decision.evaluation.gate.blocked_by.iter().any(|reason| {
-            matches!(
-                reason,
-                EntryBlockReason::MetadataMismatch | EntryBlockReason::ActiveBookNotPriced
-            )
-        }) {
-            return None;
-        }
         if self
             .current_seconds_to_expiry_at(now_ms)
             .is_some_and(|seconds| seconds == 0)
@@ -2284,6 +2276,14 @@ impl EthChainlinkTaker {
         }
         if has_selected_market_open_orders {
             return Some("selected_market_open_orders_present");
+        }
+        if decision.evaluation.gate.blocked_by.iter().any(|reason| {
+            matches!(
+                reason,
+                EntryBlockReason::MetadataMismatch | EntryBlockReason::ActiveBookNotPriced
+            )
+        }) {
+            return None;
         }
         None
     }
@@ -3883,6 +3883,17 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
             .contains(&EntryBlockReason::RecoveryMode)
     {
         return Some("recovery_mode");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision
+            .evaluation
+            .gate
+            .blocked_by
+            .iter()
+            .any(|reason| matches!(reason, EntryBlockReason::OnePositionInvariant(_)))
+    {
+        return Some("one_position_invariant");
     }
 
     if decision.blocked_reason == Some("entry_gate_blocked")
@@ -8894,6 +8905,59 @@ mod tests {
         };
 
         assert_eq!(entry_no_action_reason(&decision), Some("recovery_mode"));
+    }
+
+    #[test]
+    fn one_position_invariant_entry_gate_maps_to_no_action_reason() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let pending = pending_entry_state(
+            &strategy,
+            ClientOrderId::from("ENTRY-001"),
+            instrument_id,
+            OutcomeSide::Up,
+            strategy.active.books.up.clone(),
+        );
+        set_pending_entry(&mut strategy, pending);
+        let gate = strategy.entry_gate_decision_at(2_000);
+        assert!(
+            gate.blocked_by
+                .contains(&EntryBlockReason::OnePositionInvariant(
+                    ExposureOccupancy::PendingEntry
+                ))
+        );
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate,
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 0.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: strategy.config.max_position_usdc,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: None,
+                uncertainty_band_probability: None,
+                up_worst_case_ev_bps: None,
+                down_worst_case_ev_bps: None,
+                min_worst_case_ev_bps: None,
+                expected_ev_per_usdc: None,
+                book_impact_cap_usdc: None,
+                effective_entry_notional_cap_usdc: None,
+                sized_notional_usdc: None,
+                selected_side: None,
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("entry_gate_blocked"),
+        };
+
+        assert_eq!(
+            entry_no_action_reason(&decision),
+            Some("one_position_invariant")
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ mod support;
 use std::{collections::BTreeMap, sync::Arc};
 
 use bolt_v2::{
-    bolt_v3_adapters::{BoltV3UpdownNowFn, map_bolt_v3_clients_with_market_identity},
+    bolt_v3_adapters::{BoltV3MarketSelectionNowFn, map_bolt_v3_clients_with_market_identity},
     bolt_v3_client_registration::register_bolt_v3_clients,
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_instrument_readiness::{
@@ -487,7 +487,8 @@ fn live_node_start_loads_selected_market_instruments_through_real_polymarket_dat
             data.insert("ws_timeout_seconds".to_string(), toml::Value::Integer(1));
         }
 
-        let clock: BoltV3UpdownNowFn = Arc::new(move || market_selection_timestamp_seconds);
+        let clock: BoltV3MarketSelectionNowFn =
+            Arc::new(move || market_selection_timestamp_seconds);
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };
@@ -582,7 +583,8 @@ fn external_polymarket_start_loads_selected_market_instruments_through_nt_data_e
             client.secrets = None;
         }
 
-        let clock: BoltV3UpdownNowFn = Arc::new(move || market_selection_timestamp_seconds);
+        let clock: BoltV3MarketSelectionNowFn =
+            Arc::new(move || market_selection_timestamp_seconds);
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };

@@ -270,14 +270,7 @@ pub struct ReferenceStreamInputBlock {
     pub stale_after_milliseconds: u64,
     pub disable_after_milliseconds: u64,
     #[serde(default)]
-    pub chainlink: Option<ReferenceStreamChainlinkInputBlock>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ReferenceStreamChainlinkInputBlock {
-    pub feed_id: String,
-    pub price_scale: u8,
+    pub provider_config: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

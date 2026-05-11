@@ -40,7 +40,9 @@ fn selected_chainlink_client_id(loaded: &LoadedBoltV3Config) -> &str {
     stream
         .inputs
         .iter()
-        .find(|input| input.source_type == ReferenceSourceType::Oracle && input.chainlink.is_some())
+        .find(|input| {
+            input.source_type == ReferenceSourceType::Oracle && input.provider_config.is_some()
+        })
         .and_then(|input| input.data_client_id.as_deref())
         .expect("selected reference stream should name a Chainlink data client")
 }

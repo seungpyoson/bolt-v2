@@ -18,6 +18,16 @@ pub mod updown;
 
 use serde::Deserialize;
 
+use crate::bolt_v3_config::LoadedBoltV3Config;
+
+pub use updown::{BoltV3MarketIdentityError, MarketIdentityPlan};
+
+pub fn plan_market_identity(
+    loaded: &LoadedBoltV3Config,
+) -> Result<MarketIdentityPlan, BoltV3MarketIdentityError> {
+    updown::plan_market_identity(loaded)
+}
+
 /// Family-agnostic target-shape metadata read by core startup
 /// validation for cross-family checks (today: uniqueness of
 /// `configured_target_id` across configured strategies). Family-

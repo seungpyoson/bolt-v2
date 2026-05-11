@@ -120,7 +120,7 @@ base_weight = 1.0
 stale_after_milliseconds = 1500
 disable_after_milliseconds = 5000
 
-[reference_streams.eth_usd.inputs.chainlink]
+[reference_streams.eth_usd.inputs.provider_config]
 feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
 price_scale = 8
 

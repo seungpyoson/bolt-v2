@@ -5,7 +5,7 @@ use crate::{
     bolt_v3_instrument_readiness::{
         BoltV3InstrumentReadinessReport, check_bolt_v3_instrument_readiness_for_start,
     },
-    bolt_v3_market_families::updown::BoltV3MarketIdentityError,
+    bolt_v3_market_families::BoltV3MarketIdentityError,
 };
 
 /// Pre-start readiness surface for bolt-v3.

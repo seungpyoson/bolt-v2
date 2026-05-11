@@ -251,6 +251,7 @@ pub struct MarketIdentityPlan {
 
 pub struct MarketIdentityClientTargetRef<'a> {
     pub family_key: &'static str,
+    pub strategy_instance_id: &'a str,
     pub configured_target_id: &'a str,
     pub client_id_key: &'a str,
 }
@@ -261,9 +262,15 @@ impl MarketIdentityPlan {
             .iter()
             .map(|target| MarketIdentityClientTargetRef {
                 family_key: KEY,
+                strategy_instance_id: target.strategy_instance_id.as_str(),
                 configured_target_id: target.configured_target_id.as_str(),
                 client_id_key: target.client_id_key.as_str(),
             })
+    }
+
+    pub fn has_client_targets(&self, client_id_key: &str) -> bool {
+        self.client_id_target_refs()
+            .any(|target| target.client_id_key == client_id_key)
     }
 }
 

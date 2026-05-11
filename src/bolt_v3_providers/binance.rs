@@ -40,18 +40,18 @@ use crate::{
     bolt_v3_adapters::{
         BoltV3ClientConfig, BoltV3ClientMappingError, BoltV3DataClientAdapterConfig,
     },
-    bolt_v3_config::ClientBlock,
+    bolt_v3_config::{ClientBlock, ReferenceSourceType},
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderReferenceInputContext,
+        ProviderResolvedSecrets, ProviderSecretRequirement, ProviderSecretResolveContext,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    config::{ReferenceVenueEntry, ReferenceVenueKind},
     secrets::validate_binance_api_secret_shape,
 };
 
 pub const KEY: &str = "BINANCE";
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
     consumer: "Binance reference-data client",
@@ -63,6 +63,26 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "BINANCE_API_KEY",
     "BINANCE_API_SECRET",
 ];
+
+pub fn build_reference_venue_entry(
+    context: ProviderReferenceInputContext<'_>,
+) -> Result<ReferenceVenueEntry, String> {
+    if context.input.source_type != ReferenceSourceType::Orderbook {
+        return Err(format!(
+            "reference_streams.{}.inputs[{}].source_type `oracle` is not supported for client venue `{}`",
+            context.stream_id, context.input_index, KEY
+        ));
+    }
+    Ok(ReferenceVenueEntry {
+        name: context.input.source_id.clone(),
+        kind: ReferenceVenueKind::Binance,
+        instrument_id: context.input.instrument_id.clone(),
+        base_weight: context.input.base_weight,
+        stale_after_ms: context.input.stale_after_milliseconds,
+        disable_after_ms: context.input.disable_after_milliseconds,
+        chainlink: None,
+    })
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

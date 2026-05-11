@@ -25,10 +25,11 @@ use std::{any::Any, fmt, sync::Arc};
 use nautilus_common::cache::Cache;
 
 use crate::{
-    bolt_v3_adapters::{BoltV3ClientConfig, BoltV3ClientMappingError, BoltV3UpdownNowFn},
-    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
-    bolt_v3_market_families::updown::{BoltV3MarketIdentityError, MarketIdentityPlan},
+    bolt_v3_adapters::{BoltV3ClientConfig, BoltV3ClientMappingError, BoltV3MarketSelectionNowFn},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock, ReferenceStreamInputBlock},
+    bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
+    config::ReferenceVenueEntry,
 };
 
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
@@ -64,9 +65,16 @@ pub struct ProviderAdapterMapContext<'a> {
     pub client_id: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
-    pub clock: BoltV3UpdownNowFn,
+    pub clock: BoltV3MarketSelectionNowFn,
 }
 
+pub struct ProviderReferenceInputContext<'a> {
+    pub stream_id: &'a str,
+    pub input_index: usize,
+    pub input: &'a ReferenceStreamInputBlock,
+}
+
+#[derive(Clone, Copy)]
 pub struct ProviderInstrumentReadinessContext<'a> {
     pub client_id_key: &'a str,
     pub venue_key: &'a str,
@@ -121,7 +129,6 @@ pub struct ProviderSecretRequirement {
 pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_client_id: fn(&str, &ClientBlock) -> Vec<String>,
-    pub supported_market_families: &'static [&'static str],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub credential_log_modules: &'static [&'static str],
     pub forbidden_env_vars: &'static [&'static str],
@@ -129,50 +136,44 @@ pub struct ProviderBinding {
         ProviderSecretResolveContext<'a>,
         &mut dyn SsmSecretResolver,
     ) -> Result<ResolvedClientSecrets, BoltV3SecretError>,
+    pub build_reference_venue_entry: Option<
+        for<'a> fn(ProviderReferenceInputContext<'a>) -> Result<ReferenceVenueEntry, String>,
+    >,
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
     ) -> Result<BoltV3ClientConfig, BoltV3ClientMappingError>,
-    pub check_instrument_readiness: Option<
-        for<'a> fn(
-            ProviderInstrumentReadinessContext<'a>,
-        )
-            -> Result<Vec<ProviderInstrumentReadinessFact>, BoltV3MarketIdentityError>,
-    >,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
         validate_client_id: polymarket::validate_client_id,
-        supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
+        build_reference_venue_entry: Some(polymarket::build_reference_venue_entry),
         map_adapters: polymarket::map_adapters,
-        check_instrument_readiness: Some(polymarket::check_instrument_readiness),
     },
     ProviderBinding {
         key: binance::KEY,
         validate_client_id: binance::validate_client_id,
-        supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,
+        build_reference_venue_entry: Some(binance::build_reference_venue_entry),
         map_adapters: binance::map_adapters,
-        check_instrument_readiness: None,
     },
     ProviderBinding {
         key: chainlink::KEY,
         validate_client_id: chainlink::validate_client_id,
-        supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
         credential_log_modules: chainlink::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: chainlink::FORBIDDEN_ENV_VARS,
         resolve_secrets: chainlink::resolve_secrets,
+        build_reference_venue_entry: Some(chainlink::build_reference_venue_entry),
         map_adapters: chainlink::map_adapters,
-        check_instrument_readiness: None,
     },
 ];
 

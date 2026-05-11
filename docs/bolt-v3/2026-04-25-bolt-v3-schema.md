@@ -667,9 +667,10 @@ Each `[[reference_streams.<stream_id>.inputs]]` block declares one logical sourc
 - `base_weight`: positive finite numeric weight
 - `stale_after_milliseconds`: positive freshness window
 - `disable_after_milliseconds`: positive disable window, greater than or equal to `stale_after_milliseconds`
-- `chainlink`: required for Chainlink oracle producer inputs
-  - `feed_id`: Chainlink Data Streams feed ID
-  - `price_scale`: Chainlink benchmark price decimal scale
+- `provider_config`: optional provider-owned input metadata
+  - required by the current Chainlink oracle producer binding
+  - Chainlink-owned fields: `feed_id`, `price_scale`
+  - core config treats this as raw TOML; provider bindings own typed parsing
 
 Current local fusion policy:
 

@@ -17,7 +17,8 @@ use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClien
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_market_families::updown::MarketIdentityPlan,
+    bolt_v3_market_families::MarketIdentityPlan,
+    bolt_v3_provider_family_bindings,
     bolt_v3_providers::{self, ProviderAdapterMapContext},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
@@ -28,7 +29,7 @@ use crate::{
 /// `load_all` cycle on every refresh, so it must be `Send + Sync` and
 /// own all state it captures. Tests inject a fixed-time closure;
 /// future live wiring will inject one backed by an NT runtime clock.
-pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+pub type BoltV3MarketSelectionNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// Provider-owned NT data-client factory and config for one configured
 /// Bolt-v3 client data block.
@@ -229,7 +230,7 @@ pub fn map_bolt_v3_clients(
     // observe any wall-clock dependency on the no-identity entry point.
     // Treat this constant as a sentinel for the no-filter path; do not
     // reuse it from any call site that supplies a non-empty plan.
-    let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);
+    let zero_clock: BoltV3MarketSelectionNowFn = Arc::new(|| 0_i64);
     map_bolt_v3_clients_with_market_identity(loaded, resolved, &empty_plan, zero_clock)
 }
 
@@ -242,7 +243,7 @@ pub fn map_bolt_v3_clients_with_market_identity(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     plan: &MarketIdentityPlan,
-    clock: BoltV3UpdownNowFn,
+    clock: BoltV3MarketSelectionNowFn,
 ) -> Result<BoltV3ClientConfigs, BoltV3ClientMappingError> {
     map_bolt_v3_clients_with_market_identity_and_venue_lookup(
         loaded,
@@ -257,7 +258,7 @@ fn map_bolt_v3_clients_with_market_identity_and_venue_lookup(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     plan: &MarketIdentityPlan,
-    clock: BoltV3UpdownNowFn,
+    clock: BoltV3MarketSelectionNowFn,
     binding_for_venue: impl Fn(&str) -> Option<&'static bolt_v3_providers::ProviderBinding>,
 ) -> Result<BoltV3ClientConfigs, BoltV3ClientMappingError> {
     validate_market_identity_target_clients(loaded, plan)?;
@@ -293,17 +294,17 @@ fn validate_provider_market_family_support(
     plan: &MarketIdentityPlan,
 ) -> Result<(), BoltV3ClientMappingError> {
     // Only clients referenced by a market-identity target need family
-    // support. A provider with an empty `supported_market_families`
-    // remains valid for data-only/reference clients that no strategy
-    // target routes through.
+    // support. Provider + market-family support is registered outside
+    // the provider binding so a provider module does not become tied
+    // to one market family.
     for target in plan
         .client_id_target_refs()
         .filter(|target| target.client_id_key == client_id_key)
     {
-        if !binding
-            .supported_market_families
-            .contains(&target.family_key)
-        {
+        if !bolt_v3_provider_family_bindings::provider_supports_family(
+            binding.key,
+            target.family_key,
+        ) {
             return Err(BoltV3ClientMappingError::ValidationInvariant {
                 client_id_key: target.client_id_key.to_string(),
                 field: "strategy.execution_client_id",
@@ -358,7 +359,7 @@ mod tests {
     };
 
     use crate::bolt_v3_config::BoltV3RootConfig;
-    use crate::bolt_v3_market_families::updown::{self, UpdownTargetPlan};
+    use crate::bolt_v3_market_families::updown::UpdownTargetPlan;
     use crate::bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
         ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
@@ -426,40 +427,26 @@ mod tests {
         })
     }
 
-    static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
-        key: FAKE_UPDOWN_PROVIDER_KEY,
-        validate_client_id: validate_fake_provider_client_id,
-        supported_market_families: &[updown::KEY],
-        required_secret_blocks: &[],
-        credential_log_modules: &[],
-        forbidden_env_vars: &[],
-        resolve_secrets: resolve_fake_provider_secrets,
-        map_adapters: map_fake_provider_adapters,
-        check_instrument_readiness: None,
-    };
-
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client_id: validate_fake_provider_client_id,
-        supported_market_families: &[],
         required_secret_blocks: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
+        build_reference_venue_entry: None,
         map_adapters: map_fake_provider_adapters,
-        check_instrument_readiness: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client_id: validate_fake_provider_client_id,
-        supported_market_families: &[],
         required_secret_blocks: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
+        build_reference_venue_entry: None,
         map_adapters: map_fake_no_target_provider_adapters,
-        check_instrument_readiness: None,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -499,58 +486,6 @@ mod tests {
             Arc::new(fixture_binance_secrets()),
         );
         ResolvedBoltV3Secrets { clients }
-    }
-
-    #[test]
-    fn injected_provider_binding_can_accept_updown_target_without_core_provider_edit() {
-        let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
-            .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
-        let mut loaded = LoadedBoltV3Config {
-            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
-            root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
-            strategies: Vec::new(),
-        };
-        loaded
-            .root
-            .clients
-            .retain(|client_id_key, _block| client_id_key == "polymarket_main");
-        let plan = MarketIdentityPlan {
-            updown_targets: vec![UpdownTargetPlan {
-                strategy_instance_id: "fake-strategy".to_string(),
-                configured_target_id: "fake-updown".to_string(),
-                market_selection_type: "rotating_market".to_string(),
-                client_id_key: "polymarket_main".to_string(),
-                underlying_asset: "BTC".to_string(),
-                cadence_seconds: 300,
-                cadence_slug_token: "5m".to_string(),
-            }],
-        };
-        let resolved = ResolvedBoltV3Secrets {
-            clients: BTreeMap::new(),
-        };
-        let clock = Arc::new(|| 601_i64);
-
-        let configs = map_bolt_v3_clients_with_market_identity_and_venue_lookup(
-            &loaded,
-            &resolved,
-            &plan,
-            clock,
-            |key| {
-                if key == FAKE_UPDOWN_PROVIDER_KEY {
-                    Some(&FAKE_UPDOWN_PROVIDER_BINDING)
-                } else {
-                    None
-                }
-            },
-        )
-        .expect("core mapping should route through the injected fake provider binding");
-
-        let fake = configs
-            .clients
-            .get("polymarket_main")
-            .expect("fake provider client should map");
-        assert!(fake.data.is_none());
-        assert!(fake.execution.is_none());
     }
 
     #[test]

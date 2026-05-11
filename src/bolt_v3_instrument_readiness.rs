@@ -2,12 +2,13 @@ use nautilus_live::node::LiveNode;
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_market_families::updown::{
+    bolt_v3_market_families::{
         BoltV3MarketIdentityError, MarketIdentityPlan, plan_market_identity,
     },
+    bolt_v3_provider_family_bindings,
     bolt_v3_providers::{
         ProviderInstrumentReadinessContext, ProviderInstrumentReadinessFact,
-        ProviderInstrumentReadinessStatus, binding_for_venue,
+        ProviderInstrumentReadinessStatus,
     },
 };
 
@@ -63,43 +64,18 @@ fn check_plan_instrument_readiness_for_start(
     let cache = cache.borrow();
     let mut facts = Vec::new();
     for (client_id_key, client) in &loaded.root.clients {
-        if !plan
-            .updown_targets
-            .iter()
-            .any(|target| target.client_id_key == *client_id_key)
-        {
+        if !plan.has_client_targets(client_id_key) {
             continue;
         }
-        let Some(binding) = binding_for_venue(client.venue.as_str()) else {
-            facts.push(BoltV3InstrumentReadinessFact {
-                client_id_key: client_id_key.clone(),
-                strategy_instance_id: String::new(),
-                configured_target_id: String::new(),
-                status: BoltV3InstrumentReadinessStatus::Blocked,
-                detail: format!("unsupported venue `{}`", client.venue.as_str()),
-            });
-            continue;
-        };
-        let Some(check_provider) = binding.check_instrument_readiness else {
-            facts.push(BoltV3InstrumentReadinessFact {
-                client_id_key: client_id_key.clone(),
-                strategy_instance_id: String::new(),
-                configured_target_id: String::new(),
-                status: BoltV3InstrumentReadinessStatus::Blocked,
-                detail: format!(
-                    "venue `{}` has no instrument readiness binding",
-                    binding.key
-                ),
-            });
-            continue;
-        };
-        let provider_facts = check_provider(ProviderInstrumentReadinessContext {
-            client_id_key,
-            venue_key: client.venue.as_str(),
-            plan,
-            cache: &cache,
-            market_selection_timestamp_milliseconds,
-        })?;
+        let provider_facts = bolt_v3_provider_family_bindings::check_instrument_readiness(
+            ProviderInstrumentReadinessContext {
+                client_id_key,
+                venue_key: client.venue.as_str(),
+                plan,
+                cache: &cache,
+                market_selection_timestamp_milliseconds,
+            },
+        )?;
         facts.extend(provider_facts.into_iter().map(from_provider_fact));
     }
     Ok(BoltV3InstrumentReadinessReport { facts })

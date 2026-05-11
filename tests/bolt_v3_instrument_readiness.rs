@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_market_families::updown::{
         BoltV3MarketIdentityError, MarketIdentityPlan, UpdownTargetPlan, plan_market_identity,
     },
-    bolt_v3_providers::polymarket::{
+    bolt_v3_provider_family_bindings::polymarket_updown::{
         UpdownSelectedMarketFailureReason, UpdownSelectedMarketResolution,
         UpdownSelectedMarketRole, resolve_updown_selected_market_from_cache,
         resolve_updown_selected_markets_for_client_from_cache,

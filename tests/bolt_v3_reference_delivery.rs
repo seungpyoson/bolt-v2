@@ -71,9 +71,9 @@ fn single_chainlink_input(stream: &ReferenceStreamBlock) -> &ReferenceStreamInpu
         .first()
         .expect("fixture stream should define one input");
     input
-        .chainlink
+        .provider_config
         .as_ref()
-        .expect("fixture input should carry Chainlink feed config");
+        .expect("fixture input should carry provider-owned feed config");
     input
 }
 

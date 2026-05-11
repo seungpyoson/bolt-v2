@@ -45,49 +45,7 @@ class FindingAllowance:
     exact_excerpt: str
 
 
-# The remaining updown-shaped market-identity boundary is intentionally tracked
-# by https://github.com/seungpyoson/bolt-v2/issues/290. Keep these exceptions
-# exact so any new market-family leakage fails this verifier.
-# `exact_excerpt` must match the stripped source line produced by `excerpt_for`;
-# if the allowed source line is reformatted, update the allowance in the same
-# change.
-FINDING_ALLOWANCES = (
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "core accesses concrete market-family module path",
-        "bolt_v3_market_families::updown::MarketIdentityPlan,",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_providers/mod.rs",
-        "core accesses concrete market-family module path",
-        "bolt_v3_market_families::updown::MarketIdentityPlan,",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "concrete market-family type name in core production code",
-        "pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "concrete market-family type name in core production code",
-        "let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "concrete market-family type name in core production code",
-        "clock: BoltV3UpdownNowFn,",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_providers/mod.rs",
-        "concrete market-family type name in core production code",
-        "bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_providers/mod.rs",
-        "concrete market-family type name in core production code",
-        "pub clock: BoltV3UpdownNowFn,",
-    ),
-)
+FINDING_ALLOWANCES = ()
 
 
 def rules_for(
@@ -125,6 +83,20 @@ def discovered_binding_names(root: Path, directory: str) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+def discovered_provider_binding_files(root: Path) -> tuple[str, ...]:
+    binding_dir = root / "src" / "bolt_v3_providers"
+    if not binding_dir.exists():
+        return ()
+
+    return tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in binding_dir.glob("*.rs")
+            if path.name != "mod.rs"
+        )
+    )
+
+
 def snake_to_pascal(name: str) -> str:
     return "".join(part[:1].upper() + part[1:] for part in name.split("_") if part)
 
@@ -143,6 +115,7 @@ def rules_for_root(root: Path) -> list[Rule]:
     provider_type_alt = alternation(tuple(snake_to_pascal(name) for name in provider_names))
     family_alt = alternation(family_names)
     family_type_alt = alternation(tuple(snake_to_pascal(name) for name in family_names))
+    provider_binding_files = discovered_provider_binding_files(root)
 
     return [
         *rules_for(
@@ -248,6 +221,21 @@ def rules_for_root(root: Path) -> list[Rule]:
             "src/bolt_v3_client_registration.rs",
             re.compile(rf"\bBoltV3VenueAdapterConfig::(?:{provider_type_alt})\b"),
             "client registration dispatches on concrete adapter variant",
+        ),
+        *rules_for(
+            provider_binding_files,
+            re.compile(rf"\bbolt_v3_market_families::(?:{family_alt})::"),
+            "provider binding accesses concrete market-family module path",
+        ),
+        *rules_for(
+            provider_binding_files,
+            re.compile(rf"\b[A-Za-z0-9_]*(?:{family_type_alt})[A-Za-z0-9_]*\b"),
+            "concrete market-family type name in provider binding code",
+        ),
+        *rules_for(
+            provider_binding_files,
+            re.compile(rf'"(?:{family_alt})"'),
+            "market-family key string literal in provider binding code",
         ),
     ]
 

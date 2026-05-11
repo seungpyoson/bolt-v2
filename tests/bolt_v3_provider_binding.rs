@@ -38,7 +38,8 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_adapters::{
-        BoltV3ClientMappingError, BoltV3UpdownNowFn, map_bolt_v3_clients_with_market_identity,
+        BoltV3ClientMappingError, BoltV3MarketSelectionNowFn,
+        map_bolt_v3_clients_with_market_identity,
     },
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
@@ -84,7 +85,7 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { clients }
 }
 
-fn fixed_clock(now_unix_seconds: i64) -> BoltV3UpdownNowFn {
+fn fixed_clock(now_unix_seconds: i64) -> BoltV3MarketSelectionNowFn {
     Arc::new(move || now_unix_seconds)
 }
 
@@ -344,7 +345,7 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
 
     let counter = Arc::new(AtomicI64::new(601));
     let clock_handle = counter.clone();
-    let clock: BoltV3UpdownNowFn = Arc::new(move || clock_handle.load(Ordering::Relaxed));
+    let clock: BoltV3MarketSelectionNowFn = Arc::new(move || clock_handle.load(Ordering::Relaxed));
 
     let configs = map_bolt_v3_clients_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping should succeed");

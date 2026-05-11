@@ -8,11 +8,11 @@ use crate::{
     bolt_v3_adapters::{
         BoltV3ClientConfig, BoltV3ClientMappingError, BoltV3DataClientAdapterConfig,
     },
-    bolt_v3_config::{ClientBlock, ReferenceSourceType},
+    bolt_v3_config::{ClientBlock, ReferenceSourceType, ReferenceStreamInputBlock},
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderReferenceInputContext,
+        ProviderResolvedSecrets, ProviderSecretRequirement, ProviderSecretResolveContext,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     clients::chainlink::build_chainlink_reference_data_client_with_secrets,
@@ -24,7 +24,6 @@ use crate::{
 };
 
 pub const KEY: &str = "CHAINLINK";
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
     consumer: "Chainlink reference-data client",
@@ -45,6 +44,13 @@ pub struct ChainlinkDataConfig {
 pub struct ChainlinkSecretsConfig {
     pub api_key_ssm_path: String,
     pub api_secret_ssm_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ChainlinkReferenceInputConfig {
+    pub feed_id: String,
+    pub price_scale: u8,
 }
 
 #[derive(Clone)]
@@ -79,6 +85,46 @@ impl ProviderResolvedSecrets for ResolvedBoltV3ChainlinkSecrets {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+pub fn build_reference_venue_entry(
+    context: ProviderReferenceInputContext<'_>,
+) -> Result<ReferenceVenueEntry, String> {
+    if context.input.source_type != ReferenceSourceType::Oracle {
+        return Err(format!(
+            "reference_streams.{}.inputs[{}].source_type `orderbook` is not supported for client venue `{}`",
+            context.stream_id, context.input_index, KEY
+        ));
+    }
+    let chainlink = parse_reference_input_config(context.input).map_err(|error| {
+        format!(
+            "reference_streams.{}.inputs[{}].provider_config: {error}",
+            context.stream_id, context.input_index
+        )
+    })?;
+    Ok(ReferenceVenueEntry {
+        name: context.input.source_id.clone(),
+        kind: ReferenceVenueKind::Chainlink,
+        instrument_id: context.input.instrument_id.clone(),
+        base_weight: context.input.base_weight,
+        stale_after_ms: context.input.stale_after_milliseconds,
+        disable_after_ms: context.input.disable_after_milliseconds,
+        chainlink: Some(ChainlinkReferenceConfig {
+            feed_id: chainlink.feed_id,
+            price_scale: chainlink.price_scale,
+        }),
+    })
+}
+
+fn parse_reference_input_config(
+    input: &ReferenceStreamInputBlock,
+) -> Result<ChainlinkReferenceInputConfig, String> {
+    input
+        .provider_config
+        .clone()
+        .ok_or_else(|| "feed config is required for Chainlink producer inputs".to_string())?
+        .try_into()
+        .map_err(|error: toml::de::Error| error.to_string())
 }
 
 pub fn validate_client_id(key: &str, client_id: &ClientBlock) -> Vec<String> {
@@ -270,16 +316,17 @@ fn reference_config_for_client(
                     ),
                 });
             }
-            let chainlink = input.chainlink.clone().ok_or_else(|| {
-                BoltV3ClientMappingError::ValidationInvariant {
-                    client_id_key: client_id_key.to_string(),
-                    field: "reference_streams",
-                    message: format!(
-                        "reference input `{}` uses Chainlink client but is missing [chainlink] feed config",
-                        input.source_id
-                    ),
-                }
-            })?;
+            let chainlink =
+                parse_reference_input_config(input).map_err(|error| {
+                    BoltV3ClientMappingError::ValidationInvariant {
+                        client_id_key: client_id_key.to_string(),
+                        field: "reference_streams",
+                        message: format!(
+                            "reference input `{}` uses Chainlink client but has invalid provider_config: {error}",
+                            input.source_id
+                        ),
+                    }
+                })?;
             venues.push(ReferenceVenueEntry {
                 name: input.source_id.clone(),
                 kind: ReferenceVenueKind::Chainlink,

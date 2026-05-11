@@ -81,6 +81,7 @@ static ORDER_LIFECYCLE_TRACER_FIXTURE: OnceLock<OrderLifecycleTracerFixture> = O
 struct OrderLifecycleTracerFixture {
     local_polymarket: LocalPolymarketFixture,
     selected_binary_option: SelectedBinaryOptionFixture,
+    market_snapshot: MarketSnapshotFixture,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +100,13 @@ struct SelectedBinaryOptionFixture {
     price_increment: String,
     size_increment: String,
     book_level_quantity: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MarketSnapshotFixture {
+    price_to_beat: f64,
+    liquidity_num: f64,
+    reference_orderbook_half_spread: f64,
 }
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -165,6 +173,22 @@ fn selected_binary_option_book_level_quantity() -> &'static str {
     selected_binary_option_fixture()
         .book_level_quantity
         .as_str()
+}
+
+fn market_snapshot_fixture() -> &'static MarketSnapshotFixture {
+    &order_lifecycle_tracer_fixture().market_snapshot
+}
+
+fn market_snapshot_price_to_beat() -> f64 {
+    market_snapshot_fixture().price_to_beat
+}
+
+fn market_snapshot_liquidity_num() -> f64 {
+    market_snapshot_fixture().liquidity_num
+}
+
+fn reference_orderbook_half_spread() -> f64 {
+    market_snapshot_fixture().reference_orderbook_half_spread
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -643,7 +667,7 @@ fn selected_market(loaded: &LoadedBoltV3Config, start_ts_ms: u64) -> CandidateMa
         ))
         .expect("fixture resolution basis should parse"),
         accepting_orders: true,
-        liquidity_num: 1000.0,
+        liquidity_num: market_snapshot_liquidity_num(),
         seconds_to_end: strategy_config(loaded).target["cadence_seconds"]
             .as_integer()
             .expect("fixture target should include cadence_seconds") as u64,
@@ -688,7 +712,7 @@ fn declared_resolution_basis_key(loaded: &LoadedBoltV3Config) -> String {
 }
 
 fn price_to_beat_value() -> f64 {
-    3_100.0
+    market_snapshot_price_to_beat()
 }
 
 fn selection_snapshot(loaded: &LoadedBoltV3Config, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
@@ -762,8 +786,10 @@ fn reference_snapshot(
                 observed_ts_ms: Some(ts_ms),
                 venue_kind,
                 observed_price: Some(observed_price),
-                observed_bid: (venue_kind == VenueKind::Orderbook).then_some(fast_price - 0.5),
-                observed_ask: (venue_kind == VenueKind::Orderbook).then_some(fast_price + 0.5),
+                observed_bid: (venue_kind == VenueKind::Orderbook)
+                    .then_some(fast_price - reference_orderbook_half_spread()),
+                observed_ask: (venue_kind == VenueKind::Orderbook)
+                    .then_some(fast_price + reference_orderbook_half_spread()),
             }
         })
         .collect();

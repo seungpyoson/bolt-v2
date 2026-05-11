@@ -151,6 +151,30 @@ book_level_quantity = "100"
         assert "fixture-owned literal" in findings[0].message
 
 
+def test_order_lifecycle_numeric_scenario_fixture_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml",
+            """
+[market_snapshot]
+price_to_beat = 3100.0
+""".lstrip(),
+        )
+        write_file(
+            root,
+            "tests/bolt_v3_order_lifecycle_tracer.rs",
+            "fn probe() -> f64 { 3_100.0 }\n",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
+        assert "numeric fixture-owned literal" in findings[0].message
+
+
 def test_fee_provider_file_is_enforced() -> None:
     verifier = load_verifier()
     if "tests/bolt_v3_polymarket_fee_provider.rs" not in verifier.ENFORCED_TEST_FILES:
@@ -171,6 +195,7 @@ def main() -> int:
         test_order_lifecycle_protocol_fixture_literal_is_a_finding,
         test_fee_provider_protocol_fixture_literal_is_a_finding,
         test_order_lifecycle_selected_binary_option_fixture_literal_is_a_finding,
+        test_order_lifecycle_numeric_scenario_fixture_literal_is_a_finding,
         test_fee_provider_file_is_enforced,
         test_order_lifecycle_tracer_file_is_enforced,
     ]

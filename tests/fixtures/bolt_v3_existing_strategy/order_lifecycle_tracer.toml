@@ -13,3 +13,8 @@ bind_addr = "127.0.0.1:0"
 price_increment = "0.001"
 size_increment = "0.01"
 book_level_quantity = "100"
+
+[market_snapshot]
+price_to_beat = 3100.0
+liquidity_num = 1000.0
+reference_orderbook_half_spread = 0.5

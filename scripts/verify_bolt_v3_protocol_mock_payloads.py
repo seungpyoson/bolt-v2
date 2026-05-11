@@ -22,11 +22,19 @@ PROTOCOL_FIXTURE_PATHS = (
     "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml",
     "tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml",
 )
+NUMERIC_FIXTURE_KEYS = frozenset(
+    (
+        "price_to_beat",
+        "liquidity_num",
+        "reference_orderbook_half_spread",
+    )
+)
 RAW_STRING_PATTERN = re.compile(
     r'(?<![A-Za-z0-9_])r(?P<hashes>#*)"(?P<body>.*?)"(?P=hashes)',
     re.DOTALL,
 )
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
+NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])\d[\d_]*(?:\.\d[\d_]*)?(?![A-Za-z0-9_.])")
 
 
 @dataclass(frozen=True)
@@ -71,29 +79,53 @@ def string_value(literal: str) -> str:
     return bytes(literal[1:-1], "utf-8").decode("unicode_escape")
 
 
-def collect_strings(value: Any, strings: set[str]) -> None:
+def normalized_number(value: str) -> str:
+    return value.replace("_", "")
+
+
+def collect_fixture_values(
+    key: str | None,
+    value: Any,
+    strings: set[str],
+    numbers: set[str],
+) -> None:
     if isinstance(value, str) and value:
         strings.add(value)
         return
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if key in NUMERIC_FIXTURE_KEYS:
+            numbers.add(normalized_number(str(value)))
+        return
     if isinstance(value, dict):
-        for child in value.values():
-            collect_strings(child, strings)
+        for child_key, child in value.items():
+            collect_fixture_values(str(child_key), child, strings, numbers)
         return
     if isinstance(value, list):
         for child in value:
-            collect_strings(child, strings)
+            collect_fixture_values(key, child, strings, numbers)
 
 
-def protocol_fixture_literals(root: Path) -> set[str]:
+def protocol_fixture_literals(root: Path) -> tuple[set[str], set[str]]:
     strings: set[str] = set()
+    numbers: set[str] = set()
     for relative_path in PROTOCOL_FIXTURE_PATHS:
         path = root / relative_path
         if path.is_file():
-            collect_strings(tomllib.loads(path.read_text(encoding="utf-8")), strings)
-    return strings
+            collect_fixture_values(
+                None,
+                tomllib.loads(path.read_text(encoding="utf-8")),
+                strings,
+                numbers,
+            )
+    return strings, numbers
 
 
-def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Finding]:
+def scan_file(
+    root: Path,
+    path: Path,
+    fixture_literals: set[str],
+    numeric_fixture_literals: set[str],
+) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
     findings: list[Finding] = []
@@ -121,16 +153,28 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
                 excerpt=literal,
             )
         )
+    for match in NUMBER_PATTERN.finditer(text):
+        number = normalized_number(match.group(0))
+        if number not in numeric_fixture_literals:
+            continue
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message="numeric fixture-owned literal; derive from TOML fixture",
+                excerpt=match.group(0),
+            )
+        )
     return findings
 
 
 def scan_root(root: Path) -> list[Finding]:
     findings: list[Finding] = []
-    fixture_literals = protocol_fixture_literals(root)
+    fixture_literals, numeric_fixture_literals = protocol_fixture_literals(root)
     for relative_path in ENFORCED_TEST_FILES:
         path = root / relative_path
         if path.is_file():
-            findings.extend(scan_file(root, path, fixture_literals))
+            findings.extend(scan_file(root, path, fixture_literals, numeric_fixture_literals))
     return findings
 
 

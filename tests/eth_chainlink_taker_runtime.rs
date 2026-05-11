@@ -110,6 +110,10 @@ struct MissingFeeProvider;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 static TEST_NODE_CONFIG: OnceLock<Config> = OnceLock::new();
+const RUNTIME_DEFAULT_SELECTED_MARKET: &str = "runtime_default";
+const RUNTIME_ROTATION_B_SELECTED_MARKET: &str = "runtime_rotation_b";
+const RUNTIME_RECOVERY_A_SELECTED_MARKET: &str = "runtime_recovery_a";
+const RUNTIME_RECOVERY_B_SELECTED_MARKET: &str = "runtime_recovery_b";
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
     RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
@@ -762,31 +766,41 @@ fn query_custom_events_all_files(
         .collect()
 }
 
-fn candidate_market_named(market_id: &str, start_ts_ms: u64) -> CandidateMarket {
-    candidate_market_with_tokens(
-        market_id,
-        "condition-eth",
-        &format!("{market_id}-UP"),
-        &format!("{market_id}-DOWN"),
-        start_ts_ms,
+fn selected_market_fixture(fixture_name: &str) -> support::UpdownSelectedMarketFixture {
+    support::bolt_v3_updown_selected_market_fixture(fixture_name)
+}
+
+fn selected_market_up_instrument_id(fixture_name: &str) -> InstrumentId {
+    InstrumentId::from(
+        selected_market_fixture(fixture_name)
+            .leg("Up")
+            .instrument_id
+            .as_str(),
     )
 }
 
-fn candidate_market_with_tokens(
-    market_id: &str,
-    condition_id: &str,
-    up_token_id: &str,
-    down_token_id: &str,
-    start_ts_ms: u64,
-) -> CandidateMarket {
+fn selected_market_down_instrument_id(fixture_name: &str) -> InstrumentId {
+    InstrumentId::from(
+        selected_market_fixture(fixture_name)
+            .leg("Down")
+            .instrument_id
+            .as_str(),
+    )
+}
+
+fn candidate_market_from_fixture(fixture_name: &str, start_ts_ms: u64) -> CandidateMarket {
+    let fixture = selected_market_fixture(fixture_name);
+    let up_leg = fixture.leg("Up");
+    let down_leg = fixture.leg("Down");
+
     CandidateMarket {
-        market_id: market_id.to_string(),
-        market_slug: market_id.to_string(),
-        question_id: format!("question-{market_id}"),
-        instrument_id: format!("{condition_id}-{up_token_id}.POLYMARKET"),
-        condition_id: condition_id.to_string(),
-        up_token_id: up_token_id.to_string(),
-        down_token_id: down_token_id.to_string(),
+        market_id: fixture.market_slug.clone(),
+        market_slug: fixture.market_slug.clone(),
+        question_id: fixture.question_id.clone(),
+        instrument_id: up_leg.instrument_id.clone(),
+        condition_id: fixture.condition_id.clone(),
+        up_token_id: up_leg.token_id.clone(),
+        down_token_id: down_leg.token_id.clone(),
         selected_market_observed_ts_ms: start_ts_ms,
         price_to_beat: None,
         price_to_beat_source: None,
@@ -803,14 +817,14 @@ fn candidate_market_with_tokens(
 }
 
 fn selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
-    selection_snapshot_for("MKT-ETH-1", start_ts_ms)
+    selection_snapshot_for(RUNTIME_DEFAULT_SELECTED_MARKET, start_ts_ms)
 }
 
 fn selection_snapshot_with_market_facts(
     start_ts_ms: u64,
     price_to_beat_observed_ts_ms: u64,
 ) -> RuntimeSelectionSnapshot {
-    let mut market = candidate_market_named("MKT-ETH-1", start_ts_ms);
+    let mut market = candidate_market_from_fixture(RUNTIME_DEFAULT_SELECTED_MARKET, start_ts_ms);
     market.price_to_beat = Some(3_100.0);
     market.price_to_beat_source = Some("polymarket_gamma_market_anchor".to_string());
     market.price_to_beat_observed_ts_ms = Some(price_to_beat_observed_ts_ms);
@@ -841,16 +855,16 @@ fn idle_selection_snapshot(reason: &str, published_at_ms: u64) -> RuntimeSelecti
     }
 }
 
-fn selection_snapshot_for(market_id: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+fn selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     RuntimeSelectionSnapshot {
         ruleset_id: "PRIMARY".to_string(),
         decision: SelectionDecision {
             ruleset_id: "PRIMARY".to_string(),
             state: SelectionState::Active {
-                market: candidate_market_named(market_id, start_ts_ms),
+                market: candidate_market_from_fixture(fixture_name, start_ts_ms),
             },
         },
-        eligible_candidates: vec![candidate_market_named(market_id, start_ts_ms)],
+        eligible_candidates: vec![candidate_market_from_fixture(fixture_name, start_ts_ms)],
         published_at_ms: start_ts_ms,
     }
 }
@@ -859,7 +873,8 @@ fn future_selection_snapshot(
     published_at_ms: u64,
     market_start_ts_ms: u64,
 ) -> RuntimeSelectionSnapshot {
-    let mut market = candidate_market_named("MKT-ETH-1", market_start_ts_ms);
+    let mut market =
+        candidate_market_from_fixture(RUNTIME_DEFAULT_SELECTED_MARKET, market_start_ts_ms);
     market.selected_market_observed_ts_ms = published_at_ms;
     market.end_ts_ms = market_start_ts_ms + 300_000;
     market.seconds_to_end = (market.end_ts_ms - published_at_ms) / 1_000;
@@ -881,7 +896,8 @@ fn short_lived_selection_snapshot(
     market_start_ts_ms: u64,
     market_end_ts_ms: u64,
 ) -> RuntimeSelectionSnapshot {
-    let mut market = candidate_market_named("MKT-ETH-1", market_start_ts_ms);
+    let mut market =
+        candidate_market_from_fixture(RUNTIME_DEFAULT_SELECTED_MARKET, market_start_ts_ms);
     market.selected_market_observed_ts_ms = published_at_ms;
     market.end_ts_ms = market_end_ts_ms;
     market.seconds_to_end = (market.end_ts_ms - published_at_ms) / 1_000;
@@ -899,20 +915,20 @@ fn short_lived_selection_snapshot(
 }
 
 fn freeze_selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
-    freeze_selection_snapshot_for("MKT-ETH-1", start_ts_ms)
+    freeze_selection_snapshot_for(RUNTIME_DEFAULT_SELECTED_MARKET, start_ts_ms)
 }
 
-fn freeze_selection_snapshot_for(market_id: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+fn freeze_selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     RuntimeSelectionSnapshot {
         ruleset_id: "PRIMARY".to_string(),
         decision: SelectionDecision {
             ruleset_id: "PRIMARY".to_string(),
             state: SelectionState::Freeze {
-                market: candidate_market_named(market_id, start_ts_ms),
+                market: candidate_market_from_fixture(fixture_name, start_ts_ms),
                 reason: "freeze window".to_string(),
             },
         },
-        eligible_candidates: vec![candidate_market_named(market_id, start_ts_ms)],
+        eligible_candidates: vec![candidate_market_from_fixture(fixture_name, start_ts_ms)],
         published_at_ms: start_ts_ms,
     }
 }
@@ -1301,11 +1317,11 @@ fn add_eth_entry_instruments_with_size_increment(node: &mut LiveNode, size_incre
 }
 
 fn eth_up_instrument_id() -> InstrumentId {
-    InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
+    selected_market_up_instrument_id(RUNTIME_DEFAULT_SELECTED_MARKET)
 }
 
 fn eth_down_instrument_id() -> InstrumentId {
-    InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET")
+    selected_market_down_instrument_id(RUNTIME_DEFAULT_SELECTED_MARKET)
 }
 
 fn drive_eth_entry_submission(mut node: LiveNode, strategy_id: StrategyId) {
@@ -2387,6 +2403,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
     let handle = node.handle();
     let start_ts_ms = 1_000;
     let price_to_beat_observed_ts_ms = 900;
+    let selected_market = selected_market_fixture(RUNTIME_DEFAULT_SELECTED_MARKET);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -2471,15 +2488,21 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
             );
             assert_eq!(
                 decoded.event_facts.get("polymarket_condition_id"),
-                Some(&serde_json::Value::String("condition-eth".to_string()))
+                Some(&serde_json::Value::String(
+                    selected_market.condition_id.clone()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("polymarket_market_slug"),
-                Some(&serde_json::Value::String("MKT-ETH-1".to_string()))
+                Some(&serde_json::Value::String(
+                    selected_market.market_slug.clone()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("polymarket_question_id"),
-                Some(&serde_json::Value::String("question-MKT-ETH-1".to_string()))
+                Some(&serde_json::Value::String(
+                    selected_market.question_id.clone()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get("up_instrument_id"),
@@ -6377,8 +6400,8 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
 
     let market_a_up = eth_up_instrument_id();
     let market_a_down = eth_down_instrument_id();
-    let market_b_up = InstrumentId::from("condition-eth-MKT-ETH-2-UP.POLYMARKET");
-    let market_b_down = InstrumentId::from("condition-eth-MKT-ETH-2-DOWN.POLYMARKET");
+    let market_b_up = selected_market_up_instrument_id(RUNTIME_ROTATION_B_SELECTED_MARKET);
+    let market_b_down = selected_market_down_instrument_id(RUNTIME_ROTATION_B_SELECTED_MARKET);
 
     {
         let cache_handle = node.kernel().cache();
@@ -6403,7 +6426,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
             wait_for_running(&handle).await;
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
-                &selection_snapshot_for("MKT-ETH-1", start_ts_ms),
+                &selection_snapshot_for(RUNTIME_DEFAULT_SELECTED_MARKET, start_ts_ms),
             );
             publish_any(
                 fixture_reference_publish_topic().to_string().into(),
@@ -6440,7 +6463,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
 
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
-                &selection_snapshot_for("MKT-ETH-2", rotation_ts_ms),
+                &selection_snapshot_for(RUNTIME_ROTATION_B_SELECTED_MARKET, rotation_ts_ms),
             );
             publish_any(
                 fixture_reference_publish_topic().to_string().into(),
@@ -6462,7 +6485,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
             );
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
-                &freeze_selection_snapshot_for("MKT-ETH-2", rotation_ts_ms),
+                &freeze_selection_snapshot_for(RUNTIME_ROTATION_B_SELECTED_MARKET, rotation_ts_ms),
             );
 
             for _ in 0..50 {
@@ -6508,12 +6531,12 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
     );
     strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
-    let market_a = candidate_market_with_tokens("MKT-ETH-A", "condition-eth-a", "111", "222", 0);
-    let market_b = candidate_market_with_tokens("MKT-ETH-B", "condition-eth-b", "333", "444", 0);
-    let market_a_up = InstrumentId::from("condition-eth-a-111.POLYMARKET");
-    let market_a_down = InstrumentId::from("condition-eth-a-222.POLYMARKET");
-    let market_b_up = InstrumentId::from("condition-eth-b-333.POLYMARKET");
-    let market_b_down = InstrumentId::from("condition-eth-b-444.POLYMARKET");
+    let market_a = candidate_market_from_fixture(RUNTIME_RECOVERY_A_SELECTED_MARKET, 0);
+    let market_b = candidate_market_from_fixture(RUNTIME_RECOVERY_B_SELECTED_MARKET, 0);
+    let market_a_up = selected_market_up_instrument_id(RUNTIME_RECOVERY_A_SELECTED_MARKET);
+    let market_a_down = selected_market_down_instrument_id(RUNTIME_RECOVERY_A_SELECTED_MARKET);
+    let market_b_up = selected_market_up_instrument_id(RUNTIME_RECOVERY_B_SELECTED_MARKET);
+    let market_b_down = selected_market_down_instrument_id(RUNTIME_RECOVERY_B_SELECTED_MARKET);
     let cache_handle = node.kernel().cache();
 
     {

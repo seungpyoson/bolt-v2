@@ -16,6 +16,9 @@ ETH_CHAINLINK_RUNTIME_TEST_FILE = "tests/eth_chainlink_taker_runtime.rs"
 ETH_CHAINLINK_RUNTIME_TEST_NODE_FIXTURE = (
     "tests/fixtures/eth_chainlink_taker_runtime/test_node.toml"
 )
+UPDOWN_SELECTED_MARKETS_FIXTURE = (
+    "tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml"
+)
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 STRATEGY_CONFIG_SPAN_PATTERN = re.compile(
     r"fn\s+strategy_raw_config\s*\([^)]*\)\s*->\s*Value\s*\{.*?^\}",
@@ -130,7 +133,39 @@ def existing_strategy_test_node_literals(root: Path) -> set[str]:
     return literals
 
 
-def scan_runtime_file(root: Path, path: Path, test_node_literals: set[str]) -> list[Finding]:
+def selected_market_fixture_literals(root: Path) -> set[str]:
+    path = root / UPDOWN_SELECTED_MARKETS_FIXTURE
+    if not path.is_file():
+        return set()
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    literals: set[str] = set()
+    markets = data.get("markets", [])
+    if not isinstance(markets, list):
+        return literals
+
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        for key in ("condition_id", "question_id", "market_slug"):
+            add_string(market.get(key), literals)
+        legs = market.get("legs", [])
+        if not isinstance(legs, list):
+            continue
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            add_string(leg.get("token_id"), literals)
+            add_string(leg.get("instrument_id"), literals)
+
+    return literals
+
+
+def scan_runtime_file(
+    root: Path,
+    path: Path,
+    test_node_literals: set[str],
+    selected_market_literals: set[str],
+) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
     strategy_config_span = span_for(STRATEGY_CONFIG_SPAN_PATTERN, text)
@@ -149,6 +184,19 @@ def scan_runtime_file(root: Path, path: Path, test_node_literals: set[str]) -> l
                     message=(
                         "existing-strategy runtime test-node fixture literal; "
                         "derive from test_node.toml"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
+            continue
+        if value in selected_market_literals:
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "existing-strategy runtime selected-market fixture literal; "
+                        "derive from updown_selected_markets.toml"
                     ),
                     excerpt=match.group(0),
                 )
@@ -205,7 +253,12 @@ def scan_root(root: Path) -> list[Finding]:
     path = root / ETH_CHAINLINK_RUNTIME_TEST_FILE
     if not path.is_file():
         return []
-    return scan_runtime_file(root, path, existing_strategy_test_node_literals(root))
+    return scan_runtime_file(
+        root,
+        path,
+        existing_strategy_test_node_literals(root),
+        selected_market_fixture_literals(root),
+    )
 
 
 def main() -> int:

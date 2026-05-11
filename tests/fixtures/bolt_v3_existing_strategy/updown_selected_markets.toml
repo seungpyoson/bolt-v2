@@ -71,3 +71,75 @@ instrument_id = "0xambiguous-b-333.POLYMARKET"
 outcome = "Down"
 token_id = "444"
 instrument_id = "0xambiguous-b-444.POLYMARKET"
+
+[[markets]]
+name = "runtime_default"
+condition_id = "condition-eth"
+question_id = "question-MKT-ETH-1"
+market_slug = "MKT-ETH-1"
+start_ms = 0
+end_ms = 300000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "MKT-ETH-1-UP"
+instrument_id = "condition-eth-MKT-ETH-1-UP.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "MKT-ETH-1-DOWN"
+instrument_id = "condition-eth-MKT-ETH-1-DOWN.POLYMARKET"
+
+[[markets]]
+name = "runtime_rotation_b"
+condition_id = "condition-eth"
+question_id = "question-MKT-ETH-2"
+market_slug = "MKT-ETH-2"
+start_ms = 0
+end_ms = 300000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "MKT-ETH-2-UP"
+instrument_id = "condition-eth-MKT-ETH-2-UP.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "MKT-ETH-2-DOWN"
+instrument_id = "condition-eth-MKT-ETH-2-DOWN.POLYMARKET"
+
+[[markets]]
+name = "runtime_recovery_a"
+condition_id = "condition-eth-a"
+question_id = "question-MKT-ETH-A"
+market_slug = "MKT-ETH-A"
+start_ms = 0
+end_ms = 300000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "111"
+instrument_id = "condition-eth-a-111.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "222"
+instrument_id = "condition-eth-a-222.POLYMARKET"
+
+[[markets]]
+name = "runtime_recovery_b"
+condition_id = "condition-eth-b"
+question_id = "question-MKT-ETH-B"
+market_slug = "MKT-ETH-B"
+start_ms = 0
+end_ms = 300000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "333"
+instrument_id = "condition-eth-b-333.POLYMARKET"
+
+[[markets.legs]]
+outcome = "Down"
+token_id = "444"
+instrument_id = "condition-eth-b-444.POLYMARKET"

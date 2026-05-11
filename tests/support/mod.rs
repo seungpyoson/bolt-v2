@@ -31,11 +31,15 @@ use nautilus_common::{
     messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
     messages::execution::SubmitOrder,
 };
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{OmsType, OrderSide, OrderType},
-    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue},
+    identifiers::{
+        AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue, VenueOrderId,
+    },
     instruments::InstrumentAny,
+    reports::ExecutionMassStatus,
     types::{AccountBalance, MarginBalance, Price, Quantity},
 };
 use serde::Deserialize;
@@ -43,6 +47,8 @@ use serde::Deserialize;
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static MOCK_EXEC_SUBMISSIONS: OnceLock<Mutex<Vec<RecordedSubmitOrder>>> = OnceLock::new();
+static MOCK_EXTERNAL_ORDER_REGISTRATIONS: OnceLock<Mutex<Vec<RecordedExternalOrderRegistration>>> =
+    OnceLock::new();
 
 fn mock_data_subscriptions() -> &'static Mutex<Vec<String>> {
     MOCK_DATA_SUBSCRIPTIONS.get_or_init(|| Mutex::new(Vec::new()))
@@ -50,6 +56,10 @@ fn mock_data_subscriptions() -> &'static Mutex<Vec<String>> {
 
 fn mock_exec_submissions() -> &'static Mutex<Vec<RecordedSubmitOrder>> {
     MOCK_EXEC_SUBMISSIONS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn mock_external_order_registrations() -> &'static Mutex<Vec<RecordedExternalOrderRegistration>> {
+    MOCK_EXTERNAL_ORDER_REGISTRATIONS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 pub fn clear_mock_data_subscriptions() {
@@ -79,6 +89,23 @@ pub fn clear_mock_exec_submissions() {
 
 pub fn recorded_mock_exec_submissions() -> Vec<RecordedSubmitOrder> {
     mock_exec_submissions().lock().unwrap().clone()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedExternalOrderRegistration {
+    pub client_order_id: ClientOrderId,
+    pub venue_order_id: VenueOrderId,
+    pub instrument_id: InstrumentId,
+    pub strategy_id: StrategyId,
+    pub ts_init: UnixNanos,
+}
+
+pub fn clear_mock_external_order_registrations() {
+    mock_external_order_registrations().lock().unwrap().clear();
+}
+
+pub fn recorded_mock_external_order_registrations() -> Vec<RecordedExternalOrderRegistration> {
+    mock_external_order_registrations().lock().unwrap().clone()
 }
 
 pub struct TempCaseDir {
@@ -411,6 +438,7 @@ pub struct MockExecClientConfig {
     client_id: String,
     account_id: String,
     venue: String,
+    mass_status: Option<ExecutionMassStatus>,
 }
 
 impl MockExecClientConfig {
@@ -419,7 +447,13 @@ impl MockExecClientConfig {
             client_id: client_id.to_string(),
             account_id: account_id.to_string(),
             venue: venue.to_string(),
+            mass_status: None,
         }
+    }
+
+    pub fn with_mass_status(mut self, mass_status: ExecutionMassStatus) -> Self {
+        self.mass_status = Some(mass_status);
+        self
     }
 }
 
@@ -487,6 +521,7 @@ impl ExecutionClientFactory for MockExecutionClientFactory {
             AccountId::from(cfg.account_id.as_str()),
             Venue::from(cfg.venue.as_str()),
             OmsType::Netting,
+            cfg.mass_status.clone(),
         )))
     }
 
@@ -541,16 +576,24 @@ struct MockExecutionClient {
     venue: Venue,
     oms_type: OmsType,
     connected: bool,
+    mass_status: Option<ExecutionMassStatus>,
 }
 
 impl MockExecutionClient {
-    fn new(client_id: ClientId, account_id: AccountId, venue: Venue, oms_type: OmsType) -> Self {
+    fn new(
+        client_id: ClientId,
+        account_id: AccountId,
+        venue: Venue,
+        oms_type: OmsType,
+        mass_status: Option<ExecutionMassStatus>,
+    ) -> Self {
         Self {
             client_id,
             account_id,
             venue,
             oms_type,
             connected: false,
+            mass_status,
         }
     }
 }
@@ -706,6 +749,32 @@ impl ExecutionClient for MockExecutionClient {
     async fn disconnect(&mut self) -> anyhow::Result<()> {
         self.connected = false;
         Ok(())
+    }
+
+    async fn generate_mass_status(
+        &self,
+        _lookback_mins: Option<u64>,
+    ) -> anyhow::Result<Option<ExecutionMassStatus>> {
+        Ok(self.mass_status.clone())
+    }
+
+    fn register_external_order(
+        &self,
+        client_order_id: ClientOrderId,
+        venue_order_id: VenueOrderId,
+        instrument_id: InstrumentId,
+        strategy_id: StrategyId,
+        ts_init: UnixNanos,
+    ) {
+        mock_external_order_registrations().lock().unwrap().push(
+            RecordedExternalOrderRegistration {
+                client_order_id,
+                venue_order_id,
+                instrument_id,
+                strategy_id,
+                ts_init,
+            },
+        );
     }
 
     fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {

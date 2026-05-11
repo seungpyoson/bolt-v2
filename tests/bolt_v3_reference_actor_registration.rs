@@ -8,7 +8,8 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config, bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_config::{LoadedBoltV3Config, REFERENCE_STREAM_ID_PARAMETER, load_bolt_v3_config},
+    bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
 };
 use nautilus_live::node::NodeState;
 
@@ -20,22 +21,37 @@ fn existing_strategy_multi_root_fixture() -> std::path::PathBuf {
     support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root_multi.toml")
 }
 
+fn selected_reference_stream_id(loaded: &LoadedBoltV3Config) -> &str {
+    loaded
+        .strategies
+        .first()
+        .and_then(|strategy| {
+            strategy
+                .config
+                .parameters
+                .get(REFERENCE_STREAM_ID_PARAMETER)
+        })
+        .and_then(toml::Value::as_str)
+        .expect("fixture strategy should select reference stream from TOML")
+}
+
 #[test]
 fn bolt_v3_registers_selected_reference_actor_and_remains_idle_no_trade() {
     let temp_dir = tempfile::tempdir().expect("temp release identity directory should be created");
     let mut loaded = load_bolt_v3_config(&existing_strategy_root_fixture())
         .expect("v3 TOML fixture should load");
     support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
+    let stream_id = selected_reference_stream_id(&loaded).to_string();
     let unused_stream = loaded
         .root
         .reference_streams
-        .get("eth_usd")
-        .expect("fixture should define eth_usd stream")
+        .get(&stream_id)
+        .expect("fixture should define selected reference stream")
         .clone();
     loaded
         .root
         .reference_streams
-        .insert("unused_eth_usd".to_string(), unused_stream);
+        .insert(format!("{stream_id}_unused"), unused_stream);
 
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)

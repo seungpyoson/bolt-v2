@@ -139,6 +139,12 @@ def test_adapter_mapping_file_is_enforced() -> None:
         raise AssertionError("adapter mapping test file must be enforced")
 
 
+def test_reference_actor_registration_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_reference_actor_registration.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("reference actor registration test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_reference_source_id_literal_is_a_finding,
@@ -147,6 +153,7 @@ def main() -> int:
         test_reference_policy_file_is_enforced,
         test_reference_producer_file_is_enforced,
         test_adapter_mapping_file_is_enforced,
+        test_reference_actor_registration_file_is_enforced,
     ]
     for test in tests:
         test()

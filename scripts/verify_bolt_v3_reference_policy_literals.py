@@ -19,6 +19,7 @@ REFERENCE_STREAM_FIXTURE_GLOBS = (
 ROOT_FIXTURE_GLOB = "tests/fixtures/bolt_v3*/root*.toml"
 ENFORCED_TEST_FILES = (
     "tests/bolt_v3_adapter_mapping.rs",
+    "tests/bolt_v3_reference_actor_registration.rs",
     "tests/bolt_v3_reference_policy.rs",
     "tests/bolt_v3_reference_producer.rs",
 )

@@ -987,6 +987,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
             | "fair_probability_unavailable"
             | "insufficient_edge"
             | "market_cooling_down"
+            | "recovery_mode"
             | "position_limit_reached",
         ) => {
             if facts.updown_market_mechanical_outcome != "accepted"

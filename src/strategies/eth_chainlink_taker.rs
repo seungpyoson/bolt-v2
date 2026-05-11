@@ -3876,6 +3876,16 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
     }
 
     if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision
+            .evaluation
+            .gate
+            .blocked_by
+            .contains(&EntryBlockReason::RecoveryMode)
+    {
+        return Some("recovery_mode");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
         && decision.evaluation.gate.blocked_by
             == [EntryBlockReason::ForcedFlat(
                 ForcedFlatReason::StaleChainlink,
@@ -8847,6 +8857,43 @@ mod tests {
             entry_no_action_reason(&decision),
             Some("market_cooling_down")
         );
+    }
+
+    #[test]
+    fn recovery_entry_gate_maps_to_no_action_reason() {
+        let mut strategy = ready_to_trade_strategy();
+        set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+        let gate = strategy.entry_gate_decision_at(2_000);
+        assert!(gate.blocked_by.contains(&EntryBlockReason::RecoveryMode));
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate,
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 0.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: strategy.config.max_position_usdc,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: None,
+                uncertainty_band_probability: None,
+                up_worst_case_ev_bps: None,
+                down_worst_case_ev_bps: None,
+                min_worst_case_ev_bps: None,
+                expected_ev_per_usdc: None,
+                book_impact_cap_usdc: None,
+                effective_entry_notional_cap_usdc: None,
+                sized_notional_usdc: None,
+                selected_side: None,
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("entry_gate_blocked"),
+        };
+
+        assert_eq!(entry_no_action_reason(&decision), Some("recovery_mode"));
     }
 
     #[test]

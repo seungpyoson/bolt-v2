@@ -78,6 +78,8 @@ F13au note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13av note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects literal timeout margins inside `Duration::from_secs(...)` / `Duration::from_millis(...)` expressions in `tests/bolt_v3_order_lifecycle_tracer.rs`. Real-adapter and mock lifecycle run-timeout margins now derive from `test_timing.real_execution_run_timeout_margin_seconds` and `test_timing.mock_lifecycle_run_timeout_margin_seconds` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
 
+F13aw note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects `start_ts_ms + <literal>` timestamp offsets in `tests/bolt_v3_order_lifecycle_tracer.rs`. Order-lifecycle scenario timeline offsets now derive from `[timeline_offsets_milliseconds]` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

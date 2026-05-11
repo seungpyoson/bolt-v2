@@ -83,6 +83,7 @@ struct OrderLifecycleTracerFixture {
     selected_binary_option: SelectedBinaryOptionFixture,
     market_snapshot: MarketSnapshotFixture,
     test_timing: TestTimingFixture,
+    timeline_offsets_milliseconds: TimelineOffsetsMillisecondsFixture,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +121,21 @@ struct TestTimingFixture {
     submit_poll_attempts: usize,
     real_execution_run_timeout_margin_seconds: u64,
     mock_lifecycle_run_timeout_margin_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TimelineOffsetsMillisecondsFixture {
+    real_execution_cancel_command: u64,
+    initial_reference_snapshot: u64,
+    entry_rejected_event: u64,
+    entry_reference_snapshot: u64,
+    entry_accepted_event: u64,
+    entry_rejected_retry_snapshot: u64,
+    entry_filled_event: u64,
+    freeze_snapshot: u64,
+    exit_accepted_event: u64,
+    exit_canceled_event: u64,
+    replacement_freeze_snapshot: u64,
 }
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -250,6 +266,14 @@ fn order_lifecycle_mock_run_timeout(loaded: &LoadedBoltV3Config) -> Duration {
             + loaded.root.nautilus.timeout_shutdown_seconds
             + test_timing_fixture().mock_lifecycle_run_timeout_margin_seconds,
     )
+}
+
+fn timeline_offsets_milliseconds() -> &'static TimelineOffsetsMillisecondsFixture {
+    &order_lifecycle_tracer_fixture().timeline_offsets_milliseconds
+}
+
+fn offset_ts_ms(start_ts_ms: u64, offset_milliseconds: u64) -> u64 {
+    start_ts_ms + offset_milliseconds
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -1220,7 +1244,10 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 200,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().initial_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1248,7 +1275,10 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                         reference_topic.into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 400,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().entry_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1271,7 +1301,12 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                         up,
                         OrderSide::Buy,
                         UUID4::new(),
-                        UnixNanos::from((start_ts_ms + 100) * 1_000_000),
+                        UnixNanos::from(
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().real_execution_cancel_command,
+                            ) * 1_000_000,
+                        ),
                         None,
                     );
                     msgbus::send_trading_command(
@@ -1375,7 +1410,10 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 200,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().initial_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1397,7 +1435,10 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                         reference_topic.into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 400,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().entry_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1515,7 +1556,10 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 200,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().initial_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1537,7 +1581,10 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 400,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().entry_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1557,7 +1604,10 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                             send_rejected_to_exec_engine(
                                 &loaded_for_control,
                                 &submission,
-                                start_ts_ms + 300,
+                                offset_ts_ms(
+                                    start_ts_ms,
+                                    timeline_offsets_milliseconds().entry_rejected_event,
+                                ),
                             );
                             break;
                         }
@@ -1566,13 +1616,22 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
 
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
-                        &selection_snapshot(&loaded_for_control, start_ts_ms + 600),
+                        &selection_snapshot(
+                            &loaded_for_control,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().entry_rejected_retry_snapshot,
+                            ),
+                        ),
                     );
                     publish_any(
                         reference_topic.into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 600,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().entry_rejected_retry_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1697,7 +1756,10 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 200,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().initial_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1719,7 +1781,10 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 400,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().entry_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1747,24 +1812,39 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                     let venue_order_id = send_accepted_to_exec_engine(
                         &loaded_for_control,
                         &entry_submission,
-                        start_ts_ms + 500,
+                        offset_ts_ms(
+                            start_ts_ms,
+                            timeline_offsets_milliseconds().entry_accepted_event,
+                        ),
                     );
                     send_filled_to_exec_engine(
                         &loaded_for_control,
                         &entry_submission,
                         venue_order_id,
-                        start_ts_ms + 600,
+                        offset_ts_ms(
+                            start_ts_ms,
+                            timeline_offsets_milliseconds().entry_filled_event,
+                        ),
                     );
 
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
-                        &freeze_selection_snapshot(&loaded_for_control, start_ts_ms + 800),
+                        &freeze_selection_snapshot(
+                            &loaded_for_control,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().freeze_snapshot,
+                            ),
+                        ),
                     );
                     publish_any(
                         reference_topic.into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 800,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().freeze_snapshot,
+                            ),
                             3_101.0,
                             3_094.0,
                         ),
@@ -1889,7 +1969,10 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 200,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().initial_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1911,7 +1994,10 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 400,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().entry_reference_snapshot,
+                            ),
                             3_101.0,
                             3_105.0,
                         ),
@@ -1939,24 +2025,39 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     let entry_venue_order_id = send_accepted_to_exec_engine(
                         &loaded_for_control,
                         &entry_submission,
-                        start_ts_ms + 500,
+                        offset_ts_ms(
+                            start_ts_ms,
+                            timeline_offsets_milliseconds().entry_accepted_event,
+                        ),
                     );
                     send_filled_to_exec_engine(
                         &loaded_for_control,
                         &entry_submission,
                         entry_venue_order_id,
-                        start_ts_ms + 600,
+                        offset_ts_ms(
+                            start_ts_ms,
+                            timeline_offsets_milliseconds().entry_filled_event,
+                        ),
                     );
 
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
-                        &freeze_selection_snapshot(&loaded_for_control, start_ts_ms + 800),
+                        &freeze_selection_snapshot(
+                            &loaded_for_control,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().freeze_snapshot,
+                            ),
+                        ),
                     );
                     publish_any(
                         reference_topic.clone().into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 800,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().freeze_snapshot,
+                            ),
                             3_101.0,
                             3_094.0,
                         ),
@@ -1984,24 +2085,39 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                     let exit_venue_order_id = send_accepted_to_exec_engine(
                         &loaded_for_control,
                         &exit_submission,
-                        start_ts_ms + 900,
+                        offset_ts_ms(
+                            start_ts_ms,
+                            timeline_offsets_milliseconds().exit_accepted_event,
+                        ),
                     );
                     send_canceled_to_exec_engine(
                         &loaded_for_control,
                         &exit_submission,
                         exit_venue_order_id,
-                        start_ts_ms + 1_000,
+                        offset_ts_ms(
+                            start_ts_ms,
+                            timeline_offsets_milliseconds().exit_canceled_event,
+                        ),
                     );
 
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
-                        &freeze_selection_snapshot(&loaded_for_control, start_ts_ms + 1_200),
+                        &freeze_selection_snapshot(
+                            &loaded_for_control,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().replacement_freeze_snapshot,
+                            ),
+                        ),
                     );
                     publish_any(
                         reference_topic.into(),
                         &reference_snapshot(
                             &loaded_for_control,
-                            start_ts_ms + 1_200,
+                            offset_ts_ms(
+                                start_ts_ms,
+                                timeline_offsets_milliseconds().replacement_freeze_snapshot,
+                            ),
                             3_101.0,
                             3_094.0,
                         ),

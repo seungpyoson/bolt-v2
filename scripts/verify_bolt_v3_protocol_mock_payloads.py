@@ -49,6 +49,7 @@ ORDER_LIFECYCLE_FEE_REQUEST_COUNT_PATTERN = re.compile(
     r"spawn_fee_rate_server\(\s*\d[\d_]*\s*\)"
 )
 ORDER_LIFECYCLE_POLL_ATTEMPT_PATTERN = re.compile(r"for\s+_\s+in\s+0\.\.\d[\d_]*\s*\{")
+ORDER_LIFECYCLE_TIMESTAMP_OFFSET_PATTERN = re.compile(r"\bstart_ts_ms\s*\+\s*\d[\d_]*")
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,15 @@ def scan_file(
                     path=rel,
                     line=line_number(text, match.start()),
                     message="order-lifecycle poll attempt literal; derive from TOML fixture",
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_TIMESTAMP_OFFSET_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="order-lifecycle timestamp offset literal; derive from TOML fixture",
                     excerpt=match.group(0),
                 )
             )

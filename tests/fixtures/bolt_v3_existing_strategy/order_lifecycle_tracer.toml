@@ -28,3 +28,16 @@ fee_request_recv_timeout_seconds = 1
 submit_poll_attempts = 50
 real_execution_run_timeout_margin_seconds = 5
 mock_lifecycle_run_timeout_margin_seconds = 1
+
+[timeline_offsets_milliseconds]
+real_execution_cancel_command = 100
+initial_reference_snapshot = 200
+entry_rejected_event = 300
+entry_reference_snapshot = 400
+entry_accepted_event = 500
+entry_rejected_retry_snapshot = 600
+entry_filled_event = 600
+freeze_snapshot = 800
+exit_accepted_event = 900
+exit_canceled_event = 1000
+replacement_freeze_snapshot = 1200

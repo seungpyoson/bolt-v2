@@ -1301,11 +1301,11 @@ fn drive_eth_entry_selected_market_open_orders_no_action(
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -1642,11 +1642,11 @@ fn drive_eth_entry_stale_reference_no_action(mut node: LiveNode, strategy_id: St
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 1, 3_101.0, 3_105.0),
             );
             sleep(Duration::from_millis(20)).await;
@@ -1744,11 +1744,11 @@ fn drive_eth_entry_market_not_started_no_action(mut node: LiveNode, strategy_id:
                 &future_selection_snapshot(start_ts_ms, market_start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -1796,11 +1796,11 @@ fn drive_eth_entry_market_ended_no_action(mut node: LiveNode, strategy_id: Strat
             );
             sleep(Duration::from_millis(1_250)).await;
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(market_end_ts_ms + 250, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(market_end_ts_ms + 450, 3_101.0, 3_105.0),
             );
 
@@ -1846,11 +1846,11 @@ fn drive_eth_entry_pre_submit_rejection(mut node: LiveNode, strategy_id: Strateg
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -1982,11 +1982,11 @@ fn drive_eth_exit_sellable_rejection(mut node: LiveNode, strategy_id: StrategyId
                 &freeze_selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
             publish_deltas(
@@ -2054,11 +2054,11 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -2349,7 +2349,10 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                 .as_any()
                 .downcast_ref::<BoltV3MarketSelectionDecisionEvent>()
                 .expect("BoltV3MarketSelectionDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(decoded.decision_event_type, "market_selection_result");
             assert!(!decoded.decision_trace_id.is_empty());
@@ -2531,7 +2534,10 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
                 .as_any()
                 .downcast_ref::<BoltV3MarketSelectionDecisionEvent>()
                 .expect("BoltV3MarketSelectionDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(decoded.decision_event_type, "market_selection_result");
             assert!(!decoded.decision_trace_id.is_empty());
@@ -2598,7 +2604,7 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -2628,7 +2634,10 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
         entry_evaluation_events_with_decision(&evaluation_events, entry_decision_enter());
     assert_eq!(accepted_evaluation_events.len(), 1);
     let decoded = accepted_evaluation_events[0];
-    assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+    assert_eq!(
+        decoded.strategy_instance_id,
+        strategy_id_from_fixture_config().to_string()
+    );
     assert_eq!(decoded.client_id, "TEST");
     let updown_side = decoded
         .event_facts
@@ -2653,7 +2662,10 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
                 .as_any()
                 .downcast_ref::<BoltV3EntryOrderSubmissionDecisionEvent>()
                 .expect("BoltV3EntryOrderSubmissionDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(decoded.decision_trace_id, evaluation_trace_id);
             assert_eq!(
@@ -2675,7 +2687,7 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -2683,7 +2695,7 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -2805,7 +2817,7 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -2813,7 +2825,7 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -2870,7 +2882,7 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -2878,7 +2890,7 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(MissingFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3066,7 +3078,7 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3074,7 +3086,7 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3102,7 +3114,10 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
         entry_no_action_events_with_reason(&evaluation_events, "stale_reference_quote");
     match stale_reference_events.last() {
         Some(decoded) => {
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
@@ -3297,7 +3312,7 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3305,7 +3320,7 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3335,7 +3350,10 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
     );
     match fair_probability_events.last() {
         Some(decoded) => {
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
@@ -3371,7 +3389,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3379,7 +3397,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3412,7 +3430,10 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
@@ -3457,7 +3478,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3465,7 +3486,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3820,7 +3841,7 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3828,7 +3849,7 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3856,7 +3877,10 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
@@ -3908,7 +3932,7 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3916,7 +3940,7 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -3944,7 +3968,10 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_decision"),
@@ -4088,7 +4115,7 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
     let temp_dir = TempDir::new().unwrap();
     let node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4096,7 +4123,7 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -4123,7 +4150,10 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
                 .as_any()
                 .downcast_ref::<BoltV3EntryPreSubmitRejectionDecisionEvent>()
                 .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_pre_submit_rejection_reason"),
@@ -4195,7 +4225,7 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4203,7 +4233,7 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -4236,7 +4266,10 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
                 .as_any()
                 .downcast_ref::<BoltV3EntryPreSubmitRejectionDecisionEvent>()
                 .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("entry_pre_submit_rejection_reason"),
@@ -4286,7 +4319,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4294,7 +4327,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -4318,7 +4351,10 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
         exit_pre_submit_rejection_events_with_reason(&rejection_events, "exit_price_missing");
     match exit_price_missing_events.last() {
         Some(decoded) => {
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
@@ -4447,7 +4483,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4455,7 +4491,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -4484,7 +4520,10 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
         exit_pre_submit_rejection_events_with_reason(&rejection_events, "invalid_quantity");
     match invalid_quantity_events.last() {
         Some(decoded) => {
-            assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
+            assert_eq!(
+                decoded.strategy_instance_id,
+                strategy_id_from_fixture_config().to_string()
+            );
             assert_eq!(decoded.client_id, "TEST");
             assert_eq!(
                 decoded.event_facts.get("exit_pre_submit_rejection_reason"),
@@ -4604,7 +4643,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4612,7 +4651,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -4846,7 +4885,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4854,7 +4893,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -4969,7 +5008,7 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_decision_evidence_write_
     std::fs::write(&occupied_path, b"occupied").unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(&occupied_path),
@@ -4977,7 +5016,7 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_decision_evidence_write_
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -5004,7 +5043,7 @@ fn eth_chainlink_taker_runtime_blocks_exit_submit_when_decision_evidence_write_f
     std::fs::write(&occupied_path, b"occupied").unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(&occupied_path),
@@ -5012,7 +5051,7 @@ fn eth_chainlink_taker_runtime_blocks_exit_submit_when_decision_evidence_write_f
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -5039,7 +5078,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
     std::fs::write(&occupied_path, b"occupied").unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(&occupied_path),
@@ -5047,7 +5086,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -5094,11 +5133,11 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
                 &freeze_selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
             publish_deltas(
@@ -5121,7 +5160,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
                 &freeze_selection_snapshot(start_ts_ms + 1),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 400, 3_102.0, 3_106.0),
             );
             publish_deltas(
@@ -5157,12 +5196,12 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -5194,11 +5233,11 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
             publish_deltas(
@@ -5281,12 +5320,12 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -5319,11 +5358,11 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -5398,12 +5437,12 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -5436,11 +5475,11 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_100.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_095.0, 3_094.0),
             );
 
@@ -6022,12 +6061,12 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -6061,11 +6100,11 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
@@ -6118,12 +6157,12 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -6172,11 +6211,11 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
             publish_deltas(
@@ -6219,12 +6258,12 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -6261,11 +6300,11 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
                 &selection_snapshot_for("MKT-ETH-1", start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
             publish_deltas(
@@ -6298,7 +6337,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
                 &selection_snapshot_for("MKT-ETH-2", rotation_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(rotation_ts_ms, 3_101.0, 3_104.0),
             );
             publish_deltas(
@@ -6352,12 +6391,12 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -6456,7 +6495,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
                 &market_a_selection,
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             clear_mock_exec_submissions();
@@ -6466,7 +6505,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
                 &market_b_selection,
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(rotation_ts_ms, 3_101.0, 3_104.0),
             );
             publish_deltas(
@@ -6531,12 +6570,12 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
 
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_id = strategy_id_from_fixture_config();
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(TradingState::Active),
         ),
     );
@@ -6577,11 +6616,11 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
                 &selection_snapshot(start_ts_ms),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
             );
             publish_any(
-                "platform.reference.test.chainlink".to_string().into(),
+                fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
             publish_any(

@@ -6,8 +6,10 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -16,10 +18,14 @@ ENFORCED_TEST_FILES = (
     "tests/bolt_v3_order_lifecycle_tracer.rs",
     "tests/bolt_v3_reconciliation_restart.rs",
 )
+ORDER_LIFECYCLE_PROTOCOL_FIXTURE = (
+    "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml"
+)
 RAW_STRING_PATTERN = re.compile(
     r'(?<![A-Za-z0-9_])r(?P<hashes>#*)"(?P<body>.*?)"(?P=hashes)',
     re.DOTALL,
 )
+STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 
 
 @dataclass(frozen=True)
@@ -60,7 +66,33 @@ def looks_like_json_object(text: str) -> bool:
     return False
 
 
-def scan_file(root: Path, path: Path) -> list[Finding]:
+def string_value(literal: str) -> str:
+    return bytes(literal[1:-1], "utf-8").decode("unicode_escape")
+
+
+def collect_strings(value: Any, strings: set[str]) -> None:
+    if isinstance(value, str) and value:
+        strings.add(value)
+        return
+    if isinstance(value, dict):
+        for child in value.values():
+            collect_strings(child, strings)
+        return
+    if isinstance(value, list):
+        for child in value:
+            collect_strings(child, strings)
+
+
+def order_lifecycle_protocol_fixture_literals(root: Path) -> set[str]:
+    path = root / ORDER_LIFECYCLE_PROTOCOL_FIXTURE
+    if not path.is_file():
+        return set()
+    strings: set[str] = set()
+    collect_strings(tomllib.loads(path.read_text(encoding="utf-8")), strings)
+    return strings
+
+
+def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Finding]:
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(root).as_posix()
     findings: list[Finding] = []
@@ -76,15 +108,31 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                 excerpt=first_nonblank_line(body),
             )
         )
+    for match in STRING_PATTERN.finditer(text):
+        literal = match.group(0)
+        if string_value(literal) not in fixture_literals:
+            continue
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message=(
+                    "order-lifecycle protocol fixture literal; derive from "
+                    "order_lifecycle_tracer.toml"
+                ),
+                excerpt=literal,
+            )
+        )
     return findings
 
 
 def scan_root(root: Path) -> list[Finding]:
     findings: list[Finding] = []
+    fixture_literals = order_lifecycle_protocol_fixture_literals(root)
     for relative_path in ENFORCED_TEST_FILES:
         path = root / relative_path
         if path.is_file():
-            findings.extend(scan_file(root, path))
+            findings.extend(scan_file(root, path, fixture_literals))
     return findings
 
 

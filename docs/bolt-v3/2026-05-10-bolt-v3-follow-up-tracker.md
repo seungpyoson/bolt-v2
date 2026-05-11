@@ -60,6 +60,8 @@ F13al note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.p
 
 F13am note: `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` now rejects selected-market fixture names in instrument gate/readiness tests. Those tests select current, stale, and ambiguous fixture markets through each market's `readiness_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of Rust string literals.
 
+F13an note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects order-lifecycle protocol fixture string values in `tests/bolt_v3_order_lifecycle_tracer.rs`. Local Polymarket accepted order ID, token IDs, fee-request count, and local NT execution timeouts now live in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

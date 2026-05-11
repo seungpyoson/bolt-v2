@@ -58,6 +58,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use serde::Deserialize;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     RecordedSubmitOrder, clear_mock_exec_submissions, recorded_mock_exec_submissions,
@@ -74,13 +75,65 @@ use tokio_tungstenite::accept_async;
 use ustr::Ustr;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-const LOCAL_POLYMARKET_ORDER_ID: &str = "local-venue-order-1";
-const LOCAL_POLYMARKET_FEE_REQUESTS_PER_BINARY_MARKET: usize = 2;
-const LOCAL_POLYMARKET_UP_TOKEN_ID: &str = "111";
-const LOCAL_POLYMARKET_DOWN_TOKEN_ID: &str = "222";
+static ORDER_LIFECYCLE_TRACER_FIXTURE: OnceLock<OrderLifecycleTracerFixture> = OnceLock::new();
+
+#[derive(Debug, Deserialize)]
+struct OrderLifecycleTracerFixture {
+    local_polymarket: LocalPolymarketFixture,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalPolymarketFixture {
+    accepted_order_id: String,
+    up_token_id: String,
+    down_token_id: String,
+    fee_requests_per_binary_market: usize,
+    http_timeout_seconds: i64,
+    ack_timeout_seconds: i64,
+}
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
     RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
+}
+
+fn order_lifecycle_tracer_fixture() -> &'static OrderLifecycleTracerFixture {
+    ORDER_LIFECYCLE_TRACER_FIXTURE.get_or_init(|| {
+        let path = support::repo_path(
+            "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml",
+        );
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+        toml::from_str(&text)
+            .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()))
+    })
+}
+
+fn local_polymarket_fixture() -> &'static LocalPolymarketFixture {
+    &order_lifecycle_tracer_fixture().local_polymarket
+}
+
+fn local_polymarket_order_id() -> &'static str {
+    local_polymarket_fixture().accepted_order_id.as_str()
+}
+
+fn local_polymarket_fee_requests_per_binary_market() -> usize {
+    local_polymarket_fixture().fee_requests_per_binary_market
+}
+
+fn local_polymarket_up_token_id() -> String {
+    local_polymarket_fixture().up_token_id.clone()
+}
+
+fn local_polymarket_down_token_id() -> String {
+    local_polymarket_fixture().down_token_id.clone()
+}
+
+fn local_polymarket_http_timeout_seconds() -> i64 {
+    local_polymarket_fixture().http_timeout_seconds
+}
+
+fn local_polymarket_ack_timeout_seconds() -> i64 {
+    local_polymarket_fixture().ack_timeout_seconds
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -325,15 +378,15 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
                     ("GET", "/fee-rate") => fee_rate_body.as_ref().clone(),
                     ("POST", "/order") => protocol_payload_template(
                         "polymarket_order_success_template.json",
-                        &[("order_id", LOCAL_POLYMARKET_ORDER_ID)],
+                        &[("order_id", local_polymarket_order_id())],
                     ),
                     ("DELETE", "/orders") => protocol_payload_template(
                         "polymarket_cancel_success_template.json",
-                        &[("order_id", LOCAL_POLYMARKET_ORDER_ID)],
+                        &[("order_id", local_polymarket_order_id())],
                     ),
                     ("DELETE", "/order") => protocol_payload_template(
                         "polymarket_cancel_success_template.json",
-                        &[("order_id", LOCAL_POLYMARKET_ORDER_ID)],
+                        &[("order_id", local_polymarket_order_id())],
                     ),
                     _ => unexpected_request_body.as_ref().clone(),
                 };
@@ -441,8 +494,14 @@ fn point_execution_to_local_polymarket_server(
         "base_url_data_api".to_string(),
         toml::Value::String(server.http_base_url.clone()),
     );
-    execution.insert("http_timeout_seconds".to_string(), toml::Value::Integer(1));
-    execution.insert("ack_timeout_seconds".to_string(), toml::Value::Integer(1));
+    execution.insert(
+        "http_timeout_seconds".to_string(),
+        toml::Value::Integer(local_polymarket_http_timeout_seconds()),
+    );
+    execution.insert(
+        "ack_timeout_seconds".to_string(),
+        toml::Value::Integer(local_polymarket_ack_timeout_seconds()),
+    );
 }
 
 fn client_configs_with_real_polymarket_execution(
@@ -527,8 +586,8 @@ fn selected_market(loaded: &LoadedBoltV3Config, start_ts_ms: u64) -> CandidateMa
     let market_id = configured_target_id(loaded);
     let underlying = underlying_asset(loaded);
     let condition_id = format!("condition-{}", underlying.to_ascii_lowercase());
-    let up_token_id = LOCAL_POLYMARKET_UP_TOKEN_ID.to_string();
-    let down_token_id = LOCAL_POLYMARKET_DOWN_TOKEN_ID.to_string();
+    let up_token_id = local_polymarket_up_token_id();
+    let down_token_id = local_polymarket_down_token_id();
     CandidateMarket {
         market_id: market_id.clone(),
         market_slug: market_id.clone(),
@@ -1058,7 +1117,7 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                         &server,
                         "GET",
                         "/fee-rate",
-                        LOCAL_POLYMARKET_FEE_REQUESTS_PER_BINARY_MARKET,
+                        local_polymarket_fee_requests_per_binary_market(),
                     )
                     .await;
                     publish_any(
@@ -1124,7 +1183,7 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
             );
             assert_eq!(cancel_orders.target, "/orders");
             assert!(
-                cancel_orders.body.contains(LOCAL_POLYMARKET_ORDER_ID),
+                cancel_orders.body.contains(local_polymarket_order_id()),
                 "real NT Polymarket cancel should reference accepted venue order id: {}",
                 cancel_orders.body
             );

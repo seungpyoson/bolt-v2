@@ -77,3 +77,5 @@ F13ak extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals
 F13al extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so existing-strategy runtime selected-market fixture names must derive from each market's `runtime_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of repeated Rust string constants.
 
 F13am extends `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` so instrument gate/readiness selected-market fixture names must derive from each market's `readiness_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of Rust string literals.
+
+F13an extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so order-lifecycle protocol fixture string values must derive from `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml` instead of Rust string constants. The fixture owns local Polymarket accepted order ID, token IDs, fee-request count, and local NT execution timeouts.

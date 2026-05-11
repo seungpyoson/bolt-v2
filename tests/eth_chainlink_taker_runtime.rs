@@ -264,6 +264,15 @@ fn strategy_raw_config_with_stale_reference_window(stale_ms: i64) -> Value {
     config
 }
 
+fn strategy_raw_config_with_fast_venue_incoherent_entry_gate() -> Value {
+    let mut config = strategy_raw_config_with_stale_reference_window(1);
+    config
+        .as_table_mut()
+        .unwrap()
+        .insert("lead_agreement_min_corr".to_string(), Value::Float(1.0));
+    config
+}
+
 fn strategy_raw_config_with_pricing_kurtosis(pricing_kurtosis: f64) -> Value {
     let mut config = strategy_raw_config();
     config.as_table_mut().unwrap().insert(
@@ -2704,6 +2713,90 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
     assert!(
         submission_events.is_empty(),
         "stale-reference entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
+fn eth_chainlink_taker_runtime_writes_fast_venue_incoherent_no_action_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = strategy_id_from_fixture_config();
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        fixture_reference_publish_topic().to_string(),
+        Some(TradingState::Active),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(
+        &trader,
+        ETH_CHAINLINK_TAKER_KIND,
+        &strategy_raw_config_with_fast_venue_incoherent_entry_gate(),
+    )
+    .unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_stale_reference_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "fast-venue-incoherent entry evaluation must not submit order"
+    );
+
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let fast_venue_event = evaluation_events.iter().find_map(|event| {
+        let nautilus_model::data::Data::Custom(custom) = event else {
+            return None;
+        };
+        let decoded = custom
+            .data
+            .as_any()
+            .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()?;
+        (decoded.event_facts.get("entry_no_action_reason")
+            == Some(&serde_json::Value::String(
+                "fast_venue_incoherent".to_string(),
+            )))
+        .then_some(decoded)
+    });
+    match fast_venue_event {
+        Some(decoded) => {
+            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+            assert_eq!(decoded.client_id, common_decision_context().client_id);
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String("no_action".to_string()))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    "fast_venue_incoherent".to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_side"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+        None => panic!("expected fast-venue-incoherent no-action event"),
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
+    assert!(
+        submission_events.is_empty(),
+        "fast-venue-incoherent entry evaluation must not persist order submission"
     );
 }
 

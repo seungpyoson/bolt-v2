@@ -3904,6 +3904,17 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
     }
 
     if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision.evaluation.gate.blocked_by.iter().any(|reason| {
+            matches!(
+                reason,
+                EntryBlockReason::ForcedFlat(ForcedFlatReason::FastVenueIncoherent)
+            )
+        })
+    {
+        return Some("fast_venue_incoherent");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
         && decision.evaluation.gate.blocked_by
             == [EntryBlockReason::ForcedFlat(
                 ForcedFlatReason::StaleChainlink,
@@ -9012,6 +9023,58 @@ mod tests {
         };
 
         assert_eq!(entry_no_action_reason(&decision), Some("thin_book"));
+    }
+
+    #[test]
+    fn fast_venue_incoherent_entry_gate_maps_to_no_action_reason() {
+        let mut strategy = ready_to_trade_strategy();
+        let last_reference_ts_ms = strategy
+            .active
+            .last_reference_ts_ms
+            .expect("ready strategy must have reference timestamp");
+        strategy.active.fast_venue_incoherent = true;
+        let gate = strategy.entry_gate_decision_at(
+            last_reference_ts_ms + strategy.config.forced_flat_stale_chainlink_ms + 1,
+        );
+        assert_eq!(
+            gate.blocked_by,
+            vec![
+                EntryBlockReason::ForcedFlat(ForcedFlatReason::StaleChainlink),
+                EntryBlockReason::ForcedFlat(ForcedFlatReason::FastVenueIncoherent),
+            ]
+        );
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate,
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 0.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: strategy.config.max_position_usdc,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: None,
+                uncertainty_band_probability: None,
+                up_worst_case_ev_bps: None,
+                down_worst_case_ev_bps: None,
+                min_worst_case_ev_bps: None,
+                expected_ev_per_usdc: None,
+                book_impact_cap_usdc: None,
+                effective_entry_notional_cap_usdc: None,
+                sized_notional_usdc: None,
+                selected_side: None,
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("entry_gate_blocked"),
+        };
+
+        assert_eq!(
+            entry_no_action_reason(&decision),
+            Some("fast_venue_incoherent")
+        );
     }
 
     #[test]

@@ -1200,6 +1200,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
             | "recovery_mode"
             | "one_position_invariant"
             | "thin_book"
+            | "fast_venue_incoherent"
             | "position_limit_reached",
         ) => {
             if facts.updown_market_mechanical_outcome != "accepted"

@@ -758,9 +758,13 @@ pub fn build_fee_provider(
         cfg.funder_address,
     )
     .map_err(|error| format!("failed to resolve Polymarket fee credentials: {error}"))?;
-    let client =
-        PolymarketClobHttpClient::new(secrets.credential, secrets.address, None, timeout_seconds)
-            .map_err(|error| format!("failed to create Polymarket fee HTTP client: {error}"))?;
+    let client = PolymarketClobHttpClient::new(
+        secrets.credential,
+        secrets.address,
+        Some(cfg.base_url_http),
+        timeout_seconds,
+    )
+    .map_err(|error| format!("failed to create Polymarket fee HTTP client: {error}"))?;
     Ok(Arc::new(PolymarketClobFeeProvider::new(client)))
 }
 

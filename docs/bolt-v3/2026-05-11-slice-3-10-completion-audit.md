@@ -73,3 +73,5 @@ F13ai extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` s
 F13aj extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime decision-event values must use exported decision-event contract constants instead of repeated Rust string literals. This covers event values, market-selection outcomes, entry/exit decisions, mechanical outcomes, order side/type/time-in-force values, up/down side values, and exit-evaluation reason values.
 
 F13ak extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so existing-strategy runtime target fixture values must derive from the v3 strategy TOML through `BoltV3MarketSelectionContext` instead of repeated Rust string literals.
+
+F13al extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so existing-strategy runtime selected-market fixture names must derive from each market's `runtime_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of repeated Rust string constants.

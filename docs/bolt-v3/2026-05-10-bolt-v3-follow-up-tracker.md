@@ -56,6 +56,8 @@ F13aj note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13ak note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now rejects existing-strategy runtime target fixture values in `tests/eth_chainlink_taker_runtime.rs`. Market-selection decision-event target facts now derive from the v3 strategy TOML through `BoltV3MarketSelectionContext` instead of repeated Rust literals.
 
+F13al note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now rejects existing-strategy runtime selected-market fixture names. Runtime tests select default, rotation, and recovery market fixtures through each market's `runtime_role` in `tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml` instead of repeated Rust string constants.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

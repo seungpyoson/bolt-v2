@@ -144,12 +144,22 @@ pub struct UpdownSelectedMarketLegFixture {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdownSelectedMarketFixture {
     pub name: String,
+    pub runtime_role: Option<UpdownSelectedMarketRuntimeRole>,
     pub condition_id: String,
     pub question_id: String,
     pub market_slug: String,
     pub start_ms: u64,
     pub end_ms: u64,
     pub legs: Vec<UpdownSelectedMarketLegFixture>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdownSelectedMarketRuntimeRole {
+    Default,
+    RotationB,
+    RecoveryA,
+    RecoveryB,
 }
 
 impl UpdownSelectedMarketFixture {
@@ -166,17 +176,46 @@ struct UpdownSelectedMarketsFixtureFile {
     markets: Vec<UpdownSelectedMarketFixture>,
 }
 
-pub fn bolt_v3_updown_selected_market_fixture(name: &str) -> UpdownSelectedMarketFixture {
+fn load_updown_selected_markets_fixture_file() -> (PathBuf, UpdownSelectedMarketsFixtureFile) {
     let path = repo_path("tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml");
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
     let fixture: UpdownSelectedMarketsFixtureFile = toml::from_str(&text)
         .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
+    (path, fixture)
+}
+
+fn selected_market_fixture_by_name(
+    path: &Path,
+    fixture: UpdownSelectedMarketsFixtureFile,
+    name: &str,
+) -> UpdownSelectedMarketFixture {
     fixture
         .markets
         .into_iter()
         .find(|market| market.name == name)
         .unwrap_or_else(|| panic!("{} should define market fixture {name}", path.display()))
+}
+
+pub fn bolt_v3_updown_selected_market_fixture(name: &str) -> UpdownSelectedMarketFixture {
+    let (path, fixture) = load_updown_selected_markets_fixture_file();
+    selected_market_fixture_by_name(&path, fixture, name)
+}
+
+pub fn bolt_v3_updown_runtime_selected_market_fixture(
+    role: UpdownSelectedMarketRuntimeRole,
+) -> UpdownSelectedMarketFixture {
+    let (path, fixture) = load_updown_selected_markets_fixture_file();
+    fixture
+        .markets
+        .into_iter()
+        .find(|market| market.runtime_role == Some(role))
+        .unwrap_or_else(|| {
+            panic!(
+                "{} should define runtime selected-market fixture role {role:?}",
+                path.display()
+            )
+        })
 }
 
 pub fn attach_test_release_identity_manifest(loaded: &mut LoadedBoltV3Config, temp_dir: &Path) {

@@ -241,6 +241,43 @@ instrument_id = "condition-fixture-111.POLYMARKET"
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_selected_market_fixture_name_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        fixture_path = (
+            root
+            / "tests/fixtures/bolt_v3_existing_strategy/updown_selected_markets.toml"
+        )
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        fixture_path.write_text(
+            """
+[[markets]]
+name = "runtime_fixture"
+condition_id = "condition-fixture"
+question_id = "question-fixture"
+market_slug = "market-fixture"
+start_ms = 0
+end_ms = 300000
+
+[[markets.legs]]
+outcome = "Up"
+token_id = "111"
+instrument_id = "condition-fixture-111.POLYMARKET"
+""",
+            encoding="utf-8",
+        )
+        write_runtime_test(root, 'fn probe() { let _ = "runtime_fixture"; }\n')
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "selected-market fixture literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_selection_ruleset_literal_is_a_finding() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -408,6 +445,7 @@ def main() -> int:
         test_market_selection_context_literal_fields_are_findings,
         test_target_fixture_literal_value_is_a_finding,
         test_selected_market_fixture_literal_is_a_finding,
+        test_selected_market_fixture_name_literal_is_a_finding,
         test_selection_ruleset_literal_is_a_finding,
         test_reference_stream_fixture_literal_is_a_finding,
         test_resolution_basis_fixture_literal_is_a_finding,

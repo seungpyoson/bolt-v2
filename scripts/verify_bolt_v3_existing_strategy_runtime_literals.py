@@ -154,7 +154,7 @@ def selected_market_fixture_literals(root: Path) -> set[str]:
     for market in markets:
         if not isinstance(market, dict):
             continue
-        for key in ("condition_id", "question_id", "market_slug"):
+        for key in ("name", "condition_id", "question_id", "market_slug"):
             add_string(market.get(key), literals)
         legs = market.get("legs", [])
         if not isinstance(legs, list):

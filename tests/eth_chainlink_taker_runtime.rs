@@ -147,7 +147,7 @@ use nautilus_trading::Strategy;
 use rust_decimal::prelude::ToPrimitive;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
-    clear_mock_exec_submissions, recorded_mock_exec_submissions,
+    UpdownSelectedMarketRuntimeRole, clear_mock_exec_submissions, recorded_mock_exec_submissions,
 };
 use tempfile::TempDir;
 use tokio::time::sleep;
@@ -160,10 +160,14 @@ struct MissingFeeProvider;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 static TEST_NODE_CONFIG: OnceLock<Config> = OnceLock::new();
-const RUNTIME_DEFAULT_SELECTED_MARKET: &str = "runtime_default";
-const RUNTIME_ROTATION_B_SELECTED_MARKET: &str = "runtime_rotation_b";
-const RUNTIME_RECOVERY_A_SELECTED_MARKET: &str = "runtime_recovery_a";
-const RUNTIME_RECOVERY_B_SELECTED_MARKET: &str = "runtime_recovery_b";
+const RUNTIME_DEFAULT_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
+    UpdownSelectedMarketRuntimeRole::Default;
+const RUNTIME_ROTATION_B_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
+    UpdownSelectedMarketRuntimeRole::RotationB;
+const RUNTIME_RECOVERY_A_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
+    UpdownSelectedMarketRuntimeRole::RecoveryA;
+const RUNTIME_RECOVERY_B_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
+    UpdownSelectedMarketRuntimeRole::RecoveryB;
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
     RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
@@ -958,30 +962,37 @@ fn query_custom_events_all_files(
         .collect()
 }
 
-fn selected_market_fixture(fixture_name: &str) -> support::UpdownSelectedMarketFixture {
-    support::bolt_v3_updown_selected_market_fixture(fixture_name)
+fn selected_market_fixture(
+    fixture_role: UpdownSelectedMarketRuntimeRole,
+) -> support::UpdownSelectedMarketFixture {
+    support::bolt_v3_updown_runtime_selected_market_fixture(fixture_role)
 }
 
-fn selected_market_up_instrument_id(fixture_name: &str) -> InstrumentId {
+fn selected_market_up_instrument_id(fixture_role: UpdownSelectedMarketRuntimeRole) -> InstrumentId {
     InstrumentId::from(
-        selected_market_fixture(fixture_name)
+        selected_market_fixture(fixture_role)
             .leg("Up")
             .instrument_id
             .as_str(),
     )
 }
 
-fn selected_market_down_instrument_id(fixture_name: &str) -> InstrumentId {
+fn selected_market_down_instrument_id(
+    fixture_role: UpdownSelectedMarketRuntimeRole,
+) -> InstrumentId {
     InstrumentId::from(
-        selected_market_fixture(fixture_name)
+        selected_market_fixture(fixture_role)
             .leg("Down")
             .instrument_id
             .as_str(),
     )
 }
 
-fn candidate_market_from_fixture(fixture_name: &str, start_ts_ms: u64) -> CandidateMarket {
-    let fixture = selected_market_fixture(fixture_name);
+fn candidate_market_from_fixture(
+    fixture_role: UpdownSelectedMarketRuntimeRole,
+    start_ts_ms: u64,
+) -> CandidateMarket {
+    let fixture = selected_market_fixture(fixture_role);
     let up_leg = fixture.leg("Up");
     let down_leg = fixture.leg("Down");
 
@@ -1051,17 +1062,20 @@ fn idle_selection_snapshot(reason: &str, published_at_ms: u64) -> RuntimeSelecti
     }
 }
 
-fn selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+fn selection_snapshot_for(
+    fixture_role: UpdownSelectedMarketRuntimeRole,
+    start_ts_ms: u64,
+) -> RuntimeSelectionSnapshot {
     let ruleset_id = selection_ruleset_id_from_fixture_config();
     RuntimeSelectionSnapshot {
         ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
             ruleset_id,
             state: SelectionState::Active {
-                market: candidate_market_from_fixture(fixture_name, start_ts_ms),
+                market: candidate_market_from_fixture(fixture_role, start_ts_ms),
             },
         },
-        eligible_candidates: vec![candidate_market_from_fixture(fixture_name, start_ts_ms)],
+        eligible_candidates: vec![candidate_market_from_fixture(fixture_role, start_ts_ms)],
         published_at_ms: start_ts_ms,
     }
 }
@@ -1117,18 +1131,21 @@ fn freeze_selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
     freeze_selection_snapshot_for(RUNTIME_DEFAULT_SELECTED_MARKET, start_ts_ms)
 }
 
-fn freeze_selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+fn freeze_selection_snapshot_for(
+    fixture_role: UpdownSelectedMarketRuntimeRole,
+    start_ts_ms: u64,
+) -> RuntimeSelectionSnapshot {
     let ruleset_id = selection_ruleset_id_from_fixture_config();
     RuntimeSelectionSnapshot {
         ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
             ruleset_id,
             state: SelectionState::Freeze {
-                market: candidate_market_from_fixture(fixture_name, start_ts_ms),
+                market: candidate_market_from_fixture(fixture_role, start_ts_ms),
                 reason: SELECTION_FREEZE_WINDOW_REASON.to_string(),
             },
         },
-        eligible_candidates: vec![candidate_market_from_fixture(fixture_name, start_ts_ms)],
+        eligible_candidates: vec![candidate_market_from_fixture(fixture_role, start_ts_ms)],
         published_at_ms: start_ts_ms,
     }
 }

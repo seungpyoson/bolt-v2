@@ -74,6 +74,7 @@ instrument_id = "0xambiguous-b-444.POLYMARKET"
 
 [[markets]]
 name = "runtime_default"
+runtime_role = "default"
 condition_id = "condition-eth"
 question_id = "question-MKT-ETH-1"
 market_slug = "MKT-ETH-1"
@@ -92,6 +93,7 @@ instrument_id = "condition-eth-MKT-ETH-1-DOWN.POLYMARKET"
 
 [[markets]]
 name = "runtime_rotation_b"
+runtime_role = "rotation_b"
 condition_id = "condition-eth"
 question_id = "question-MKT-ETH-2"
 market_slug = "MKT-ETH-2"
@@ -110,6 +112,7 @@ instrument_id = "condition-eth-MKT-ETH-2-DOWN.POLYMARKET"
 
 [[markets]]
 name = "runtime_recovery_a"
+runtime_role = "recovery_a"
 condition_id = "condition-eth-a"
 question_id = "question-MKT-ETH-A"
 market_slug = "MKT-ETH-A"
@@ -128,6 +131,7 @@ instrument_id = "condition-eth-a-222.POLYMARKET"
 
 [[markets]]
 name = "runtime_recovery_b"
+runtime_role = "recovery_b"
 condition_id = "condition-eth-b"
 question_id = "question-MKT-ETH-B"
 market_slug = "MKT-ETH-B"

@@ -94,6 +94,14 @@ fn protocol_payload_fixture(filename: &str) -> String {
     .unwrap_or_else(|error| panic!("protocol payload fixture {filename} should load: {error}"))
 }
 
+fn protocol_payload_template(filename: &str, substitutions: &[(&str, &str)]) -> String {
+    let mut body = protocol_payload_fixture(filename);
+    for (key, value) in substitutions {
+        body = body.replace(&format!("{{{key}}}"), value);
+    }
+    body
+}
+
 fn strategy_config(loaded: &LoadedBoltV3Config) -> &bolt_v2::bolt_v3_config::BoltV3StrategyConfig {
     &loaded
         .strategies
@@ -315,21 +323,18 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
                     }
                     ("GET", "/positions") => "[]".to_string(),
                     ("GET", "/fee-rate") => fee_rate_body.as_ref().clone(),
-                    ("POST", "/order") => {
-                        format!(
-                            r#"{{"success":true,"orderID":"{LOCAL_POLYMARKET_ORDER_ID}","errorMsg":null}}"#
-                        )
-                    }
-                    ("DELETE", "/orders") => {
-                        format!(
-                            r#"{{"canceled":["{LOCAL_POLYMARKET_ORDER_ID}"],"not_canceled":{{}}}}"#
-                        )
-                    }
-                    ("DELETE", "/order") => {
-                        format!(
-                            r#"{{"canceled":["{LOCAL_POLYMARKET_ORDER_ID}"],"not_canceled":{{}}}}"#
-                        )
-                    }
+                    ("POST", "/order") => protocol_payload_template(
+                        "polymarket_order_success_template.json",
+                        &[("order_id", LOCAL_POLYMARKET_ORDER_ID)],
+                    ),
+                    ("DELETE", "/orders") => protocol_payload_template(
+                        "polymarket_cancel_success_template.json",
+                        &[("order_id", LOCAL_POLYMARKET_ORDER_ID)],
+                    ),
+                    ("DELETE", "/order") => protocol_payload_template(
+                        "polymarket_cancel_success_template.json",
+                        &[("order_id", LOCAL_POLYMARKET_ORDER_ID)],
+                    ),
                     _ => unexpected_request_body.as_ref().clone(),
                 };
                 let status = if response_body.contains("unexpected") {

@@ -45,11 +45,18 @@ def first_nonblank_line(text: str) -> str:
 
 
 def looks_like_json_object(text: str) -> bool:
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        return False
-    return isinstance(value, dict)
+    candidates = (
+        text,
+        text.replace("{{", "{").replace("}}", "}"),
+    )
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return True
+    return False
 
 
 def scan_file(root: Path, path: Path) -> list[Finding]:

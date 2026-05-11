@@ -58,6 +58,22 @@ def test_fixture_payload_read_is_clean() -> None:
         assert verifier.scan_root(root) == []
 
 
+def test_inline_protocol_json_template_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_order_lifecycle_tracer.rs",
+            'fn probe() { let body = format!(r#"{{"orderID":"{ORDER_ID}"}}"#); }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
+        assert "protocol mock payload" in findings[0].message
+
+
 def test_fee_provider_file_is_enforced() -> None:
     verifier = load_verifier()
     if "tests/bolt_v3_polymarket_fee_provider.rs" not in verifier.ENFORCED_TEST_FILES:
@@ -74,6 +90,7 @@ def main() -> int:
     tests = [
         test_inline_protocol_json_body_is_a_finding,
         test_fixture_payload_read_is_clean,
+        test_inline_protocol_json_template_is_a_finding,
         test_fee_provider_file_is_enforced,
         test_order_lifecycle_tracer_file_is_enforced,
     ]

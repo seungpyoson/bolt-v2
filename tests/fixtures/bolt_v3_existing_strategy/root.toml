@@ -123,6 +123,15 @@ disable_after_milliseconds = 5000
 feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
 price_scale = 8
 
+[[reference_streams.eth_usd.inputs]]
+source_id = "eth_usd_fast_orderbook"
+source_type = "orderbook"
+data_client_id = "binance_reference"
+instrument_id = "ETHUSDT.BINANCE"
+base_weight = 0.9
+stale_after_milliseconds = 1500
+disable_after_milliseconds = 5000
+
 [clients.chainlink_reference]
 venue = "CHAINLINK"
 
@@ -134,6 +143,20 @@ ws_reconnect_alert_threshold = 3
 [clients.chainlink_reference.secrets]
 api_key_ssm_path = "/bolt/chainlink_reference/api_key"
 api_secret_ssm_path = "/bolt/chainlink_reference/api_secret"
+
+[clients.binance_reference]
+venue = "BINANCE"
+
+[clients.binance_reference.data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream.binance.com:9443/ws"
+instrument_status_poll_seconds = 3600
+
+[clients.binance_reference.secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 [clients.polymarket_main]
 venue = "POLYMARKET"

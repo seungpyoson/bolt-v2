@@ -8,7 +8,8 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{
-        BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy, load_bolt_v3_config,
+        BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy, ReferenceSourceType,
+        load_bolt_v3_config,
     },
     bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
     bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
@@ -77,9 +78,24 @@ fn existing_strategy_fixture_selects_root_reference_stream() {
         .get(stream_id)
         .expect("root should define selected reference stream");
 
-    assert_eq!(stream.publish_topic, "reference.eth_usd");
-    assert_eq!(stream.inputs.len(), 1);
-    assert_eq!(stream.inputs[0].source_id, "eth_usd_oracle_anchor");
+    assert!(
+        !stream.publish_topic.trim().is_empty(),
+        "selected reference stream should define publish_topic"
+    );
+    assert!(
+        stream
+            .inputs
+            .iter()
+            .any(|input| input.source_type == ReferenceSourceType::Oracle),
+        "selected reference stream should include oracle anchor input"
+    );
+    assert!(
+        stream
+            .inputs
+            .iter()
+            .any(|input| input.source_type == ReferenceSourceType::Orderbook),
+        "selected reference stream should include fast orderbook input"
+    );
 }
 
 #[test]

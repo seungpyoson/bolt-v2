@@ -34,6 +34,9 @@ DOWN_INSTRUMENT_HELPER_SPAN_PATTERN = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 FORBIDDEN_LITERALS = {
+    "eth_chainlink_taker": (
+        "existing-strategy runtime archetype literal; use ETH_CHAINLINK_TAKER_KIND"
+    ),
     "ETHCHAINLINKTAKER-RT-001": "existing-strategy runtime strategy id literal; derive from strategy_raw_config",
     "platform.reference.test.chainlink": (
         "existing-strategy runtime reference topic literal; use fixture_reference_publish_topic"

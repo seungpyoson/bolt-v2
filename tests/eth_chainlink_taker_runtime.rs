@@ -2763,7 +2763,7 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(
         &trader,
-        "eth_chainlink_taker",
+        ETH_CHAINLINK_TAKER_KIND,
         &strategy_raw_config_with_min_edge(2_000),
     )
     .unwrap();
@@ -2900,7 +2900,7 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_entry_missing_reference_no_action(node, strategy_id);
@@ -2967,7 +2967,7 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_entry_no_action(node, strategy_id);
@@ -3167,7 +3167,7 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(
         &trader,
-        "eth_chainlink_taker",
+        ETH_CHAINLINK_TAKER_KIND,
         &strategy_raw_config_with_stale_reference_window(1),
     )
     .unwrap();
@@ -3407,7 +3407,7 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(
         &trader,
-        "eth_chainlink_taker",
+        ETH_CHAINLINK_TAKER_KIND,
         &strategy_raw_config_with_pricing_kurtosis(-6.0),
     )
     .unwrap();
@@ -3484,7 +3484,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(
         &trader,
-        "eth_chainlink_taker",
+        ETH_CHAINLINK_TAKER_KIND,
         &strategy_raw_config_with_max_position_usdc(0.0),
     )
     .unwrap();
@@ -3573,7 +3573,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(
         &trader,
-        "eth_chainlink_taker",
+        ETH_CHAINLINK_TAKER_KIND,
         &strategy_raw_config_with_max_position_usdc(45.0),
     )
     .unwrap();
@@ -3936,7 +3936,7 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_entry_market_not_started_no_action(node, strategy_id);
@@ -4027,7 +4027,7 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_entry_market_ended_no_action(node, strategy_id);
@@ -4211,7 +4211,7 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     drive_eth_entry_pre_submit_rejection(node, strategy_id);
 
@@ -4324,7 +4324,7 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(
         &trader,
-        "eth_chainlink_taker",
+        ETH_CHAINLINK_TAKER_KIND,
         &strategy_raw_config_with_max_position_usdc(0.1),
     )
     .unwrap();
@@ -4418,7 +4418,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_exit_pre_submit_rejection(node, strategy_id);
@@ -4586,7 +4586,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_exit_pre_submit_rejection_with_quantity(
@@ -4750,7 +4750,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     let up = eth_up_instrument_id();
@@ -4995,7 +4995,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     let up = eth_up_instrument_id();
@@ -5118,7 +5118,7 @@ fn eth_chainlink_taker_runtime_blocks_entry_submit_when_decision_evidence_write_
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_entry_submission(node, strategy_id);
@@ -5153,7 +5153,7 @@ fn eth_chainlink_taker_runtime_blocks_exit_submit_when_decision_evidence_write_f
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_exit_sellable_rejection(node, strategy_id);
@@ -5188,7 +5188,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
     let handle = node.handle();
@@ -5301,7 +5301,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let up = eth_up_instrument_id();
     let down = eth_down_instrument_id();
@@ -5425,7 +5425,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let up = eth_up_instrument_id();
     let down = eth_down_instrument_id();
@@ -5542,7 +5542,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let up = eth_up_instrument_id();
     let down = eth_down_instrument_id();
@@ -6166,7 +6166,7 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let up = eth_up_instrument_id();
     let down = eth_down_instrument_id();
@@ -6262,7 +6262,7 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let up = eth_up_instrument_id();
     let down = eth_down_instrument_id();
@@ -6363,7 +6363,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let market_a_up = eth_up_instrument_id();
     let market_a_down = eth_down_instrument_id();
@@ -6496,7 +6496,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let market_a = candidate_market_with_tokens("MKT-ETH-A", "condition-eth-a", "111", "222", 0);
     let market_b = candidate_market_with_tokens("MKT-ETH-B", "condition-eth-b", "333", "444", 0);
@@ -6675,7 +6675,7 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
             Some(TradingState::Active),
         ),
     );
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
 
     let up = eth_up_instrument_id();
     let down = eth_down_instrument_id();

@@ -122,6 +122,24 @@ venue = "POLYMARKET"
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_strategy_archetype_literal_outside_constant_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        write_runtime_test(
+            root,
+            'fn probe() { strategy_factory(&trader, "eth_chainlink_taker", &raw).unwrap(); }\n',
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "existing-strategy runtime archetype literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -169,6 +187,7 @@ def main() -> int:
         test_reference_topic_literal_outside_helper_is_a_finding,
         test_default_instrument_literal_outside_helper_is_a_finding,
         test_test_node_fixture_literal_outside_fixture_is_a_finding,
+        test_strategy_archetype_literal_outside_constant_is_a_finding,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

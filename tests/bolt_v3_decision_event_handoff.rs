@@ -417,6 +417,27 @@ fn entry_evaluation_accepts_fast_venue_incoherent_no_action_reason() {
 }
 
 #[test]
+fn entry_evaluation_accepts_freeze_no_action_reason() {
+    let mut facts = entry_evaluation_facts();
+    facts.entry_decision = "no_action".to_string();
+    facts.updown_side = None;
+    facts.entry_no_action_reason = Some("freeze".to_string());
+
+    let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
+        common_fields(),
+        facts,
+        test_entry_evaluation_event_ts(),
+        test_entry_evaluation_init_ts(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        event.event_facts.get("entry_no_action_reason"),
+        Some(&Value::String("freeze".to_string()))
+    );
+}
+
+#[test]
 fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
     let temp_dir = TempDir::new().unwrap();
     let mut handoff = BoltV3DecisionEventCatalogHandoff::from_persistence_block(

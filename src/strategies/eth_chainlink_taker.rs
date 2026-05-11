@@ -3883,6 +3883,17 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
     }
 
     if decision.blocked_reason == Some("entry_gate_blocked")
+        && decision.evaluation.gate.blocked_by.iter().any(|reason| {
+            matches!(
+                reason,
+                EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze)
+            )
+        })
+    {
+        return Some("freeze");
+    }
+
+    if decision.blocked_reason == Some("entry_gate_blocked")
         && decision
             .evaluation
             .gate
@@ -9075,6 +9086,44 @@ mod tests {
             entry_no_action_reason(&decision),
             Some("fast_venue_incoherent")
         );
+    }
+
+    #[test]
+    fn freeze_entry_gate_maps_to_no_action_reason() {
+        let decision = EntrySubmissionDecision {
+            evaluation: EntryEvaluation {
+                gate: EntryGateDecision {
+                    blocked_by: vec![
+                        EntryBlockReason::PhaseNotActive,
+                        EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze),
+                    ],
+                },
+                entry_capacity: EntryCapacitySnapshot {
+                    entry_filled_notional: 0.0,
+                    open_entry_notional: 0.0,
+                    strategy_remaining_entry_capacity: 1.0,
+                },
+                pricing_blocked_by: Vec::new(),
+                fair_probability_up: None,
+                uncertainty_band_probability: None,
+                up_worst_case_ev_bps: None,
+                down_worst_case_ev_bps: None,
+                min_worst_case_ev_bps: None,
+                expected_ev_per_usdc: None,
+                book_impact_cap_usdc: None,
+                effective_entry_notional_cap_usdc: None,
+                sized_notional_usdc: None,
+                selected_side: None,
+            },
+            instrument_id: None,
+            order_side: None,
+            price: None,
+            quantity_value: None,
+            client_order_id: None,
+            blocked_reason: Some("entry_gate_blocked"),
+        };
+
+        assert_eq!(entry_no_action_reason(&decision), Some("freeze"));
     }
 
     #[test]

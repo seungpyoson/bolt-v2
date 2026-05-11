@@ -12,9 +12,15 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-REFERENCE_POLICY_STREAM_GLOB = "tests/fixtures/bolt_v3_reference_policy/*_stream.toml"
+REFERENCE_STREAM_FIXTURE_GLOBS = (
+    "tests/fixtures/bolt_v3_reference_policy/*_stream.toml",
+    "tests/fixtures/bolt_v3_reference_producer/*_stream.toml",
+)
 ROOT_FIXTURE_GLOB = "tests/fixtures/bolt_v3*/root*.toml"
-ENFORCED_TEST_FILES = ("tests/bolt_v3_reference_policy.rs",)
+ENFORCED_TEST_FILES = (
+    "tests/bolt_v3_reference_policy.rs",
+    "tests/bolt_v3_reference_producer.rs",
+)
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 
 
@@ -57,11 +63,14 @@ def add_stream_literals(literals: set[str], stream_id: str, stream: dict[str, An
 
 def reference_policy_fixture_literals(root: Path) -> set[str]:
     literals: set[str] = set()
-    for path in sorted(root.glob(REFERENCE_POLICY_STREAM_GLOB)):
-        if not path.is_file():
-            continue
-        stream_id = path.name.removesuffix("_stream.toml")
-        add_stream_literals(literals, stream_id, tomllib.loads(path.read_text(encoding="utf-8")))
+    for glob in REFERENCE_STREAM_FIXTURE_GLOBS:
+        for path in sorted(root.glob(glob)):
+            if not path.is_file():
+                continue
+            stream_id = path.name.removesuffix("_stream.toml")
+            add_stream_literals(
+                literals, stream_id, tomllib.loads(path.read_text(encoding="utf-8"))
+            )
     for path in sorted(root.glob(ROOT_FIXTURE_GLOB)):
         if not path.is_file():
             continue

@@ -127,12 +127,19 @@ def test_reference_policy_file_is_enforced() -> None:
         raise AssertionError("reference policy test file must be enforced")
 
 
+def test_reference_producer_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_reference_producer.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("reference producer test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_reference_source_id_literal_is_a_finding,
         test_reference_instrument_literal_is_a_finding,
         test_derived_reference_fixture_lookup_is_clean,
         test_reference_policy_file_is_enforced,
+        test_reference_producer_file_is_enforced,
     ]
     for test in tests:
         test()

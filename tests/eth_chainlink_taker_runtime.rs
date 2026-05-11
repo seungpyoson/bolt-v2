@@ -48,6 +48,7 @@ use bolt_v2::{
         BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
         BoltV3MarketSelectionDecisionEvent,
     },
+    bolt_v3_market_families::updown,
     bolt_v3_release_identity::load_bolt_v3_release_identity,
     bolt_v3_strategy_decision_evidence::BoltV3StrategyDecisionEvidence,
     config::Config,
@@ -438,6 +439,29 @@ fn common_decision_context_from_strategy_config(
 
 fn configured_target_id_from_decision_context() -> String {
     common_decision_context().configured_target_id
+}
+
+fn market_selection_context_from_fixture_config() -> BoltV3MarketSelectionContext {
+    let loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing-strategy root fixture should load");
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("existing-strategy root fixture should load one strategy");
+    let target = updown::deserialize_target_block(&strategy.config.target)
+        .expect("existing-strategy fixture target should deserialize");
+
+    BoltV3MarketSelectionContext {
+        market_selection_type: target.market_selection_type.as_str().to_string(),
+        rotating_market_family: Some(target.rotating_market_family.as_str().to_string()),
+        underlying_asset: Some(target.underlying_asset),
+        cadence_seconds: Some(target.cadence_seconds),
+        market_selection_rule: Some(target.market_selection_rule.as_str().to_string()),
+        retry_interval_seconds: Some(target.retry_interval_seconds),
+        blocked_after_seconds: Some(target.blocked_after_seconds),
+    }
 }
 
 fn thin_book_fixture_quantity() -> Quantity {
@@ -2354,15 +2378,8 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
-    build_context.bolt_v3_market_selection_context = Some(BoltV3MarketSelectionContext {
-        market_selection_type: "rotating_market".to_string(),
-        rotating_market_family: Some("updown".to_string()),
-        underlying_asset: Some("ETH".to_string()),
-        cadence_seconds: Some(300),
-        market_selection_rule: Some("active_or_next".to_string()),
-        retry_interval_seconds: Some(5),
-        blocked_after_seconds: Some(60),
-    });
+    build_context.bolt_v3_market_selection_context =
+        Some(market_selection_context_from_fixture_config());
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
@@ -2540,15 +2557,8 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
         Some(TradingState::Active),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
-    build_context.bolt_v3_market_selection_context = Some(BoltV3MarketSelectionContext {
-        market_selection_type: "rotating_market".to_string(),
-        rotating_market_family: Some("updown".to_string()),
-        underlying_asset: Some("ETH".to_string()),
-        cadence_seconds: Some(300),
-        market_selection_rule: Some("active_or_next".to_string()),
-        retry_interval_seconds: Some(5),
-        blocked_after_seconds: Some(60),
-    });
+    build_context.bolt_v3_market_selection_context =
+        Some(market_selection_context_from_fixture_config());
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
     strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();

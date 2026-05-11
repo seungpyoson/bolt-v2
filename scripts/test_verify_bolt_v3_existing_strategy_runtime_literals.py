@@ -140,6 +140,36 @@ def test_strategy_archetype_literal_outside_constant_is_a_finding() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_market_selection_context_literal_fields_are_findings() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        write_runtime_test(
+            root,
+            """
+fn probe() {
+    build_context.bolt_v3_market_selection_context = Some(BoltV3MarketSelectionContext {
+        market_selection_type: "rotating_market".to_string(),
+        rotating_market_family: Some("updown".to_string()),
+        underlying_asset: Some("ETH".to_string()),
+        cadence_seconds: Some(300),
+        market_selection_rule: Some("active_or_next".to_string()),
+        retry_interval_seconds: Some(5),
+        blocked_after_seconds: Some(60),
+    });
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "market-selection context literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -188,6 +218,7 @@ def main() -> int:
         test_default_instrument_literal_outside_helper_is_a_finding,
         test_test_node_fixture_literal_outside_fixture_is_a_finding,
         test_strategy_archetype_literal_outside_constant_is_a_finding,
+        test_market_selection_context_literal_fields_are_findings,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

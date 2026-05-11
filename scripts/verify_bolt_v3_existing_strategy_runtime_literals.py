@@ -33,6 +33,13 @@ DOWN_INSTRUMENT_HELPER_SPAN_PATTERN = re.compile(
     r"fn\s+eth_down_instrument_id\s*\([^)]*\)\s*->\s*InstrumentId\s*\{.*?^\}",
     re.MULTILINE | re.DOTALL,
 )
+MARKET_SELECTION_CONTEXT_SPAN_PATTERN = re.compile(
+    r"BoltV3MarketSelectionContext\s*\{.*?^\s*\}",
+    re.MULTILINE | re.DOTALL,
+)
+MARKET_SELECTION_CONTEXT_LITERAL_FIELD_PATTERN = re.compile(
+    r"\b(?:market_selection_type|rotating_market_family|underlying_asset|cadence_seconds|market_selection_rule|retry_interval_seconds|blocked_after_seconds)\s*:\s*(?:\"[^\"]*\"|Some\s*\(\s*\"[^\"]*\"|Some\s*\(\s*[0-9])",
+)
 FORBIDDEN_LITERALS = {
     "eth_chainlink_taker": (
         "existing-strategy runtime archetype literal; use ETH_CHAINLINK_TAKER_KIND"
@@ -173,6 +180,23 @@ def scan_runtime_file(root: Path, path: Path, test_node_literals: set[str]) -> l
                 excerpt=match.group(0),
             )
         )
+
+    for context_match in MARKET_SELECTION_CONTEXT_SPAN_PATTERN.finditer(text):
+        context_block = context_match.group(0)
+        for field_match in MARKET_SELECTION_CONTEXT_LITERAL_FIELD_PATTERN.finditer(
+            context_block
+        ):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, context_match.start() + field_match.start()),
+                    message=(
+                        "existing-strategy runtime market-selection context literal; "
+                        "derive from v3 strategy TOML"
+                    ),
+                    excerpt=field_match.group(0),
+                )
+            )
 
     return findings
 

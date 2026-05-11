@@ -90,6 +90,7 @@ struct LocalPolymarketFixture {
     fee_requests_per_binary_market: usize,
     http_timeout_seconds: i64,
     ack_timeout_seconds: i64,
+    bind_addr: String,
 }
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -134,6 +135,10 @@ fn local_polymarket_http_timeout_seconds() -> i64 {
 
 fn local_polymarket_ack_timeout_seconds() -> i64 {
     local_polymarket_fixture().ack_timeout_seconds
+}
+
+fn local_polymarket_bind_addr() -> &'static str {
+    local_polymarket_fixture().bind_addr.as_str()
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -258,7 +263,8 @@ fn mock_client_configs_from_loaded(loaded: &LoadedBoltV3Config) -> BoltV3ClientC
 }
 
 fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<String>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("local fee server should bind");
+    let listener =
+        TcpListener::bind(local_polymarket_bind_addr()).expect("local fee server should bind");
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let (tx, rx) = mpsc::channel();
     let body = protocol_payload_fixture("polymarket_fee_rate_zero.json");
@@ -321,7 +327,7 @@ impl Drop for LocalPolymarketExecutionServer {
 
 async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionServer {
     let requests = Arc::new(AsyncMutex::new(Vec::<RecordedPolymarketRequest>::new()));
-    let http_listener = TokioTcpListener::bind("127.0.0.1:0")
+    let http_listener = TokioTcpListener::bind(local_polymarket_bind_addr())
         .await
         .expect("local CLOB HTTP listener should bind");
     let http_base_url = format!(
@@ -405,7 +411,7 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
         }
     });
 
-    let ws_listener = TokioTcpListener::bind("127.0.0.1:0")
+    let ws_listener = TokioTcpListener::bind(local_polymarket_bind_addr())
         .await
         .expect("local user WS listener should bind");
     let ws_user_url = format!(

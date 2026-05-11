@@ -1,0 +1,5 @@
+schema_version = 1
+
+[local_fee_provider]
+token_id_suffix = "-FEE-PROBE-UP"
+bind_addr = "127.0.0.1:0"

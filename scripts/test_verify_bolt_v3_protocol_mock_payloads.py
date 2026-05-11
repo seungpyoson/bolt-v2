@@ -97,7 +97,32 @@ down_token_id = "token-down-fixture"
         findings = verifier.scan_root(root)
         assert len(findings) == 1
         assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
-        assert "order-lifecycle protocol fixture literal" in findings[0].message
+        assert "protocol fixture literal" in findings[0].message
+
+
+def test_fee_provider_protocol_fixture_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml",
+            """
+[local_fee_provider]
+token_id_suffix = "fee-token-fixture"
+bind_addr = "127.0.0.1:0"
+""".lstrip(),
+        )
+        write_file(
+            root,
+            "tests/bolt_v3_polymarket_fee_provider.rs",
+            'fn probe() { let _ = "fee-token-fixture"; }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_polymarket_fee_provider.rs"
+        assert "protocol fixture literal" in findings[0].message
 
 
 def test_fee_provider_file_is_enforced() -> None:
@@ -118,6 +143,7 @@ def main() -> int:
         test_fixture_payload_read_is_clean,
         test_inline_protocol_json_template_is_a_finding,
         test_order_lifecycle_protocol_fixture_literal_is_a_finding,
+        test_fee_provider_protocol_fixture_literal_is_a_finding,
         test_fee_provider_file_is_enforced,
         test_order_lifecycle_tracer_file_is_enforced,
     ]

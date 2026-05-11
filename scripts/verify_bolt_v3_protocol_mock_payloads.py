@@ -18,8 +18,9 @@ ENFORCED_TEST_FILES = (
     "tests/bolt_v3_order_lifecycle_tracer.rs",
     "tests/bolt_v3_reconciliation_restart.rs",
 )
-ORDER_LIFECYCLE_PROTOCOL_FIXTURE = (
-    "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml"
+PROTOCOL_FIXTURE_PATHS = (
+    "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml",
+    "tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml",
 )
 RAW_STRING_PATTERN = re.compile(
     r'(?<![A-Za-z0-9_])r(?P<hashes>#*)"(?P<body>.*?)"(?P=hashes)',
@@ -83,12 +84,12 @@ def collect_strings(value: Any, strings: set[str]) -> None:
             collect_strings(child, strings)
 
 
-def order_lifecycle_protocol_fixture_literals(root: Path) -> set[str]:
-    path = root / ORDER_LIFECYCLE_PROTOCOL_FIXTURE
-    if not path.is_file():
-        return set()
+def protocol_fixture_literals(root: Path) -> set[str]:
     strings: set[str] = set()
-    collect_strings(tomllib.loads(path.read_text(encoding="utf-8")), strings)
+    for relative_path in PROTOCOL_FIXTURE_PATHS:
+        path = root / relative_path
+        if path.is_file():
+            collect_strings(tomllib.loads(path.read_text(encoding="utf-8")), strings)
     return strings
 
 
@@ -116,10 +117,7 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
             Finding(
                 path=rel,
                 line=line_number(text, match.start()),
-                message=(
-                    "order-lifecycle protocol fixture literal; derive from "
-                    "order_lifecycle_tracer.toml"
-                ),
+                message="protocol fixture literal; derive from TOML fixture",
                 excerpt=literal,
             )
         )
@@ -128,7 +126,7 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
 
 def scan_root(root: Path) -> list[Finding]:
     findings: list[Finding] = []
-    fixture_literals = order_lifecycle_protocol_fixture_literals(root)
+    fixture_literals = protocol_fixture_literals(root)
     for relative_path in ENFORCED_TEST_FILES:
         path = root / relative_path
         if path.is_file():

@@ -2,7 +2,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::PathBuf,
-    sync::mpsc,
+    sync::{OnceLock, mpsc},
     time::Duration,
 };
 
@@ -14,6 +14,36 @@ use bolt_v2::{
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
 };
 use rust_decimal::Decimal;
+use serde::Deserialize;
+
+static FEE_PROVIDER_FIXTURE: OnceLock<PolymarketFeeProviderFixture> = OnceLock::new();
+
+#[derive(Debug, Deserialize)]
+struct PolymarketFeeProviderFixture {
+    local_fee_provider: LocalFeeProviderFixture,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalFeeProviderFixture {
+    token_id_suffix: String,
+    bind_addr: String,
+}
+
+fn fee_provider_fixture() -> &'static PolymarketFeeProviderFixture {
+    FEE_PROVIDER_FIXTURE.get_or_init(|| {
+        let path = support::repo_path(
+            "tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml",
+        );
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+        toml::from_str(&text)
+            .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()))
+    })
+}
+
+fn local_fee_provider_fixture() -> &'static LocalFeeProviderFixture {
+    &fee_provider_fixture().local_fee_provider
+}
 
 fn existing_strategy_root_fixture() -> PathBuf {
     support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml")
@@ -80,7 +110,11 @@ fn fixture_fee_token_id(loaded: &LoadedBoltV3Config) -> String {
         .get("underlying_asset")
         .and_then(toml::Value::as_str)
         .expect("fixture strategy target should include underlying_asset");
-    format!("{underlying}-FEE-PROBE-UP")
+    let suffix = &local_fee_provider_fixture().token_id_suffix;
+    let mut token_id = String::with_capacity(underlying.len() + suffix.len());
+    token_id.push_str(underlying);
+    token_id.push_str(suffix);
+    token_id
 }
 
 fn configured_execution_http_base_url(
@@ -102,7 +136,8 @@ fn fee_rate_zero_response_fixture() -> String {
 }
 
 fn spawn_fee_rate_server() -> (String, mpsc::Receiver<String>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("local fee server should bind");
+    let listener = TcpListener::bind(local_fee_provider_fixture().bind_addr.as_str())
+        .expect("local fee server should bind");
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let (tx, rx) = mpsc::channel();
     let body = fee_rate_zero_response_fixture();

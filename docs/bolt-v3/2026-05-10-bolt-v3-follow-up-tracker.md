@@ -62,6 +62,8 @@ F13am note: `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` now 
 
 F13an note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects order-lifecycle protocol fixture string values in `tests/bolt_v3_order_lifecycle_tracer.rs`. Local Polymarket accepted order ID, token IDs, fee-request count, and local NT execution timeouts now live in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
 
+F13ao note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects local fee-provider protocol fixture string values in `tests/bolt_v3_polymarket_fee_provider.rs`. Local fee-provider bind address and fee-token suffix now live in `tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml`; order-lifecycle local bind address now lives in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

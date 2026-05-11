@@ -45,6 +45,10 @@ path = "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml"
 purpose = "local Polymarket protocol fixture values for bolt-v3 order lifecycle tracer tests"
 
 [[fixtures]]
+path = "tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml"
+purpose = "local Polymarket fee-provider protocol fixture values"
+
+[[fixtures]]
 path = "tests/fixtures/bolt_v3_reference_policy/eth_usd_stream.toml"
 purpose = "isolated ETH/USD reference-stream fixture for source-health and fused-reference policy tests"
 

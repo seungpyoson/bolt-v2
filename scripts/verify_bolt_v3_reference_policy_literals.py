@@ -22,6 +22,7 @@ ENFORCED_TEST_FILES = (
     "tests/bolt_v3_reference_actor_registration.rs",
     "tests/bolt_v3_reference_policy.rs",
     "tests/bolt_v3_reference_producer.rs",
+    "tests/bolt_v3_scale_process.rs",
     "tests/bolt_v3_strategy_registration.rs",
 )
 ENFORCED_SOURCE_FILES = ("src/bolt_v3_validate.rs",)

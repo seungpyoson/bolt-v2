@@ -231,6 +231,12 @@ def test_strategy_registration_file_is_enforced() -> None:
         raise AssertionError("strategy registration test file must be enforced")
 
 
+def test_scale_process_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_scale_process.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("scale process test file must be enforced")
+
+
 def test_validate_source_file_is_enforced() -> None:
     verifier = load_verifier()
     if "src/bolt_v3_validate.rs" not in verifier.ENFORCED_SOURCE_FILES:
@@ -252,6 +258,7 @@ def main() -> int:
         test_adapter_mapping_file_is_enforced,
         test_reference_actor_registration_file_is_enforced,
         test_strategy_registration_file_is_enforced,
+        test_scale_process_file_is_enforced,
         test_validate_source_file_is_enforced,
     ]
     for test in tests:

@@ -71,6 +71,8 @@ verify-bolt-v3-test-hardcodes: check-workspace
     python3 scripts/verify_bolt_v3_toml_fixture_inventory.py
     python3 scripts/test_verify_bolt_v3_reference_policy_literals.py
     python3 scripts/verify_bolt_v3_reference_policy_literals.py
+    python3 scripts/test_verify_bolt_v3_scale_process_literals.py
+    python3 scripts/verify_bolt_v3_scale_process_literals.py
 
 fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks verify-bolt-v3-test-hardcodes
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check

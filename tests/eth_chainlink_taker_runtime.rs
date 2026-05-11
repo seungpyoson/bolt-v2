@@ -445,6 +445,10 @@ fn configured_target_id_from_decision_context() -> String {
     common_decision_context().configured_target_id
 }
 
+fn selection_ruleset_id_from_fixture_config() -> String {
+    configured_target_id_from_decision_context()
+}
+
 fn market_selection_context_from_fixture_config() -> BoltV3MarketSelectionContext {
     let loaded = load_bolt_v3_config(&support::repo_path(
         "tests/fixtures/bolt_v3_existing_strategy/root.toml",
@@ -825,13 +829,14 @@ fn selection_snapshot_with_market_facts(
     price_to_beat_observed_ts_ms: u64,
 ) -> RuntimeSelectionSnapshot {
     let mut market = candidate_market_from_fixture(RUNTIME_DEFAULT_SELECTED_MARKET, start_ts_ms);
+    let ruleset_id = selection_ruleset_id_from_fixture_config();
     market.price_to_beat = Some(3_100.0);
     market.price_to_beat_source = Some("polymarket_gamma_market_anchor".to_string());
     market.price_to_beat_observed_ts_ms = Some(price_to_beat_observed_ts_ms);
     RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id,
             state: SelectionState::Active {
                 market: market.clone(),
             },
@@ -842,10 +847,11 @@ fn selection_snapshot_with_market_facts(
 }
 
 fn idle_selection_snapshot(reason: &str, published_at_ms: u64) -> RuntimeSelectionSnapshot {
+    let ruleset_id = selection_ruleset_id_from_fixture_config();
     RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id,
             state: SelectionState::Idle {
                 reason: reason.to_string(),
             },
@@ -856,10 +862,11 @@ fn idle_selection_snapshot(reason: &str, published_at_ms: u64) -> RuntimeSelecti
 }
 
 fn selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+    let ruleset_id = selection_ruleset_id_from_fixture_config();
     RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id,
             state: SelectionState::Active {
                 market: candidate_market_from_fixture(fixture_name, start_ts_ms),
             },
@@ -878,10 +885,11 @@ fn future_selection_snapshot(
     market.selected_market_observed_ts_ms = published_at_ms;
     market.end_ts_ms = market_start_ts_ms + 300_000;
     market.seconds_to_end = (market.end_ts_ms - published_at_ms) / 1_000;
+    let ruleset_id = selection_ruleset_id_from_fixture_config();
     RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id,
             state: SelectionState::Active {
                 market: market.clone(),
             },
@@ -901,10 +909,11 @@ fn short_lived_selection_snapshot(
     market.selected_market_observed_ts_ms = published_at_ms;
     market.end_ts_ms = market_end_ts_ms;
     market.seconds_to_end = (market.end_ts_ms - published_at_ms) / 1_000;
+    let ruleset_id = selection_ruleset_id_from_fixture_config();
     RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id,
             state: SelectionState::Active {
                 market: market.clone(),
             },
@@ -919,10 +928,11 @@ fn freeze_selection_snapshot(start_ts_ms: u64) -> RuntimeSelectionSnapshot {
 }
 
 fn freeze_selection_snapshot_for(fixture_name: &str, start_ts_ms: u64) -> RuntimeSelectionSnapshot {
+    let ruleset_id = selection_ruleset_id_from_fixture_config();
     RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id,
             state: SelectionState::Freeze {
                 market: candidate_market_from_fixture(fixture_name, start_ts_ms),
                 reason: "freeze window".to_string(),
@@ -6559,10 +6569,11 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
     let handle = node.handle();
     let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
     let rotation_ts_ms = start_ts_ms + 1_000;
+    let ruleset_id = selection_ruleset_id_from_fixture_config();
     let market_a_selection = RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id: ruleset_id.clone(),
             state: SelectionState::Active {
                 market: CandidateMarket {
                     start_ts_ms,
@@ -6577,9 +6588,9 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
         published_at_ms: start_ts_ms,
     };
     let market_b_selection = RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id: ruleset_id.clone(),
             state: SelectionState::Active {
                 market: CandidateMarket {
                     start_ts_ms: rotation_ts_ms,
@@ -6594,9 +6605,9 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
         published_at_ms: rotation_ts_ms,
     };
     let market_b_freeze = RuntimeSelectionSnapshot {
-        ruleset_id: "PRIMARY".to_string(),
+        ruleset_id: ruleset_id.clone(),
         decision: SelectionDecision {
-            ruleset_id: "PRIMARY".to_string(),
+            ruleset_id,
             state: SelectionState::Freeze {
                 market: CandidateMarket {
                     start_ts_ms: rotation_ts_ms,

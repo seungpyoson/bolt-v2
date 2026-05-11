@@ -207,6 +207,21 @@ instrument_id = "condition-fixture-111.POLYMARKET"
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_selection_ruleset_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        write_runtime_test(root, 'fn probe() { let _ = "PRIMARY"; }\n')
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "selection ruleset literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -257,6 +272,7 @@ def main() -> int:
         test_strategy_archetype_literal_outside_constant_is_a_finding,
         test_market_selection_context_literal_fields_are_findings,
         test_selected_market_fixture_literal_is_a_finding,
+        test_selection_ruleset_literal_is_a_finding,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

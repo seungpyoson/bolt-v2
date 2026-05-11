@@ -57,6 +57,9 @@ FORBIDDEN_LITERALS = {
     "condition-eth-MKT-ETH-1-DOWN.POLYMARKET": (
         "existing-strategy runtime instrument id literal; use eth_down_instrument_id"
     ),
+    "PRIMARY": (
+        "existing-strategy runtime selection ruleset literal; derive from v3 strategy TOML"
+    ),
 }
 
 

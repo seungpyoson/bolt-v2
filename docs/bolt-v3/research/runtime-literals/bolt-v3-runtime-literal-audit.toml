@@ -32,16 +32,24 @@ reason = "The Binance provider binding owns the NT credential-log module path th
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
-literal = "\"Binance reference-data venue\""
-context = "consumer: \"Binance reference-data venue\","
+literal = "\"Binance reference-data client\""
+context = "consumer: \"Binance reference-data client\","
 classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = "\"Polymarket execution venue\""
-context = "consumer: \"Polymarket execution venue\","
+literal = "\"Polymarket execution client\""
+context = "consumer: \"Polymarket execution client\","
+classification = "provider_secret_requirement_label"
+reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = "\"Chainlink reference-data client\""
+context = "consumer: \"Chainlink reference-data client\","
 classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
 
@@ -336,18 +344,26 @@ reason = "This is the accepted runtime-contract slug template for the updown mar
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
-literal = "\"binance\""
-context = "pub const KEY: &str = \"binance\";"
+literal = "\"BINANCE\""
+context = "pub const KEY: &str = \"BINANCE\";"
 classification = "provider_dispatch_key"
-reason = "This is the accepted provider registry key for the Binance venue binding, not an operator-tunable runtime value."
+reason = "This is the accepted provider registry key for the Binance NT venue binding, owned by the provider module rather than core dispatch logic."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = "\"polymarket\""
-context = "pub const KEY: &str = \"polymarket\";"
+literal = "\"POLYMARKET\""
+context = "pub const KEY: &str = \"POLYMARKET\";"
 classification = "provider_dispatch_key"
-reason = "This is the accepted provider registry key for the Polymarket venue binding, not an operator-tunable runtime value."
+reason = "This is the accepted provider registry key for the Polymarket NT venue binding, owned by the provider module rather than core dispatch logic."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = "\"CHAINLINK\""
+context = "pub const KEY: &str = \"CHAINLINK\";"
+classification = "provider_dispatch_key"
+reason = "This is the accepted provider registry key for the Chainlink reference-data binding, owned by the provider module rather than core dispatch logic."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
@@ -456,42 +472,42 @@ reason = "This label names the Polymarket execution config field being validated
 [[allowed]]
 path = "src/bolt_v3_secrets.rs"
 kind = "string"
-literal = "\"venues.{venue}.secrets.{field}: {source}\""
-context = "\"venues.{venue}.secrets.{field}: {source}\","
+literal = "\"clients.{client_id}.secrets.{field}: {source}\""
+context = "\"clients.{client_id}.secrets.{field}: {source}\","
 classification = "diagnostic_template"
 reason = "This is an error-display template for a failed SSM secret resolution without an exposed path, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_secrets.rs"
 kind = "string"
-literal = "\"venues.{venue}.secrets.{field} (path={path}): {source}\""
-context = "\"venues.{venue}.secrets.{field} (path={path}): {source}\","
+literal = "\"clients.{client_id}.secrets.{field} (path={path}): {source}\""
+context = "\"clients.{client_id}.secrets.{field} (path={path}): {source}\","
 classification = "diagnostic_template"
 reason = "This is an error-display template for a failed SSM secret resolution with a redacted path context, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"no venue secrets configured\""
-context = "\"no venue secrets configured\","
+literal = "\"no client secrets configured\""
+context = "\"no client secrets configured\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This message renders the root-level secret-resolution fact when no venue has secrets to resolve; it is diagnostic output, not an operator runtime value."
+reason = "This message renders the root-level secret-resolution fact when no client has secrets to resolve; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"no venue adapter configs mapped\""
-context = "\"no venue adapter configs mapped\","
+literal = "\"no client configs mapped\""
+context = "\"no client configs mapped\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This message renders the root-level adapter-mapping fact when no venues produce adapter configs; it is diagnostic output, not an operator runtime value."
+reason = "This message renders the root-level adapter-mapping fact when no clients produce mapped configs; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"mapped adapter configs for venue `{venue_key}`: data={} execution={}\""
-context = "\"mapped adapter configs for venue `{venue_key}`: data={} execution={}\","
+literal = "\"mapped client configs for client_id `{client_id_key}`: data={} execution={}\""
+context = "\"mapped client configs for client_id `{client_id_key}`: data={} execution={}\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This template renders the adapter-mapping fact with venue key and data/execution presence booleans; it is diagnostic output, not an operator runtime value."
+reason = "This template renders the adapter-mapping fact with client instance key and data/execution presence booleans; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
@@ -512,15 +528,15 @@ reason = "This message renders the final no-connect LiveNode build fact for the 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"no NT clients registered because no venues are configured\""
-context = "\"no NT clients registered because no venues are configured\","
+literal = "\"no NT clients registered because no clients are configured\""
+context = "\"no NT clients registered because no clients are configured\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This message renders the root-level client-registration fact when no venues exist; it is diagnostic output, not an operator runtime value."
+reason = "This message renders the root-level client-registration fact when no client instances exist; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"registered NT clients for venue `{venue_key}`: data={} execution={}\""
-context = "\"registered NT clients for venue `{venue_key}`: data={} execution={}\","
+literal = "\"registered NT clients for client_id `{client_id_key}`: data={} execution={}\""
+context = "\"registered NT clients for client_id `{client_id_key}`: data={} execution={}\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This template renders the client-registration fact with venue key and registered client presence booleans; it is diagnostic output, not an operator runtime value."
+reason = "This template renders the client-registration fact with client instance key and registered client presence booleans; it is diagnostic output, not an operator runtime value."

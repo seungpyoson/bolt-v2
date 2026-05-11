@@ -1,12 +1,16 @@
 use bolt_v2::bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock};
 use bolt_v2::bolt_v3_decision_events::{
-    BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
-    BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+    BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_CLIENT_ORDER_ID_FACT_KEY,
+    BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE,
+    BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY, BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
-    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS, BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
+    BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS,
+    BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_EXIT_EVALUATION_EVENT_VALUE,
+    BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY,
     BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
-    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS, BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
+    BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS,
+    BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY,
     BOLT_V3_MARKET_SELECTION_FAILURE_REASONS, BoltV3DecisionEventCatalogHandoff,
     BoltV3DecisionEventCommonFields, BoltV3EntryEvaluationDecisionEvent,
     BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
@@ -19,13 +23,31 @@ use bolt_v2::bolt_v3_decision_events::{
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::fs;
 use tempfile::TempDir;
 
 const TEST_ENTRY_EVALUATION_EVENT_TS_NANOS: u64 = 2_500;
 const TEST_ENTRY_EVALUATION_INIT_TS_NANOS: u64 = 2_501;
 const TEST_UNSUPPORTED_DECISION_REASON: &str = "some_new_reason";
+
+fn decision_event_json_fixture(filename: &str) -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/bolt_v3_decision_events")
+        .join(filename);
+    let body = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("decision-event fixture {filename} should load: {error}"));
+    serde_json::from_str(&body)
+        .unwrap_or_else(|error| panic!("decision-event fixture {filename} should parse: {error}"))
+}
+
+fn entry_archetype_metrics() -> Value {
+    decision_event_json_fixture("entry_archetype_metrics.json")
+}
+
+fn exit_archetype_metrics() -> Value {
+    decision_event_json_fixture("exit_archetype_metrics.json")
+}
 
 #[test]
 fn market_selection_result_event_writes_through_nt_catalog_handoff() {
@@ -99,7 +121,9 @@ fn market_selection_result_event_writes_through_nt_catalog_handoff() {
                 common_fields().configured_target_id
             );
             assert_eq!(
-                decoded.event_facts.get("market_selection_failure_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY),
                 Some(&Value::Null)
             );
         }
@@ -227,14 +251,19 @@ fn entry_evaluation_event_writes_through_nt_catalog_handoff() {
                 .as_any()
                 .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
-            assert_eq!(decoded.decision_event_type, "entry_evaluation");
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded.decision_event_type,
+                BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE
+            );
+            assert_eq!(
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("archetype_metrics"),
-                Some(&json!({"expected_edge_basis_points": 42.0}))
+                decoded.event_facts.get(BOLT_V3_ARCHETYPE_METRICS_FACT_KEY),
+                Some(&entry_archetype_metrics())
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -327,7 +356,9 @@ fn entry_evaluation_accepts_market_cooling_down_no_action_reason() {
     .unwrap();
 
     assert_eq!(
-        event.event_facts.get("entry_no_action_reason"),
+        event
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&Value::String("market_cooling_down".to_string()))
     );
 }
@@ -348,7 +379,9 @@ fn entry_evaluation_accepts_recovery_mode_no_action_reason() {
     .unwrap();
 
     assert_eq!(
-        event.event_facts.get("entry_no_action_reason"),
+        event
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&Value::String("recovery_mode".to_string()))
     );
 }
@@ -369,7 +402,9 @@ fn entry_evaluation_accepts_one_position_invariant_no_action_reason() {
     .unwrap();
 
     assert_eq!(
-        event.event_facts.get("entry_no_action_reason"),
+        event
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&Value::String("one_position_invariant".to_string()))
     );
 }
@@ -390,7 +425,9 @@ fn entry_evaluation_accepts_thin_book_no_action_reason() {
     .unwrap();
 
     assert_eq!(
-        event.event_facts.get("entry_no_action_reason"),
+        event
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&Value::String("thin_book".to_string()))
     );
 }
@@ -411,7 +448,9 @@ fn entry_evaluation_accepts_fast_venue_incoherent_no_action_reason() {
     .unwrap();
 
     assert_eq!(
-        event.event_facts.get("entry_no_action_reason"),
+        event
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&Value::String("fast_venue_incoherent".to_string()))
     );
 }
@@ -432,7 +471,9 @@ fn entry_evaluation_accepts_freeze_no_action_reason() {
     .unwrap();
 
     assert_eq!(
-        event.event_facts.get("entry_no_action_reason"),
+        event
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&Value::String("freeze".to_string()))
     );
 }
@@ -454,7 +495,9 @@ fn entry_evaluation_accepts_book_state_no_action_reasons() {
         .unwrap();
 
         assert_eq!(
-            event.event_facts.get("entry_no_action_reason"),
+            event
+                .event_facts
+                .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
             Some(&Value::String(reason.to_string()))
         );
     }
@@ -500,7 +543,7 @@ fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
                 .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3EntryOrderSubmissionDecisionEvent>()
                 .expect("BoltV3EntryOrderSubmissionDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&Value::String("ORDER-001".to_string()))
             );
         }
@@ -572,11 +615,13 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
                 .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3EntryPreSubmitRejectionDecisionEvent>()
                 .expect("BoltV3EntryPreSubmitRejectionDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("entry_pre_submit_rejection_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&Value::String("invalid_quantity".to_string()))
             );
         }
@@ -676,7 +721,7 @@ fn exit_order_submission_event_writes_through_nt_catalog_handoff() {
                 .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3ExitOrderSubmissionDecisionEvent>()
                 .expect("BoltV3ExitOrderSubmissionDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&Value::String("EXIT-ORDER-001".to_string()))
             );
         }
@@ -723,11 +768,13 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
                 .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3ExitPreSubmitRejectionDecisionEvent>()
                 .expect("BoltV3ExitPreSubmitRejectionDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("client_order_id"),
+                decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
                 Some(&Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("exit_pre_submit_rejection_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY),
                 Some(&Value::String("invalid_quantity".to_string()))
             );
         }
@@ -805,16 +852,19 @@ fn exit_evaluation_event_writes_through_nt_catalog_handoff() {
                 .as_any()
                 .downcast_ref::<bolt_v2::bolt_v3_decision_events::BoltV3ExitEvaluationDecisionEvent>()
                 .expect("BoltV3ExitEvaluationDecisionEvent");
-            assert_eq!(decoded.decision_event_type, "exit_evaluation");
+            assert_eq!(
+                decoded.decision_event_type,
+                BOLT_V3_EXIT_EVALUATION_EVENT_VALUE
+            );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("exit_order_mechanical_rejection_reason"),
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("archetype_metrics"),
-                Some(&json!({}))
+                decoded.event_facts.get(BOLT_V3_ARCHETYPE_METRICS_FACT_KEY),
+                Some(&exit_archetype_metrics())
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -911,7 +961,7 @@ fn entry_evaluation_facts() -> BoltV3EntryEvaluationFacts {
         entry_filled_notional: 0.0,
         open_entry_notional: 0.0,
         strategy_remaining_entry_capacity: 100.0,
-        archetype_metrics: json!({"expected_edge_basis_points": 42.0}),
+        archetype_metrics: entry_archetype_metrics(),
     }
 }
 
@@ -925,7 +975,7 @@ fn exit_evaluation_facts() -> BoltV3ExitEvaluationFacts {
         exit_order_mechanical_rejection_reason: None,
         exit_decision: "hold".to_string(),
         exit_decision_reason: "active_exit_not_defined".to_string(),
-        archetype_metrics: json!({}),
+        archetype_metrics: exit_archetype_metrics(),
     }
 }
 

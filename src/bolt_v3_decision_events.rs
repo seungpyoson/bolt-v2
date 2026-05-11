@@ -28,6 +28,24 @@ pub const BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE: &str =
     "BoltV3ExitOrderSubmissionDecisionEvent";
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE: &str =
     "BoltV3ExitPreSubmitRejectionDecisionEvent";
+pub const BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE: &str = "market_selection_result";
+pub const BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE: &str = "entry_evaluation";
+pub const BOLT_V3_ENTRY_ORDER_SUBMISSION_EVENT_VALUE: &str = "entry_order_submission";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = "entry_pre_submit_rejection";
+pub const BOLT_V3_EXIT_EVALUATION_EVENT_VALUE: &str = "exit_evaluation";
+pub const BOLT_V3_EXIT_ORDER_SUBMISSION_EVENT_VALUE: &str = "exit_order_submission";
+pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = "exit_pre_submit_rejection";
+pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY: &str =
+    "market_selection_failure_reason";
+pub const BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY: &str = "entry_no_action_reason";
+pub const BOLT_V3_ARCHETYPE_METRICS_FACT_KEY: &str = "archetype_metrics";
+pub const BOLT_V3_CLIENT_ORDER_ID_FACT_KEY: &str = "client_order_id";
+pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
+    "entry_pre_submit_rejection_reason";
+pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
+    "exit_pre_submit_rejection_reason";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY: &str =
+    "exit_order_mechanical_rejection_reason";
 pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASONS: &[&str] = &[
     "request_instruments_failed",
     "instruments_not_in_cache",
@@ -51,13 +69,13 @@ pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS: &[&str] = &[
     "invalid_quantity",
     "trading_state_halted",
 ];
-const MARKET_SELECTION_RESULT: &str = "market_selection_result";
-const ENTRY_EVALUATION: &str = "entry_evaluation";
-const ENTRY_ORDER_SUBMISSION: &str = "entry_order_submission";
-const ENTRY_PRE_SUBMIT_REJECTION: &str = "entry_pre_submit_rejection";
-const EXIT_EVALUATION: &str = "exit_evaluation";
-const EXIT_ORDER_SUBMISSION: &str = "exit_order_submission";
-const EXIT_PRE_SUBMIT_REJECTION: &str = "exit_pre_submit_rejection";
+const MARKET_SELECTION_RESULT: &str = BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE;
+const ENTRY_EVALUATION: &str = BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE;
+const ENTRY_ORDER_SUBMISSION: &str = BOLT_V3_ENTRY_ORDER_SUBMISSION_EVENT_VALUE;
+const ENTRY_PRE_SUBMIT_REJECTION: &str = BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_EVENT_VALUE;
+const EXIT_EVALUATION: &str = BOLT_V3_EXIT_EVALUATION_EVENT_VALUE;
+const EXIT_ORDER_SUBMISSION: &str = BOLT_V3_EXIT_ORDER_SUBMISSION_EVENT_VALUE;
+const EXIT_PRE_SUBMIT_REJECTION: &str = BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EVENT_VALUE;
 const DECISION_EVENT_REWRITE_STAGING_DIR: &str = ".bolt_v3_decision_event_rewrite";
 
 pub fn validate_bolt_v3_market_selection_failure_reason(reason: &str) -> Result<()> {
@@ -468,7 +486,7 @@ impl BoltV3EntryPreSubmitRejectionDecisionEvent {
             configured_target_id: common.configured_target_id,
             event_facts: pre_submit_rejection_facts_to_params(
                 facts,
-                "entry_pre_submit_rejection_reason",
+                BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY,
                 false,
             ),
             ts_event,
@@ -574,7 +592,7 @@ impl BoltV3ExitPreSubmitRejectionDecisionEvent {
             configured_target_id: common.configured_target_id,
             event_facts: pre_submit_rejection_facts_to_params(
                 facts,
-                "exit_pre_submit_rejection_reason",
+                BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY,
                 true,
             ),
             ts_event,
@@ -1023,7 +1041,7 @@ fn market_selection_result_facts_to_params(facts: BoltV3MarketSelectionResultFac
         Value::String(facts.market_selection_outcome),
     );
     params.insert(
-        "market_selection_failure_reason".to_string(),
+        BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY.to_string(),
         facts
             .market_selection_failure_reason
             .map(Value::String)
@@ -1286,7 +1304,7 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         Value::String(facts.entry_decision),
     );
     params.insert(
-        "entry_no_action_reason".to_string(),
+        BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY.to_string(),
         optional_string_to_value(facts.entry_no_action_reason),
     );
     params.insert(
@@ -1317,7 +1335,10 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         "strategy_remaining_entry_capacity".to_string(),
         Value::from(facts.strategy_remaining_entry_capacity),
     );
-    params.insert("archetype_metrics".to_string(), facts.archetype_metrics);
+    params.insert(
+        BOLT_V3_ARCHETYPE_METRICS_FACT_KEY.to_string(),
+        facts.archetype_metrics,
+    );
     params
 }
 
@@ -1345,7 +1366,7 @@ fn order_submission_facts_to_params(facts: BoltV3OrderSubmissionFacts) -> Params
         Value::from(facts.is_reduce_only),
     );
     params.insert(
-        "client_order_id".to_string(),
+        BOLT_V3_CLIENT_ORDER_ID_FACT_KEY.to_string(),
         facts
             .client_order_id
             .map(Value::String)
@@ -1387,7 +1408,7 @@ fn rejected_order_facts_to_params(facts: BoltV3RejectedOrderFacts) -> Params {
         optional_bool_to_value(facts.is_reduce_only),
     );
     params.insert(
-        "client_order_id".to_string(),
+        BOLT_V3_CLIENT_ORDER_ID_FACT_KEY.to_string(),
         optional_string_to_value(facts.client_order_id),
     );
     params
@@ -1476,7 +1497,7 @@ fn exit_evaluation_facts_to_params(facts: BoltV3ExitEvaluationFacts) -> Params {
         Value::String(facts.exit_order_mechanical_outcome),
     );
     params.insert(
-        "exit_order_mechanical_rejection_reason".to_string(),
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY.to_string(),
         optional_string_to_value(facts.exit_order_mechanical_rejection_reason),
     );
     params.insert(
@@ -1487,7 +1508,10 @@ fn exit_evaluation_facts_to_params(facts: BoltV3ExitEvaluationFacts) -> Params {
         "exit_decision_reason".to_string(),
         Value::String(facts.exit_decision_reason),
     );
-    params.insert("archetype_metrics".to_string(), facts.archetype_metrics);
+    params.insert(
+        BOLT_V3_ARCHETYPE_METRICS_FACT_KEY.to_string(),
+        facts.archetype_metrics,
+    );
     params
 }
 

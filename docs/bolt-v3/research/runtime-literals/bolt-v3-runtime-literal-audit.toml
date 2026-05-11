@@ -1217,7 +1217,7 @@ reason = "This is an explicit contract value in a bolt-v3 decision-event reason 
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"market_selection_result\""
-context = "const MARKET_SELECTION_RESULT: &str = \"market_selection_result\";"
+context = "pub const BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE: &str = \"market_selection_result\";"
 classification = "decision_event_dataset_key"
 reason = "This is the durable decision-event dataset key used for NT catalog routing."
 
@@ -1225,7 +1225,7 @@ reason = "This is the durable decision-event dataset key used for NT catalog rou
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"entry_evaluation\""
-context = "const ENTRY_EVALUATION: &str = \"entry_evaluation\";"
+context = "pub const BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE: &str = \"entry_evaluation\";"
 classification = "decision_event_dataset_key"
 reason = "This is the durable decision-event dataset key used for NT catalog routing."
 
@@ -1233,7 +1233,7 @@ reason = "This is the durable decision-event dataset key used for NT catalog rou
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"entry_order_submission\""
-context = "const ENTRY_ORDER_SUBMISSION: &str = \"entry_order_submission\";"
+context = "pub const BOLT_V3_ENTRY_ORDER_SUBMISSION_EVENT_VALUE: &str = \"entry_order_submission\";"
 classification = "decision_event_dataset_key"
 reason = "This is the durable decision-event dataset key used for NT catalog routing."
 
@@ -1241,7 +1241,7 @@ reason = "This is the durable decision-event dataset key used for NT catalog rou
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"entry_pre_submit_rejection\""
-context = "const ENTRY_PRE_SUBMIT_REJECTION: &str = \"entry_pre_submit_rejection\";"
+context = "pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = \"entry_pre_submit_rejection\";"
 classification = "decision_event_dataset_key"
 reason = "This is the durable decision-event dataset key used for NT catalog routing."
 
@@ -1249,7 +1249,7 @@ reason = "This is the durable decision-event dataset key used for NT catalog rou
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_evaluation\""
-context = "const EXIT_EVALUATION: &str = \"exit_evaluation\";"
+context = "pub const BOLT_V3_EXIT_EVALUATION_EVENT_VALUE: &str = \"exit_evaluation\";"
 classification = "decision_event_dataset_key"
 reason = "This is the durable decision-event dataset key used for NT catalog routing."
 
@@ -1257,7 +1257,7 @@ reason = "This is the durable decision-event dataset key used for NT catalog rou
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_order_submission\""
-context = "const EXIT_ORDER_SUBMISSION: &str = \"exit_order_submission\";"
+context = "pub const BOLT_V3_EXIT_ORDER_SUBMISSION_EVENT_VALUE: &str = \"exit_order_submission\";"
 classification = "decision_event_dataset_key"
 reason = "This is the durable decision-event dataset key used for NT catalog routing."
 
@@ -1265,7 +1265,7 @@ reason = "This is the durable decision-event dataset key used for NT catalog rou
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_pre_submit_rejection\""
-context = "const EXIT_PRE_SUBMIT_REJECTION: &str = \"exit_pre_submit_rejection\";"
+context = "pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = \"exit_pre_submit_rejection\";"
 classification = "decision_event_dataset_key"
 reason = "This is the durable decision-event dataset key used for NT catalog routing."
 
@@ -1281,7 +1281,7 @@ reason = "This is the local staging directory name used when rewriting overlappi
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"entry_pre_submit_rejection_reason\""
-context = "\"entry_pre_submit_rejection_reason\","
+context = "\"entry_pre_submit_rejection_reason\";"
 classification = "decision_event_reason_field_key"
 reason = "This is a decision-event fact key used to persist the pre-submit rejection reason."
 
@@ -1289,7 +1289,7 @@ reason = "This is a decision-event fact key used to persist the pre-submit rejec
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_pre_submit_rejection_reason\""
-context = "\"exit_pre_submit_rejection_reason\","
+context = "\"exit_pre_submit_rejection_reason\";"
 classification = "decision_event_reason_field_key"
 reason = "This is a decision-event fact key used to persist the pre-submit rejection reason."
 
@@ -1529,7 +1529,7 @@ reason = "This is a persisted market-selection decision-event fact key."
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"market_selection_failure_reason\""
-context = "\"market_selection_failure_reason\".to_string(),"
+context = "\"market_selection_failure_reason\";"
 classification = "decision_event_market_selection_fact_key"
 reason = "This is a persisted market-selection decision-event fact key."
 
@@ -1921,7 +1921,7 @@ reason = "This is a persisted entry-evaluation decision-event fact key."
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"entry_no_action_reason\""
-context = "\"entry_no_action_reason\".to_string(),"
+context = "pub const BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY: &str = \"entry_no_action_reason\";"
 classification = "decision_event_entry_fact_key"
 reason = "This is a persisted entry-evaluation decision-event fact key."
 
@@ -1985,7 +1985,7 @@ reason = "This is a persisted entry-evaluation decision-event fact key."
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"archetype_metrics\""
-context = "params.insert(\"archetype_metrics\".to_string(), facts.archetype_metrics);"
+context = "pub const BOLT_V3_ARCHETYPE_METRICS_FACT_KEY: &str = \"archetype_metrics\";"
 classification = "decision_event_entry_fact_key"
 reason = "This is a persisted entry-evaluation decision-event fact key."
 
@@ -2065,7 +2065,7 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"client_order_id\""
-context = "\"client_order_id\".to_string(),"
+context = "pub const BOLT_V3_CLIENT_ORDER_ID_FACT_KEY: &str = \"client_order_id\";"
 classification = "decision_event_order_fact_key"
 reason = "This is a persisted order-submission or pre-submit-rejection decision-event fact key."
 
@@ -2281,7 +2281,7 @@ reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decis
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_order_mechanical_rejection_reason\""
-context = "\"exit_order_mechanical_rejection_reason\".to_string(),"
+context = "\"exit_order_mechanical_rejection_reason\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
 

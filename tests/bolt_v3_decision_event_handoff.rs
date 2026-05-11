@@ -1,4 +1,9 @@
-use bolt_v2::bolt_v3_config::{CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock};
+mod support;
+
+use bolt_v2::bolt_v3_config::{
+    CatalogFsProtocol, PersistenceBlock, RotationKind, StreamingBlock, load_bolt_v3_config,
+};
+use bolt_v2::bolt_v3_decision_event_context::bolt_v3_decision_event_common_fields;
 use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_CLIENT_ORDER_ID_FACT_KEY,
     BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE,
@@ -31,6 +36,7 @@ use bolt_v2::bolt_v3_decision_events::{
     BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
     BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
 };
+use bolt_v2::bolt_v3_release_identity::load_bolt_v3_release_identity;
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -540,9 +546,14 @@ fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
     )
     .unwrap();
 
+    let order_facts = order_submission_facts_from_fixture();
+    let expected_client_order_id = order_facts
+        .client_order_id
+        .clone()
+        .expect("entry order fixture should define client_order_id");
     let event = BoltV3EntryOrderSubmissionDecisionEvent::entry_order_submission(
         common_fields(),
-        order_submission_facts(Some("ORDER-001".to_string())),
+        order_facts,
         UnixNanos::from(3_000),
         UnixNanos::from(3_001),
     )
@@ -573,7 +584,7 @@ fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
                 .expect("BoltV3EntryOrderSubmissionDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
-                Some(&Value::String("ORDER-001".to_string()))
+                Some(&Value::String(expected_client_order_id))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -584,7 +595,7 @@ fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
 fn entry_order_submission_rejects_missing_client_order_id() {
     let error = BoltV3EntryOrderSubmissionDecisionEvent::entry_order_submission(
         common_fields(),
-        order_submission_facts(None),
+        order_submission_facts_without_client_order_id(),
         UnixNanos::from(3_000),
         UnixNanos::from(3_001),
     )
@@ -608,7 +619,7 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
     let event = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts_without_client_order_id()),
             rejection_reason: BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON
                 .to_string(),
             authoritative_position_quantity: None,
@@ -666,7 +677,7 @@ fn entry_pre_submit_rejection_rejects_unknown_reason() {
     let error = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts_without_client_order_id()),
             rejection_reason: TEST_UNSUPPORTED_DECISION_REASON.to_string(),
             authoritative_position_quantity: None,
             authoritative_sellable_quantity: None,
@@ -689,7 +700,9 @@ fn entry_pre_submit_rejection_accepts_allowed_reasons() {
         BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
             common_fields(),
             BoltV3PreSubmitRejectionFacts {
-                order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+                order: BoltV3RejectedOrderFacts::from(
+                    order_submission_facts_without_client_order_id(),
+                ),
                 rejection_reason: (*reason).to_string(),
                 authoritative_position_quantity: None,
                 authoritative_sellable_quantity: None,
@@ -708,7 +721,7 @@ fn entry_pre_submit_rejection_accepts_missing_instrument_id_reason() {
     BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            order: BoltV3RejectedOrderFacts::from(order_submission_facts_without_client_order_id()),
             rejection_reason: BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON
                 .to_string(),
             authoritative_position_quantity: None,
@@ -730,9 +743,14 @@ fn exit_order_submission_event_writes_through_nt_catalog_handoff() {
     )
     .unwrap();
 
+    let order_facts = exit_order_submission_facts_from_fixture();
+    let expected_client_order_id = order_facts
+        .client_order_id
+        .clone()
+        .expect("exit order fixture should define client_order_id");
     let event = BoltV3ExitOrderSubmissionDecisionEvent::exit_order_submission(
         common_fields(),
-        order_submission_facts(Some("EXIT-ORDER-001".to_string())),
+        order_facts,
         UnixNanos::from(5_000),
         UnixNanos::from(5_001),
     )
@@ -755,7 +773,7 @@ fn exit_order_submission_event_writes_through_nt_catalog_handoff() {
                 .expect("BoltV3ExitOrderSubmissionDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_CLIENT_ORDER_ID_FACT_KEY),
-                Some(&Value::String("EXIT-ORDER-001".to_string()))
+                Some(&Value::String(expected_client_order_id))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -773,7 +791,9 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
     let event = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            order: BoltV3RejectedOrderFacts::from(
+                exit_order_submission_facts_without_client_order_id(),
+            ),
             rejection_reason: BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string(),
             authoritative_position_quantity: Some(10.0),
             authoritative_sellable_quantity: Some(10.0),
@@ -822,7 +842,9 @@ fn exit_pre_submit_rejection_rejects_unknown_reason() {
     let error = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+            order: BoltV3RejectedOrderFacts::from(
+                exit_order_submission_facts_without_client_order_id(),
+            ),
             rejection_reason: TEST_UNSUPPORTED_DECISION_REASON.to_string(),
             authoritative_position_quantity: Some(10.0),
             authoritative_sellable_quantity: Some(10.0),
@@ -845,7 +867,9 @@ fn exit_pre_submit_rejection_accepts_allowed_reasons() {
         BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
             common_fields(),
             BoltV3PreSubmitRejectionFacts {
-                order: BoltV3RejectedOrderFacts::from(order_submission_facts(None)),
+                order: BoltV3RejectedOrderFacts::from(
+                    exit_order_submission_facts_without_client_order_id(),
+                ),
                 rejection_reason: (*reason).to_string(),
                 authoritative_position_quantity: Some(10.0),
                 authoritative_sellable_quantity: Some(10.0),
@@ -931,20 +955,24 @@ fn exit_evaluation_rejects_missing_mechanical_rejection_reason() {
 }
 
 fn common_fields() -> BoltV3DecisionEventCommonFields {
-    BoltV3DecisionEventCommonFields {
-        schema_version: 1,
-        decision_trace_id: "123e4567-e89b-12d3-a456-426614174002".to_string(),
-        strategy_instance_id: "strategy-alpha".to_string(),
-        strategy_archetype: "edge_taker".to_string(),
-        trader_id: "TRADER-001".to_string(),
-        client_id: "POLY-A".to_string(),
-        venue: "POLYMARKET".to_string(),
-        runtime_mode: "live".to_string(),
-        release_id: "release-sha".to_string(),
-        config_hash: "config-hash".to_string(),
-        nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e".to_string(),
-        configured_target_id: "target-eth-updown".to_string(),
-    }
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&support::repo_path(
+        "tests/fixtures/bolt_v3_existing_strategy/root.toml",
+    ))
+    .expect("existing strategy root should load");
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
+    let identity = load_bolt_v3_release_identity(&loaded).expect("release identity should load");
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("existing strategy root should load one strategy");
+    let decision_trace_id = format!(
+        "{}:{}",
+        identity.release_id, strategy.config.strategy_instance_id
+    );
+
+    bolt_v3_decision_event_common_fields(&loaded, strategy, &identity, &decision_trace_id)
+        .expect("common fields should derive from v3 TOML and release identity")
 }
 
 fn test_target_ids() -> Vec<String> {
@@ -1015,19 +1043,24 @@ fn exit_evaluation_facts() -> BoltV3ExitEvaluationFacts {
     }
 }
 
-fn order_submission_facts(client_order_id: Option<String>) -> BoltV3OrderSubmissionFacts {
-    BoltV3OrderSubmissionFacts {
-        order_type: "limit".to_string(),
-        time_in_force: "gtc".to_string(),
-        instrument_id: "ETH-UP.POLYMARKET".to_string(),
-        side: "buy".to_string(),
-        price: 0.52,
-        quantity: 10.0,
-        is_quote_quantity: false,
-        is_post_only: false,
-        is_reduce_only: false,
-        client_order_id,
-    }
+fn order_submission_facts_from_fixture() -> BoltV3OrderSubmissionFacts {
+    support::bolt_v3_order_submission_facts_fixture("entry_order_submission_facts.json")
+}
+
+fn order_submission_facts_without_client_order_id() -> BoltV3OrderSubmissionFacts {
+    let mut facts = order_submission_facts_from_fixture();
+    facts.client_order_id = None;
+    facts
+}
+
+fn exit_order_submission_facts_from_fixture() -> BoltV3OrderSubmissionFacts {
+    support::bolt_v3_order_submission_facts_fixture("exit_order_submission_facts.json")
+}
+
+fn exit_order_submission_facts_without_client_order_id() -> BoltV3OrderSubmissionFacts {
+    let mut facts = exit_order_submission_facts_from_fixture();
+    facts.client_order_id = None;
+    facts
 }
 
 fn query_events(path: &std::path::Path, event_type: &str) -> Vec<Data> {

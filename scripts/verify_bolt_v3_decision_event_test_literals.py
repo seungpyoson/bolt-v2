@@ -10,10 +10,11 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DECISION_EVENT_HANDOFF_TEST_FILE = "tests/bolt_v3_decision_event_handoff.rs"
 ORDER_INTENT_GATE_TEST_FILE = "tests/bolt_v3_order_intent_gate.rs"
 DECISION_EVENT_CONTEXT_TEST_FILE = "tests/bolt_v3_decision_event_context.rs"
 ENFORCED_TEST_FILES = (
-    "tests/bolt_v3_decision_event_handoff.rs",
+    DECISION_EVENT_HANDOFF_TEST_FILE,
     DECISION_EVENT_CONTEXT_TEST_FILE,
     ORDER_INTENT_GATE_TEST_FILE,
 )
@@ -28,13 +29,19 @@ JSON_OBJECT_MACRO_PATTERN = re.compile(r"json!\s*\(\s*\{")
 STRING_LITERAL_PATTERN = re.compile(r'"(?P<literal>[a-z_][a-z0-9_]*)"')
 RUST_STRING_LITERAL_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 DIRECT_COMMON_FIELDS_PATTERN = re.compile(r"=\s*BoltV3DecisionEventCommonFields\s*\{")
-DIRECT_ORDER_SUBMISSION_FACTS_PATTERN = re.compile(r"BoltV3OrderSubmissionFacts\s*\{")
+DIRECT_ORDER_SUBMISSION_FACTS_PATTERN = re.compile(
+    r"(?:=|,|\()\s*BoltV3OrderSubmissionFacts\s*\{|^\s*BoltV3OrderSubmissionFacts\s*\{",
+    re.MULTILINE,
+)
 DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES = {
     "release-sha",
     "config-hash",
     "38b912a8b0fe14e4046773973ff46a3b798b1e3e",
     "123e4567-e89b-12d3-a456-426614174002",
+    "strategy-alpha",
+    "POLY-A",
     "eth_updown_5m",
+    "target-eth-updown",
 }
 DECISION_REASON_VALUES = {
     "active_book_not_priced",
@@ -141,11 +148,11 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                         "direct order-submission fact fixture construction; "
                         "load order fact fixture data outside Rust test code"
                     ),
-                    excerpt="BoltV3OrderSubmissionFacts {",
+                    excerpt=match.group(0).strip(),
                 )
             )
 
-    if rel == DECISION_EVENT_CONTEXT_TEST_FILE:
+    if rel in {DECISION_EVENT_CONTEXT_TEST_FILE, DECISION_EVENT_HANDOFF_TEST_FILE}:
         for match in RUST_STRING_LITERAL_PATTERN.finditer(text):
             value = string_value(match.group(0))
             if value not in DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES:
@@ -159,6 +166,20 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                         "derive from v3 TOML, release identity, or generated trace id"
                     ),
                     excerpt=match.group(0),
+                )
+            )
+
+    if rel == DECISION_EVENT_HANDOFF_TEST_FILE:
+        for match in DIRECT_ORDER_SUBMISSION_FACTS_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "direct order-submission fact fixture construction; "
+                        "load order fact fixture data outside Rust test code"
+                    ),
+                    excerpt=match.group(0).strip(),
                 )
             )
 

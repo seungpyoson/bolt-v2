@@ -105,6 +105,35 @@ fn probe() {
         } == {finding.message for finding in findings}
 
 
+def test_decision_event_handoff_fixture_literal_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_decision_event_handoff.rs",
+            """
+fn probe() {
+    let _ = "strategy-alpha";
+    let _ = "target-eth-updown";
+    let _ = BoltV3OrderSubmissionFacts {
+        instrument_id: "ETH-UP.POLYMARKET".to_string(),
+    };
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        messages = [finding.message for finding in findings]
+        assert (
+            "inline decision-event context fixture literal; derive from v3 TOML, release identity, or generated trace id"
+            in messages
+        )
+        assert (
+            "direct order-submission fact fixture construction; load order fact fixture data outside Rust test code"
+            in messages
+        )
+
+
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -144,6 +173,7 @@ def main() -> int:
         test_inline_event_contract_literals_are_findings,
         test_order_intent_gate_direct_event_fixture_construction_is_a_finding,
         test_decision_event_context_identity_literal_is_a_finding,
+        test_decision_event_handoff_fixture_literal_is_a_finding,
         test_exported_constants_and_fixture_helpers_are_clean,
         test_decision_event_handoff_file_is_enforced,
         test_order_intent_gate_file_is_enforced,

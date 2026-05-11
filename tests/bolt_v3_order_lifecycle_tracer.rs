@@ -82,6 +82,7 @@ struct OrderLifecycleTracerFixture {
     local_polymarket: LocalPolymarketFixture,
     selected_binary_option: SelectedBinaryOptionFixture,
     market_snapshot: MarketSnapshotFixture,
+    test_timing: TestTimingFixture,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +108,15 @@ struct MarketSnapshotFixture {
     price_to_beat: f64,
     liquidity_num: f64,
     reference_orderbook_half_spread: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestTimingFixture {
+    local_clob_wait_timeout_seconds: u64,
+    poll_interval_milliseconds: u64,
+    post_order_cancel_delay_milliseconds: u64,
+    post_initial_market_delay_milliseconds: u64,
+    fee_request_recv_timeout_seconds: u64,
 }
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
@@ -193,6 +203,30 @@ fn market_snapshot_liquidity_num() -> f64 {
 
 fn reference_orderbook_half_spread() -> f64 {
     market_snapshot_fixture().reference_orderbook_half_spread
+}
+
+fn test_timing_fixture() -> &'static TestTimingFixture {
+    &order_lifecycle_tracer_fixture().test_timing
+}
+
+fn order_lifecycle_local_clob_wait_timeout() -> Duration {
+    Duration::from_secs(test_timing_fixture().local_clob_wait_timeout_seconds)
+}
+
+fn order_lifecycle_poll_interval() -> Duration {
+    Duration::from_millis(test_timing_fixture().poll_interval_milliseconds)
+}
+
+fn order_lifecycle_post_order_cancel_delay() -> Duration {
+    Duration::from_millis(test_timing_fixture().post_order_cancel_delay_milliseconds)
+}
+
+fn order_lifecycle_post_initial_market_delay() -> Duration {
+    Duration::from_millis(test_timing_fixture().post_initial_market_delay_milliseconds)
+}
+
+fn order_lifecycle_fee_request_recv_timeout() -> Duration {
+    Duration::from_secs(test_timing_fixture().fee_request_recv_timeout_seconds)
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -590,7 +624,7 @@ async fn wait_for_local_clob_request(
     method: &str,
     path: &str,
 ) -> RecordedPolymarketRequest {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + order_lifecycle_local_clob_wait_timeout();
     loop {
         if let Some(request) = server
             .requests
@@ -609,7 +643,7 @@ async fn wait_for_local_clob_request(
             "timed out waiting for local CLOB {method} {path}; observed {:#?}",
             server.requests.lock().await
         );
-        sleep(Duration::from_millis(10)).await;
+        sleep(order_lifecycle_poll_interval()).await;
     }
 }
 
@@ -619,7 +653,7 @@ async fn wait_for_local_clob_request_count(
     path: &str,
     count: usize,
 ) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + order_lifecycle_local_clob_wait_timeout();
     loop {
         let observed = server
             .requests
@@ -638,7 +672,7 @@ async fn wait_for_local_clob_request_count(
             "timed out waiting for {count} local CLOB {method} {path} requests; observed {:#?}",
             server.requests.lock().await
         );
-        sleep(Duration::from_millis(10)).await;
+        sleep(order_lifecycle_poll_interval()).await;
     }
 }
 
@@ -913,7 +947,7 @@ fn book_deltas(instrument_id: InstrumentId, bid: f64, ask: f64) -> OrderBookDelt
 
 async fn wait_for_running(handle: &LiveNodeHandle) {
     while !handle.is_running() {
-        sleep(Duration::from_millis(10)).await;
+        sleep(order_lifecycle_poll_interval()).await;
     }
 }
 
@@ -1210,7 +1244,7 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                     );
 
                     let post_order = wait_for_local_clob_request(&server, "POST", "/order").await;
-                    sleep(Duration::from_millis(50)).await;
+                    sleep(order_lifecycle_post_order_cancel_delay()).await;
                     let cancel = CancelAllOrders::new(
                         TraderId::from(loaded_for_control.root.trader_id.as_str()),
                         Some(execution_client_id),
@@ -1338,7 +1372,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                         switchboard::get_book_deltas_topic(down),
                         &book_deltas(down, 0.480, 0.490),
                     );
-                    sleep(Duration::from_millis(200)).await;
+                    sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
                         &selection_snapshot(&loaded_for_control, start_ts_ms),
@@ -1365,7 +1399,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                         if !recorded_mock_exec_submissions().is_empty() {
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
                     handle.stop();
                 };
@@ -1388,7 +1422,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
     assert_eq!(entry_submission_events(&catalog_dir, &target_id), 1);
     for _ in 0..2 {
         let request = fee_requests
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");
         assert!(
             request
@@ -1481,7 +1515,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                         switchboard::get_book_deltas_topic(down),
                         &book_deltas(down, 0.480, 0.490),
                     );
-                    sleep(Duration::from_millis(200)).await;
+                    sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
                         &selection_snapshot(&loaded_for_control, start_ts_ms),
@@ -1514,7 +1548,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                             );
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
 
                     publish_any(
@@ -1543,7 +1577,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                         if recorded_mock_exec_submissions().len() >= 2 {
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
                     handle.stop();
                 };
@@ -1573,7 +1607,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
     assert_eq!(entry_submission_events(&catalog_dir, &target_id), 2);
     for _ in 0..2 {
         let request = fee_requests
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");
         assert!(
             request
@@ -1666,7 +1700,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                         switchboard::get_book_deltas_topic(down),
                         &book_deltas(down, 0.480, 0.490),
                     );
-                    sleep(Duration::from_millis(200)).await;
+                    sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
                         &selection_snapshot(&loaded_for_control, start_ts_ms),
@@ -1696,7 +1730,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                             entry_submission = Some(submission);
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
                     let entry_submission =
                         entry_submission.expect("entry submit should happen before fill event");
@@ -1738,7 +1772,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                         if recorded_mock_exec_submissions().len() >= 2 {
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
                     handle.stop();
                 };
@@ -1768,7 +1802,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
     assert_eq!(exit_submission_events(&catalog_dir, &target_id), 1);
     for _ in 0..2 {
         let request = fee_requests
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");
         assert!(
             request
@@ -1861,7 +1895,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                         switchboard::get_book_deltas_topic(down),
                         &book_deltas(down, 0.480, 0.490),
                     );
-                    sleep(Duration::from_millis(200)).await;
+                    sleep(order_lifecycle_post_initial_market_delay()).await;
                     publish_any(
                         runtime_selection_topic(&strategy_id).into(),
                         &selection_snapshot(&loaded_for_control, start_ts_ms),
@@ -1891,7 +1925,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                             entry_submission = Some(submission);
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
                     let entry_submission =
                         entry_submission.expect("entry submit should happen before fill event");
@@ -1936,7 +1970,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                             exit_submission = submissions.get(1).cloned();
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
                     let exit_submission =
                         exit_submission.expect("exit submit should happen before cancel event");
@@ -1978,7 +2012,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                         if recorded_mock_exec_submissions().len() >= 3 {
                             break;
                         }
-                        sleep(Duration::from_millis(10)).await;
+                        sleep(order_lifecycle_poll_interval()).await;
                     }
                     handle.stop();
                 };
@@ -2013,7 +2047,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
     assert_eq!(exit_submission_events(&catalog_dir, &target_id), 2);
     for _ in 0..2 {
         let request = fee_requests
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(order_lifecycle_fee_request_recv_timeout())
             .expect("local fee server should receive fee request");
         assert!(
             request

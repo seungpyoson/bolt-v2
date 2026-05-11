@@ -38,6 +38,9 @@ NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])\d[\d_]*(?:\.\d[\d_]*)?(?![A-Za-
 ORDER_LIFECYCLE_PRICE_PRECISION_PATTERN = re.compile(
     r"Price::new\(\s*[^,\n]+,\s*\d+\s*\)"
 )
+ORDER_LIFECYCLE_DURATION_LITERAL_PATTERN = re.compile(
+    r"Duration::from_(?:secs|millis)\(\s*\d[\d_]*\s*\)"
+)
 
 
 @dataclass(frozen=True)
@@ -178,6 +181,15 @@ def scan_file(
                         "order-lifecycle price precision literal; derive from "
                         "selected binary option price increment"
                     ),
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_DURATION_LITERAL_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="order-lifecycle duration literal; derive from TOML fixture",
                     excerpt=match.group(0),
                 )
             )

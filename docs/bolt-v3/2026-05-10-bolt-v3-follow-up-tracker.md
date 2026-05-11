@@ -70,6 +70,8 @@ F13aq note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13ar note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects order-lifecycle `Price::new(..., <literal precision>)` calls in `tests/bolt_v3_order_lifecycle_tracer.rs`. Book-delta price precision now derives from the selected binary-option `price_increment` fixture value.
 
+F13as note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects literal-only `Duration::from_secs(...)` and `Duration::from_millis(...)` calls in `tests/bolt_v3_order_lifecycle_tracer.rs`. Local CLOB wait timeout, poll interval, post-order cancel delay, post-initial-market delay, and fee-request receive timeout now live in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

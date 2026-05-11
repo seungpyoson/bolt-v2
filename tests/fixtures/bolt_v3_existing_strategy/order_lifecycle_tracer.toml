@@ -18,3 +18,10 @@ book_level_quantity = "100"
 price_to_beat = 3100.0
 liquidity_num = 1000.0
 reference_orderbook_half_spread = 0.5
+
+[test_timing]
+local_clob_wait_timeout_seconds = 5
+poll_interval_milliseconds = 10
+post_order_cancel_delay_milliseconds = 50
+post_initial_market_delay_milliseconds = 200
+fee_request_recv_timeout_seconds = 1

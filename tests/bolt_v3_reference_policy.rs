@@ -112,13 +112,29 @@ fn existing_strategy_root_stream_uses_v3_reference_policy() {
         .reference_streams
         .get("eth_usd")
         .expect("existing strategy root should define eth_usd stream");
+    let observed_input = stream
+        .inputs
+        .iter()
+        .find(|input| {
+            matches!(
+                input.source_type,
+                bolt_v2::bolt_v3_config::ReferenceSourceType::Oracle
+            )
+        })
+        .expect("existing strategy stream should define an oracle source");
+    let observed_weight = observed_input.base_weight;
+    let total_weight = stream
+        .inputs
+        .iter()
+        .map(|input| input.base_weight)
+        .sum::<f64>();
     let policy = BoltV3ReferenceStreamPolicy::from_stream("eth_usd", stream)
         .expect("existing strategy stream should build policy");
     let latest = BTreeMap::from([(
-        "eth_usd_oracle_anchor".to_string(),
+        observed_input.source_id.clone(),
         ReferenceObservation::Oracle {
-            venue_name: "eth_usd_oracle_anchor".to_string(),
-            instrument_id: "ETHUSD.CHAINLINK".to_string(),
+            venue_name: observed_input.source_id.clone(),
+            instrument_id: observed_input.instrument_id.clone(),
             price: 3_100.0,
             ts_ms: 1_000,
             observed_ts_ms: 1_004,
@@ -127,8 +143,8 @@ fn existing_strategy_root_stream_uses_v3_reference_policy() {
 
     let snapshot = policy.fuse_snapshot(1_100, &latest, &BTreeMap::new());
 
-    assert_eq!(snapshot.topic, "reference.eth_usd");
+    assert_eq!(snapshot.topic, stream.publish_topic);
     assert_eq!(snapshot.fair_value, Some(3_100.0));
-    assert_eq!(snapshot.confidence, 1.0);
-    assert_eq!(snapshot.venues[0].venue_name, "eth_usd_oracle_anchor");
+    assert_eq!(snapshot.confidence, observed_weight / total_weight);
+    assert_eq!(snapshot.venues[0].venue_name, observed_input.source_id);
 }

@@ -10,14 +10,14 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock, mpsc},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     time::Duration,
 };
 
 use bolt_v2::{
     bolt_v3_adapters::{
         BoltV3ClientConfig, BoltV3ClientConfigs, BoltV3DataClientAdapterConfig,
-        BoltV3ExecutionClientAdapterConfig,
+        BoltV3ExecutionClientAdapterConfig, map_bolt_v3_clients,
     },
     bolt_v3_client_registration::register_bolt_v3_clients,
     bolt_v3_config::{
@@ -38,7 +38,9 @@ use bolt_v2::{
         runtime::runtime_selection_topic,
     },
 };
+use futures_util::StreamExt;
 use nautilus_common::{
+    messages::execution::{CancelAllOrders, TradingCommand},
     msgbus::switchboard::MessagingSwitchboard,
     msgbus::{self, publish_any, publish_deltas, switchboard},
 };
@@ -49,7 +51,8 @@ use nautilus_model::{
     enums::{AssetClass, BookAction, LiquiditySide, OrderSide},
     events::{OrderAccepted, OrderCanceled, OrderEventAny, OrderFilled, OrderRejected},
     identifiers::{
-        AccountId, ClientId, InstrumentId, PositionId, StrategyId, TradeId, TraderId, VenueOrderId,
+        AccountId, ClientId, InstrumentId, PositionId, StrategyId, Symbol, TradeId, TraderId,
+        VenueOrderId,
     },
     instruments::{InstrumentAny, binary_option::BinaryOption},
     types::{Currency, Price, Quantity},
@@ -60,10 +63,21 @@ use support::{
     RecordedSubmitOrder, clear_mock_exec_submissions, recorded_mock_exec_submissions,
 };
 use tempfile::TempDir;
-use tokio::time::sleep;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener as TokioTcpListener,
+    sync::Mutex as AsyncMutex,
+    task::JoinHandle,
+    time::sleep,
+};
+use tokio_tungstenite::accept_async;
 use ustr::Ustr;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+const LOCAL_POLYMARKET_ORDER_ID: &str = "local-venue-order-1";
+const LOCAL_POLYMARKET_FEE_REQUESTS_PER_BINARY_MARKET: usize = 2;
+const LOCAL_POLYMARKET_UP_TOKEN_ID: &str = "111";
+const LOCAL_POLYMARKET_DOWN_TOKEN_ID: &str = "222";
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
     RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
@@ -215,12 +229,282 @@ fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<St
     (base_url, rx)
 }
 
+#[derive(Debug, Clone)]
+struct RecordedPolymarketRequest {
+    method: String,
+    target: String,
+    body: String,
+}
+
+struct LocalPolymarketExecutionServer {
+    http_base_url: String,
+    ws_user_url: String,
+    requests: Arc<AsyncMutex<Vec<RecordedPolymarketRequest>>>,
+    http_task: JoinHandle<()>,
+    ws_task: JoinHandle<()>,
+}
+
+impl Drop for LocalPolymarketExecutionServer {
+    fn drop(&mut self) {
+        self.http_task.abort();
+        self.ws_task.abort();
+    }
+}
+
+async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionServer {
+    let requests = Arc::new(AsyncMutex::new(Vec::<RecordedPolymarketRequest>::new()));
+    let http_listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local CLOB HTTP listener should bind");
+    let http_base_url = format!(
+        "http://{}",
+        http_listener
+            .local_addr()
+            .expect("local CLOB HTTP listener should expose addr")
+    );
+    let recorded_http_requests = Arc::clone(&requests);
+    let http_task = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _peer)) = http_listener.accept().await else {
+                return;
+            };
+            let recorded = Arc::clone(&recorded_http_requests);
+            tokio::spawn(async move {
+                let Some(request) = read_http_request(&mut socket).await else {
+                    return;
+                };
+                let request_line = request.lines().next().unwrap_or_default();
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_string();
+                let target = parts.next().unwrap_or_default().to_string();
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body.to_string())
+                    .unwrap_or_default();
+                recorded.lock().await.push(RecordedPolymarketRequest {
+                    method: method.clone(),
+                    target: target.clone(),
+                    body,
+                });
+                let path = target.split('?').next().unwrap_or_default();
+                let response_body = match (method.as_str(), path) {
+                    ("GET", "/balance-allowance") => {
+                        r#"{"balance":"1000000000","allowance":"1000000000"}"#.to_string()
+                    }
+                    ("GET", "/data/orders") | ("GET", "/data/trades") => {
+                        r#"{"data":[],"next_cursor":"LTE="}"#.to_string()
+                    }
+                    ("GET", "/positions") => "[]".to_string(),
+                    ("GET", "/fee-rate") => r#"{"base_fee":"0"}"#.to_string(),
+                    ("POST", "/order") => {
+                        format!(
+                            r#"{{"success":true,"orderID":"{LOCAL_POLYMARKET_ORDER_ID}","errorMsg":null}}"#
+                        )
+                    }
+                    ("DELETE", "/orders") => {
+                        format!(
+                            r#"{{"canceled":["{LOCAL_POLYMARKET_ORDER_ID}"],"not_canceled":{{}}}}"#
+                        )
+                    }
+                    ("DELETE", "/order") => {
+                        format!(
+                            r#"{{"canceled":["{LOCAL_POLYMARKET_ORDER_ID}"],"not_canceled":{{}}}}"#
+                        )
+                    }
+                    _ => r#"{"error":"unexpected local CLOB request"}"#.to_string(),
+                };
+                let status = if response_body.contains("unexpected") {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+
+    let ws_listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local user WS listener should bind");
+    let ws_user_url = format!(
+        "ws://{}",
+        ws_listener
+            .local_addr()
+            .expect("local user WS listener should expose addr")
+    );
+    let ws_task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _peer)) = ws_listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let Ok(mut websocket) = accept_async(stream).await else {
+                    return;
+                };
+                while websocket.next().await.is_some() {}
+            });
+        }
+    });
+
+    LocalPolymarketExecutionServer {
+        http_base_url,
+        ws_user_url,
+        requests,
+        http_task,
+        ws_task,
+    }
+}
+
+async fn read_http_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
+    let mut request = Vec::new();
+    loop {
+        let mut buffer = [0_u8; 1024];
+        let read = socket.read(&mut buffer).await.ok()?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request_has_complete_body(&request) {
+            break;
+        }
+    }
+    String::from_utf8(request).ok()
+}
+
+fn request_has_complete_body(request: &[u8]) -> bool {
+    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    request.len() >= header_end + 4 + content_length
+}
+
+fn point_execution_to_local_polymarket_server(
+    loaded: &mut LoadedBoltV3Config,
+    server: &LocalPolymarketExecutionServer,
+) {
+    let client_id = execution_client_id(loaded);
+    let execution = loaded
+        .root
+        .clients
+        .get_mut(&client_id)
+        .and_then(|client| client.execution.as_mut())
+        .and_then(toml::Value::as_table_mut)
+        .unwrap_or_else(|| panic!("{client_id} execution config should be a TOML table"));
+    execution.insert(
+        "base_url_http".to_string(),
+        toml::Value::String(server.http_base_url.clone()),
+    );
+    execution.insert(
+        "base_url_ws".to_string(),
+        toml::Value::String(server.ws_user_url.clone()),
+    );
+    execution.insert(
+        "base_url_data_api".to_string(),
+        toml::Value::String(server.http_base_url.clone()),
+    );
+    execution.insert("http_timeout_seconds".to_string(), toml::Value::Integer(1));
+    execution.insert("ack_timeout_seconds".to_string(), toml::Value::Integer(1));
+}
+
+fn client_configs_with_real_polymarket_execution(
+    loaded: &LoadedBoltV3Config,
+    resolved: &bolt_v2::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> BoltV3ClientConfigs {
+    let mut configs = mock_client_configs_from_loaded(loaded);
+    let mut real_configs =
+        map_bolt_v3_clients(loaded, resolved).expect("real v3 client configs should map");
+    let client_id = execution_client_id(loaded);
+    let real_execution = real_configs
+        .clients
+        .remove(&client_id)
+        .and_then(|client| client.execution)
+        .expect("real Polymarket execution config should map from v3 TOML");
+    configs
+        .clients
+        .get_mut(&client_id)
+        .expect("mock client configs should include strategy execution client")
+        .execution = Some(real_execution);
+    configs
+}
+
+async fn wait_for_local_clob_request(
+    server: &LocalPolymarketExecutionServer,
+    method: &str,
+    path: &str,
+) -> RecordedPolymarketRequest {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(request) = server
+            .requests
+            .lock()
+            .await
+            .iter()
+            .find(|request| {
+                request.method == method && request.target.split('?').next() == Some(path)
+            })
+            .cloned()
+        {
+            return request;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for local CLOB {method} {path}; observed {:#?}",
+            server.requests.lock().await
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_local_clob_request_count(
+    server: &LocalPolymarketExecutionServer,
+    method: &str,
+    path: &str,
+    count: usize,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let observed = server
+            .requests
+            .lock()
+            .await
+            .iter()
+            .filter(|request| {
+                request.method == method && request.target.split('?').next() == Some(path)
+            })
+            .count();
+        if observed >= count {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {count} local CLOB {method} {path} requests; observed {:#?}",
+            server.requests.lock().await
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn selected_market(loaded: &LoadedBoltV3Config, start_ts_ms: u64) -> CandidateMarket {
     let market_id = configured_target_id(loaded);
     let underlying = underlying_asset(loaded);
     let condition_id = format!("condition-{}", underlying.to_ascii_lowercase());
-    let up_token_id = format!("{market_id}-UP");
-    let down_token_id = format!("{market_id}-DOWN");
+    let up_token_id = LOCAL_POLYMARKET_UP_TOKEN_ID.to_string();
+    let down_token_id = LOCAL_POLYMARKET_DOWN_TOKEN_ID.to_string();
     CandidateMarket {
         market_id: market_id.clone(),
         market_slug: market_id.clone(),
@@ -400,9 +684,18 @@ fn selected_instruments(loaded: &LoadedBoltV3Config) -> (InstrumentId, Instrumen
 fn binary_option(instrument_id: InstrumentId) -> InstrumentAny {
     let price_increment = Price::from("0.001");
     let size_increment = Quantity::from("0.01");
+    let token_id = instrument_id
+        .symbol
+        .as_str()
+        .rsplit_once('-')
+        .map(|(_, token_id)| token_id)
+        .unwrap_or_else(|| {
+            panic!("polymarket fixture instrument id should include token id: {instrument_id}")
+        });
+    let raw_symbol = Symbol::new(token_id);
     InstrumentAny::BinaryOption(BinaryOption::new(
         instrument_id,
-        instrument_id.symbol,
+        raw_symbol,
         AssetClass::Alternative,
         Currency::USDC(),
         UnixNanos::from(1_u64),
@@ -648,6 +941,171 @@ fn exit_submission_events(catalog_dir: &Path, configured_target_id: &str) -> usi
         configured_target_id,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
     )
+}
+
+#[test]
+fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_through_nt_livenode_run()
+ {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded =
+        load_bolt_v3_config(&existing_strategy_root_fixture()).expect("v3 fixture should load");
+    loaded.root.nautilus.load_state = false;
+    loaded.root.nautilus.save_state = false;
+    loaded.root.nautilus.delay_post_stop_seconds = 0;
+    loaded.root.nautilus.timeout_disconnection_seconds = 1;
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build")
+        .block_on(async {
+            let server = start_local_polymarket_execution_server().await;
+            point_execution_to_local_polymarket_server(&mut loaded, &server);
+
+            let strategy_id =
+                StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
+            let execution_client_id = ClientId::from(execution_client_id(&loaded).as_str());
+            let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+                .expect("fixture secrets should resolve through fake SSM");
+            let builder =
+                make_bolt_v3_live_node_builder(&loaded).expect("v3 LiveNode builder should build");
+            let (builder, _summary) = register_bolt_v3_clients(
+                builder,
+                client_configs_with_real_polymarket_execution(&loaded, &resolved),
+            )
+            .expect("mock data plus real Polymarket execution should register through v3 boundary");
+            let mut node = builder
+                .build()
+                .expect("mixed real-exec LiveNode should build");
+            register_bolt_v3_reference_actors(&mut node, &loaded)
+                .expect("v3 reference actors should register on mixed LiveNode");
+            register_bolt_v3_strategies(&mut node, &loaded, &resolved)
+                .expect("existing strategy should register from v3 TOML");
+            add_selected_instruments(&mut node, &loaded);
+
+            let handle = node.handle();
+            let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+            let reference_topic = reference_publish_topic(&loaded);
+            let (up, down) = selected_instruments(&loaded);
+            let loaded_for_control = loaded.clone();
+            let run_timeout = Duration::from_secs(
+                loaded.root.nautilus.timeout_shutdown_seconds
+                    + loaded.root.nautilus.timeout_disconnection_seconds
+                    + 5,
+            );
+
+            let (post_order, cancel_orders) = tokio::time::timeout(run_timeout, async move {
+                let control = async {
+                    wait_for_running(&handle).await;
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &selection_snapshot(&loaded_for_control, start_ts_ms),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms,
+                            price_to_beat_value(),
+                            3_102.0,
+                        ),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 200,
+                            3_101.0,
+                            3_105.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.430, 0.450),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+                    wait_for_local_clob_request_count(
+                        &server,
+                        "GET",
+                        "/fee-rate",
+                        LOCAL_POLYMARKET_FEE_REQUESTS_PER_BINARY_MARKET,
+                    )
+                    .await;
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &selection_snapshot(&loaded_for_control, start_ts_ms),
+                    );
+                    publish_any(
+                        reference_topic.into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 400,
+                            3_101.0,
+                            3_105.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.430, 0.450),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+
+                    let post_order = wait_for_local_clob_request(&server, "POST", "/order").await;
+                    sleep(Duration::from_millis(50)).await;
+                    let cancel = CancelAllOrders::new(
+                        TraderId::from(loaded_for_control.root.trader_id.as_str()),
+                        Some(execution_client_id),
+                        strategy_id,
+                        up,
+                        OrderSide::Buy,
+                        UUID4::new(),
+                        UnixNanos::from((start_ts_ms + 100) * 1_000_000),
+                        None,
+                    );
+                    msgbus::send_trading_command(
+                        MessagingSwitchboard::exec_engine_execute(),
+                        TradingCommand::CancelAllOrders(cancel),
+                    );
+                    let cancel_orders =
+                        wait_for_local_clob_request(&server, "DELETE", "/orders").await;
+
+                    handle.stop();
+                    (post_order, cancel_orders)
+                };
+                let runner = async {
+                    node.run()
+                        .await
+                        .expect("mixed real-exec node should stop cleanly");
+                };
+                let (observed, _) = tokio::join!(control, runner);
+                observed
+            })
+            .await
+            .expect("mixed real-exec LiveNode run should finish before timeout");
+
+            assert_eq!(post_order.target, "/order");
+            assert!(
+                post_order.body.contains("\"owner\""),
+                "real NT Polymarket submitter should send signed order body through local CLOB: {}",
+                post_order.body
+            );
+            assert_eq!(cancel_orders.target, "/orders");
+            assert!(
+                cancel_orders.body.contains(LOCAL_POLYMARKET_ORDER_ID),
+                "real NT Polymarket cancel should reference accepted venue order id: {}",
+                cancel_orders.body
+            );
+            assert!(recorded_mock_exec_submissions().is_empty());
+        });
 }
 
 #[test]

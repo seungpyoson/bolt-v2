@@ -2174,15 +2174,19 @@ fn eth_chainlink_taker_runtime_restrictive_trading_states_block_entry_submit() {
         let mut node = build_test_node();
         add_eth_entry_instruments(&mut node);
         let trader = Rc::clone(node.kernel().trader());
-        let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+        let strategy_config = strategy_raw_config();
+        let decision_context = common_decision_context();
+        let configured_target_id = decision_context.configured_target_id.clone();
+        let strategy_archetype = decision_context.strategy_archetype.clone();
+        let strategy_id = strategy_id_from_raw_config(&strategy_config);
         let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
-            common_decision_context(),
+            decision_context,
             &decision_persistence_block(temp_dir.path()),
         )
         .unwrap();
         let mut build_context = make_strategy_build_context(
             Arc::new(StaticFeeProvider),
-            "platform.reference.test.chainlink".to_string(),
+            fixture_reference_publish_topic().to_string(),
             Some(trading_state),
         );
         build_context.bolt_v3_decision_evidence = Some(evidence);
@@ -2190,7 +2194,7 @@ fn eth_chainlink_taker_runtime_restrictive_trading_states_block_entry_submit() {
             production_strategy_registry().unwrap(),
             build_context,
         );
-        strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+        strategy_factory(&trader, strategy_archetype.as_str(), &strategy_config).unwrap();
 
         drive_eth_entry_submission(node, strategy_id);
 
@@ -2200,7 +2204,7 @@ fn eth_chainlink_taker_runtime_restrictive_trading_states_block_entry_submit() {
         );
 
         let rejection_events =
-            query_entry_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+            query_entry_pre_submit_rejection_events(temp_dir.path(), &configured_target_id);
         assert_eq!(rejection_events.len(), 1);
         match &rejection_events[0] {
             nautilus_model::data::Data::Custom(custom) => {
@@ -2218,7 +2222,7 @@ fn eth_chainlink_taker_runtime_restrictive_trading_states_block_entry_submit() {
         }
 
         let submission_events =
-            query_entry_order_submission_events(temp_dir.path(), "target-eth-updown");
+            query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
         assert!(
             submission_events.is_empty(),
             "{trading_state:?} trading state must not persist entry order submission"
@@ -4671,21 +4675,25 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
     let temp_dir = TempDir::new().unwrap();
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
-    let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let strategy_config = strategy_raw_config();
+    let decision_context = common_decision_context();
+    let configured_target_id = decision_context.configured_target_id.clone();
+    let strategy_archetype = decision_context.strategy_archetype.clone();
+    let strategy_id = strategy_id_from_raw_config(&strategy_config);
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
-        common_decision_context(),
+        decision_context,
         &decision_persistence_block(temp_dir.path()),
     )
     .unwrap();
     let mut build_context = make_strategy_build_context(
         Arc::new(StaticFeeProvider),
-        "platform.reference.test.chainlink".to_string(),
+        fixture_reference_publish_topic().to_string(),
         Some(TradingState::Halted),
     );
     build_context.bolt_v3_decision_evidence = Some(evidence);
     let strategy_factory =
         registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
-    strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
+    strategy_factory(&trader, strategy_archetype.as_str(), &strategy_config).unwrap();
 
     add_eth_entry_instruments(&mut node);
     drive_eth_exit_sellable_rejection(node, strategy_id);
@@ -4696,7 +4704,7 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
     );
 
     let rejection_events =
-        query_exit_pre_submit_rejection_events(temp_dir.path(), "target-eth-updown");
+        query_exit_pre_submit_rejection_events(temp_dir.path(), &configured_target_id);
     let trading_state_events =
         exit_pre_submit_rejection_events_with_reason(&rejection_events, "trading_state_halted");
     match trading_state_events.last() {
@@ -4726,7 +4734,7 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
     }
 
     let submission_events =
-        query_exit_order_submission_events(temp_dir.path(), "target-eth-updown");
+        query_exit_order_submission_events(temp_dir.path(), &configured_target_id);
     assert!(
         submission_events.is_empty(),
         "HALTED trading state must not persist exit order submission"

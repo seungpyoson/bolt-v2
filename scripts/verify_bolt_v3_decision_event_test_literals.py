@@ -11,8 +11,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ORDER_INTENT_GATE_TEST_FILE = "tests/bolt_v3_order_intent_gate.rs"
+DECISION_EVENT_CONTEXT_TEST_FILE = "tests/bolt_v3_decision_event_context.rs"
 ENFORCED_TEST_FILES = (
     "tests/bolt_v3_decision_event_handoff.rs",
+    DECISION_EVENT_CONTEXT_TEST_FILE,
     ORDER_INTENT_GATE_TEST_FILE,
 )
 EVENT_FACT_GET_PATTERN = re.compile(
@@ -24,8 +26,16 @@ DECISION_EVENT_TYPE_LITERAL_PATTERN = re.compile(
 )
 JSON_OBJECT_MACRO_PATTERN = re.compile(r"json!\s*\(\s*\{")
 STRING_LITERAL_PATTERN = re.compile(r'"(?P<literal>[a-z_][a-z0-9_]*)"')
+RUST_STRING_LITERAL_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
 DIRECT_COMMON_FIELDS_PATTERN = re.compile(r"=\s*BoltV3DecisionEventCommonFields\s*\{")
 DIRECT_ORDER_SUBMISSION_FACTS_PATTERN = re.compile(r"BoltV3OrderSubmissionFacts\s*\{")
+DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES = {
+    "release-sha",
+    "config-hash",
+    "38b912a8b0fe14e4046773973ff46a3b798b1e3e",
+    "123e4567-e89b-12d3-a456-426614174002",
+    "eth_updown_5m",
+}
 DECISION_REASON_VALUES = {
     "active_book_not_priced",
     "fast_venue_incoherent",
@@ -55,6 +65,10 @@ class Finding:
 
 def line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
+
+
+def string_value(literal: str) -> str:
+    return bytes(literal[1:-1], "utf-8").decode("unicode_escape")
 
 
 def scan_file(root: Path, path: Path) -> list[Finding]:
@@ -128,6 +142,23 @@ def scan_file(root: Path, path: Path) -> list[Finding]:
                         "load order fact fixture data outside Rust test code"
                     ),
                     excerpt="BoltV3OrderSubmissionFacts {",
+                )
+            )
+
+    if rel == DECISION_EVENT_CONTEXT_TEST_FILE:
+        for match in RUST_STRING_LITERAL_PATTERN.finditer(text):
+            value = string_value(match.group(0))
+            if value not in DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "inline decision-event context fixture literal; "
+                        "derive from v3 TOML, release identity, or generated trace id"
+                    ),
+                    excerpt=match.group(0),
                 )
             )
 

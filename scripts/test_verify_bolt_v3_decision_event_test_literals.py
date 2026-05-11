@@ -81,6 +81,30 @@ fn probe() {
         )
 
 
+def test_decision_event_context_identity_literal_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_decision_event_context.rs",
+            """
+fn probe() {
+    let _ = "release-sha";
+    let _ = "config-hash";
+    let _ = "38b912a8b0fe14e4046773973ff46a3b798b1e3e";
+    let _ = "123e4567-e89b-12d3-a456-426614174002";
+    let _ = "eth_updown_5m";
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 5
+        assert {
+            "inline decision-event context fixture literal; derive from v3 TOML, release identity, or generated trace id"
+        } == {finding.message for finding in findings}
+
+
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -110,13 +134,20 @@ def test_order_intent_gate_file_is_enforced() -> None:
         raise AssertionError("order intent gate test file must be enforced")
 
 
+def test_decision_event_context_file_is_enforced() -> None:
+    if "tests/bolt_v3_decision_event_context.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("decision event context test file must be enforced")
+
+
 def main() -> int:
     tests = [
         test_inline_event_contract_literals_are_findings,
         test_order_intent_gate_direct_event_fixture_construction_is_a_finding,
+        test_decision_event_context_identity_literal_is_a_finding,
         test_exported_constants_and_fixture_helpers_are_clean,
         test_decision_event_handoff_file_is_enforced,
         test_order_intent_gate_file_is_enforced,
+        test_decision_event_context_file_is_enforced,
     ]
     for test in tests:
         test()

@@ -35,6 +35,29 @@ pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = "entry_pre_subm
 pub const BOLT_V3_EXIT_EVALUATION_EVENT_VALUE: &str = "exit_evaluation";
 pub const BOLT_V3_EXIT_ORDER_SUBMISSION_EVENT_VALUE: &str = "exit_order_submission";
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EVENT_VALUE: &str = "exit_pre_submit_rejection";
+pub const BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE: &str = "current";
+pub const BOLT_V3_MARKET_SELECTION_OUTCOME_NEXT_VALUE: &str = "next";
+pub const BOLT_V3_MARKET_SELECTION_OUTCOME_FAILED_VALUE: &str = "failed";
+pub const BOLT_V3_ENTRY_DECISION_ENTER_VALUE: &str = "enter";
+pub const BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE: &str = "no_action";
+pub const BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE: &str = "accepted";
+pub const BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE: &str = "rejected";
+pub const BOLT_V3_ORDER_SIDE_BUY_VALUE: &str = "buy";
+pub const BOLT_V3_ORDER_SIDE_SELL_VALUE: &str = "sell";
+pub const BOLT_V3_ORDER_TYPE_LIMIT_VALUE: &str = "limit";
+pub const BOLT_V3_ORDER_TYPE_MARKET_VALUE: &str = "market";
+pub const BOLT_V3_TIME_IN_FORCE_GTC_VALUE: &str = "gtc";
+pub const BOLT_V3_TIME_IN_FORCE_FOK_VALUE: &str = "fok";
+pub const BOLT_V3_TIME_IN_FORCE_IOC_VALUE: &str = "ioc";
+pub const BOLT_V3_UPDOWN_SIDE_UP_VALUE: &str = "up";
+pub const BOLT_V3_UPDOWN_SIDE_DOWN_VALUE: &str = "down";
+pub const BOLT_V3_EXIT_DECISION_HOLD_VALUE: &str = "hold";
+pub const BOLT_V3_EXIT_DECISION_EXIT_VALUE: &str = "exit";
+pub const BOLT_V3_EXIT_DECISION_REASON_ACTIVE_EXIT_NOT_DEFINED_VALUE: &str =
+    "active_exit_not_defined";
+pub const BOLT_V3_EXIT_DECISION_REASON_FORCED_FLAT_VALUE: &str = "forced_flat";
+pub const BOLT_V3_EXIT_DECISION_REASON_EV_HYSTERESIS_VALUE: &str = "ev_hysteresis";
+pub const BOLT_V3_EXIT_DECISION_REASON_FAIL_CLOSED_VALUE: &str = "fail_closed";
 pub const BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY: &str = "market_selection_type";
 pub const BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY: &str =
     "market_selection_timestamp_milliseconds";
@@ -121,6 +144,9 @@ pub const BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON: &str = "freeze";
 pub const BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON: &str = "position_limit_reached";
 pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON: &str =
     "selected_market_open_orders_present";
+pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_NOT_STARTED_REASON: &str =
+    "market_not_started";
+pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_ENDED_REASON: &str = "market_ended";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON: &str =
     "instrument_id_missing";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_MISSING_FROM_CACHE_REASON: &str =
@@ -141,6 +167,22 @@ pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON: &str =
     "trading_state_halted";
 pub const BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON: &str =
     "exit_order_mechanical_rejection";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_POSITION_QUANTITY_UNCONFIRMED_REASON: &str =
+    "position_quantity_unconfirmed";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_UNCONFIRMED_REASON:
+    &str = "open_exit_order_quantity_unconfirmed";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_COVERS_POSITION_REASON: &str =
+    "open_exit_order_quantity_covers_position";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_SELLABLE_QUANTITY_UNCONFIRMED_REASON: &str =
+    "sellable_quantity_unconfirmed";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_SELLABLE_QUANTITY_ZERO_REASON: &str =
+    "sellable_quantity_zero";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_BID_UNAVAILABLE_REASON: &str =
+    "exit_bid_unavailable";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_QUANTITY_INVALID_REASON: &str =
+    "exit_quantity_invalid";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_PRICE_INVALID_REASON: &str =
+    "exit_price_invalid";
 pub const BOLT_V3_MARKET_SELECTION_FAILURE_REASONS: &[&str] = &[
     "request_instruments_failed",
     "instruments_not_in_cache",
@@ -1035,14 +1077,15 @@ fn custom_data_file_path(
 
 fn validate_market_selection_result_facts(facts: &BoltV3MarketSelectionResultFacts) -> Result<()> {
     match facts.market_selection_outcome.as_str() {
-        "current" | "next" => {
+        BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE
+        | BOLT_V3_MARKET_SELECTION_OUTCOME_NEXT_VALUE => {
             if facts.market_selection_failure_reason.is_some() {
                 bail!(
                     "market_selection_failure_reason must be null when market_selection_outcome is current or next"
                 );
             }
         }
-        "failed" => {
+        BOLT_V3_MARKET_SELECTION_OUTCOME_FAILED_VALUE => {
             let Some(reason) = facts.market_selection_failure_reason.as_deref() else {
                 bail!(
                     "market_selection_failure_reason must be non-null when market_selection_outcome is failed"
@@ -1073,7 +1116,11 @@ fn validate_market_selection_result_facts(facts: &BoltV3MarketSelectionResultFac
             "blocked_after_seconds",
         )?;
 
-        if matches!(facts.market_selection_outcome.as_str(), "current" | "next") {
+        if matches!(
+            facts.market_selection_outcome.as_str(),
+            BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE
+                | BOLT_V3_MARKET_SELECTION_OUTCOME_NEXT_VALUE
+        ) {
             require_some(
                 facts.polymarket_condition_id.as_ref(),
                 "polymarket_condition_id",
@@ -1266,20 +1313,20 @@ fn market_selection_result_facts_to_params(facts: BoltV3MarketSelectionResultFac
 
 fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result<()> {
     match facts.entry_decision.as_str() {
-        "enter" => {
+        BOLT_V3_ENTRY_DECISION_ENTER_VALUE => {
             if facts.entry_no_action_reason.is_some() {
                 bail!("entry_no_action_reason must be null when entry_decision is enter");
             }
             match facts.updown_side.as_deref() {
-                Some("up" | "down") => {}
+                Some(BOLT_V3_UPDOWN_SIDE_UP_VALUE | BOLT_V3_UPDOWN_SIDE_DOWN_VALUE) => {}
                 Some(value) => bail!("unsupported updown_side `{value}`"),
                 None => bail!("updown_side must be non-null when entry_decision is enter"),
             }
-            if facts.updown_market_mechanical_outcome != "accepted" {
+            if facts.updown_market_mechanical_outcome != BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE {
                 bail!("entry_decision enter requires updown_market_mechanical_outcome accepted");
             }
         }
-        "no_action" => {
+        BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE => {
             if facts.entry_no_action_reason.is_none() {
                 bail!("entry_no_action_reason must be non-null when entry_decision is no_action");
             }
@@ -1291,7 +1338,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
     }
 
     match facts.updown_market_mechanical_outcome.as_str() {
-        "accepted" => {
+        BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE => {
             if facts.updown_market_mechanical_rejection_reason.is_some() {
                 bail!(
                     "updown_market_mechanical_rejection_reason must be null when updown_market_mechanical_outcome is accepted"
@@ -1303,9 +1350,12 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
                 );
             }
         }
-        "rejected" => {
+        BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE => {
             match facts.updown_market_mechanical_rejection_reason.as_deref() {
-                Some("market_not_started" | "market_ended") => {}
+                Some(
+                    BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_NOT_STARTED_REASON
+                    | BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_ENDED_REASON,
+                ) => {}
                 Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON) => {}
                 Some(value) => {
                     bail!("unsupported updown_market_mechanical_rejection_reason `{value}`");
@@ -1316,7 +1366,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
                     );
                 }
             }
-            if facts.entry_decision != "no_action" {
+            if facts.entry_decision != BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE {
                 bail!(
                     "updown_market_mechanical_outcome rejected requires entry_decision no_action"
                 );
@@ -1327,7 +1377,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
 
     match facts.entry_no_action_reason.as_deref() {
         Some(BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON) => {
-            if facts.updown_market_mechanical_outcome != "rejected"
+            if facts.updown_market_mechanical_outcome != BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE
                 || facts.updown_market_mechanical_rejection_reason.is_none()
             {
                 bail!(
@@ -1351,7 +1401,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
             | BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON
             | BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON,
         ) => {
-            if facts.updown_market_mechanical_outcome != "accepted"
+            if facts.updown_market_mechanical_outcome != BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE
                 || facts.updown_market_mechanical_rejection_reason.is_some()
             {
                 bail!(
@@ -1526,7 +1576,7 @@ fn rejected_order_facts_to_params(facts: BoltV3RejectedOrderFacts) -> Params {
 
 fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<()> {
     match facts.exit_order_mechanical_outcome.as_str() {
-        "accepted" => {
+        BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE => {
             if facts.exit_order_mechanical_rejection_reason.is_some() {
                 bail!(
                     "exit_order_mechanical_rejection_reason must be null when exit_order_mechanical_outcome is accepted"
@@ -1536,8 +1586,16 @@ fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<(
                 facts.exit_decision.as_str(),
                 facts.exit_decision_reason.as_str(),
             ) {
-                ("hold", "active_exit_not_defined") => {}
-                ("exit", "forced_flat" | "ev_hysteresis" | "fail_closed") => {}
+                (
+                    BOLT_V3_EXIT_DECISION_HOLD_VALUE,
+                    BOLT_V3_EXIT_DECISION_REASON_ACTIVE_EXIT_NOT_DEFINED_VALUE,
+                ) => {}
+                (
+                    BOLT_V3_EXIT_DECISION_EXIT_VALUE,
+                    BOLT_V3_EXIT_DECISION_REASON_FORCED_FLAT_VALUE
+                    | BOLT_V3_EXIT_DECISION_REASON_EV_HYSTERESIS_VALUE
+                    | BOLT_V3_EXIT_DECISION_REASON_FAIL_CLOSED_VALUE,
+                ) => {}
                 _ => {
                     bail!(
                         "accepted exit_order_mechanical_outcome requires exit_decision hold/active_exit_not_defined or exit with supported reason"
@@ -1545,17 +1603,17 @@ fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<(
                 }
             }
         }
-        "rejected" => {
+        BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE => {
             match facts.exit_order_mechanical_rejection_reason.as_deref() {
                 Some(
-                    "position_quantity_unconfirmed"
-                    | "open_exit_order_quantity_unconfirmed"
-                    | "open_exit_order_quantity_covers_position"
-                    | "sellable_quantity_unconfirmed"
-                    | "sellable_quantity_zero"
-                    | "exit_bid_unavailable"
-                    | "exit_quantity_invalid"
-                    | "exit_price_invalid",
+                    BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_POSITION_QUANTITY_UNCONFIRMED_REASON
+                    | BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_UNCONFIRMED_REASON
+                    | BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_COVERS_POSITION_REASON
+                    | BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_SELLABLE_QUANTITY_UNCONFIRMED_REASON
+                    | BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_SELLABLE_QUANTITY_ZERO_REASON
+                    | BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_BID_UNAVAILABLE_REASON
+                    | BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_QUANTITY_INVALID_REASON
+                    | BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_PRICE_INVALID_REASON,
                 ) => {}
                 Some(value) => {
                     bail!("unsupported exit_order_mechanical_rejection_reason `{value}`");
@@ -1566,7 +1624,7 @@ fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<(
                     );
                 }
             }
-            if facts.exit_decision != "hold"
+            if facts.exit_decision != BOLT_V3_EXIT_DECISION_HOLD_VALUE
                 || facts.exit_decision_reason
                     != BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON
             {

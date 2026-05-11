@@ -21,7 +21,8 @@ use bolt_v2::{
         BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY,
         BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY, BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY,
         BOLT_V3_CADENCE_SECONDS_FACT_KEY, BOLT_V3_CLIENT_ORDER_ID_FACT_KEY,
-        BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY, BOLT_V3_ENTRY_DECISION_FACT_KEY,
+        BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY, BOLT_V3_ENTRY_DECISION_ENTER_VALUE,
+        BOLT_V3_ENTRY_DECISION_FACT_KEY, BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE,
         BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY,
         BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
         BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON,
@@ -41,9 +42,16 @@ use bolt_v2::{
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_REDUCING_REASON,
-        BOLT_V3_EXIT_DECISION_FACT_KEY, BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
-        BOLT_V3_EXIT_DECISION_REASON_FACT_KEY, BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
+        BOLT_V3_EXIT_DECISION_EXIT_VALUE, BOLT_V3_EXIT_DECISION_FACT_KEY,
+        BOLT_V3_EXIT_DECISION_HOLD_VALUE, BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
+        BOLT_V3_EXIT_DECISION_REASON_EV_HYSTERESIS_VALUE, BOLT_V3_EXIT_DECISION_REASON_FACT_KEY,
+        BOLT_V3_EXIT_DECISION_REASON_FAIL_CLOSED_VALUE,
+        BOLT_V3_EXIT_DECISION_REASON_FORCED_FLAT_VALUE,
+        BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_BID_UNAVAILABLE_REASON,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_QUANTITY_INVALID_REASON,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_COVERS_POSITION_REASON,
         BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
@@ -56,10 +64,14 @@ use bolt_v2::{
         BOLT_V3_IS_POST_ONLY_FACT_KEY, BOLT_V3_IS_QUOTE_QUANTITY_FACT_KEY,
         BOLT_V3_IS_REDUCE_ONLY_FACT_KEY, BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
         BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
-        BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY, BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY,
+        BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE, BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY,
+        BOLT_V3_MARKET_SELECTION_OUTCOME_FAILED_VALUE, BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE,
+        BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY,
         BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY,
-        BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY, BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY,
-        BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY, BOLT_V3_ORDER_TYPE_FACT_KEY,
+        BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY, BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE,
+        BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE, BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY,
+        BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY, BOLT_V3_ORDER_SIDE_BUY_VALUE,
+        BOLT_V3_ORDER_SIDE_SELL_VALUE, BOLT_V3_ORDER_TYPE_FACT_KEY,
         BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY,
@@ -72,12 +84,15 @@ use bolt_v2::{
         BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY, BOLT_V3_TIME_IN_FORCE_FACT_KEY,
         BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY, BOLT_V3_UNDERLYING_ASSET_FACT_KEY,
         BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY, BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_ENDED_REASON,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_NOT_STARTED_REASON,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
-        BOLT_V3_UPDOWN_SIDE_FACT_KEY, BoltV3EntryEvaluationDecisionEvent,
-        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
-        BoltV3ExitEvaluationDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
-        BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
+        BOLT_V3_UPDOWN_SIDE_DOWN_VALUE, BOLT_V3_UPDOWN_SIDE_FACT_KEY, BOLT_V3_UPDOWN_SIDE_UP_VALUE,
+        BoltV3EntryEvaluationDecisionEvent, BoltV3EntryOrderSubmissionDecisionEvent,
+        BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
+        BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
+        BoltV3MarketSelectionDecisionEvent,
     },
     bolt_v3_market_families::updown,
     bolt_v3_release_identity::load_bolt_v3_release_identity,
@@ -627,11 +642,11 @@ fn query_entry_evaluation_events_all_files(
 }
 
 fn entry_decision_enter() -> &'static str {
-    "enter"
+    BOLT_V3_ENTRY_DECISION_ENTER_VALUE
 }
 
 fn entry_decision_no_action() -> &'static str {
-    "no_action"
+    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE
 }
 
 fn entry_evaluation_events_with_decision<'a>(
@@ -687,7 +702,9 @@ fn has_selected_open_orders_no_action_event(path: &std::path::Path) -> bool {
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>();
             decoded.is_some_and(|event| {
                 event.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY)
-                    == Some(&serde_json::Value::String("no_action".to_string()))
+                    == Some(&serde_json::Value::String(
+                        BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string(),
+                    ))
                     && event
                         .event_facts
                         .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY)
@@ -2608,7 +2625,10 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                 strategy_id_from_fixture_config().to_string()
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
-            assert_eq!(decoded.decision_event_type, "market_selection_result");
+            assert_eq!(
+                decoded.decision_event_type,
+                BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE
+            );
             assert!(!decoded.decision_trace_id.is_empty());
             assert_eq!(
                 decoded
@@ -2620,7 +2640,9 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                 decoded
                     .event_facts
                     .get(BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("current".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -2818,7 +2840,10 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
                 strategy_id_from_fixture_config().to_string()
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
-            assert_eq!(decoded.decision_event_type, "market_selection_result");
+            assert_eq!(
+                decoded.decision_event_type,
+                BOLT_V3_MARKET_SELECTION_RESULT_EVENT_VALUE
+            );
             assert!(!decoded.decision_trace_id.is_empty());
             assert_eq!(
                 decoded
@@ -2836,7 +2861,9 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
                 decoded
                     .event_facts
                     .get(BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("failed".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MARKET_SELECTION_OUTCOME_FAILED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -2942,7 +2969,10 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
         .and_then(serde_json::Value::as_str)
         .expect("entry evaluation updown_side should be present");
     assert!(
-        matches!(updown_side, "up" | "down"),
+        matches!(
+            updown_side,
+            BOLT_V3_UPDOWN_SIDE_UP_VALUE | BOLT_V3_UPDOWN_SIDE_DOWN_VALUE
+        ),
         "unexpected updown_side {updown_side}"
     );
     let evaluation_trace_id = decoded.decision_trace_id.clone();
@@ -3027,7 +3057,9 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     assert_eq!(decoded.client_id, common_decision_context().client_id);
     assert_eq!(
         decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-        Some(&serde_json::Value::String("no_action".to_string()))
+        Some(&serde_json::Value::String(
+            BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+        ))
     );
     assert_eq!(
         decoded
@@ -3093,7 +3125,9 @@ fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
         Some(decoded) => {
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3107,7 +3141,9 @@ fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
                 decoded
                     .event_facts
                     .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("accepted".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string()
+                ))
             );
         }
         None => panic!("expected thin-book no-action event, got {evaluation_events:?}"),
@@ -3167,7 +3203,9 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     assert_eq!(decoded.client_id, common_decision_context().client_id);
     assert_eq!(
         decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-        Some(&serde_json::Value::String("no_action".to_string()))
+        Some(&serde_json::Value::String(
+            BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+        ))
     );
     assert_eq!(
         decoded
@@ -3236,7 +3274,9 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     assert_eq!(decoded.client_id, common_decision_context().client_id);
     assert_eq!(
         decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-        Some(&serde_json::Value::String("no_action".to_string()))
+        Some(&serde_json::Value::String(
+            BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+        ))
     );
     assert_eq!(
         decoded
@@ -3304,7 +3344,9 @@ fn eth_chainlink_taker_runtime_writes_active_book_not_priced_no_action_without_s
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3447,7 +3489,9 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3535,7 +3579,9 @@ fn eth_chainlink_taker_runtime_writes_fast_venue_incoherent_no_action_without_su
             assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3618,7 +3664,9 @@ fn eth_chainlink_taker_runtime_writes_freeze_no_action_without_submit() {
             assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3697,7 +3745,9 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3779,7 +3829,9 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3873,7 +3925,9 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -3972,7 +4026,9 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4060,7 +4116,9 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4151,7 +4209,9 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4238,7 +4298,9 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4252,13 +4314,18 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
                 decoded
                     .event_facts
                     .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("rejected".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY),
-                Some(&serde_json::Value::String("market_not_started".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_NOT_STARTED_REASON
+                        .to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4335,7 +4402,9 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4349,13 +4418,17 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
                 decoded
                     .event_facts
                     .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("rejected".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY),
-                Some(&serde_json::Value::String("market_ended".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_ENDED_REASON.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4436,7 +4509,9 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
             assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("no_action".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4450,7 +4525,9 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
                 decoded
                     .event_facts
                     .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("rejected".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4553,7 +4630,9 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
-                Some(&serde_json::Value::String("buy".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ORDER_SIDE_BUY_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
@@ -4663,7 +4742,9 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
-                Some(&serde_json::Value::String("buy".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ORDER_SIDE_BUY_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
@@ -4754,7 +4835,9 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
-                Some(&serde_json::Value::String("sell".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ORDER_SIDE_SELL_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
@@ -4821,7 +4904,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
             .event_facts
             .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY)
             .and_then(serde_json::Value::as_str)
-            == Some("exit_bid_unavailable"))
+            == Some(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_BID_UNAVAILABLE_REASON))
         .then_some(decoded)
     });
     match exit_bid_unavailable_event {
@@ -4830,19 +4913,23 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("rejected".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
-                    "exit_bid_unavailable".to_string()
+                    BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_BID_UNAVAILABLE_REASON.to_string()
                 ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("hold".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_HOLD_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -4949,7 +5036,9 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
-                Some(&serde_json::Value::String("sell".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ORDER_SIDE_SELL_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_PRICE_FACT_KEY),
@@ -5016,19 +5105,24 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("rejected".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
-                    "exit_quantity_invalid".to_string()
+                    BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_QUANTITY_INVALID_REASON
+                        .to_string()
                 ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("hold".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_HOLD_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -5133,7 +5227,9 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
-                Some(&serde_json::Value::String("sell".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ORDER_SIDE_SELL_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
@@ -5194,7 +5290,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
             .event_facts
             .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY)
             .and_then(serde_json::Value::as_str)
-            == Some("open_exit_order_quantity_covers_position"))
+            == Some(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_COVERS_POSITION_REASON))
         .then_some(decoded)
     });
     match open_order_covers_position_event {
@@ -5203,19 +5299,23 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("rejected".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
-                    "open_exit_order_quantity_covers_position".to_string()
+                    BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_COVERS_POSITION_REASON.to_string()
                 ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("hold".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_HOLD_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
@@ -5316,7 +5416,9 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_SIDE_FACT_KEY),
-                Some(&serde_json::Value::String("sell".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_ORDER_SIDE_SELL_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_QUANTITY_FACT_KEY),
@@ -6126,19 +6228,25 @@ fn eth_chainlink_taker_runtime_reducing_trading_state_allows_exit_order_submit()
             assert_eq!(decoded.client_id, expected_client_id);
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("exit".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_EXIT_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
-                Some(&serde_json::Value::String("forced_flat".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_REASON_FORCED_FLAT_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("accepted".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string()
+                ))
             );
             decoded.decision_trace_id.clone()
         }
@@ -6301,19 +6409,25 @@ fn eth_chainlink_taker_runtime_writes_fail_closed_exit_evaluation_before_submit(
                 .expect("BoltV3ExitEvaluationDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("exit".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_EXIT_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
-                Some(&serde_json::Value::String("fail_closed".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_REASON_FAIL_CLOSED_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("accepted".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string()
+                ))
             );
             decoded.decision_trace_id.clone()
         }
@@ -6492,19 +6606,25 @@ fn eth_chainlink_taker_runtime_writes_ev_hysteresis_exit_evaluation_before_submi
                 .expect("BoltV3ExitEvaluationDecisionEvent");
             assert_eq!(
                 decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
-                Some(&serde_json::Value::String("exit".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_EXIT_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
-                Some(&serde_json::Value::String("ev_hysteresis".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_EXIT_DECISION_REASON_EV_HYSTERESIS_VALUE.to_string()
+                ))
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
-                Some(&serde_json::Value::String("accepted".to_string()))
+                Some(&serde_json::Value::String(
+                    BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string()
+                ))
             );
             decoded.decision_trace_id.clone()
         }

@@ -115,6 +115,40 @@ EXIT_EVALUATION_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
     "open_exit_order_quantity",
     "uncovered_position_quantity",
 }
+DECISION_EVENT_VALUE_FORBIDDEN_LITERAL_VALUES = {
+    "accepted",
+    "active_exit_not_defined",
+    "buy",
+    "current",
+    "enter",
+    "entry_evaluation",
+    "entry_order_submission",
+    "entry_pre_submit_rejection",
+    "ev_hysteresis",
+    "exit",
+    "exit_evaluation",
+    "exit_order_submission",
+    "exit_pre_submit_rejection",
+    "fail_closed",
+    "failed",
+    "fok",
+    "forced_flat",
+    "gtc",
+    "hold",
+    "ioc",
+    "limit",
+    "market",
+    "market_selection_result",
+    "market_ended",
+    "market_not_started",
+    "next",
+    "no_action",
+    "open_exit_order_quantity_covers_position",
+    "rejected",
+    "sell",
+    "up",
+    "down",
+}
 
 @dataclass(frozen=True)
 class Finding:
@@ -341,6 +375,22 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                         "contract constant"
                     ),
                     excerpt=literal,
+                )
+            )
+
+        for match in RUST_STRING_LITERAL_PATTERN.finditer(text):
+            value = string_value(match.group(0))
+            if value not in DECISION_EVENT_VALUE_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "inline decision-event value; use exported event "
+                        "contract constant"
+                    ),
+                    excerpt=match.group(0),
                 )
             )
 

@@ -52,6 +52,8 @@ F13ah note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13ai note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline exit-evaluation fact keys in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests use exported decision-event contract constants for authoritative/sellable/open/uncovered exit quantities, exit mechanical outcome/rejection reason, exit decision, and exit decision reason.
 
+F13aj note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline decision-event value literals in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests and source validation use exported decision-event contract constants for market-selection outcomes, entry/exit decisions, mechanical outcomes, order side/type/time-in-force values, up/down side values, and exit-evaluation reason values.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

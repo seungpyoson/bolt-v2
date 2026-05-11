@@ -19,7 +19,8 @@ use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS,
-    BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
+    BOLT_V3_EXIT_DECISION_HOLD_VALUE, BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
+    BOLT_V3_EXIT_DECISION_REASON_ACTIVE_EXIT_NOT_DEFINED_VALUE,
     BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_EXIT_EVALUATION_EVENT_VALUE,
     BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY,
     BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
@@ -27,14 +28,15 @@ use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS,
     BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY,
-    BOLT_V3_MARKET_SELECTION_FAILURE_REASONS, BoltV3DecisionEventCatalogHandoff,
-    BoltV3DecisionEventCommonFields, BoltV3EntryEvaluationDecisionEvent,
-    BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
-    BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
-    BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
-    BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
-    BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
-    BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
+    BOLT_V3_MARKET_SELECTION_FAILURE_REASONS, BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE,
+    BoltV3DecisionEventCatalogHandoff, BoltV3DecisionEventCommonFields,
+    BoltV3EntryEvaluationDecisionEvent, BoltV3EntryEvaluationFacts,
+    BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
+    BoltV3ExitEvaluationDecisionEvent, BoltV3ExitEvaluationFacts,
+    BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
+    BoltV3MarketSelectionDecisionEvent, BoltV3MarketSelectionResultFacts,
+    BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
+    register_bolt_v3_decision_event_types,
 };
 use bolt_v2::bolt_v3_release_identity::load_bolt_v3_release_identity;
 use bolt_v2::platform::polymarket_catalog::POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE;
@@ -1036,10 +1038,11 @@ fn exit_evaluation_facts() -> BoltV3ExitEvaluationFacts {
         authoritative_sellable_quantity: Some(10.0),
         open_exit_order_quantity: Some(0.0),
         uncovered_position_quantity: Some(10.0),
-        exit_order_mechanical_outcome: "accepted".to_string(),
+        exit_order_mechanical_outcome: BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string(),
         exit_order_mechanical_rejection_reason: None,
-        exit_decision: "hold".to_string(),
-        exit_decision_reason: "active_exit_not_defined".to_string(),
+        exit_decision: BOLT_V3_EXIT_DECISION_HOLD_VALUE.to_string(),
+        exit_decision_reason: BOLT_V3_EXIT_DECISION_REASON_ACTIVE_EXIT_NOT_DEFINED_VALUE
+            .to_string(),
         archetype_metrics: exit_archetype_metrics(),
     }
 }

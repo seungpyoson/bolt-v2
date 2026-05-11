@@ -35,9 +35,28 @@ use crate::{
         exit_pre_submit_rejection_reason_for_trading_state,
     },
     bolt_v3_decision_events::{
+        BOLT_V3_ENTRY_DECISION_ENTER_VALUE, BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE,
+        BOLT_V3_EXIT_DECISION_EXIT_VALUE, BOLT_V3_EXIT_DECISION_HOLD_VALUE,
+        BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
+        BOLT_V3_EXIT_DECISION_REASON_EV_HYSTERESIS_VALUE,
+        BOLT_V3_EXIT_DECISION_REASON_FAIL_CLOSED_VALUE,
+        BOLT_V3_EXIT_DECISION_REASON_FORCED_FLAT_VALUE,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_BID_UNAVAILABLE_REASON,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_QUANTITY_INVALID_REASON,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_COVERS_POSITION_REASON,
+        BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE,
+        BOLT_V3_MARKET_SELECTION_OUTCOME_FAILED_VALUE, BOLT_V3_MARKET_SELECTION_OUTCOME_NEXT_VALUE,
+        BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE, BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE,
+        BOLT_V3_ORDER_SIDE_BUY_VALUE, BOLT_V3_ORDER_SIDE_SELL_VALUE,
+        BOLT_V3_ORDER_TYPE_LIMIT_VALUE, BOLT_V3_ORDER_TYPE_MARKET_VALUE,
+        BOLT_V3_TIME_IN_FORCE_FOK_VALUE, BOLT_V3_TIME_IN_FORCE_GTC_VALUE,
+        BOLT_V3_TIME_IN_FORCE_IOC_VALUE,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_ENDED_REASON,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_NOT_STARTED_REASON,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
-        BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts,
-        BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
+        BOLT_V3_UPDOWN_SIDE_DOWN_VALUE, BOLT_V3_UPDOWN_SIDE_UP_VALUE, BoltV3EntryEvaluationFacts,
+        BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts,
+        BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
         validate_bolt_v3_market_selection_failure_reason,
     },
     platform::{
@@ -2218,14 +2237,14 @@ impl EthChainlinkTaker {
             let mechanical_rejected = mechanical_rejection_reason.is_some();
             return Ok(Some(BoltV3EntryEvaluationFacts {
                 updown_side: None,
-                entry_decision: "no_action".to_string(),
+                entry_decision: BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string(),
                 entry_no_action_reason: Some(reason.to_string()),
                 seconds_to_market_end,
                 has_selected_market_open_orders,
                 updown_market_mechanical_outcome: if mechanical_rejected {
-                    "rejected".to_string()
+                    BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string()
                 } else {
-                    "accepted".to_string()
+                    BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string()
                 },
                 updown_market_mechanical_rejection_reason: mechanical_rejection_reason
                     .map(str::to_string),
@@ -2243,11 +2262,11 @@ impl EthChainlinkTaker {
 
         Ok(Some(BoltV3EntryEvaluationFacts {
             updown_side: Some(outcome_side_as_decision_fact(selected_side).to_string()),
-            entry_decision: "enter".to_string(),
+            entry_decision: BOLT_V3_ENTRY_DECISION_ENTER_VALUE.to_string(),
             entry_no_action_reason: None,
             seconds_to_market_end,
             has_selected_market_open_orders,
-            updown_market_mechanical_outcome: "accepted".to_string(),
+            updown_market_mechanical_outcome: BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string(),
             updown_market_mechanical_rejection_reason: None,
             entry_filled_notional: entry_capacity.entry_filled_notional,
             open_entry_notional: entry_capacity.open_entry_notional,
@@ -2266,14 +2285,14 @@ impl EthChainlinkTaker {
             .current_seconds_to_expiry_at(now_ms)
             .is_some_and(|seconds| seconds == 0)
         {
-            return Some("market_ended");
+            return Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_ENDED_REASON);
         }
         if self
             .active
             .interval_start_ms
             .is_some_and(|start_ms| now_ms < start_ms)
         {
-            return Some("market_not_started");
+            return Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_NOT_STARTED_REASON);
         }
         if has_selected_market_open_orders {
             return Some(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON);
@@ -3273,12 +3292,14 @@ impl EthChainlinkTaker {
                 authoritative_sellable_quantity: Some(authoritative_sellable_quantity),
                 open_exit_order_quantity: Some(open_exit_order_quantity),
                 uncovered_position_quantity: Some(uncovered_position_quantity),
-                exit_order_mechanical_outcome: "rejected".to_string(),
+                exit_order_mechanical_outcome: BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE
+                    .to_string(),
                 exit_order_mechanical_rejection_reason: Some(
                     mechanical_rejection_reason.to_string(),
                 ),
-                exit_decision: "hold".to_string(),
-                exit_decision_reason: "exit_order_mechanical_rejection".to_string(),
+                exit_decision: BOLT_V3_EXIT_DECISION_HOLD_VALUE.to_string(),
+                exit_decision_reason: BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON
+                    .to_string(),
                 archetype_metrics: json!({
                     "hold_ev_bps": decision.evaluation.hold_ev_bps,
                     "exit_ev_bps": decision.evaluation.exit_ev_bps,
@@ -3301,9 +3322,9 @@ impl EthChainlinkTaker {
             authoritative_sellable_quantity: Some(authoritative_sellable_quantity),
             open_exit_order_quantity: Some(open_exit_order_quantity),
             uncovered_position_quantity: Some(uncovered_position_quantity),
-            exit_order_mechanical_outcome: "accepted".to_string(),
+            exit_order_mechanical_outcome: BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE.to_string(),
             exit_order_mechanical_rejection_reason: None,
-            exit_decision: "exit".to_string(),
+            exit_decision: BOLT_V3_EXIT_DECISION_EXIT_VALUE.to_string(),
             exit_decision_reason: exit_decision_reason.to_string(),
             archetype_metrics: json!({
                 "hold_ev_bps": decision.evaluation.hold_ev_bps,
@@ -4455,7 +4476,7 @@ fn market_selection_result_facts(
             ),
             SelectionState::Idle { reason } => (
                 None,
-                "failed".to_string(),
+                BOLT_V3_MARKET_SELECTION_OUTCOME_FAILED_VALUE.to_string(),
                 Some(market_selection_failure_reason(reason)?),
             ),
         };
@@ -4501,10 +4522,10 @@ fn market_selection_failure_reason(reason: &str) -> Result<String> {
 
 fn market_selection_outcome(market: &CandidateMarket, timestamp_ms: u64) -> Result<String> {
     if market.start_ts_ms <= timestamp_ms && timestamp_ms < market.end_ts_ms {
-        return Ok("current".to_string());
+        return Ok(BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE.to_string());
     }
     if market.start_ts_ms > timestamp_ms {
-        return Ok("next".to_string());
+        return Ok(BOLT_V3_MARKET_SELECTION_OUTCOME_NEXT_VALUE.to_string());
     }
     Err(anyhow!(
         "selected market {} ended before market_selection_timestamp_milliseconds {}",
@@ -5359,7 +5380,7 @@ fn exit_order_mechanical_rejection_reason(
     decision: &ExitSubmissionDecision,
 ) -> Option<&'static str> {
     match decision.blocked_reason? {
-        "exit_price_missing" => Some("exit_bid_unavailable"),
+        "exit_price_missing" => Some(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_BID_UNAVAILABLE_REASON),
         "exit_quantity_exceeds_sellable_quantity"
             if decision
                 .authoritative_position_quantity
@@ -5373,26 +5394,26 @@ fn exit_order_mechanical_rejection_reason(
                             })
                 }) =>
         {
-            Some("open_exit_order_quantity_covers_position")
+            Some(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_OPEN_EXIT_ORDER_QUANTITY_COVERS_POSITION_REASON)
         }
-        "exit_quantity_not_positive" => Some("exit_quantity_invalid"),
+        "exit_quantity_not_positive" => Some(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_EXIT_QUANTITY_INVALID_REASON),
         _ => None,
     }
 }
 
 fn order_type_as_decision_fact(order_type: OrderType) -> Result<&'static str> {
     match order_type {
-        OrderType::Limit => Ok("limit"),
-        OrderType::Market => Ok("market"),
+        OrderType::Limit => Ok(BOLT_V3_ORDER_TYPE_LIMIT_VALUE),
+        OrderType::Market => Ok(BOLT_V3_ORDER_TYPE_MARKET_VALUE),
         _ => anyhow::bail!("unsupported order type for bolt-v3 decision event: {order_type:?}"),
     }
 }
 
 fn time_in_force_as_decision_fact(time_in_force: TimeInForce) -> Result<&'static str> {
     match time_in_force {
-        TimeInForce::Gtc => Ok("gtc"),
-        TimeInForce::Fok => Ok("fok"),
-        TimeInForce::Ioc => Ok("ioc"),
+        TimeInForce::Gtc => Ok(BOLT_V3_TIME_IN_FORCE_GTC_VALUE),
+        TimeInForce::Fok => Ok(BOLT_V3_TIME_IN_FORCE_FOK_VALUE),
+        TimeInForce::Ioc => Ok(BOLT_V3_TIME_IN_FORCE_IOC_VALUE),
         _ => {
             anyhow::bail!("unsupported time-in-force for bolt-v3 decision event: {time_in_force:?}")
         }
@@ -5401,16 +5422,16 @@ fn time_in_force_as_decision_fact(time_in_force: TimeInForce) -> Result<&'static
 
 fn order_side_as_decision_fact(order_side: OrderSide) -> Result<&'static str> {
     match order_side {
-        OrderSide::Buy => Ok("buy"),
-        OrderSide::Sell => Ok("sell"),
+        OrderSide::Buy => Ok(BOLT_V3_ORDER_SIDE_BUY_VALUE),
+        OrderSide::Sell => Ok(BOLT_V3_ORDER_SIDE_SELL_VALUE),
         _ => anyhow::bail!("unsupported order side for bolt-v3 decision event: {order_side:?}"),
     }
 }
 
 fn outcome_side_as_decision_fact(outcome_side: OutcomeSide) -> &'static str {
     match outcome_side {
-        OutcomeSide::Up => "up",
-        OutcomeSide::Down => "down",
+        OutcomeSide::Up => BOLT_V3_UPDOWN_SIDE_UP_VALUE,
+        OutcomeSide::Down => BOLT_V3_UPDOWN_SIDE_DOWN_VALUE,
     }
 }
 
@@ -5436,9 +5457,11 @@ fn exit_decision_reason_as_decision_fact(
     forced_flat_reasons: &[ForcedFlatReason],
 ) -> Option<&'static str> {
     match decision {
-        ExitDecision::Exit if !forced_flat_reasons.is_empty() => Some("forced_flat"),
-        ExitDecision::Exit => Some("ev_hysteresis"),
-        ExitDecision::ExitFailClosed => Some("fail_closed"),
+        ExitDecision::Exit if !forced_flat_reasons.is_empty() => {
+            Some(BOLT_V3_EXIT_DECISION_REASON_FORCED_FLAT_VALUE)
+        }
+        ExitDecision::Exit => Some(BOLT_V3_EXIT_DECISION_REASON_EV_HYSTERESIS_VALUE),
+        ExitDecision::ExitFailClosed => Some(BOLT_V3_EXIT_DECISION_REASON_FAIL_CLOSED_VALUE),
         ExitDecision::Hold => None,
     }
 }

@@ -1328,22 +1328,6 @@ reason = "This is the NT catalog path segment used to locate custom-data files f
 [[allowed]]
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
-literal = "\"current\""
-context = "\"current\" | \"next\" => {"
-classification = "decision_event_market_selection_contract_check"
-reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"next\""
-context = "\"current\" | \"next\" => {"
-classification = "decision_event_market_selection_contract_check"
-reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
 literal = "\"rotating_market\""
 context = "if facts.market_selection_type == \"rotating_market\" {"
 classification = "decision_event_market_selection_contract_check"
@@ -1394,22 +1378,6 @@ path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"blocked_after_seconds\""
 context = "\"blocked_after_seconds\","
-classification = "decision_event_market_selection_contract_check"
-reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"current\""
-context = "if matches!(facts.market_selection_outcome.as_str(), \"current\" | \"next\") {"
-classification = "decision_event_market_selection_contract_check"
-reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"next\""
-context = "if matches!(facts.market_selection_outcome.as_str(), \"current\" | \"next\") {"
 classification = "decision_event_market_selection_contract_check"
 reason = "This is a contract value or required fact key checked while validating market-selection decision-event facts."
 
@@ -1672,78 +1640,6 @@ reason = "This is a persisted market-selection decision-event fact key."
 [[allowed]]
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
-literal = "\"enter\""
-context = "\"enter\" => {"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"up\""
-context = "Some(\"up\" | \"down\") => {}"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"down\""
-context = "Some(\"up\" | \"down\") => {}"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"accepted\""
-context = "if facts.updown_market_mechanical_outcome != \"accepted\" {"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"no_action\""
-context = "\"no_action\" => {"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"accepted\""
-context = "\"accepted\" => {"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"market_not_started\""
-context = "Some(\"market_not_started\" | \"market_ended\") => {}"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"market_ended\""
-context = "Some(\"market_not_started\" | \"market_ended\") => {}"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"no_action\""
-context = "if facts.entry_decision != \"no_action\" {"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
 literal = "\"updown_market_mechanical_rejection\""
 context = "\"updown_market_mechanical_rejection\";"
 classification = "decision_event_entry_contract_check"
@@ -1858,14 +1754,6 @@ path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"position_limit_reached\""
 context = "pub const BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON: &str = \"position_limit_reached\";"
-classification = "decision_event_entry_contract_check"
-reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"accepted\""
-context = "if facts.updown_market_mechanical_outcome != \"accepted\""
 classification = "decision_event_entry_contract_check"
 reason = "This is a contract value, reason value, or numeric gate checked while validating entry-evaluation decision-event facts."
 
@@ -2064,126 +1952,6 @@ reason = "This is a persisted order-submission or pre-submit-rejection decision-
 [[allowed]]
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
-literal = "\"hold\""
-context = "(\"hold\", \"active_exit_not_defined\") => {}"
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"active_exit_not_defined\""
-context = "(\"hold\", \"active_exit_not_defined\") => {}"
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"exit\""
-context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"forced_flat\""
-context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"ev_hysteresis\""
-context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"fail_closed\""
-context = "(\"exit\", \"forced_flat\" | \"ev_hysteresis\" | \"fail_closed\") => {}"
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"position_quantity_unconfirmed\""
-context = "\"position_quantity_unconfirmed\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"open_exit_order_quantity_unconfirmed\""
-context = "| \"open_exit_order_quantity_unconfirmed\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"open_exit_order_quantity_covers_position\""
-context = "| \"open_exit_order_quantity_covers_position\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"sellable_quantity_unconfirmed\""
-context = "| \"sellable_quantity_unconfirmed\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"sellable_quantity_zero\""
-context = "| \"sellable_quantity_zero\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"exit_bid_unavailable\""
-context = "| \"exit_bid_unavailable\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"exit_quantity_invalid\""
-context = "| \"exit_quantity_invalid\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"exit_price_invalid\""
-context = "| \"exit_price_invalid\","
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
-literal = "\"hold\""
-context = "if facts.exit_decision != \"hold\""
-classification = "decision_event_exit_contract_check"
-reason = "This is a contract value or reason value checked while validating exit-evaluation decision-event facts."
-
-[[allowed]]
-path = "src/bolt_v3_decision_events.rs"
-kind = "string"
 literal = "\"exit_order_mechanical_rejection\""
 context = "\"exit_order_mechanical_rejection\";"
 classification = "decision_event_exit_contract_check"
@@ -2252,3 +2020,243 @@ literal = "\"exit_decision_reason\""
 context = "pub const BOLT_V3_EXIT_DECISION_REASON_FACT_KEY: &str = \"exit_decision_reason\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"accepted\""
+context = "pub const BOLT_V3_MECHANICAL_OUTCOME_ACCEPTED_VALUE: &str = \"accepted\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"active_exit_not_defined\""
+context = "\"active_exit_not_defined\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"buy\""
+context = "pub const BOLT_V3_ORDER_SIDE_BUY_VALUE: &str = \"buy\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"current\""
+context = "pub const BOLT_V3_MARKET_SELECTION_OUTCOME_CURRENT_VALUE: &str = \"current\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"down\""
+context = "pub const BOLT_V3_UPDOWN_SIDE_DOWN_VALUE: &str = \"down\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"enter\""
+context = "pub const BOLT_V3_ENTRY_DECISION_ENTER_VALUE: &str = \"enter\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"ev_hysteresis\""
+context = "pub const BOLT_V3_EXIT_DECISION_REASON_EV_HYSTERESIS_VALUE: &str = \"ev_hysteresis\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit\""
+context = "pub const BOLT_V3_EXIT_DECISION_EXIT_VALUE: &str = \"exit\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_bid_unavailable\""
+context = "\"exit_bid_unavailable\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_price_invalid\""
+context = "\"exit_price_invalid\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"exit_quantity_invalid\""
+context = "\"exit_quantity_invalid\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"fail_closed\""
+context = "pub const BOLT_V3_EXIT_DECISION_REASON_FAIL_CLOSED_VALUE: &str = \"fail_closed\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"fok\""
+context = "pub const BOLT_V3_TIME_IN_FORCE_FOK_VALUE: &str = \"fok\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"forced_flat\""
+context = "pub const BOLT_V3_EXIT_DECISION_REASON_FORCED_FLAT_VALUE: &str = \"forced_flat\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"gtc\""
+context = "pub const BOLT_V3_TIME_IN_FORCE_GTC_VALUE: &str = \"gtc\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"hold\""
+context = "pub const BOLT_V3_EXIT_DECISION_HOLD_VALUE: &str = \"hold\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"ioc\""
+context = "pub const BOLT_V3_TIME_IN_FORCE_IOC_VALUE: &str = \"ioc\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"limit\""
+context = "pub const BOLT_V3_ORDER_TYPE_LIMIT_VALUE: &str = \"limit\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market\""
+context = "pub const BOLT_V3_ORDER_TYPE_MARKET_VALUE: &str = \"market\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_ended\""
+context = "pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_MARKET_ENDED_REASON: &str = \"market_ended\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"market_not_started\""
+context = "\"market_not_started\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"next\""
+context = "pub const BOLT_V3_MARKET_SELECTION_OUTCOME_NEXT_VALUE: &str = \"next\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"no_action\""
+context = "pub const BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE: &str = \"no_action\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"open_exit_order_quantity_covers_position\""
+context = "\"open_exit_order_quantity_covers_position\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"open_exit_order_quantity_unconfirmed\""
+context = "&str = \"open_exit_order_quantity_unconfirmed\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"position_quantity_unconfirmed\""
+context = "\"position_quantity_unconfirmed\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"sell\""
+context = "pub const BOLT_V3_ORDER_SIDE_SELL_VALUE: &str = \"sell\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"sellable_quantity_unconfirmed\""
+context = "\"sellable_quantity_unconfirmed\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"sellable_quantity_zero\""
+context = "\"sellable_quantity_zero\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_decision_events.rs"
+kind = "string"
+literal = "\"up\""
+context = "pub const BOLT_V3_UPDOWN_SIDE_UP_VALUE: &str = \"up\";"
+classification = "decision_event_contract_value_constant"
+reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."

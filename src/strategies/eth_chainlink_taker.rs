@@ -3955,11 +3955,8 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
         return Some("stale_reference_quote");
     }
 
-    if decision.blocked_reason == Some("entry_pricing_blocked")
-        && decision.evaluation.pricing_blocked_by
-            == [EntryPricingBlockReason::FairProbabilityUnavailable]
-    {
-        return Some("fair_probability_unavailable");
+    if decision.blocked_reason == Some("entry_pricing_blocked") {
+        return entry_pricing_no_action_reason(&decision.evaluation.pricing_blocked_by);
     }
 
     if decision.blocked_reason == Some("position_limit_reached")
@@ -3969,6 +3966,44 @@ fn entry_no_action_reason(decision: &EntrySubmissionDecision) -> Option<&'static
             .is_some_and(|value| value <= 0.0)
     {
         return Some("position_limit_reached");
+    }
+
+    None
+}
+
+fn entry_pricing_no_action_reason(
+    pricing_blocked_by: &[EntryPricingBlockReason],
+) -> Option<&'static str> {
+    if pricing_blocked_by
+        .iter()
+        .any(|reason| matches!(reason, EntryPricingBlockReason::FeeUnavailable(_)))
+    {
+        return Some("fee_rate_unavailable");
+    }
+
+    if pricing_blocked_by.iter().any(|reason| {
+        matches!(
+            reason,
+            EntryPricingBlockReason::ExecutableEntryCostUnavailable(_)
+        )
+    }) {
+        return Some("active_book_not_priced");
+    }
+
+    if pricing_blocked_by.iter().any(|reason| {
+        matches!(
+            reason,
+            EntryPricingBlockReason::SpotPriceMissing
+                | EntryPricingBlockReason::StrikePriceMissing
+                | EntryPricingBlockReason::SecondsToExpiryMissing
+                | EntryPricingBlockReason::RealizedVolNotReady
+                | EntryPricingBlockReason::ThetaScalerUnavailable
+                | EntryPricingBlockReason::UncertaintyBandUnavailable
+                | EntryPricingBlockReason::FairProbabilityUnavailable
+                | EntryPricingBlockReason::WorstCaseEvUnavailable(_)
+        )
+    }) {
+        return Some("fair_probability_unavailable");
     }
 
     None
@@ -8951,6 +8986,96 @@ mod tests {
             entry_no_action_reason(&decision),
             Some("position_limit_reached")
         );
+    }
+
+    #[test]
+    fn entry_pricing_blocks_map_to_contract_no_action_reasons() {
+        for (pricing_block, expected_reason) in [
+            (
+                EntryPricingBlockReason::SpotPriceMissing,
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::StrikePriceMissing,
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::SecondsToExpiryMissing,
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::RealizedVolNotReady,
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::ThetaScalerUnavailable,
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::UncertaintyBandUnavailable,
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::FairProbabilityUnavailable,
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up),
+                "fee_rate_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down),
+                "fee_rate_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Up),
+                "active_book_not_priced",
+            ),
+            (
+                EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Down),
+                "active_book_not_priced",
+            ),
+            (
+                EntryPricingBlockReason::WorstCaseEvUnavailable(OutcomeSide::Up),
+                "fair_probability_unavailable",
+            ),
+            (
+                EntryPricingBlockReason::WorstCaseEvUnavailable(OutcomeSide::Down),
+                "fair_probability_unavailable",
+            ),
+        ] {
+            let decision = EntrySubmissionDecision {
+                evaluation: EntryEvaluation {
+                    gate: EntryGateDecision {
+                        blocked_by: Vec::new(),
+                    },
+                    entry_capacity: EntryCapacitySnapshot {
+                        entry_filled_notional: 0.0,
+                        open_entry_notional: 0.0,
+                        strategy_remaining_entry_capacity: 1.0,
+                    },
+                    pricing_blocked_by: vec![pricing_block],
+                    fair_probability_up: None,
+                    uncertainty_band_probability: None,
+                    up_worst_case_ev_bps: None,
+                    down_worst_case_ev_bps: None,
+                    min_worst_case_ev_bps: None,
+                    expected_ev_per_usdc: None,
+                    book_impact_cap_usdc: None,
+                    effective_entry_notional_cap_usdc: None,
+                    sized_notional_usdc: None,
+                    selected_side: None,
+                },
+                instrument_id: None,
+                order_side: None,
+                price: None,
+                quantity_value: None,
+                client_order_id: None,
+                blocked_reason: Some("entry_pricing_blocked"),
+            };
+
+            assert_eq!(entry_no_action_reason(&decision), Some(expected_reason));
+        }
     }
 
     #[test]

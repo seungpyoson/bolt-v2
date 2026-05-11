@@ -246,6 +246,10 @@ fn active_book_not_priced_no_action_reason() -> &'static str {
     "active_book_not_priced"
 }
 
+fn fair_probability_unavailable_no_action_reason() -> &'static str {
+    "fair_probability_unavailable"
+}
+
 fn fixture_forced_flat_thin_book_min_liquidity() -> f64 {
     strategy_raw_config()
         .get("forced_flat_thin_book_min_liquidity")
@@ -1515,6 +1519,52 @@ fn drive_eth_entry_active_book_not_priced_no_action(mut node: LiveNode, strategy
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
+            );
+
+            for _ in 0..50 {
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            handle.stop();
+        };
+
+        let runner = async {
+            node.run().await.unwrap();
+        };
+
+        tokio::join!(control, runner);
+    });
+}
+
+fn drive_eth_entry_realized_vol_not_ready_no_action(mut node: LiveNode, strategy_id: StrategyId) {
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let control = async {
+            wait_for_running(&handle).await;
+            publish_any(
+                runtime_selection_topic(&strategy_id).into(),
+                &selection_snapshot(start_ts_ms),
+            );
+            publish_any(
+                fixture_reference_publish_topic().to_string().into(),
+                &reference_snapshot(start_ts_ms, 3_100.0, 3_102.0),
+            );
+
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
+            publish_deltas(
+                switchboard::get_book_deltas_topic(up),
+                &book_deltas(up, 0.430, 0.450),
+            );
+            publish_deltas(
+                switchboard::get_book_deltas_topic(down),
+                &book_deltas(down, 0.480, 0.490),
             );
 
             for _ in 0..50 {
@@ -2882,6 +2932,79 @@ fn eth_chainlink_taker_runtime_writes_active_book_not_priced_no_action_without_s
 }
 
 #[test]
+fn eth_chainlink_taker_runtime_writes_realized_vol_not_ready_no_action_without_submit() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut node = build_test_node();
+    let trader = Rc::clone(node.kernel().trader());
+    let strategy_id = strategy_id_from_fixture_config();
+    let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
+        common_decision_context(),
+        &decision_persistence_block(temp_dir.path()),
+    )
+    .unwrap();
+    let mut build_context = make_strategy_build_context(
+        Arc::new(StaticFeeProvider),
+        fixture_reference_publish_topic().to_string(),
+        Some(TradingState::Active),
+    );
+    build_context.bolt_v3_decision_evidence = Some(evidence);
+    let strategy_factory =
+        registry_runtime_strategy_factory(production_strategy_registry().unwrap(), build_context);
+    strategy_factory(&trader, ETH_CHAINLINK_TAKER_KIND, &strategy_raw_config()).unwrap();
+
+    add_eth_entry_instruments(&mut node);
+    drive_eth_entry_realized_vol_not_ready_no_action(node, strategy_id);
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "realized-vol-not-ready entry evaluation must not submit order"
+    );
+
+    let configured_target_id = configured_target_id_from_decision_context();
+    let evaluation_events =
+        query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
+    let fair_probability_events = entry_no_action_events_with_reason(
+        &evaluation_events,
+        fair_probability_unavailable_no_action_reason(),
+    );
+    match fair_probability_events.last() {
+        Some(decoded) => {
+            assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
+            assert_eq!(decoded.client_id, common_decision_context().client_id);
+            assert_eq!(
+                decoded.event_facts.get("entry_decision"),
+                Some(&serde_json::Value::String(
+                    entry_decision_no_action().to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("entry_no_action_reason"),
+                Some(&serde_json::Value::String(
+                    fair_probability_unavailable_no_action_reason().to_string()
+                ))
+            );
+            assert_eq!(
+                decoded.event_facts.get("updown_side"),
+                Some(&serde_json::Value::Null)
+            );
+        }
+        None => {
+            panic!("expected realized-vol-not-ready no-action event, got {evaluation_events:?}")
+        }
+    }
+
+    let submission_events =
+        query_entry_order_submission_events(temp_dir.path(), &configured_target_id);
+    assert!(
+        submission_events.is_empty(),
+        "realized-vol-not-ready entry evaluation must not persist order submission"
+    );
+}
+
+#[test]
 fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit() {
     let _guard = runtime_test_mutex().lock().unwrap();
     clear_mock_exec_submissions();
@@ -3152,8 +3275,10 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
     let configured_target_id = configured_target_id_from_decision_context();
     let evaluation_events =
         query_entry_evaluation_events_all_files(temp_dir.path(), &configured_target_id);
-    let fair_probability_events =
-        entry_no_action_events_with_reason(&evaluation_events, "fair_probability_unavailable");
+    let fair_probability_events = entry_no_action_events_with_reason(
+        &evaluation_events,
+        fair_probability_unavailable_no_action_reason(),
+    );
     match fair_probability_events.last() {
         Some(decoded) => {
             assert_eq!(decoded.strategy_instance_id, "ETHCHAINLINKTAKER-RT-001");
@@ -3165,7 +3290,7 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
             assert_eq!(
                 decoded.event_facts.get("entry_no_action_reason"),
                 Some(&serde_json::Value::String(
-                    "fair_probability_unavailable".to_string()
+                    fair_probability_unavailable_no_action_reason().to_string()
                 ))
             );
             assert_eq!(

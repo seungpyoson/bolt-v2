@@ -3241,8 +3241,7 @@ impl EthChainlinkTaker {
         &self,
         decision: &ExitSubmissionDecision,
     ) -> Result<Option<BoltV3ExitEvaluationFacts>> {
-        let mechanical_rejection_reason =
-            exit_order_mechanical_rejection_reason(decision.blocked_reason);
+        let mechanical_rejection_reason = exit_order_mechanical_rejection_reason(decision);
         if decision.blocked_reason.is_some() && mechanical_rejection_reason.is_none() {
             return Ok(None);
         }
@@ -5180,10 +5179,25 @@ fn exit_pre_submit_rejection_contract_reason(internal_reason: &str) -> Option<&'
 }
 
 fn exit_order_mechanical_rejection_reason(
-    internal_reason: Option<&'static str>,
+    decision: &ExitSubmissionDecision,
 ) -> Option<&'static str> {
-    match internal_reason? {
+    match decision.blocked_reason? {
         "exit_price_missing" => Some("exit_bid_unavailable"),
+        "exit_quantity_exceeds_sellable_quantity"
+            if decision
+                .authoritative_position_quantity
+                .is_some_and(|quantity| {
+                    quantity.is_finite()
+                        && quantity > 0.0
+                        && decision
+                            .open_exit_order_quantity
+                            .is_some_and(|open_quantity| {
+                                open_quantity.is_finite() && open_quantity >= quantity
+                            })
+                }) =>
+        {
+            Some("open_exit_order_quantity_covers_position")
+        }
         _ => None,
     }
 }

@@ -18,8 +18,10 @@ use bolt_v2::{
         BoltV3DecisionEventCommonContext, bolt_v3_decision_event_common_context,
     },
     bolt_v3_decision_events::{
-        BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY, BOLT_V3_CADENCE_SECONDS_FACT_KEY,
-        BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY, BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+        BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY,
+        BOLT_V3_CADENCE_SECONDS_FACT_KEY, BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY,
+        BOLT_V3_ENTRY_DECISION_FACT_KEY, BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE,
+        BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY,
         BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
         BOLT_V3_ENTRY_NO_ACTION_FAIR_PROBABILITY_UNAVAILABLE_REASON,
         BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON,
@@ -27,6 +29,7 @@ use bolt_v2::{
         BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON,
         BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON,
         BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON,
+        BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY,
         BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON,
         BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON,
         BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON,
@@ -44,24 +47,28 @@ use bolt_v2::{
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_QUANTITY_EXCEEDS_SELLABLE_QUANTITY_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
+        BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY,
         BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE,
         BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY, BOLT_V3_MARKET_SELECTION_FAILURE_REASONS,
         BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY, BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY,
         BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY,
-        BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY, BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
+        BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY, BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY,
+        BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_START_TIMESTAMP_MILLISECONDS_FACT_KEY,
         BOLT_V3_POLYMARKET_QUESTION_ID_FACT_KEY, BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY,
         BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY, BOLT_V3_PRICE_TO_BEAT_VALUE_FACT_KEY,
         BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY, BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY,
-        BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY, BOLT_V3_UNDERLYING_ASSET_FACT_KEY,
-        BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY,
+        BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY,
+        BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY, BOLT_V3_UNDERLYING_ASSET_FACT_KEY,
+        BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY, BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY,
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
-        BoltV3EntryEvaluationDecisionEvent, BoltV3EntryOrderSubmissionDecisionEvent,
-        BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
-        BoltV3ExitOrderSubmissionDecisionEvent, BoltV3ExitPreSubmitRejectionDecisionEvent,
-        BoltV3MarketSelectionDecisionEvent,
+        BOLT_V3_UPDOWN_SIDE_FACT_KEY, BoltV3EntryEvaluationDecisionEvent,
+        BoltV3EntryOrderSubmissionDecisionEvent, BoltV3EntryPreSubmitRejectionDecisionEvent,
+        BoltV3ExitEvaluationDecisionEvent, BoltV3ExitOrderSubmissionDecisionEvent,
+        BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
     },
     bolt_v3_market_families::updown,
     bolt_v3_release_identity::load_bolt_v3_release_identity,
@@ -635,7 +642,7 @@ fn entry_evaluation_events_with_decision<'a>(
         .filter(|event| {
             event
                 .event_facts
-                .get("entry_decision")
+                .get(BOLT_V3_ENTRY_DECISION_FACT_KEY)
                 .and_then(serde_json::Value::as_str)
                 == Some(decision)
         })
@@ -651,7 +658,7 @@ fn entry_no_action_events_with_reason<'a>(
         .filter(|event| {
             event
                 .event_facts
-                .get("entry_no_action_reason")
+                .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY)
                 .and_then(serde_json::Value::as_str)
                 == Some(reason)
         })
@@ -670,11 +677,11 @@ fn has_selected_open_orders_no_action_event(path: &std::path::Path) -> bool {
                 .as_any()
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>();
             decoded.is_some_and(|event| {
-                event.event_facts.get("entry_decision")
+                event.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY)
                     == Some(&serde_json::Value::String("no_action".to_string()))
                     && event
                         .event_facts
-                        .get("updown_market_mechanical_rejection_reason")
+                        .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY)
                         == Some(&serde_json::Value::String(
                             BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
                                 .to_string(),
@@ -2394,13 +2401,13 @@ fn eth_chainlink_taker_runtime_caps_entry_notional_by_bolt_v3_default_max_notion
     let decoded = accepted_evaluation_events[0];
     let sized_notional = decoded
         .event_facts
-        .get("archetype_metrics")
+        .get(BOLT_V3_ARCHETYPE_METRICS_FACT_KEY)
         .and_then(|value| value.get("sized_notional_usdc"))
         .and_then(serde_json::Value::as_f64)
         .expect("entry evaluation should include sized_notional_usdc");
     let effective_cap = decoded
         .event_facts
-        .get("archetype_metrics")
+        .get(BOLT_V3_ARCHETYPE_METRICS_FACT_KEY)
         .and_then(|value| value.get("effective_entry_notional_cap_usdc"))
         .and_then(serde_json::Value::as_f64)
         .expect("entry evaluation should include effective_entry_notional_cap_usdc");
@@ -2920,7 +2927,7 @@ fn eth_chainlink_taker_runtime_writes_entry_evaluation_and_order_intent_before_s
     assert_eq!(decoded.client_id, test_exec_client_name());
     let updown_side = decoded
         .event_facts
-        .get("updown_side")
+        .get(BOLT_V3_UPDOWN_SIDE_FACT_KEY)
         .and_then(serde_json::Value::as_str)
         .expect("entry evaluation updown_side should be present");
     assert!(
@@ -3008,17 +3015,19 @@ fn eth_chainlink_taker_runtime_writes_no_action_entry_evaluation_without_submit(
     assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
     assert_eq!(decoded.client_id, common_decision_context().client_id);
     assert_eq!(
-        decoded.event_facts.get("entry_decision"),
+        decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
         Some(&serde_json::Value::String("no_action".to_string()))
     );
     assert_eq!(
-        decoded.event_facts.get("entry_no_action_reason"),
+        decoded
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&serde_json::Value::String(
             BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON.to_string()
         ))
     );
     assert_eq!(
-        decoded.event_facts.get("updown_side"),
+        decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
         Some(&serde_json::Value::Null)
     );
 
@@ -3072,17 +3081,21 @@ fn eth_chainlink_taker_runtime_writes_thin_book_no_action_without_submit() {
     match thin_book_events.last() {
         Some(decoded) => {
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_market_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("accepted".to_string()))
             );
         }
@@ -3142,17 +3155,19 @@ fn eth_chainlink_taker_runtime_writes_missing_reference_no_action_without_submit
     assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
     assert_eq!(decoded.client_id, common_decision_context().client_id);
     assert_eq!(
-        decoded.event_facts.get("entry_decision"),
+        decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
         Some(&serde_json::Value::String("no_action".to_string()))
     );
     assert_eq!(
-        decoded.event_facts.get("entry_no_action_reason"),
+        decoded
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&serde_json::Value::String(
             BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON.to_string()
         ))
     );
     assert_eq!(
-        decoded.event_facts.get("updown_side"),
+        decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
         Some(&serde_json::Value::Null)
     );
 
@@ -3209,17 +3224,19 @@ fn eth_chainlink_taker_runtime_writes_fee_rate_unavailable_no_action_without_sub
     assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
     assert_eq!(decoded.client_id, common_decision_context().client_id);
     assert_eq!(
-        decoded.event_facts.get("entry_decision"),
+        decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
         Some(&serde_json::Value::String("no_action".to_string()))
     );
     assert_eq!(
-        decoded.event_facts.get("entry_no_action_reason"),
+        decoded
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
         Some(&serde_json::Value::String(
             BOLT_V3_ENTRY_NO_ACTION_FEE_RATE_UNAVAILABLE_REASON.to_string()
         ))
     );
     assert_eq!(
-        decoded.event_facts.get("updown_side"),
+        decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
         Some(&serde_json::Value::Null)
     );
 
@@ -3275,11 +3292,13 @@ fn eth_chainlink_taker_runtime_writes_active_book_not_priced_no_action_without_s
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     active_book_not_priced_no_action_reason().to_string()
                 ))
@@ -3333,19 +3352,21 @@ fn eth_chainlink_taker_runtime_writes_realized_vol_not_ready_no_action_without_s
             assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
             assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String(
                     entry_decision_no_action().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     fair_probability_unavailable_no_action_reason().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -3414,17 +3435,19 @@ fn eth_chainlink_taker_runtime_writes_stale_reference_no_action_without_submit()
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_STALE_REFERENCE_QUOTE_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -3487,7 +3510,9 @@ fn eth_chainlink_taker_runtime_writes_fast_venue_incoherent_no_action_without_su
             .data
             .as_any()
             .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()?;
-        (decoded.event_facts.get("entry_no_action_reason")
+        (decoded
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY)
             == Some(&serde_json::Value::String(
                 BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON.to_string(),
             )))
@@ -3498,17 +3523,19 @@ fn eth_chainlink_taker_runtime_writes_fast_venue_incoherent_no_action_without_su
             assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
             assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -3566,7 +3593,9 @@ fn eth_chainlink_taker_runtime_writes_freeze_no_action_without_submit() {
             .data
             .as_any()
             .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()?;
-        (decoded.event_facts.get("entry_no_action_reason")
+        (decoded
+            .event_facts
+            .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY)
             == Some(&serde_json::Value::String(
                 BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON.to_string(),
             )))
@@ -3577,17 +3606,19 @@ fn eth_chainlink_taker_runtime_writes_freeze_no_action_without_submit() {
             assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
             assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -3654,17 +3685,19 @@ fn eth_chainlink_taker_runtime_writes_fair_probability_unavailable_no_action_wit
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     fair_probability_unavailable_no_action_reason().to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -3734,23 +3767,25 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("strategy_remaining_entry_capacity")
+                    .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(0.0)
             );
@@ -3826,11 +3861,13 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
@@ -3838,7 +3875,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("updown_market_mechanical_rejection_reason"),
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
                         .to_string()
@@ -3847,14 +3884,14 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("open_entry_notional")
+                    .get(BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(45.0)
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("strategy_remaining_entry_capacity")
+                    .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(0.0)
             );
@@ -3923,11 +3960,13 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
@@ -3935,7 +3974,7 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("updown_market_mechanical_rejection_reason"),
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
                         .to_string()
@@ -3944,14 +3983,14 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("open_entry_notional")
+                    .get(BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(open_order_notional)
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("strategy_remaining_entry_capacity")
+                    .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(0.0)
             );
@@ -4009,11 +4048,13 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON.to_string()
                 ))
@@ -4021,21 +4062,21 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("entry_filled_notional")
+                    .get(BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(filled_entry_notional)
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("open_entry_notional")
+                    .get(BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(0.0)
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("strategy_remaining_entry_capacity")
+                    .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(0.0)
             );
@@ -4098,11 +4139,13 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_
                 .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()
                 .expect("BoltV3EntryEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_POSITION_LIMIT_REACHED_REASON.to_string()
                 ))
@@ -4110,21 +4153,21 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("entry_filled_notional")
+                    .get(BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(filled_entry_notional)
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("open_entry_notional")
+                    .get(BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(0.0)
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("strategy_remaining_entry_capacity")
+                    .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
                 Some(0.0)
             );
@@ -4183,31 +4226,37 @@ fn eth_chainlink_taker_runtime_writes_market_not_started_mechanical_no_action_wi
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_market_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("rejected".to_string()))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("updown_market_mechanical_rejection_reason"),
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String("market_not_started".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("has_selected_market_open_orders"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY),
                 Some(&serde_json::Value::Bool(false))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -4274,31 +4323,37 @@ fn eth_chainlink_taker_runtime_writes_market_ended_mechanical_no_action_without_
             );
             assert_eq!(decoded.client_id, test_exec_client_name());
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_market_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("rejected".to_string()))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("updown_market_mechanical_rejection_reason"),
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String("market_ended".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("has_selected_market_open_orders"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY),
                 Some(&serde_json::Value::Bool(false))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }
@@ -4358,7 +4413,7 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
             .downcast_ref::<BoltV3EntryEvaluationDecisionEvent>()?;
         (decoded
             .event_facts
-            .get("updown_market_mechanical_rejection_reason")
+            .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY)
             == Some(&serde_json::Value::String(
                 BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON.to_string(),
             )))
@@ -4369,34 +4424,40 @@ fn eth_chainlink_taker_runtime_writes_selected_open_orders_no_action_without_sec
             assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
             assert_eq!(decoded.client_id, common_decision_context().client_id);
             assert_eq!(
-                decoded.event_facts.get("entry_decision"),
+                decoded.event_facts.get(BOLT_V3_ENTRY_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("no_action".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("entry_no_action_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_market_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("rejected".to_string()))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("updown_market_mechanical_rejection_reason"),
+                    .get(BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON
                         .to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("has_selected_market_open_orders"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY),
                 Some(&serde_json::Value::Bool(true))
             );
             assert_eq!(
-                decoded.event_facts.get("updown_side"),
+                decoded.event_facts.get(BOLT_V3_UPDOWN_SIDE_FACT_KEY),
                 Some(&serde_json::Value::Null)
             );
         }

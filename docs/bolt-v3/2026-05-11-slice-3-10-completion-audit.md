@@ -61,3 +61,5 @@ F13ac extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals
 F13ad classifies `polymarket_gamma_market_anchor` as a Polymarket-catalog-owned evidence source label, not TOML operator policy. `src/platform/polymarket_catalog.rs` owns the label through `POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE`, and decision-event/runtime test verifiers reject repeated inline provider-source-label literals.
 
 F13ae extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime market-selection event fact keys must use exported decision-event contract constants instead of repeated Rust string literals.
+
+F13af extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime entry-evaluation event fact keys must use exported decision-event contract constants instead of repeated Rust string literals.

@@ -44,6 +44,8 @@ F13ad note: `polymarket_gamma_market_anchor` is classified as a Polymarket-catal
 
 F13ae note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline market-selection event fact keys in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests use exported decision-event contract constants for market-selection type, timestamps, outcome, failure reason, target facts, selected-market facts, and price-to-beat facts.
 
+F13af note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline entry-evaluation event fact keys in `tests/eth_chainlink_taker_runtime.rs`. Runtime tests use exported decision-event contract constants for entry decision, no-action reason, up/down side, mechanical outcome/rejection, capacity facts, selected-open-order facts, and archetype metrics.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

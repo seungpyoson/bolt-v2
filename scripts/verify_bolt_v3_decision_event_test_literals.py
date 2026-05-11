@@ -76,6 +76,19 @@ MARKET_SELECTION_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
     "underlying_asset",
     "up_instrument_id",
 }
+ENTRY_EVALUATION_FACT_KEY_FORBIDDEN_LITERAL_VALUES = {
+    "archetype_metrics",
+    "entry_decision",
+    "entry_filled_notional",
+    "entry_no_action_reason",
+    "has_selected_market_open_orders",
+    "open_entry_notional",
+    "seconds_to_market_end",
+    "strategy_remaining_entry_capacity",
+    "updown_market_mechanical_outcome",
+    "updown_market_mechanical_rejection_reason",
+    "updown_side",
+}
 
 @dataclass(frozen=True)
 class Finding:
@@ -236,6 +249,22 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     line=line_number(text, match.start()),
                     message=(
                         "inline market-selection fact key; use exported event "
+                        "contract constant"
+                    ),
+                    excerpt=literal,
+                )
+            )
+
+        for match in EVENT_FACT_GET_PATTERN.finditer(text):
+            literal = match.group("literal")
+            if literal not in ENTRY_EVALUATION_FACT_KEY_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "inline entry-evaluation fact key; use exported event "
                         "contract constant"
                     ),
                     excerpt=literal,

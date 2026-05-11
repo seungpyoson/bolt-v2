@@ -64,11 +64,19 @@ pub const BOLT_V3_PRICE_TO_BEAT_OBSERVED_TIMESTAMP_FACT_KEY: &str =
 pub const BOLT_V3_PRICE_TO_BEAT_SOURCE_FACT_KEY: &str = "price_to_beat_source";
 pub const BOLT_V3_ENTRY_DECISION_FACT_KEY: &str = "entry_decision";
 pub const BOLT_V3_ENTRY_NO_ACTION_REASON_FACT_KEY: &str = "entry_no_action_reason";
+pub const BOLT_V3_UPDOWN_SIDE_FACT_KEY: &str = "updown_side";
+pub const BOLT_V3_SECONDS_TO_MARKET_END_FACT_KEY: &str = "seconds_to_market_end";
 pub const BOLT_V3_ARCHETYPE_METRICS_FACT_KEY: &str = "archetype_metrics";
 pub const BOLT_V3_HAS_SELECTED_MARKET_OPEN_ORDERS_FACT_KEY: &str =
     "has_selected_market_open_orders";
+pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY: &str =
+    "updown_market_mechanical_outcome";
 pub const BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY: &str =
     "updown_market_mechanical_rejection_reason";
+pub const BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY: &str = "entry_filled_notional";
+pub const BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY: &str = "open_entry_notional";
+pub const BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY: &str =
+    "strategy_remaining_entry_capacity";
 pub const BOLT_V3_CLIENT_ORDER_ID_FACT_KEY: &str = "client_order_id";
 pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
     "entry_pre_submit_rejection_reason";
@@ -1365,7 +1373,7 @@ fn validate_entry_evaluation_facts(facts: &BoltV3EntryEvaluationFacts) -> Result
 fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params {
     let mut params = Params::new();
     params.insert(
-        "updown_side".to_string(),
+        BOLT_V3_UPDOWN_SIDE_FACT_KEY.to_string(),
         optional_string_to_value(facts.updown_side),
     );
     params.insert(
@@ -1377,7 +1385,7 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         optional_string_to_value(facts.entry_no_action_reason),
     );
     params.insert(
-        "seconds_to_market_end".to_string(),
+        BOLT_V3_SECONDS_TO_MARKET_END_FACT_KEY.to_string(),
         Value::from(facts.seconds_to_market_end),
     );
     params.insert(
@@ -1385,7 +1393,7 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         Value::from(facts.has_selected_market_open_orders),
     );
     params.insert(
-        "updown_market_mechanical_outcome".to_string(),
+        BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY.to_string(),
         Value::String(facts.updown_market_mechanical_outcome),
     );
     params.insert(
@@ -1393,15 +1401,15 @@ fn entry_evaluation_facts_to_params(facts: BoltV3EntryEvaluationFacts) -> Params
         optional_string_to_value(facts.updown_market_mechanical_rejection_reason),
     );
     params.insert(
-        "entry_filled_notional".to_string(),
+        BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY.to_string(),
         Value::from(facts.entry_filled_notional),
     );
     params.insert(
-        "open_entry_notional".to_string(),
+        BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY.to_string(),
         Value::from(facts.open_entry_notional),
     );
     params.insert(
-        "strategy_remaining_entry_capacity".to_string(),
+        BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY.to_string(),
         Value::from(facts.strategy_remaining_entry_capacity),
     );
     params.insert(

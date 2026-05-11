@@ -236,6 +236,25 @@ fn probe(decoded: Decoded) {
         assert "inline market-selection fact key" in findings[0].message
 
 
+def test_eth_chainlink_runtime_entry_evaluation_fact_key_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/eth_chainlink_taker_runtime.rs",
+            """
+fn probe(decoded: Decoded) {
+    let _ = decoded.event_facts.get("entry_decision");
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert len(findings) == 1
+        assert "inline entry-evaluation fact key" in findings[0].message
+
+
 def test_exported_constants_and_fixture_helpers_are_clean() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -286,6 +305,7 @@ def main() -> int:
         test_eth_chainlink_runtime_decision_reason_literal_is_a_finding,
         test_provider_source_label_literal_is_a_finding,
         test_eth_chainlink_runtime_market_selection_fact_key_is_a_finding,
+        test_eth_chainlink_runtime_entry_evaluation_fact_key_is_a_finding,
         test_exported_constants_and_fixture_helpers_are_clean,
         test_decision_event_handoff_file_is_enforced,
         test_order_intent_gate_file_is_enforced,

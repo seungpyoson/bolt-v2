@@ -1251,8 +1251,8 @@ fn drive_eth_entry_submission(mut node: LiveNode, strategy_id: StrategyId) {
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1309,8 +1309,8 @@ fn drive_eth_entry_selected_market_open_orders_no_action(
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1395,8 +1395,8 @@ fn drive_eth_entry_no_action_with_book_quantity(
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas_with_quantity(up, 0.430, 0.450, book_quantity),
@@ -1510,8 +1510,8 @@ fn drive_eth_entry_missing_reference_no_action(mut node: LiveNode, strategy_id: 
                 &selection_snapshot(start_ts_ms),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1651,8 +1651,8 @@ fn drive_eth_entry_stale_reference_no_action(mut node: LiveNode, strategy_id: St
             );
             sleep(Duration::from_millis(20)).await;
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1752,8 +1752,8 @@ fn drive_eth_entry_market_not_started_no_action(mut node: LiveNode, strategy_id:
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1804,8 +1804,8 @@ fn drive_eth_entry_market_ended_no_action(mut node: LiveNode, strategy_id: Strat
                 &reference_snapshot(market_end_ts_ms + 450, 3_101.0, 3_105.0),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1854,8 +1854,8 @@ fn drive_eth_entry_pre_submit_rejection(mut node: LiveNode, strategy_id: Strateg
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -1897,7 +1897,7 @@ fn drive_eth_exit_pre_submit_rejection_with_quantity(
 ) {
     let handle = node.handle();
     let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let up = eth_up_instrument_id();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1946,8 +1946,8 @@ fn drive_eth_exit_pre_submit_rejection_with_quantity(
 fn drive_eth_exit_sellable_rejection(mut node: LiveNode, strategy_id: StrategyId) {
     let handle = node.handle();
     let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -2031,8 +2031,8 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
     {
         let cache_handle = node.kernel().cache();
         let mut cache = cache_handle.borrow_mut();
-        let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-        let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+        let up = eth_up_instrument_id();
+        let down = eth_down_instrument_id();
         cache.add_instrument(polymarket_binary_option(up)).unwrap();
         cache
             .add_instrument(polymarket_binary_option(down))
@@ -2062,8 +2062,8 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
                 &reference_snapshot(start_ts_ms + 200, 3_101.0, 3_105.0),
             );
 
-            let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-            let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+            let up = eth_up_instrument_id();
+            let down = eth_down_instrument_id();
             publish_deltas(
                 switchboard::get_book_deltas_topic(up),
                 &book_deltas(up, 0.430, 0.450),
@@ -2104,10 +2104,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
     assert_eq!(submissions.len(), 1, "{submissions:?}");
     assert_eq!(submissions[0].client_id, Some(ClientId::from("TEST")));
     assert_eq!(submissions[0].strategy_id, strategy_id);
-    assert_eq!(
-        submissions[0].instrument_id,
-        InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
-    );
+    assert_eq!(submissions[0].instrument_id, eth_up_instrument_id());
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
 }
 
@@ -2407,13 +2404,13 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
             assert_eq!(
                 decoded.event_facts.get("up_instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                    eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
                 decoded.event_facts.get("down_instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-DOWN.POLYMARKET".to_string()
+                    eth_down_instrument_id().to_string()
                 ))
             );
             assert_eq!(
@@ -3500,7 +3497,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
     .unwrap();
 
     add_eth_entry_instruments(&mut node);
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let up = eth_up_instrument_id();
     seed_cached_open_entry_order(
         &node,
         strategy_id,
@@ -4164,7 +4161,7 @@ fn eth_chainlink_taker_runtime_writes_entry_pre_submit_rejection_without_submit(
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                    eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
@@ -4278,7 +4275,7 @@ fn eth_chainlink_taker_runtime_writes_invalid_quantity_pre_submit_rejection_with
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                    eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
@@ -4363,7 +4360,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                    eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
@@ -4532,7 +4529,7 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                    eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
@@ -4660,7 +4657,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let up = eth_up_instrument_id();
     seed_cached_open_order(
         &node,
         strategy_id,
@@ -4695,7 +4692,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                    eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
@@ -4854,7 +4851,7 @@ fn eth_chainlink_taker_runtime_halted_trading_state_blocks_exit_submit() {
             assert_eq!(
                 decoded.event_facts.get("instrument_id"),
                 Some(&serde_json::Value::String(
-                    "condition-eth-MKT-ETH-1-UP.POLYMARKET".to_string()
+                    eth_up_instrument_id().to_string()
                 ))
             );
             assert_eq!(
@@ -4902,7 +4899,7 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
     add_eth_entry_instruments(&mut node);
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
+    let up = eth_up_instrument_id();
     seed_cached_open_order(
         &node,
         strategy_id,
@@ -5097,8 +5094,8 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
     add_eth_entry_instruments(&mut node);
     let handle = node.handle();
     let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -5207,8 +5204,8 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
     {
         let cache_handle = node.kernel().cache();
         let mut cache = cache_handle.borrow_mut();
@@ -5331,8 +5328,8 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
     let cache_handle = node.kernel().cache();
 
     {
@@ -5448,8 +5445,8 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
     let cache_handle = node.kernel().cache();
 
     {
@@ -6072,8 +6069,8 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
 
     {
         let cache_handle = node.kernel().cache();
@@ -6168,8 +6165,8 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
 
     {
         let cache_handle = node.kernel().cache();
@@ -6269,8 +6266,8 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
-    let market_a_up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let market_a_down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let market_a_up = eth_up_instrument_id();
+    let market_a_down = eth_down_instrument_id();
     let market_b_up = InstrumentId::from("condition-eth-MKT-ETH-2-UP.POLYMARKET");
     let market_b_down = InstrumentId::from("condition-eth-MKT-ETH-2-DOWN.POLYMARKET");
 
@@ -6581,8 +6578,8 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
 
-    let up = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET");
-    let down = InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET");
+    let up = eth_up_instrument_id();
+    let down = eth_down_instrument_id();
 
     {
         let cache_handle = node.kernel().cache();

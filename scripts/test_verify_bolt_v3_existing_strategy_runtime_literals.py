@@ -67,6 +67,24 @@ def test_reference_topic_literal_outside_helper_is_a_finding() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_default_instrument_literal_outside_helper_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        write_runtime_test(
+            root,
+            'fn probe() { let _ = InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET"); }\n',
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "existing-strategy runtime instrument id literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -86,9 +104,19 @@ fn fixture_reference_publish_topic() -> &'static str {
     "platform.reference.test.chainlink"
 }
 
+fn eth_up_instrument_id() -> InstrumentId {
+    InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
+}
+
+fn eth_down_instrument_id() -> InstrumentId {
+    InstrumentId::from("condition-eth-MKT-ETH-1-DOWN.POLYMARKET")
+}
+
 fn probe() {
     let _ = strategy_id_from_fixture_config();
     let _ = fixture_reference_publish_topic().to_string();
+    let _ = eth_up_instrument_id();
+    let _ = eth_down_instrument_id();
 }
 """,
         )
@@ -102,6 +130,7 @@ def main() -> int:
     tests = [
         test_strategy_id_literal_outside_fixture_config_is_a_finding,
         test_reference_topic_literal_outside_helper_is_a_finding,
+        test_default_instrument_literal_outside_helper_is_a_finding,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

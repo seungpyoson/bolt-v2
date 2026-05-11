@@ -20,10 +20,24 @@ REFERENCE_TOPIC_HELPER_SPAN_PATTERN = re.compile(
     r"fn\s+fixture_reference_publish_topic\s*\([^)]*\)\s*->\s*&'static\s+str\s*\{.*?^\}",
     re.MULTILINE | re.DOTALL,
 )
+UP_INSTRUMENT_HELPER_SPAN_PATTERN = re.compile(
+    r"fn\s+eth_up_instrument_id\s*\([^)]*\)\s*->\s*InstrumentId\s*\{.*?^\}",
+    re.MULTILINE | re.DOTALL,
+)
+DOWN_INSTRUMENT_HELPER_SPAN_PATTERN = re.compile(
+    r"fn\s+eth_down_instrument_id\s*\([^)]*\)\s*->\s*InstrumentId\s*\{.*?^\}",
+    re.MULTILINE | re.DOTALL,
+)
 FORBIDDEN_LITERALS = {
     "ETHCHAINLINKTAKER-RT-001": "existing-strategy runtime strategy id literal; derive from strategy_raw_config",
     "platform.reference.test.chainlink": (
         "existing-strategy runtime reference topic literal; use fixture_reference_publish_topic"
+    ),
+    "condition-eth-MKT-ETH-1-UP.POLYMARKET": (
+        "existing-strategy runtime instrument id literal; use eth_up_instrument_id"
+    ),
+    "condition-eth-MKT-ETH-1-DOWN.POLYMARKET": (
+        "existing-strategy runtime instrument id literal; use eth_down_instrument_id"
     ),
 }
 
@@ -63,6 +77,8 @@ def scan_runtime_file(root: Path, path: Path) -> list[Finding]:
     rel = path.relative_to(root).as_posix()
     strategy_config_span = span_for(STRATEGY_CONFIG_SPAN_PATTERN, text)
     reference_topic_helper_span = span_for(REFERENCE_TOPIC_HELPER_SPAN_PATTERN, text)
+    up_instrument_helper_span = span_for(UP_INSTRUMENT_HELPER_SPAN_PATTERN, text)
+    down_instrument_helper_span = span_for(DOWN_INSTRUMENT_HELPER_SPAN_PATTERN, text)
     findings: list[Finding] = []
 
     for match in STRING_PATTERN.finditer(text):
@@ -75,6 +91,14 @@ def scan_runtime_file(root: Path, path: Path) -> list[Finding]:
             continue
         if value == "platform.reference.test.chainlink" and within(
             reference_topic_helper_span, match.start()
+        ):
+            continue
+        if value == "condition-eth-MKT-ETH-1-UP.POLYMARKET" and within(
+            up_instrument_helper_span, match.start()
+        ):
+            continue
+        if value == "condition-eth-MKT-ETH-1-DOWN.POLYMARKET" and within(
+            down_instrument_helper_span, match.start()
         ):
             continue
         findings.append(

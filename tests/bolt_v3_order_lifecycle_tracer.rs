@@ -36,23 +36,28 @@ use bolt_v2::{
         runtime::runtime_selection_topic,
     },
 };
-use nautilus_common::msgbus::{publish_any, publish_deltas, switchboard};
-use nautilus_core::UnixNanos;
+use nautilus_common::{
+    msgbus::switchboard::MessagingSwitchboard,
+    msgbus::{self, publish_any, publish_deltas, switchboard},
+};
+use nautilus_core::{UUID4, UnixNanos};
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{BookOrder, OrderBookDelta, OrderBookDeltas},
     enums::{AssetClass, BookAction, OrderSide},
-    identifiers::{ClientId, InstrumentId, StrategyId},
+    events::{OrderEventAny, OrderRejected},
+    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
     instruments::{InstrumentAny, binary_option::BinaryOption},
     types::{Currency, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
-    clear_mock_exec_submissions, recorded_mock_exec_submissions,
+    RecordedSubmitOrder, clear_mock_exec_submissions, recorded_mock_exec_submissions,
 };
 use tempfile::TempDir;
 use tokio::time::sleep;
+use ustr::Ustr;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -475,20 +480,70 @@ async fn wait_for_running(handle: &LiveNodeHandle) {
     }
 }
 
+fn send_rejected_to_exec_engine(
+    loaded: &LoadedBoltV3Config,
+    submission: &RecordedSubmitOrder,
+    ts_event_ms: u64,
+) {
+    let account_id = execution_account_id(loaded, execution_client_id(loaded).as_str());
+    let event = OrderRejected::new(
+        TraderId::from(loaded.root.trader_id.as_str()),
+        submission.strategy_id,
+        submission.instrument_id,
+        submission.client_order_id,
+        AccountId::from(account_id.as_str()),
+        Ustr::from("mock_execution_rejected"),
+        UUID4::new(),
+        UnixNanos::from(ts_event_ms * 1_000_000),
+        UnixNanos::from(ts_event_ms * 1_000_000),
+        false,
+        false,
+    );
+    msgbus::send_order_event(
+        MessagingSwitchboard::exec_engine_process(),
+        OrderEventAny::Rejected(event),
+    );
+}
+
 fn submission_events(catalog_dir: &Path, configured_target_id: &str) -> usize {
     let ids = vec![configured_target_id.to_string()];
-    ParquetDataCatalog::new(catalog_dir, None, None, None, None)
-        .query_custom_data_dynamic(
-            BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
-            Some(&ids),
-            None,
-            None,
-            None,
-            None,
-            true,
-        )
-        .unwrap_or_default()
-        .len()
+    let event_dir = catalog_dir
+        .join("data")
+        .join("custom")
+        .join(BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE)
+        .join(configured_target_id);
+    if !event_dir.exists() {
+        return 0;
+    }
+
+    let mut files = std::fs::read_dir(event_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "parquet")
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+
+    files
+        .into_iter()
+        .map(|file| {
+            ParquetDataCatalog::new(catalog_dir, None, None, None, None)
+                .query_custom_data_dynamic(
+                    BOLT_V3_ENTRY_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
+                    Some(&ids),
+                    None,
+                    None,
+                    None,
+                    Some(vec![file]),
+                    true,
+                )
+                .unwrap_or_default()
+                .len()
+        })
+        .sum()
 }
 
 #[test]
@@ -619,6 +674,191 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
     assert_eq!(submissions[0].strategy_id, strategy_id);
     assert_eq!(submissions[0].instrument_id, up);
     assert_eq!(submission_events(&catalog_dir, &target_id), 1);
+    for _ in 0..2 {
+        let request = fee_requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("local fee server should receive fee request");
+        assert!(
+            request
+                .split_ascii_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .starts_with("/fee-rate?token_id="),
+            "unexpected fee request path: {request:?}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    clear_mock_exec_submissions();
+    let temp_dir = TempDir::new().unwrap();
+    let (fee_base_url, fee_requests) = spawn_fee_rate_server(2);
+    let mut loaded =
+        load_bolt_v3_config(&existing_strategy_root_fixture()).expect("v3 fixture should load");
+    point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
+    loaded.root.nautilus.load_state = false;
+    loaded.root.nautilus.save_state = false;
+    attach_release_identity_manifest(&mut loaded, &temp_dir);
+
+    let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
+    let execution_client_id = ClientId::from(execution_client_id(&loaded).as_str());
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve through fake SSM");
+    let builder =
+        make_bolt_v3_live_node_builder(&loaded).expect("v3 LiveNode builder should build");
+    let (builder, _summary) =
+        register_bolt_v3_clients(builder, mock_client_configs_from_loaded(&loaded))
+            .expect("mock clients should register through v3 client boundary");
+    let mut node = builder.build().expect("mock LiveNode should build");
+    register_bolt_v3_reference_actors(&mut node, &loaded)
+        .expect("v3 reference actors should register on mock LiveNode");
+    register_bolt_v3_strategies(&mut node, &loaded, &resolved)
+        .expect("existing strategy should register from v3 TOML");
+    add_selected_instruments(&mut node, &loaded);
+
+    let handle = node.handle();
+    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let reference_topic = reference_publish_topic(&loaded);
+    let (up, down) = selected_instruments(&loaded);
+    let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
+    let target_id = configured_target_id(&loaded);
+    let run_timeout = Duration::from_secs(
+        loaded.root.nautilus.delay_post_stop_seconds
+            + loaded.root.nautilus.timeout_shutdown_seconds
+            + 1,
+    );
+    let loaded_for_control = loaded.clone();
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            tokio::time::timeout(run_timeout, async move {
+                let control = async {
+                    wait_for_running(&handle).await;
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &selection_snapshot(&loaded_for_control, start_ts_ms),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms,
+                            price_to_beat_value(),
+                            3_102.0,
+                        ),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 200,
+                            3_101.0,
+                            3_105.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.430, 0.450),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+                    sleep(Duration::from_millis(200)).await;
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &selection_snapshot(&loaded_for_control, start_ts_ms),
+                    );
+                    publish_any(
+                        reference_topic.clone().into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 400,
+                            3_101.0,
+                            3_105.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.430, 0.450),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+
+                    for _ in 0..50 {
+                        if let Some(submission) = recorded_mock_exec_submissions().first().cloned()
+                        {
+                            send_rejected_to_exec_engine(
+                                &loaded_for_control,
+                                &submission,
+                                start_ts_ms + 300,
+                            );
+                            break;
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+
+                    publish_any(
+                        runtime_selection_topic(&strategy_id).into(),
+                        &selection_snapshot(&loaded_for_control, start_ts_ms + 600),
+                    );
+                    publish_any(
+                        reference_topic.into(),
+                        &reference_snapshot(
+                            &loaded_for_control,
+                            start_ts_ms + 600,
+                            3_101.0,
+                            3_105.0,
+                        ),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(up),
+                        &book_deltas(up, 0.430, 0.450),
+                    );
+                    publish_deltas(
+                        switchboard::get_book_deltas_topic(down),
+                        &book_deltas(down, 0.480, 0.490),
+                    );
+
+                    for _ in 0..50 {
+                        if recorded_mock_exec_submissions().len() >= 2 {
+                            break;
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                    handle.stop();
+                };
+
+                let runner = async {
+                    node.run().await.expect("mock node should stop cleanly");
+                };
+
+                tokio::join!(control, runner);
+            })
+            .await
+            .expect("mock LiveNode run should finish before timeout");
+        });
+
+    let submissions = recorded_mock_exec_submissions();
+    assert_eq!(submissions.len(), 2, "{submissions:?}");
+    assert_eq!(submissions[0].client_id, Some(execution_client_id));
+    assert_eq!(submissions[1].client_id, Some(execution_client_id));
+    assert_eq!(submissions[0].strategy_id, strategy_id);
+    assert_eq!(submissions[1].strategy_id, strategy_id);
+    assert_eq!(submissions[0].instrument_id, up);
+    assert_eq!(submissions[1].instrument_id, up);
+    assert_ne!(
+        submissions[0].client_order_id, submissions[1].client_order_id,
+        "{submissions:?}"
+    );
+    assert_eq!(submission_events(&catalog_dir, &target_id), 2);
     for _ in 0..2 {
         let request = fee_requests
             .recv_timeout(Duration::from_secs(1))

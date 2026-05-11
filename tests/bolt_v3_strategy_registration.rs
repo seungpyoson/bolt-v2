@@ -8,7 +8,8 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{
-        BoltV3StrategyConfig, LoadedStrategy, ReferenceSourceType, load_bolt_v3_config,
+        BoltV3StrategyConfig, LoadedStrategy, REFERENCE_STREAM_ID_PARAMETER, ReferenceSourceType,
+        load_bolt_v3_config,
     },
     bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
     bolt_v3_validate::validate_strategies,
@@ -37,7 +38,7 @@ fn existing_strategy_fixture_selects_root_reference_stream() {
     let stream_id = strategy
         .config
         .parameters
-        .get("reference_stream_id")
+        .get(REFERENCE_STREAM_ID_PARAMETER)
         .and_then(toml::Value::as_str)
         .expect("existing-strategy fixture should set reference_stream_id");
 

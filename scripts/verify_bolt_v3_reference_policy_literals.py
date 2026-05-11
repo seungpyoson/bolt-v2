@@ -22,8 +22,10 @@ ENFORCED_TEST_FILES = (
     "tests/bolt_v3_reference_actor_registration.rs",
     "tests/bolt_v3_reference_policy.rs",
     "tests/bolt_v3_reference_producer.rs",
+    "tests/bolt_v3_strategy_registration.rs",
 )
 STRING_PATTERN = re.compile(r'"(?:\\.|[^"\\])*"')
+REFERENCE_STREAM_PARAMETER_LITERALS = frozenset({"reference_stream_id"})
 
 
 @dataclass(frozen=True)
@@ -92,7 +94,18 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
     findings: list[Finding] = []
     for match in STRING_PATTERN.finditer(text):
         literal = match.group(0)
-        if string_value(literal) not in fixture_literals:
+        value = string_value(literal)
+        if value in REFERENCE_STREAM_PARAMETER_LITERALS:
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="reference stream parameter-key literal; use REFERENCE_STREAM_ID_PARAMETER",
+                    excerpt=literal,
+                )
+            )
+            continue
+        if value not in fixture_literals:
             continue
         findings.append(
             Finding(

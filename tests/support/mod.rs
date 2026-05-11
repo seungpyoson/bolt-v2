@@ -16,6 +16,10 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bolt_v2::{
+    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
+};
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
     cache::Cache,
@@ -96,6 +100,35 @@ impl TempCaseDir {
 
 pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+pub fn attach_test_release_identity_manifest(loaded: &mut LoadedBoltV3Config, temp_dir: &Path) {
+    let config_hash = bolt_v3_config_hash(loaded).expect("fixture config hash should compute");
+    let nt_revision = bolt_v3_compiled_nautilus_trader_revision()
+        .expect("fixture NT revision should resolve from Cargo.toml");
+    let manifest_path = temp_dir.join("release-identity.toml");
+    fs::write(
+        &manifest_path,
+        format!(
+            r#"
+release_id = "test-release"
+git_commit_sha = "test-git-sha"
+nautilus_trader_revision = "{nt_revision}"
+binary_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+cargo_lock_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+config_hash = "{config_hash}"
+build_profile = "test"
+
+[artifact_sha256]
+bolt_v2 = "3333333333333333333333333333333333333333333333333333333333333333"
+"#,
+        ),
+    )
+    .expect("release identity manifest should write");
+    loaded.root.release.identity_manifest_path = manifest_path.to_string_lossy().into_owned();
+    let catalog_dir = temp_dir.join("catalog");
+    fs::create_dir_all(&catalog_dir).expect("catalog dir should create");
+    loaded.root.persistence.catalog_directory = catalog_dir.to_string_lossy().into_owned();
 }
 
 pub fn runtime_toml_with_reference_venue(
@@ -641,7 +674,7 @@ const FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY: &str =
     "0x4242424242424242424242424242424242424242424242424242424242424242";
 
 /// Synthetic SSM resolver for bolt-v3 LiveNode build tests. Returns
-/// per-path placeholder values that satisfy the polymarket and binance
+/// per-path synthetic values that satisfy the polymarket and binance
 /// secret schemas declared in `tests/fixtures/bolt_v3/root.toml` so the
 /// build path can run all the way through `LiveNodeBuilder::build`
 /// (which invokes the real NT `factory.create` for every registered

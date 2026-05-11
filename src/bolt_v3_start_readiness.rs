@@ -25,6 +25,40 @@ impl BoltV3StartReadinessReport {
     }
 }
 
+#[derive(Debug)]
+pub enum BoltV3StartReadinessGateError {
+    MarketIdentity(BoltV3MarketIdentityError),
+    Blocked(BoltV3StartReadinessReport),
+}
+
+impl std::fmt::Display for BoltV3StartReadinessGateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoltV3StartReadinessGateError::MarketIdentity(error) => write!(f, "{error}"),
+            BoltV3StartReadinessGateError::Blocked(report) => write!(
+                f,
+                "bolt-v3 start readiness gate blocked production start with {} instrument readiness fact(s)",
+                report.instrument_readiness.facts.len()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BoltV3StartReadinessGateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BoltV3StartReadinessGateError::MarketIdentity(error) => Some(error),
+            BoltV3StartReadinessGateError::Blocked(_) => None,
+        }
+    }
+}
+
+impl From<BoltV3MarketIdentityError> for BoltV3StartReadinessGateError {
+    fn from(error: BoltV3MarketIdentityError) -> Self {
+        BoltV3StartReadinessGateError::MarketIdentity(error)
+    }
+}
+
 pub fn check_bolt_v3_start_readiness_gate(
     node: &LiveNode,
     loaded: &LoadedBoltV3Config,
@@ -38,4 +72,18 @@ pub fn check_bolt_v3_start_readiness_gate(
     Ok(BoltV3StartReadinessReport {
         instrument_readiness,
     })
+}
+
+pub fn require_bolt_v3_start_readiness_gate(
+    node: &LiveNode,
+    loaded: &LoadedBoltV3Config,
+    market_selection_timestamp_milliseconds: i64,
+) -> Result<BoltV3StartReadinessReport, BoltV3StartReadinessGateError> {
+    let report =
+        check_bolt_v3_start_readiness_gate(node, loaded, market_selection_timestamp_milliseconds)?;
+    if report.is_ready() {
+        Ok(report)
+    } else {
+        Err(BoltV3StartReadinessGateError::Blocked(report))
+    }
 }

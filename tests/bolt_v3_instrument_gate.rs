@@ -16,6 +16,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use serde_json::json;
+use tempfile::TempDir;
 use ustr::Ustr;
 
 fn polymarket_updown_option(
@@ -69,7 +70,9 @@ fn polymarket_updown_option(
 #[test]
 fn live_node_instrument_gate_blocks_missing_cache_targets_before_start() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root_multi.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("multi-strategy fixture should load");
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&root_path).expect("multi-strategy fixture should load");
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build and register configured strategies");
@@ -111,7 +114,9 @@ fn live_node_instrument_gate_blocks_missing_cache_targets_before_start() {
 #[test]
 fn live_node_instrument_gate_accepts_loaded_selected_market_before_start() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("strategy fixture should load");
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&root_path).expect("strategy fixture should load");
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build and register configured strategy");

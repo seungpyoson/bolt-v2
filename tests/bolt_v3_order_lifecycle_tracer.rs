@@ -29,7 +29,6 @@ use bolt_v2::{
     },
     bolt_v3_live_node::make_bolt_v3_live_node_builder,
     bolt_v3_reference_actor_registration::register_bolt_v3_reference_actors,
-    bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_strategy_registration::register_bolt_v3_strategies,
     platform::{
@@ -72,35 +71,6 @@ fn runtime_test_mutex() -> &'static Mutex<()> {
 
 fn existing_strategy_root_fixture() -> PathBuf {
     support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml")
-}
-
-fn attach_release_identity_manifest(loaded: &mut LoadedBoltV3Config, temp_dir: &TempDir) {
-    let config_hash = bolt_v3_config_hash(loaded).expect("fixture config hash should compute");
-    let nt_revision = bolt_v3_compiled_nautilus_trader_revision()
-        .expect("fixture NT revision should resolve from Cargo.toml");
-    let manifest_path = temp_dir.path().join("release-identity.toml");
-    std::fs::write(
-        &manifest_path,
-        format!(
-            r#"
-release_id = "test-release"
-git_commit_sha = "test-git-sha"
-nautilus_trader_revision = "{nt_revision}"
-binary_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
-cargo_lock_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
-config_hash = "{config_hash}"
-build_profile = "test"
-
-[artifact_sha256]
-bolt_v2 = "3333333333333333333333333333333333333333333333333333333333333333"
-"#,
-        ),
-    )
-    .expect("release identity manifest should write");
-    loaded.root.release.identity_manifest_path = manifest_path.to_string_lossy().into_owned();
-    let catalog_dir = temp_dir.path().join("catalog");
-    std::fs::create_dir_all(&catalog_dir).expect("catalog dir should create");
-    loaded.root.persistence.catalog_directory = catalog_dir.to_string_lossy().into_owned();
 }
 
 fn strategy_config(loaded: &LoadedBoltV3Config) -> &bolt_v2::bolt_v3_config::BoltV3StrategyConfig {
@@ -691,7 +661,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
     loaded.root.nautilus.load_state = false;
     loaded.root.nautilus.save_state = false;
-    attach_release_identity_manifest(&mut loaded, &temp_dir);
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
 
     let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
     let execution_client_id = ClientId::from(execution_client_id(&loaded).as_str());
@@ -834,7 +804,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
     loaded.root.nautilus.load_state = false;
     loaded.root.nautilus.save_state = false;
-    attach_release_identity_manifest(&mut loaded, &temp_dir);
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
 
     let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
     let execution_client_id = ClientId::from(execution_client_id(&loaded).as_str());
@@ -1019,7 +989,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
     loaded.root.nautilus.load_state = false;
     loaded.root.nautilus.save_state = false;
-    attach_release_identity_manifest(&mut loaded, &temp_dir);
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
 
     let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
     let execution_client_id = ClientId::from(execution_client_id(&loaded).as_str());
@@ -1214,7 +1184,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
     point_execution_http_to_local_fee_server(&mut loaded, fee_base_url);
     loaded.root.nautilus.load_state = false;
     loaded.root.nautilus.save_state = false;
-    attach_release_identity_manifest(&mut loaded, &temp_dir);
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
 
     let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
     let execution_client_id = ClientId::from(execution_client_id(&loaded).as_str());

@@ -1,8 +1,12 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config, bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
-    bolt_v3_start_readiness::check_bolt_v3_start_readiness_gate,
+    bolt_v3_config::load_bolt_v3_config,
+    bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_start_readiness::{
+        BoltV3StartReadinessGateError, check_bolt_v3_start_readiness_gate,
+        require_bolt_v3_start_readiness_gate,
+    },
 };
 use nautilus_core::{Params, UnixNanos};
 use nautilus_live::node::NodeState;
@@ -13,6 +17,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use serde_json::json;
+use tempfile::TempDir;
 use ustr::Ustr;
 
 fn polymarket_updown_option(
@@ -66,7 +71,9 @@ fn polymarket_updown_option(
 #[test]
 fn start_readiness_gate_blocks_missing_instruments_before_nt_start() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root_multi.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("multi-strategy fixture should load");
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&root_path).expect("multi-strategy fixture should load");
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build and register configured strategies");
@@ -77,12 +84,25 @@ fn start_readiness_gate_blocks_missing_instruments_before_nt_start() {
     assert_eq!(node.state(), NodeState::Idle);
     assert!(!report.is_ready(), "empty NT cache must block start");
     assert_eq!(report.instrument_readiness.facts.len(), 2);
+
+    let error = require_bolt_v3_start_readiness_gate(&node, &loaded, 601_000)
+        .expect_err("missing selected-market instruments must reject production start");
+    match error {
+        BoltV3StartReadinessGateError::Blocked(blocked_report) => {
+            assert_eq!(blocked_report, report);
+        }
+        BoltV3StartReadinessGateError::MarketIdentity(error) => {
+            panic!("unexpected market identity error: {error}")
+        }
+    }
 }
 
 #[test]
 fn start_readiness_gate_accepts_loaded_selected_market_before_nt_start() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3_existing_strategy/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("strategy fixture should load");
+    let temp_dir = TempDir::new().unwrap();
+    let mut loaded = load_bolt_v3_config(&root_path).expect("strategy fixture should load");
+    support::attach_test_release_identity_manifest(&mut loaded, temp_dir.path());
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build and register configured strategy");
@@ -120,6 +140,10 @@ fn start_readiness_gate_accepts_loaded_selected_market_before_nt_start() {
     assert_eq!(node.state(), NodeState::Idle);
     assert!(report.is_ready(), "loaded selected market should pass gate");
     assert_eq!(report.instrument_readiness.facts.len(), 1);
+
+    let required = require_bolt_v3_start_readiness_gate(&node, &loaded, 601_000)
+        .expect("loaded selected-market instruments should permit production start");
+    assert_eq!(required, report);
 }
 
 #[test]

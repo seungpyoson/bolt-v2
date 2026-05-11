@@ -91,8 +91,17 @@ pub const BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
     "entry_pre_submit_rejection_reason";
 pub const BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY: &str =
     "exit_pre_submit_rejection_reason";
+pub const BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY: &str =
+    "authoritative_position_quantity";
+pub const BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY: &str =
+    "authoritative_sellable_quantity";
+pub const BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY: &str = "open_exit_order_quantity";
+pub const BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY: &str = "uncovered_position_quantity";
+pub const BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY: &str = "exit_order_mechanical_outcome";
 pub const BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY: &str =
     "exit_order_mechanical_rejection_reason";
+pub const BOLT_V3_EXIT_DECISION_FACT_KEY: &str = "exit_decision";
+pub const BOLT_V3_EXIT_DECISION_REASON_FACT_KEY: &str = "exit_decision_reason";
 pub const BOLT_V3_ENTRY_NO_ACTION_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON: &str =
     "updown_market_mechanical_rejection";
 pub const BOLT_V3_ENTRY_NO_ACTION_MISSING_REFERENCE_QUOTE_REASON: &str = "missing_reference_quote";
@@ -1579,23 +1588,23 @@ fn validate_exit_evaluation_facts(facts: &BoltV3ExitEvaluationFacts) -> Result<(
 fn exit_evaluation_facts_to_params(facts: BoltV3ExitEvaluationFacts) -> Params {
     let mut params = Params::new();
     params.insert(
-        "authoritative_position_quantity".to_string(),
+        BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY.to_string(),
         optional_f64_to_value(facts.authoritative_position_quantity),
     );
     params.insert(
-        "authoritative_sellable_quantity".to_string(),
+        BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY.to_string(),
         optional_f64_to_value(facts.authoritative_sellable_quantity),
     );
     params.insert(
-        "open_exit_order_quantity".to_string(),
+        BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY.to_string(),
         optional_f64_to_value(facts.open_exit_order_quantity),
     );
     params.insert(
-        "uncovered_position_quantity".to_string(),
+        BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY.to_string(),
         optional_f64_to_value(facts.uncovered_position_quantity),
     );
     params.insert(
-        "exit_order_mechanical_outcome".to_string(),
+        BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY.to_string(),
         Value::String(facts.exit_order_mechanical_outcome),
     );
     params.insert(
@@ -1603,11 +1612,11 @@ fn exit_evaluation_facts_to_params(facts: BoltV3ExitEvaluationFacts) -> Params {
         optional_string_to_value(facts.exit_order_mechanical_rejection_reason),
     );
     params.insert(
-        "exit_decision".to_string(),
+        BOLT_V3_EXIT_DECISION_FACT_KEY.to_string(),
         Value::String(facts.exit_decision),
     );
     params.insert(
-        "exit_decision_reason".to_string(),
+        BOLT_V3_EXIT_DECISION_REASON_FACT_KEY.to_string(),
         Value::String(facts.exit_decision_reason),
     );
     params.insert(
@@ -1629,19 +1638,19 @@ fn pre_submit_rejection_facts_to_params(
     );
     if include_exit_position_facts {
         params.insert(
-            "authoritative_position_quantity".to_string(),
+            BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY.to_string(),
             optional_f64_to_value(facts.authoritative_position_quantity),
         );
         params.insert(
-            "authoritative_sellable_quantity".to_string(),
+            BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY.to_string(),
             optional_f64_to_value(facts.authoritative_sellable_quantity),
         );
         params.insert(
-            "open_exit_order_quantity".to_string(),
+            BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY.to_string(),
             optional_f64_to_value(facts.open_exit_order_quantity),
         );
         params.insert(
-            "uncovered_position_quantity".to_string(),
+            BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY.to_string(),
             optional_f64_to_value(facts.uncovered_position_quantity),
         );
     }

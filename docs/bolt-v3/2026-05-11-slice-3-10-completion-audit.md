@@ -67,3 +67,5 @@ F13af extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` s
 F13ag extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime order-submission and pre-submit order fact keys must use exported decision-event contract constants instead of repeated Rust string literals.
 
 F13ah extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime entry/exit pre-submit rejection reason fact keys must use exported decision-event contract constants instead of repeated Rust string literals.
+
+F13ai extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so existing-strategy runtime exit-evaluation fact keys must use exported decision-event contract constants instead of repeated Rust string literals.

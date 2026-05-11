@@ -18,7 +18,8 @@ use bolt_v2::{
         BoltV3DecisionEventCommonContext, bolt_v3_decision_event_common_context,
     },
     bolt_v3_decision_events::{
-        BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY,
+        BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY,
+        BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY, BOLT_V3_BLOCKED_AFTER_SECONDS_FACT_KEY,
         BOLT_V3_CADENCE_SECONDS_FACT_KEY, BOLT_V3_CLIENT_ORDER_ID_FACT_KEY,
         BOLT_V3_DOWN_INSTRUMENT_ID_FACT_KEY, BOLT_V3_ENTRY_DECISION_FACT_KEY,
         BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_FILLED_NOTIONAL_FACT_KEY,
@@ -40,8 +41,10 @@ use bolt_v2::{
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_HALTED_REASON,
         BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_TRADING_STATE_REDUCING_REASON,
-        BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
-        BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
+        BOLT_V3_EXIT_DECISION_FACT_KEY, BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
+        BOLT_V3_EXIT_DECISION_REASON_FACT_KEY, BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY,
+        BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY,
         BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_DECISION_EVENT_TYPE,
         BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_EXIT_PRICE_MISSING_REASON,
@@ -56,7 +59,8 @@ use bolt_v2::{
         BOLT_V3_MARKET_SELECTION_OUTCOME_FACT_KEY, BOLT_V3_MARKET_SELECTION_RULE_FACT_KEY,
         BOLT_V3_MARKET_SELECTION_TIMESTAMP_MILLISECONDS_FACT_KEY,
         BOLT_V3_MARKET_SELECTION_TYPE_FACT_KEY, BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY,
-        BOLT_V3_ORDER_TYPE_FACT_KEY, BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
+        BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY, BOLT_V3_ORDER_TYPE_FACT_KEY,
+        BOLT_V3_POLYMARKET_CONDITION_ID_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_END_TIMESTAMP_MILLISECONDS_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_SLUG_FACT_KEY,
         BOLT_V3_POLYMARKET_MARKET_START_TIMESTAMP_MILLISECONDS_FACT_KEY,
@@ -66,8 +70,8 @@ use bolt_v2::{
         BOLT_V3_RETRY_INTERVAL_SECONDS_FACT_KEY, BOLT_V3_ROTATING_MARKET_FAMILY_FACT_KEY,
         BOLT_V3_SELECTED_MARKET_OBSERVED_TIMESTAMP_FACT_KEY, BOLT_V3_SIDE_FACT_KEY,
         BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY, BOLT_V3_TIME_IN_FORCE_FACT_KEY,
-        BOLT_V3_UNDERLYING_ASSET_FACT_KEY, BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY,
-        BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY,
+        BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY, BOLT_V3_UNDERLYING_ASSET_FACT_KEY,
+        BOLT_V3_UP_INSTRUMENT_ID_FACT_KEY, BOLT_V3_UPDOWN_MARKET_MECHANICAL_OUTCOME_FACT_KEY,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_REASON_FACT_KEY,
         BOLT_V3_UPDOWN_MARKET_MECHANICAL_REJECTION_SELECTED_OPEN_ORDERS_REASON,
         BOLT_V3_UPDOWN_SIDE_FACT_KEY, BoltV3EntryEvaluationDecisionEvent,
@@ -4765,19 +4769,27 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_sellable_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("open_exit_order_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("uncovered_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
         }
@@ -4807,7 +4819,7 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
             .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()?;
         (decoded
             .event_facts
-            .get("exit_order_mechanical_rejection_reason")
+            .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY)
             .and_then(serde_json::Value::as_str)
             == Some("exit_bid_unavailable"))
         .then_some(decoded)
@@ -4815,41 +4827,53 @@ fn eth_chainlink_taker_runtime_writes_exit_pre_submit_rejection_without_submit()
     match exit_bid_unavailable_event {
         Some(decoded) => {
             assert_eq!(
-                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("rejected".to_string()))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("exit_order_mechanical_rejection_reason"),
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     "exit_bid_unavailable".to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision"),
+                decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("hold".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_sellable_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("open_exit_order_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("uncovered_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
         }
@@ -4940,19 +4964,27 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
                 Some(&serde_json::Value::Null)
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_sellable_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("open_exit_order_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("uncovered_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
         }
@@ -4981,41 +5013,53 @@ fn eth_chainlink_taker_runtime_writes_exit_invalid_quantity_pre_submit_rejection
                 .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
                 .expect("BoltV3ExitEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("rejected".to_string()))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("exit_order_mechanical_rejection_reason"),
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     "exit_quantity_invalid".to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision"),
+                decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("hold".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_sellable_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("open_exit_order_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("uncovered_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
         }
@@ -5096,19 +5140,27 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_sellable_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("open_exit_order_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("uncovered_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
         }
@@ -5140,7 +5192,7 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
             .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()?;
         (decoded
             .event_facts
-            .get("exit_order_mechanical_rejection_reason")
+            .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY)
             .and_then(serde_json::Value::as_str)
             == Some("open_exit_order_quantity_covers_position"))
         .then_some(decoded)
@@ -5148,41 +5200,53 @@ fn eth_chainlink_taker_runtime_writes_exit_sellable_quantity_pre_submit_rejectio
     match open_order_covers_position_event {
         Some(decoded) => {
             assert_eq!(
-                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("rejected".to_string()))
             );
             assert_eq!(
                 decoded
                     .event_facts
-                    .get("exit_order_mechanical_rejection_reason"),
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     "open_exit_order_quantity_covers_position".to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision"),
+                decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("hold".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String(
                     BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string()
                 ))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_sellable_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
             assert_eq!(
-                decoded.event_facts.get("open_exit_order_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("uncovered_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(0.0))
             );
         }
@@ -5346,26 +5410,36 @@ fn eth_chainlink_taker_runtime_submits_uncovered_exit_quantity_when_partial_exit
             .data
             .as_any()
             .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()?;
-        (decoded.event_facts.get("uncovered_position_quantity")
+        (decoded
+            .event_facts
+            .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY)
             == Some(&serde_json::Value::from(3.0)))
         .then_some(decoded)
     });
     match partial_exit_event {
         Some(decoded) => {
             assert_eq!(
-                decoded.event_facts.get("authoritative_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(5.0))
             );
             assert_eq!(
-                decoded.event_facts.get("authoritative_sellable_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_AUTHORITATIVE_SELLABLE_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(3.0))
             );
             assert_eq!(
-                decoded.event_facts.get("open_exit_order_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(2.0))
             );
             assert_eq!(
-                decoded.event_facts.get("uncovered_position_quantity"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY),
                 Some(&serde_json::Value::from(3.0))
             );
         }
@@ -6051,15 +6125,19 @@ fn eth_chainlink_taker_runtime_reducing_trading_state_allows_exit_order_submit()
             assert_eq!(decoded.strategy_instance_id, strategy_id.to_string());
             assert_eq!(decoded.client_id, expected_client_id);
             assert_eq!(
-                decoded.event_facts.get("exit_decision"),
+                decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("exit".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String("forced_flat".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("accepted".to_string()))
             );
             decoded.decision_trace_id.clone()
@@ -6222,15 +6300,19 @@ fn eth_chainlink_taker_runtime_writes_fail_closed_exit_evaluation_before_submit(
                 .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
                 .expect("BoltV3ExitEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("exit_decision"),
+                decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("exit".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String("fail_closed".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("accepted".to_string()))
             );
             decoded.decision_trace_id.clone()
@@ -6409,15 +6491,19 @@ fn eth_chainlink_taker_runtime_writes_ev_hysteresis_exit_evaluation_before_submi
                 .downcast_ref::<BoltV3ExitEvaluationDecisionEvent>()
                 .expect("BoltV3ExitEvaluationDecisionEvent");
             assert_eq!(
-                decoded.event_facts.get("exit_decision"),
+                decoded.event_facts.get(BOLT_V3_EXIT_DECISION_FACT_KEY),
                 Some(&serde_json::Value::String("exit".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_decision_reason"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_DECISION_REASON_FACT_KEY),
                 Some(&serde_json::Value::String("ev_hysteresis".to_string()))
             );
             assert_eq!(
-                decoded.event_facts.get("exit_order_mechanical_outcome"),
+                decoded
+                    .event_facts
+                    .get(BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY),
                 Some(&serde_json::Value::String("accepted".to_string()))
             );
             decoded.decision_trace_id.clone()

@@ -2193,7 +2193,7 @@ reason = "This is a contract value or reason value checked while validating exit
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"authoritative_position_quantity\""
-context = "\"authoritative_position_quantity\".to_string(),"
+context = "\"authoritative_position_quantity\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
 
@@ -2201,7 +2201,7 @@ reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decis
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"authoritative_sellable_quantity\""
-context = "\"authoritative_sellable_quantity\".to_string(),"
+context = "\"authoritative_sellable_quantity\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
 
@@ -2209,7 +2209,7 @@ reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decis
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"open_exit_order_quantity\""
-context = "\"open_exit_order_quantity\".to_string(),"
+context = "pub const BOLT_V3_OPEN_EXIT_ORDER_QUANTITY_FACT_KEY: &str = \"open_exit_order_quantity\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
 
@@ -2217,7 +2217,7 @@ reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decis
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"uncovered_position_quantity\""
-context = "\"uncovered_position_quantity\".to_string(),"
+context = "pub const BOLT_V3_UNCOVERED_POSITION_QUANTITY_FACT_KEY: &str = \"uncovered_position_quantity\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
 
@@ -2225,7 +2225,7 @@ reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decis
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_order_mechanical_outcome\""
-context = "\"exit_order_mechanical_outcome\".to_string(),"
+context = "pub const BOLT_V3_EXIT_ORDER_MECHANICAL_OUTCOME_FACT_KEY: &str = \"exit_order_mechanical_outcome\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
 
@@ -2241,7 +2241,7 @@ reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decis
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_decision\""
-context = "\"exit_decision\".to_string(),"
+context = "pub const BOLT_V3_EXIT_DECISION_FACT_KEY: &str = \"exit_decision\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."
 
@@ -2249,6 +2249,6 @@ reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decis
 path = "src/bolt_v3_decision_events.rs"
 kind = "string"
 literal = "\"exit_decision_reason\""
-context = "\"exit_decision_reason\".to_string(),"
+context = "pub const BOLT_V3_EXIT_DECISION_REASON_FACT_KEY: &str = \"exit_decision_reason\";"
 classification = "decision_event_exit_fact_key"
 reason = "This is a persisted exit-evaluation or exit pre-submit-rejection decision-event fact key."

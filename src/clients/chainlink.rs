@@ -103,6 +103,32 @@ pub struct ChainlinkReferenceFeedConfig {
     pub price_scale: u8,
 }
 
+pub fn chainlink_reference_feed_config(
+    venue_name: &str,
+    instrument_id: &str,
+    feed_id: &str,
+    price_scale: u8,
+) -> Result<ChainlinkReferenceFeedConfig> {
+    let feed_id = ID::from_hex_str(feed_id)
+        .with_context(|| format!("invalid chainlink feed_id for {venue_name}"))?;
+    let version = chainlink_feed_version(feed_id);
+    if version != CHAINLINK_FEED_VERSION_V3 {
+        return Err(anyhow!(
+            "unsupported Chainlink Data Streams feed version {} for {} ({})",
+            version,
+            venue_name,
+            instrument_id
+        ));
+    }
+
+    Ok(ChainlinkReferenceFeedConfig {
+        venue_name: venue_name.to_string(),
+        instrument_id: instrument_id.to_string(),
+        feed_id,
+        price_scale,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChainlinkOracleUpdate {
     pub venue_name: String,
@@ -226,24 +252,12 @@ pub fn build_chainlink_reference_data_client_with_secrets(
                 )
             })?;
 
-            let feed_id = ID::from_hex_str(&chainlink.feed_id)
-                .with_context(|| format!("invalid chainlink feed_id for {}", venue.name))?;
-            let version = chainlink_feed_version(feed_id);
-            if version != CHAINLINK_FEED_VERSION_V3 {
-                return Err(anyhow!(
-                    "unsupported Chainlink Data Streams feed version {} for {} ({})",
-                    version,
-                    venue.name,
-                    venue.instrument_id
-                ));
-            }
-
-            Ok(ChainlinkReferenceFeedConfig {
-                venue_name: venue.name.clone(),
-                instrument_id: venue.instrument_id.clone(),
-                feed_id,
-                price_scale: chainlink.price_scale,
-            })
+            chainlink_reference_feed_config(
+                &venue.name,
+                &venue.instrument_id,
+                &chainlink.feed_id,
+                chainlink.price_scale,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 

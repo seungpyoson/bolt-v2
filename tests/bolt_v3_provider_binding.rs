@@ -30,6 +30,7 @@ mod support;
 
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicI64, Ordering},
@@ -38,15 +39,21 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3UpdownNowFn, map_bolt_v3_adapters_with_market_identity,
+        BoltV3AdapterMappingError, BoltV3UpdownNowFn, map_bolt_v3_adapters,
+        map_bolt_v3_adapters_with_market_identity,
     },
-    bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
     bolt_v3_providers::{
         ReferenceCapability, binance, binance::ResolvedBoltV3BinanceSecrets,
-        binding_for_provider_key, polymarket, polymarket::ResolvedBoltV3PolymarketSecrets,
+        binding_for_provider_key, chainlink, polymarket,
+        polymarket::ResolvedBoltV3PolymarketSecrets,
     },
-    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
+    bolt_v3_secrets::{
+        ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets, resolve_bolt_v3_secrets_with,
+    },
+    bolt_v3_validate::validate_root_only,
+    clients::chainlink::ChainlinkReferenceClientConfig,
 };
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 
@@ -85,6 +92,58 @@ fn provider_bindings_declare_reference_capabilities_generically() {
     );
 }
 
+#[test]
+fn chainlink_provider_binding_declares_oracle_reference_capability() {
+    let chainlink_binding =
+        binding_for_provider_key(chainlink::KEY).expect("chainlink provider binding should exist");
+
+    assert!(
+        chainlink_binding.supports_reference_capability(ReferenceCapability::Oracle),
+        "chainlink data venue must declare oracle reference capability"
+    );
+    assert!(
+        !chainlink_binding.supports_reference_capability(ReferenceCapability::Orderbook),
+        "chainlink data venue must not be treated as an orderbook reference"
+    );
+    assert!(
+        chainlink_binding.supported_market_families.is_empty(),
+        "chainlink is reference data only and must not claim market-family execution support"
+    );
+}
+
+#[test]
+fn chainlink_provider_binding_maps_toml_to_nt_reference_data_client() {
+    let loaded = fixture_loaded_config_with_chainlink_venue();
+    let validation_messages = validate_root_only(&loaded.root);
+    assert!(
+        validation_messages.is_empty(),
+        "chainlink bolt-v3 venue should validate, got: {validation_messages:#?}"
+    );
+
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, fixture_resolver_with_chainlink)
+        .expect("fixture SSM resolver should resolve polymarket/binance/chainlink secrets");
+    let adapters = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect("chainlink provider binding should map to NT data client config");
+    let chainlink = adapters
+        .venues
+        .get("chainlink_btcusd")
+        .expect("chainlink venue should be mapped");
+    let data = chainlink
+        .data
+        .as_ref()
+        .expect("chainlink venue [data] should produce NT data config");
+    let config = data
+        .config_as::<ChainlinkReferenceClientConfig>()
+        .expect("chainlink data config should downcast to NT ChainlinkReferenceClientConfig");
+
+    assert_eq!(config.shared.ws_url, "wss://streams.chain.link");
+    assert_eq!(config.shared.ws_reconnect_alert_threshold, 5);
+    assert_eq!(config.feeds.len(), 1);
+    assert_eq!(config.feeds[0].venue_name, "chainlink_btcusd");
+    assert_eq!(config.feeds[0].instrument_id, "BTCUSD.CHAINLINK");
+    assert_eq!(config.feeds[0].price_scale, 8);
+}
+
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
     venues.insert(
@@ -104,6 +163,29 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         }),
     );
     ResolvedBoltV3Secrets { venues }
+}
+
+fn fixture_loaded_config_with_chainlink_venue() -> LoadedBoltV3Config {
+    let root_text = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture root should be readable");
+    let root_text = format!(
+        "{root_text}\n\n[venues.chainlink_btcusd]\nkind = \"chainlink\"\n\n[venues.chainlink_btcusd.data]\ninstrument_id = \"BTCUSD.CHAINLINK\"\nfeed_id = \"0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472\"\nprice_scale = 8\nws_url = \"wss://streams.chain.link\"\nws_reconnect_alert_threshold = 5\n\n[venues.chainlink_btcusd.secrets]\napi_key_ssm_path = \"/bolt/chainlink_btcusd/api_key\"\napi_secret_ssm_path = \"/bolt/chainlink_btcusd/api_secret\"\n"
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_text).expect("fixture plus chainlink bolt-v3 venue should parse");
+    LoadedBoltV3Config {
+        root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+        root,
+        strategies: Vec::new(),
+    }
+}
+
+fn fixture_resolver_with_chainlink(region: &str, path: &str) -> Result<String, &'static str> {
+    match path {
+        "/bolt/chainlink_btcusd/api_key" => Ok("chainlink-api-key".to_string()),
+        "/bolt/chainlink_btcusd/api_secret" => Ok("chainlink-api-secret".to_string()),
+        _ => support::fake_bolt_v3_resolver(region, path),
+    }
 }
 
 fn fixed_clock(now_unix_seconds: i64) -> BoltV3UpdownNowFn {

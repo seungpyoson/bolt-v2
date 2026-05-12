@@ -358,6 +358,46 @@ classification = "provider_dispatch_key"
 reason = "This is the accepted provider registry key for the Polymarket venue binding, not an operator-tunable runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = "\"chainlink\""
+context = "pub const KEY: &str = \"chainlink\";"
+classification = "provider_dispatch_key"
+reason = "This is the accepted provider registry key for the Chainlink venue binding, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = "\"Chainlink reference-data venue\""
+context = "consumer: \"Chainlink reference-data venue\","
+classification = "provider_secret_requirement_label"
+reason = "This label names the Chainlink provider-owned credential consumer in diagnostics for missing [secrets], not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = "\"CHAINLINK_API_KEY\""
+context = "pub const FORBIDDEN_ENV_VARS: &[&str] = &[\"CHAINLINK_API_KEY\", \"CHAINLINK_API_SECRET\"];"
+classification = "credential_env_blocklist_entry"
+reason = "This is a forbidden credential environment-variable name used to fail closed before client build, not a secret value or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = "\"CHAINLINK_API_SECRET\""
+context = "pub const FORBIDDEN_ENV_VARS: &[&str] = &[\"CHAINLINK_API_KEY\", \"CHAINLINK_API_SECRET\"];"
+classification = "credential_env_blocklist_entry"
+reason = "This is a forbidden credential environment-variable name used to fail closed before client build, not a secret value or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "number"
+literal = "18"
+context = "if data.price_scale > 18 {"
+classification = "provider_protocol_scale_bound"
+reason = "This is the Chainlink decimal price-scale upper bound already enforced by the existing reference config validator, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"0x\""

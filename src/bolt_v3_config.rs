@@ -34,6 +34,8 @@ pub struct BoltV3RootConfig {
     pub release: ReleaseBlock,
     pub aws: AwsBlock,
     #[serde(default)]
+    pub live_canary: Option<BoltV3LiveCanaryBlock>,
+    #[serde(default)]
     pub reference_streams: BTreeMap<String, ReferenceStreamBlock>,
     pub clients: BTreeMap<String, ClientBlock>,
 }
@@ -248,6 +250,16 @@ pub enum RotationKind {
 #[serde(deny_unknown_fields)]
 pub struct AwsBlock {
     pub region: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BoltV3LiveCanaryBlock {
+    pub approval_id: String,
+    pub no_submit_readiness_report_path: String,
+    pub report_path: String,
+    pub max_live_order_count: u32,
+    pub max_notional_per_order: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

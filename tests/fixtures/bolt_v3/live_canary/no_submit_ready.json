@@ -1,0 +1,58 @@
+{
+  "facts": [
+    {
+      "stage": "ForbiddenCredentialEnv",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "SecretResolverSetup",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "SecretResolution",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "AdapterMapping",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "LiveNodeBuilder",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "ClientRegistration",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "LiveNodeBuild",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "Connect",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "Disconnect",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    }
+  ]
+}

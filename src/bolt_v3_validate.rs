@@ -43,8 +43,9 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, REFERENCE_STREAM_ID_PARAMETER, ReferenceStreamBlock, ReleaseBlock, RiskBlock,
+    AwsBlock, BoltV3LiveCanaryBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock,
+    LoadedStrategy, NautilusBlock, PersistenceBlock, REFERENCE_STREAM_ID_PARAMETER,
+    ReferenceStreamBlock, ReleaseBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -102,6 +103,9 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_release_block(&root.release));
     errors.extend(validate_aws_block(&root.aws));
+    if let Some(live_canary) = &root.live_canary {
+        errors.extend(validate_live_canary_block(live_canary));
+    }
     errors.extend(validate_reference_streams(&root.reference_streams));
     errors.extend(validate_clients_block(&root.clients));
 
@@ -332,6 +336,37 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 ));
             }
         }
+    }
+    errors
+}
+
+fn validate_live_canary_block(block: &BoltV3LiveCanaryBlock) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (label, value) in [
+        ("live_canary.approval_id", block.approval_id.as_str()),
+        (
+            "live_canary.no_submit_readiness_report_path",
+            block.no_submit_readiness_report_path.as_str(),
+        ),
+        ("live_canary.report_path", block.report_path.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            errors.push(format!("{label} must be a non-empty string"));
+        }
+    }
+    if block.max_live_order_count == 0 {
+        errors.push("live_canary.max_live_order_count must be a positive integer".to_string());
+    }
+    match parse_decimal_string(&block.max_notional_per_order) {
+        Ok(value) if value <= Decimal::ZERO => errors.push(format!(
+            "live_canary.max_notional_per_order must be a positive decimal string: `{value}`",
+            value = block.max_notional_per_order
+        )),
+        Ok(_) => {}
+        Err(reason) => errors.push(format!(
+            "live_canary.max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
+            value = block.max_notional_per_order
+        )),
     }
     errors
 }

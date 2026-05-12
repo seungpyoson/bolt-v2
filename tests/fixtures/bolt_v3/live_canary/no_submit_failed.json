@@ -1,0 +1,16 @@
+{
+  "facts": [
+    {
+      "stage": "ForbiddenCredentialEnv",
+      "subject": "Root",
+      "status": "Satisfied",
+      "detail": "fixture"
+    },
+    {
+      "stage": "Connect",
+      "subject": "Root",
+      "status": "Failed",
+      "detail": "fixture connect failure"
+    }
+  ]
+}

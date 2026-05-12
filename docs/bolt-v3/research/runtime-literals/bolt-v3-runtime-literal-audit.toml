@@ -390,6 +390,38 @@ classification = "validation_field_label"
 reason = "This label names the Binance data config URL field being validated for non-empty input."
 
 [[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = "\"live_canary.approval_id\""
+context = "(\"live_canary.approval_id\", block.approval_id.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the live-canary approval identifier field for root TOML validation diagnostics; the value comes from config."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = "\"live_canary.no_submit_readiness_report_path\""
+context = "\"live_canary.no_submit_readiness_report_path\","
+classification = "validation_field_label"
+reason = "This label names the live-canary no-submit readiness report path field for root TOML validation diagnostics; the path comes from config."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = "\"live_canary.report_path\""
+context = "(\"live_canary.report_path\", block.report_path.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the live-canary report output path field for root TOML validation diagnostics; the path comes from config."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = "\"live_canary.max_notional_per_order exceeds root risk.default_max_notional_per_order: `{canary}` > `{root}`\""
+context = "\"live_canary.max_notional_per_order exceeds root risk.default_max_notional_per_order: `{canary}` > `{root}`\""
+classification = "diagnostic_template"
+reason = "This diagnostic names the two TOML config fields compared by the live-canary gate; both compared values come from config."
+
+[[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"base_url_ws\""

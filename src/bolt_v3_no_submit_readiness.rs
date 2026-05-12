@@ -1,5 +1,5 @@
 use nautilus_live::node::LiveNode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_adapters::{BoltV3ClientMappingError, map_bolt_v3_clients},
@@ -17,12 +17,12 @@ use crate::{
     secrets::SsmResolverSession,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BoltV3NoSubmitReadinessReport {
     pub facts: Vec<BoltV3NoSubmitReadinessFact>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BoltV3NoSubmitReadinessFact {
     pub stage: BoltV3NoSubmitReadinessStage,
     pub subject: BoltV3NoSubmitReadinessSubject,
@@ -30,7 +30,7 @@ pub struct BoltV3NoSubmitReadinessFact {
     pub detail: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BoltV3NoSubmitReadinessStage {
     ForbiddenCredentialEnv,
     SecretResolverSetup,
@@ -43,14 +43,26 @@ pub enum BoltV3NoSubmitReadinessStage {
     Disconnect,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub const BOLT_V3_NO_SUBMIT_READINESS_REQUIRED_STAGES: &[BoltV3NoSubmitReadinessStage] = &[
+    BoltV3NoSubmitReadinessStage::ForbiddenCredentialEnv,
+    BoltV3NoSubmitReadinessStage::SecretResolverSetup,
+    BoltV3NoSubmitReadinessStage::SecretResolution,
+    BoltV3NoSubmitReadinessStage::AdapterMapping,
+    BoltV3NoSubmitReadinessStage::LiveNodeBuilder,
+    BoltV3NoSubmitReadinessStage::ClientRegistration,
+    BoltV3NoSubmitReadinessStage::LiveNodeBuild,
+    BoltV3NoSubmitReadinessStage::Connect,
+    BoltV3NoSubmitReadinessStage::Disconnect,
+];
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BoltV3NoSubmitReadinessStatus {
     Satisfied,
     Failed,
     Skipped,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BoltV3NoSubmitReadinessSubject {
     Root,
     Client(String),

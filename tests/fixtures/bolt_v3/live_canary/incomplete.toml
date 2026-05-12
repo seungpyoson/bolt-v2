@@ -1,0 +1,5 @@
+approval_id = "local-canary-approval"
+no_submit_readiness_report_path = "live_canary/no_submit_incomplete.json"
+report_path = "live_canary/live_canary_report.json"
+max_live_order_count = 1
+max_notional_per_order = "1.00"

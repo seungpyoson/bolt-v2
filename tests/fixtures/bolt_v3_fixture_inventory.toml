@@ -13,6 +13,26 @@ path = "tests/fixtures/bolt_v3/strategies/binary_oracle.toml"
 purpose = "baseline strategy file referenced by the baseline bolt-v3 root fixture"
 
 [[fixtures]]
+path = "tests/fixtures/bolt_v3/live_canary/accepted.toml"
+purpose = "generic live-canary gate config fixture that points to a satisfied no-submit readiness report"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3/live_canary/failed.toml"
+purpose = "generic live-canary gate config fixture that points to a failed no-submit readiness report"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3/live_canary/incomplete.toml"
+purpose = "generic live-canary gate config fixture that points to an incomplete no-submit readiness report"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3/live_canary/exceeds_root_risk.toml"
+purpose = "generic live-canary gate config fixture proving canary notional cannot exceed the configured root risk cap"
+
+[[fixtures]]
+path = "tests/fixtures/bolt_v3/live_canary/forbidden_core_terms.toml"
+purpose = "generic source-guard fixture listing provider, market, and strategy terms forbidden from the live-canary gate core module"
+
+[[fixtures]]
 path = "tests/fixtures/bolt_v3_existing_strategy/root.toml"
 purpose = "existing eth-chainlink-taker strategy root fixture for v3 strategy registration, decision evidence, readiness, and order-lifecycle tests"
 

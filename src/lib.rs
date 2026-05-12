@@ -5,6 +5,7 @@ pub mod bolt_v3_config;
 pub mod bolt_v3_decision_event_context;
 pub mod bolt_v3_decision_events;
 pub mod bolt_v3_instrument_readiness;
+pub mod bolt_v3_live_canary_gate;
 pub mod bolt_v3_live_node;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_market_identity;

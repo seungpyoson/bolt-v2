@@ -10,7 +10,7 @@ use std::{
     any::Any,
     cell::RefCell,
     rc::Rc,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use bolt_v2::{
@@ -27,9 +27,17 @@ use nautilus_common::msgbus::{self, MessageBus, ShareableMessageHandler};
 use nautilus_core::UnixNanos;
 use nautilus_live::node::NodeState;
 use nautilus_model::data::CustomData;
+use serde::Deserialize;
 use support::{MockDataClientConfig, MockDataClientFactory};
 
 static LIVE_NODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+static REFERENCE_DELIVERY_OBSERVATION: OnceLock<ReferenceDeliveryObservationFixture> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, Deserialize)]
+struct ReferenceDeliveryObservationFixture {
+    price: f64,
+}
 
 fn live_node_test_guard() -> MutexGuard<'static, ()> {
     LIVE_NODE_TEST_LOCK
@@ -96,6 +104,16 @@ fn current_time_milliseconds() -> u64 {
     u64::try_from(now.as_millis()).expect("current time millis should fit in u64")
 }
 
+fn reference_delivery_observation_fixture() -> &'static ReferenceDeliveryObservationFixture {
+    REFERENCE_DELIVERY_OBSERVATION.get_or_init(|| {
+        let fixture_path =
+            support::repo_path("tests/fixtures/bolt_v3_reference_delivery/observation.toml");
+        let toml =
+            std::fs::read_to_string(fixture_path).expect("reference delivery fixture should read");
+        toml::from_str(&toml).expect("reference delivery fixture should parse")
+    })
+}
+
 #[test]
 fn live_node_start_drives_registered_reference_actor_to_publish_snapshot() {
     let _guard = live_node_test_guard();
@@ -147,11 +165,12 @@ fn live_node_start_drives_registered_reference_actor_to_publish_snapshot() {
         assert_eq!(node.state(), NodeState::Running);
 
         let observed_ms = current_time_milliseconds();
+        let observation = reference_delivery_observation_fixture();
         let custom = CustomData::new(
             Arc::new(ChainlinkOracleUpdate {
                 venue_name: input.source_id.clone(),
                 instrument_id: input.instrument_id.clone(),
-                price: 3210.25,
+                price: observation.price,
                 round_id: observed_ms.to_string(),
                 updated_at_ms: observed_ms,
                 ts_init: UnixNanos::from(observed_ms.saturating_mul(1_000_000)),
@@ -174,5 +193,8 @@ fn live_node_start_drives_registered_reference_actor_to_publish_snapshot() {
     let snapshots = snapshots.borrow();
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].topic, stream.publish_topic);
-    assert_eq!(snapshots[0].fair_value, Some(3210.25));
+    assert_eq!(
+        snapshots[0].fair_value,
+        Some(reference_delivery_observation_fixture().price)
+    );
 }

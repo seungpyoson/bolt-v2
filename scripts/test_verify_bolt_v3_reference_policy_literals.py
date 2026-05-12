@@ -156,6 +156,22 @@ def test_reference_policy_scenario_value_literal_is_a_finding() -> None:
         assert "reference-policy scenario value literal" in findings[0].message
 
 
+def test_reference_delivery_observation_price_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_reference_delivery.rs",
+            "fn probe() { let _ = ChainlinkOracleUpdate { price: 3210.25 }; }\n",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_reference_delivery.rs"
+        assert "reference-delivery observation price literal" in findings[0].message
+
+
 def test_reference_policy_manual_disable_reason_literal_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -225,6 +241,12 @@ def test_reference_actor_registration_file_is_enforced() -> None:
         raise AssertionError("reference actor registration test file must be enforced")
 
 
+def test_reference_delivery_file_is_enforced() -> None:
+    verifier = load_verifier()
+    if "tests/bolt_v3_reference_delivery.rs" not in verifier.ENFORCED_TEST_FILES:
+        raise AssertionError("reference delivery test file must be enforced")
+
+
 def test_strategy_registration_file_is_enforced() -> None:
     verifier = load_verifier()
     if "tests/bolt_v3_strategy_registration.rs" not in verifier.ENFORCED_TEST_FILES:
@@ -251,12 +273,14 @@ def main() -> int:
         test_reference_stream_parameter_literal_in_source_is_a_finding,
         test_auto_disable_reason_literal_is_a_finding,
         test_reference_policy_scenario_value_literal_is_a_finding,
+        test_reference_delivery_observation_price_literal_is_a_finding,
         test_reference_policy_manual_disable_reason_literal_is_a_finding,
         test_derived_reference_fixture_lookup_is_clean,
         test_reference_policy_file_is_enforced,
         test_reference_producer_file_is_enforced,
         test_adapter_mapping_file_is_enforced,
         test_reference_actor_registration_file_is_enforced,
+        test_reference_delivery_file_is_enforced,
         test_strategy_registration_file_is_enforced,
         test_scale_process_file_is_enforced,
         test_validate_source_file_is_enforced,

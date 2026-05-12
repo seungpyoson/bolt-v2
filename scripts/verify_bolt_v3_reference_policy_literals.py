@@ -20,6 +20,7 @@ ROOT_FIXTURE_GLOB = "tests/fixtures/bolt_v3*/root*.toml"
 ENFORCED_TEST_FILES = (
     "tests/bolt_v3_adapter_mapping.rs",
     "tests/bolt_v3_reference_actor_registration.rs",
+    "tests/bolt_v3_reference_delivery.rs",
     "tests/bolt_v3_reference_policy.rs",
     "tests/bolt_v3_reference_producer.rs",
     "tests/bolt_v3_scale_process.rs",
@@ -33,6 +34,9 @@ AUTO_DISABLE_REASON_LITERAL_PATTERN = re.compile(
 )
 INLINE_REFERENCE_POLICY_SCENARIO_VALUE_PATTERN = re.compile(
     r"\blet\s+(?:oracle_price|orderbook_bid|orderbook_ask|observed_price)\s*=\s*[0-9][^;]*;"
+)
+REFERENCE_DELIVERY_OBSERVATION_PRICE_PATTERN = re.compile(
+    r"(?:\bprice:\s*|\bSome\()\d[\d_]*(?:\.\d+)?"
 )
 INLINE_REFERENCE_POLICY_REASON_LITERAL_PATTERN = re.compile(r'"test disables \{\}"')
 
@@ -135,6 +139,16 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
                     path=rel,
                     line=line_number(text, match.start()),
                     message="reference-policy manual disable reason literal; load from test fixture",
+                    excerpt=match.group(0),
+                )
+            )
+    if rel == "tests/bolt_v3_reference_delivery.rs":
+        for match in REFERENCE_DELIVERY_OBSERVATION_PRICE_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="reference-delivery observation price literal; load from test fixture",
                     excerpt=match.group(0),
                 )
             )

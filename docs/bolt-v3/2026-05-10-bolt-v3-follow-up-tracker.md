@@ -114,6 +114,8 @@ F13bm note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.p
 
 F13bn note: `python3 scripts/verify_bolt_v3_reference_policy_literals.py` now enforces `tests/bolt_v3_reference_delivery.rs` and rejects literal reference-observation prices there. Mock reference-delivery observation price now loads from `tests/fixtures/bolt_v3_reference_delivery/observation.toml`.
 
+F13bo note: `python3 scripts/verify_bolt_v3_reference_policy_literals.py` now rejects raw millisecond-to-nanosecond multiplier literals in `tests/bolt_v3_reference_delivery.rs`. Mock reference-delivery `UnixNanos` construction now uses a `Duration`-based helper instead of `1_000_000`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

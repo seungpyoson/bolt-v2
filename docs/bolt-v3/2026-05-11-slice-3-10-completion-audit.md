@@ -131,3 +131,5 @@ F13bl extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals
 F13bm extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so literal `sleep(Duration::from_millis(...))` and `sleep(Duration::from_secs(...))` calls in `tests/eth_chainlink_taker_runtime.rs` are rejected. Existing-strategy runtime async wait/settle durations now load from `tests/fixtures/eth_chainlink_taker_runtime/timing.toml`.
 
 F13bn extends `python3 scripts/verify_bolt_v3_reference_policy_literals.py` so `tests/bolt_v3_reference_delivery.rs` is enforced and literal reference-observation prices are rejected. Mock reference-delivery observation price now loads from `tests/fixtures/bolt_v3_reference_delivery/observation.toml`.
+
+F13bo extends `python3 scripts/verify_bolt_v3_reference_policy_literals.py` so raw millisecond-to-nanosecond multiplier literals in `tests/bolt_v3_reference_delivery.rs` are rejected. Mock reference-delivery `UnixNanos` construction now uses a `Duration`-based helper instead of `1_000_000`.

@@ -38,6 +38,9 @@ INLINE_REFERENCE_POLICY_SCENARIO_VALUE_PATTERN = re.compile(
 REFERENCE_DELIVERY_OBSERVATION_PRICE_PATTERN = re.compile(
     r"(?:\bprice:\s*|\bSome\()\d[\d_]*(?:\.\d+)?"
 )
+REFERENCE_DELIVERY_TIMESTAMP_CONVERSION_PATTERN = re.compile(
+    r"\.saturating_mul\(\s*1_000_000\s*\)"
+)
 INLINE_REFERENCE_POLICY_REASON_LITERAL_PATTERN = re.compile(r'"test disables \{\}"')
 
 
@@ -149,6 +152,17 @@ def scan_file(root: Path, path: Path, fixture_literals: set[str]) -> list[Findin
                     path=rel,
                     line=line_number(text, match.start()),
                     message="reference-delivery observation price literal; load from test fixture",
+                    excerpt=match.group(0),
+                )
+            )
+        for match in REFERENCE_DELIVERY_TIMESTAMP_CONVERSION_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "reference-delivery timestamp conversion literal; use Duration-based helper"
+                    ),
                     excerpt=match.group(0),
                 )
             )

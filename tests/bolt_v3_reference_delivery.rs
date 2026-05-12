@@ -104,6 +104,11 @@ fn current_time_milliseconds() -> u64 {
     u64::try_from(now.as_millis()).expect("current time millis should fit in u64")
 }
 
+fn unix_nanos_from_milliseconds(milliseconds: u64) -> UnixNanos {
+    let nanos = std::time::Duration::from_millis(milliseconds).as_nanos();
+    UnixNanos::from(u64::try_from(nanos).expect("millisecond timestamp nanos should fit in u64"))
+}
+
 fn reference_delivery_observation_fixture() -> &'static ReferenceDeliveryObservationFixture {
     REFERENCE_DELIVERY_OBSERVATION.get_or_init(|| {
         let fixture_path =
@@ -173,7 +178,7 @@ fn live_node_start_drives_registered_reference_actor_to_publish_snapshot() {
                 price: observation.price,
                 round_id: observed_ms.to_string(),
                 updated_at_ms: observed_ms,
-                ts_init: UnixNanos::from(observed_ms.saturating_mul(1_000_000)),
+                ts_init: unix_nanos_from_milliseconds(observed_ms),
             }),
             bolt_v2::clients::chainlink::chainlink_data_type_for_venue(
                 input.source_id.as_str(),

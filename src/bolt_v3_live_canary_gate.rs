@@ -44,6 +44,7 @@ pub struct BoltV3LiveCanaryGateReport {
 pub enum BoltV3LiveCanaryGateError {
     MissingConfig,
     MissingApprovalId,
+    MissingReadinessReportPath,
     InvalidMaxLiveOrderCount {
         value: u32,
     },
@@ -86,6 +87,12 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
             }
             BoltV3LiveCanaryGateError::MissingApprovalId => {
                 write!(f, "bolt-v3 live canary approval_id is empty")
+            }
+            BoltV3LiveCanaryGateError::MissingReadinessReportPath => {
+                write!(
+                    f,
+                    "bolt-v3 live canary no_submit_readiness_report_path is empty"
+                )
             }
             BoltV3LiveCanaryGateError::InvalidMaxLiveOrderCount { value } => write!(
                 f,
@@ -173,6 +180,9 @@ pub async fn check_bolt_v3_live_canary_gate(
     let approval_id = block.approval_id.trim();
     if approval_id.is_empty() {
         return Err(BoltV3LiveCanaryGateError::MissingApprovalId);
+    }
+    if block.no_submit_readiness_report_path.trim().is_empty() {
+        return Err(BoltV3LiveCanaryGateError::MissingReadinessReportPath);
     }
     if block.max_live_order_count == 0 {
         return Err(BoltV3LiveCanaryGateError::InvalidMaxLiveOrderCount {

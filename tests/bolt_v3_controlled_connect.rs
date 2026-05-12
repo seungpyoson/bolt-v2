@@ -576,6 +576,9 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
     // this integration test (not in the module's own source) so the
     // assertion does not self-trip; production comments in
     // `bolt_v3_live_node.rs` must avoid these substrings on purpose.
+    //
+    // This is a best-effort source fence, not a compile-time proof. Adding another
+    // gated NT runner call requires updating the invariant checked here.
     let source = include_str!("../src/bolt_v3_live_node.rs");
     let gate_index = source
         .find("check_bolt_v3_live_canary_gate(loaded)")

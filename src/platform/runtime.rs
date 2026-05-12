@@ -1146,9 +1146,15 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
+    use tokio_util::sync::CancellationToken;
 
     static BUILD_LOCK: Mutex<()> = Mutex::new(());
-    use tokio_util::sync::CancellationToken;
+
+    fn lock_build() -> std::sync::MutexGuard<'static, ()> {
+        BUILD_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn config_with_runtime_strategy(kind: &str) -> Config {
         Config {
@@ -1433,9 +1439,7 @@ mod tests {
         };
 
         let node = {
-            let _guard = BUILD_LOCK
-                .lock()
-                .expect("build lock should not be poisoned");
+            let _guard = lock_build();
             LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
                 .expect("builder should construct")
                 .with_name("TEST-NODE")
@@ -1547,9 +1551,7 @@ mod tests {
     }
 
     fn build_empty_node() -> LiveNode {
-        let _guard = BUILD_LOCK
-            .lock()
-            .expect("build lock should not be poisoned");
+        let _guard = lock_build();
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("builder should construct")
             .with_name("TEST-NODE")

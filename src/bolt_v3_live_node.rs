@@ -269,9 +269,11 @@ pub async fn run_bolt_v3_live_node(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    check_bolt_v3_live_canary_gate(loaded)
+    let _gate_report = check_bolt_v3_live_canary_gate(loaded)
         .await
         .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
+    // This F1 slice validates the approved canary bounds before the runner loop.
+    // Submit admission must consume these bounds in the later live-order slice.
     node.run().await.map_err(BoltV3LiveNodeError::Run)
 }
 

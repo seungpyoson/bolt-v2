@@ -536,6 +536,14 @@ reason = "This template renders the client-registration fact with venue key and 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
+literal = '''"bolt-v3 live canary no_submit_readiness_report_path is empty"'''
+context = '''"bolt-v3 live canary no_submit_readiness_report_path is empty"'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is the fail-closed diagnostic for an empty no-submit readiness report path, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
 literal = '''"bolt-v3 live canary max_notional_per_order ({max_notional_per_order}) exceeds \
                  risk.default_max_notional_per_order ({root_max_notional_per_order})"'''
 context = '''"bolt-v3 live canary max_notional_per_order ({max_notional_per_order}) exceeds \'''

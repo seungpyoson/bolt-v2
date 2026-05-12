@@ -62,6 +62,31 @@ async fn live_canary_gate_rejects_empty_approval_id() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_empty_readiness_report_path() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "  ".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("empty no-submit readiness report path must fail closed");
+
+    assert!(
+        matches!(error, BoltV3LiveCanaryGateError::MissingReadinessReportPath),
+        "expected missing readiness report path rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_zero_order_count() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -87,6 +112,98 @@ async fn live_canary_gate_rejects_zero_order_count() {
         ),
         "expected order-count rejection, got {error:?}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_zero_report_byte_cap() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-size-limit-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 0,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("zero readiness report byte cap must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidReadinessReportSizeLimit { value: 0 }
+        ),
+        "expected readiness report byte-cap rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_invalid_canary_notional_values() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+
+    for candidate in ["abc", "0.00", "-1.00"] {
+        let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+        let loaded = loaded_with_live_canary(
+            loaded,
+            LiveCanaryBlock {
+                approval_id: "operator-approved-canary-001".to_string(),
+                no_submit_readiness_report_path: "not-read-before-notional-check.json".to_string(),
+                max_live_order_count: 1,
+                max_notional_per_order: candidate.to_string(),
+                max_no_submit_readiness_report_bytes: 4096,
+            },
+        );
+
+        let error = check_bolt_v3_live_canary_gate(&loaded)
+            .await
+            .expect_err("invalid canary notional must fail closed");
+
+        match error {
+            BoltV3LiveCanaryGateError::InvalidMaxNotional { field, value, .. } => {
+                assert_eq!(field, "max_notional_per_order");
+                assert_eq!(value, candidate);
+            }
+            other => panic!("expected invalid canary notional rejection, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_invalid_root_notional_values() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+
+    for candidate in ["abc", "0.00", "-1.00"] {
+        let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+        loaded.root.risk.default_max_notional_per_order = candidate.to_string();
+        let loaded = loaded_with_live_canary(
+            loaded,
+            LiveCanaryBlock {
+                approval_id: "operator-approved-canary-001".to_string(),
+                no_submit_readiness_report_path: "not-read-before-root-notional-check.json"
+                    .to_string(),
+                max_live_order_count: 1,
+                max_notional_per_order: "1.00".to_string(),
+                max_no_submit_readiness_report_bytes: 4096,
+            },
+        );
+
+        let error = check_bolt_v3_live_canary_gate(&loaded)
+            .await
+            .expect_err("invalid root notional must fail closed");
+
+        match error {
+            BoltV3LiveCanaryGateError::InvalidMaxNotional { field, value, .. } => {
+                assert_eq!(field, "risk.default_max_notional_per_order");
+                assert_eq!(value, candidate);
+            }
+            other => panic!("expected invalid root notional rejection, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -122,6 +239,31 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
         report.no_submit_readiness_report_path, report_path,
         "absolute report path should be preserved"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.risk.default_max_notional_per_order = "10.00".to_string();
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[("connect", "satisfied")]);
+
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "10.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    );
+
+    check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("notional equal to root risk cap should pass");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -179,6 +321,41 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             assert!(
                 reasons.iter().any(|reason| reason.contains("empty")),
                 "error should name the empty stages array, got {reasons:?}"
+            );
+        }
+        other => panic!("expected unsatisfied report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_report_missing_stages_key() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    std::fs::write(&report_path, r#"{"other":true}"#).expect("report fixture should be written");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing stages key must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains("stages array is missing")),
+                "error should name the missing stages array, got {reasons:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -277,6 +454,32 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
         ),
         "expected parse rejection, got {error:?}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[("connect", "satisfied")]);
+    let report_len = std::fs::metadata(&report_path)
+        .expect("report metadata should be readable")
+        .len();
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: report_len,
+        },
+    );
+
+    check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("report exactly at configured byte cap should pass");
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -36,7 +36,7 @@ use bolt_v2::bolt_v3_decision_events::{
     BoltV3ExitEvaluationFacts, BoltV3ExitOrderSubmissionDecisionEvent,
     BoltV3ExitPreSubmitRejectionDecisionEvent, BoltV3MarketSelectionDecisionEvent,
     BoltV3MarketSelectionResultFacts, BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts,
-    BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
+    register_bolt_v3_decision_event_types,
 };
 use bolt_v2::bolt_v3_release_identity::load_bolt_v3_release_identity;
 use nautilus_core::UnixNanos;
@@ -581,15 +581,9 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
 
     let event = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
-        BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts_without_client_order_id()),
-            rejection_reason: BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON
-                .to_string(),
-            authoritative_position_quantity: None,
-            authoritative_sellable_quantity: None,
-            open_exit_order_quantity: None,
-            uncovered_position_quantity: None,
-        },
+        entry_pre_submit_rejection_facts(
+            BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
+        ),
         entry_pre_submit_rejection_event_ts(),
         entry_pre_submit_rejection_init_ts(),
     )
@@ -640,14 +634,7 @@ fn entry_pre_submit_rejection_rejects_unknown_reason() {
     let unsupported_reason = unsupported_decision_reason();
     let error = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
-        BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts_without_client_order_id()),
-            rejection_reason: unsupported_reason.clone(),
-            authoritative_position_quantity: None,
-            authoritative_sellable_quantity: None,
-            open_exit_order_quantity: None,
-            uncovered_position_quantity: None,
-        },
+        entry_pre_submit_rejection_facts(unsupported_reason.as_str()),
         entry_pre_submit_rejection_event_ts(),
         entry_pre_submit_rejection_init_ts(),
     )
@@ -663,16 +650,7 @@ fn entry_pre_submit_rejection_accepts_allowed_reasons() {
     for reason in BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS {
         BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
             common_fields(),
-            BoltV3PreSubmitRejectionFacts {
-                order: BoltV3RejectedOrderFacts::from(
-                    order_submission_facts_without_client_order_id(),
-                ),
-                rejection_reason: (*reason).to_string(),
-                authoritative_position_quantity: None,
-                authoritative_sellable_quantity: None,
-                open_exit_order_quantity: None,
-                uncovered_position_quantity: None,
-            },
+            entry_pre_submit_rejection_facts(reason),
             entry_pre_submit_rejection_event_ts(),
             entry_pre_submit_rejection_init_ts(),
         )
@@ -684,15 +662,9 @@ fn entry_pre_submit_rejection_accepts_allowed_reasons() {
 fn entry_pre_submit_rejection_accepts_missing_instrument_id_reason() {
     BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
-        BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(order_submission_facts_without_client_order_id()),
-            rejection_reason: BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON
-                .to_string(),
-            authoritative_position_quantity: None,
-            authoritative_sellable_quantity: None,
-            open_exit_order_quantity: None,
-            uncovered_position_quantity: None,
-        },
+        entry_pre_submit_rejection_facts(
+            BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON,
+        ),
         entry_pre_submit_rejection_event_ts(),
         entry_pre_submit_rejection_init_ts(),
     )
@@ -754,16 +726,7 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
 
     let event = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
         common_fields(),
-        BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(
-                exit_order_submission_facts_without_client_order_id(),
-            ),
-            rejection_reason: BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON.to_string(),
-            authoritative_position_quantity: Some(10.0),
-            authoritative_sellable_quantity: Some(10.0),
-            open_exit_order_quantity: Some(0.0),
-            uncovered_position_quantity: Some(10.0),
-        },
+        exit_pre_submit_rejection_facts(BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON),
         exit_pre_submit_rejection_event_ts(),
         exit_pre_submit_rejection_init_ts(),
     )
@@ -806,16 +769,7 @@ fn exit_pre_submit_rejection_rejects_unknown_reason() {
     let unsupported_reason = unsupported_decision_reason();
     let error = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
         common_fields(),
-        BoltV3PreSubmitRejectionFacts {
-            order: BoltV3RejectedOrderFacts::from(
-                exit_order_submission_facts_without_client_order_id(),
-            ),
-            rejection_reason: unsupported_reason.clone(),
-            authoritative_position_quantity: Some(10.0),
-            authoritative_sellable_quantity: Some(10.0),
-            open_exit_order_quantity: Some(0.0),
-            uncovered_position_quantity: Some(10.0),
-        },
+        exit_pre_submit_rejection_facts(unsupported_reason.as_str()),
         exit_pre_submit_rejection_event_ts(),
         exit_pre_submit_rejection_init_ts(),
     )
@@ -831,16 +785,7 @@ fn exit_pre_submit_rejection_accepts_allowed_reasons() {
     for reason in BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS {
         BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
             common_fields(),
-            BoltV3PreSubmitRejectionFacts {
-                order: BoltV3RejectedOrderFacts::from(
-                    exit_order_submission_facts_without_client_order_id(),
-                ),
-                rejection_reason: (*reason).to_string(),
-                authoritative_position_quantity: Some(10.0),
-                authoritative_sellable_quantity: Some(10.0),
-                open_exit_order_quantity: Some(0.0),
-                uncovered_position_quantity: Some(10.0),
-            },
+            exit_pre_submit_rejection_facts(reason),
             exit_pre_submit_rejection_event_ts(),
             exit_pre_submit_rejection_init_ts(),
         )
@@ -1070,9 +1015,18 @@ fn exit_order_submission_facts_from_fixture() -> BoltV3OrderSubmissionFacts {
     support::bolt_v3_order_submission_facts_fixture("exit_order_submission_facts.json")
 }
 
-fn exit_order_submission_facts_without_client_order_id() -> BoltV3OrderSubmissionFacts {
-    let mut facts = exit_order_submission_facts_from_fixture();
-    facts.client_order_id = None;
+fn entry_pre_submit_rejection_facts(reason: &str) -> BoltV3PreSubmitRejectionFacts {
+    let mut facts = support::bolt_v3_pre_submit_rejection_facts_fixture(
+        "entry_pre_submit_rejection_facts.json",
+    );
+    facts.rejection_reason = reason.to_string();
+    facts
+}
+
+fn exit_pre_submit_rejection_facts(reason: &str) -> BoltV3PreSubmitRejectionFacts {
+    let mut facts =
+        support::bolt_v3_pre_submit_rejection_facts_fixture("exit_pre_submit_rejection_facts.json");
+    facts.rejection_reason = reason.to_string();
     facts
 }
 

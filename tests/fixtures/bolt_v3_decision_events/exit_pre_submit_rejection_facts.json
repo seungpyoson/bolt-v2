@@ -1,0 +1,19 @@
+{
+  "order": {
+    "order_type": "limit",
+    "time_in_force": "fok",
+    "instrument_id": "ETH-UP.POLYMARKET",
+    "side": "sell",
+    "price": 0.48,
+    "quantity": 10.0,
+    "is_quote_quantity": false,
+    "is_post_only": false,
+    "is_reduce_only": true,
+    "client_order_id": null
+  },
+  "rejection_reason": "invalid_quantity",
+  "authoritative_position_quantity": 10.0,
+  "authoritative_sellable_quantity": 10.0,
+  "open_exit_order_quantity": 0.0,
+  "uncovered_position_quantity": 10.0
+}

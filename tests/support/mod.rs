@@ -21,7 +21,7 @@ use bolt_v2::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_decision_events::{
         BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts,
-        BoltV3OrderSubmissionFacts,
+        BoltV3OrderSubmissionFacts, BoltV3PreSubmitRejectionFacts, BoltV3RejectedOrderFacts,
     },
     bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
 };
@@ -605,6 +605,40 @@ pub fn bolt_v3_order_submission_facts_fixture(filename: &str) -> BoltV3OrderSubm
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
     let fixture: BoltV3OrderSubmissionFactsFixture = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
+    fixture.into()
+}
+
+#[derive(Debug, Deserialize)]
+struct BoltV3PreSubmitRejectionFactsFixture {
+    order: BoltV3OrderSubmissionFactsFixture,
+    rejection_reason: String,
+    authoritative_position_quantity: Option<f64>,
+    authoritative_sellable_quantity: Option<f64>,
+    open_exit_order_quantity: Option<f64>,
+    uncovered_position_quantity: Option<f64>,
+}
+
+impl From<BoltV3PreSubmitRejectionFactsFixture> for BoltV3PreSubmitRejectionFacts {
+    fn from(fixture: BoltV3PreSubmitRejectionFactsFixture) -> Self {
+        Self {
+            order: BoltV3RejectedOrderFacts::from(BoltV3OrderSubmissionFacts::from(fixture.order)),
+            rejection_reason: fixture.rejection_reason,
+            authoritative_position_quantity: fixture.authoritative_position_quantity,
+            authoritative_sellable_quantity: fixture.authoritative_sellable_quantity,
+            open_exit_order_quantity: fixture.open_exit_order_quantity,
+            uncovered_position_quantity: fixture.uncovered_position_quantity,
+        }
+    }
+}
+
+pub fn bolt_v3_pre_submit_rejection_facts_fixture(filename: &str) -> BoltV3PreSubmitRejectionFacts {
+    let path = repo_path(&format!(
+        "tests/fixtures/bolt_v3_decision_events/{filename}"
+    ));
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    let fixture: BoltV3PreSubmitRejectionFactsFixture = serde_json::from_str(&text)
         .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
     fixture.into()
 }

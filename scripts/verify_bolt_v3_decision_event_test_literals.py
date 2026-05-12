@@ -52,6 +52,10 @@ DIRECT_MARKET_SELECTION_FACTS_PATTERN = re.compile(
     r"(?:=|,|\()\s*BoltV3MarketSelectionResultFacts\s*\{|^\s*BoltV3MarketSelectionResultFacts\s*\{",
     re.MULTILINE,
 )
+DIRECT_PRE_SUBMIT_REJECTION_FACTS_PATTERN = re.compile(
+    r"(?:=|,|\()\s*BoltV3PreSubmitRejectionFacts\s*\{|^\s*BoltV3PreSubmitRejectionFacts\s*\{",
+    re.MULTILINE,
+)
 DECISION_EVENT_TIMESTAMP_LITERAL_PATTERN = re.compile(
     r"(?:const\s+TEST_[A-Z0-9_]*TS_NANOS\s*:\s*u64\s*=\s*\d[\d_]*|UnixNanos::from\(\s*\d[\d_]*\s*\))"
 )
@@ -461,6 +465,18 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     message=(
                         "direct market-selection fact fixture construction; "
                         "load market-selection fact fixture data outside Rust test code"
+                    ),
+                    excerpt=match.group(0).strip(),
+                )
+            )
+        for match in DIRECT_PRE_SUBMIT_REJECTION_FACTS_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "direct pre-submit rejection fact fixture construction; "
+                        "load pre-submit rejection fact fixture data outside Rust test code"
                     ),
                     excerpt=match.group(0).strip(),
                 )

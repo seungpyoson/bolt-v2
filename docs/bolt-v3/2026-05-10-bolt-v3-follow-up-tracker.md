@@ -104,6 +104,8 @@ F13bh note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13bi note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline decision-value literals in `tests/bolt_v3_decision_event_handoff.rs`. Supported decision values now use exported event-contract constants; unsupported negative-case values now load from `tests/fixtures/bolt_v3_decision_events/negative_cases.json`.
 
+F13bj note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct pre-submit rejection fact construction in `tests/bolt_v3_decision_event_handoff.rs`. Entry/exit pre-submit rejection facts now load from JSON fixtures through `tests/support/mod.rs`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

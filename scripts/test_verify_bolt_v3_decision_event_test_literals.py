@@ -218,6 +218,26 @@ fn probe() {
         assert "direct market-selection fact fixture construction" in findings[0].message
 
 
+def test_decision_event_handoff_direct_pre_submit_rejection_facts_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_decision_event_handoff.rs",
+            """
+fn probe() {
+    let _ = BoltV3PreSubmitRejectionFacts {
+        authoritative_position_quantity: Some(10.0),
+    };
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert "direct pre-submit rejection fact fixture construction" in findings[0].message
+
+
 def test_decision_event_handoff_timestamp_literals_are_findings() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -478,6 +498,7 @@ def main() -> int:
         test_decision_event_handoff_direct_entry_evaluation_facts_is_a_finding,
         test_decision_event_handoff_direct_exit_evaluation_facts_is_a_finding,
         test_decision_event_handoff_direct_market_selection_facts_is_a_finding,
+        test_decision_event_handoff_direct_pre_submit_rejection_facts_is_a_finding,
         test_decision_event_handoff_timestamp_literals_are_findings,
         test_decision_event_handoff_decision_value_literals_are_findings,
         test_eth_chainlink_runtime_context_literal_is_a_finding,

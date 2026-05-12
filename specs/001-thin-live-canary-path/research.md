@@ -14,7 +14,7 @@ The project has a partially built bolt-v3 path, but current `main` still has a p
 - Provider bindings are registry-shaped but currently only Polymarket and Binance: `src/bolt_v3_providers/mod.rs:111-132`.
 - Strategy archetype validation registry currently has one binding: `src/bolt_v3_archetypes/mod.rs:34-37`.
 - NT-first doctrine says Bolt owns TOML, SSM policy, explicit runtime values, safe NT config conversion, and startup checks only when NT would fail poorly: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md:167-180`.
-- Runtime contracts say NT owns account, position, order, fill, balance, average-price, and exposure state: `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:191-195`.
+- Runtime contracts say NT owns account, position, order, fill, balance, average-price, and exposure state: `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:193-195`.
 - Runtime contracts forbid a Bolt executable-order schema and venue translation layer: `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:676-688`.
 - Runtime contracts state the live canary gate does not count orders or enforce per-order notional at submit time: `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:1410-1418`.
 

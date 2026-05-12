@@ -9,6 +9,7 @@ pub mod bolt_v3_market_identity;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_readiness;
 pub mod bolt_v3_secrets;
+pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_validate;
 pub mod clients;
 pub mod config;

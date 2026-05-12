@@ -46,8 +46,8 @@ use crate::{
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
-        SsmSecretResolver,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ReferenceCapability,
+        ResolvedVenueSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     secrets::pad_base64,
@@ -55,6 +55,7 @@ use crate::{
 
 pub const KEY: &str = "polymarket";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
+pub const REFERENCE_CAPABILITIES: &[ReferenceCapability] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
     consumer: "Polymarket execution venue",

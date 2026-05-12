@@ -47,7 +47,9 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Existing strategy tests plus new config tests prove Polymarket option venue, Chainlink primary reference, and multiple exchange reference roles are configured through TOML.
 
-- [ ] T018 [US3] Write failing validation tests proving strategy config accepts multiple exchange reference roles and rejects missing primary oracle/reference roles.
+- [x] T018a [US3] Add provider-owned reference capability metadata so reference-role validation can stay provider-agnostic.
+- [ ] T018b [US3] Add the minimal Chainlink bolt-v3 provider binding needed for an oracle-capable reference venue.
+- [ ] T018c [US3] Write failing validation tests proving strategy config accepts multiple exchange reference roles and rejects missing oracle/orderbook reference capabilities.
 - [ ] T019 [US3] Run targeted strategy/config tests; expected failure shows current config cannot express all required reference roles.
 - [ ] T020 [US3] Extend strategy-archetype validation in `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` to validate reference roles generically.
 - [ ] T021 [US3] Extend fixtures under `tests/fixtures/bolt_v3/` only for operator-visible runtime values, not test-local timing scaffolding.

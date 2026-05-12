@@ -43,7 +43,8 @@ use bolt_v2::{
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
     bolt_v3_providers::{
-        binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+        ReferenceCapability, binance, binance::ResolvedBoltV3BinanceSecrets,
+        binding_for_provider_key, polymarket, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
     bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
 };
@@ -61,6 +62,27 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
         .as_table_mut()
         .expect("strategy [target] should be a TOML table")
         .insert(key.to_string(), value);
+}
+
+#[test]
+fn provider_bindings_declare_reference_capabilities_generically() {
+    let binance_binding =
+        binding_for_provider_key(binance::KEY).expect("binance provider binding should exist");
+    assert!(
+        binance_binding.supports_reference_capability(ReferenceCapability::Orderbook),
+        "binance data venue must declare orderbook reference capability"
+    );
+    assert!(
+        !binance_binding.supports_reference_capability(ReferenceCapability::Oracle),
+        "binance data venue must not be treated as an oracle reference"
+    );
+
+    let polymarket_binding = binding_for_provider_key(polymarket::KEY)
+        .expect("polymarket provider binding should exist");
+    assert!(
+        polymarket_binding.reference_capabilities.is_empty(),
+        "polymarket execution venue must not be classified as a reference input"
+    );
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {

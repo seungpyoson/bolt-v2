@@ -42,8 +42,8 @@ use crate::{
     bolt_v3_config::VenueBlock,
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
-        SsmSecretResolver,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ReferenceCapability,
+        ResolvedVenueSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     secrets::validate_binance_api_secret_shape,
@@ -51,6 +51,7 @@ use crate::{
 
 pub const KEY: &str = "binance";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
+pub const REFERENCE_CAPABILITIES: &[ReferenceCapability] = &[ReferenceCapability::Orderbook];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
     consumer: "Binance reference-data venue",

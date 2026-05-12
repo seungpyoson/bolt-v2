@@ -91,10 +91,17 @@ pub struct ProviderSecretRequirement {
     pub consumer: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceCapability {
+    Oracle,
+    Orderbook,
+}
+
 pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
+    pub reference_capabilities: &'static [ReferenceCapability],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
     pub credential_log_modules: &'static [&'static str],
@@ -109,11 +116,18 @@ pub struct ProviderBinding {
         -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError>,
 }
 
+impl ProviderBinding {
+    pub fn supports_reference_capability(&self, capability: ReferenceCapability) -> bool {
+        self.reference_capabilities.contains(&capability)
+    }
+}
+
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
         validate_venue: polymarket::validate_venue,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
+        reference_capabilities: polymarket::REFERENCE_CAPABILITIES,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polymarket::SECRET_FIELD_NAMES,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
@@ -125,6 +139,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: binance::KEY,
         validate_venue: binance::validate_venue,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
+        reference_capabilities: binance::REFERENCE_CAPABILITIES,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         secret_field_names: binance::SECRET_FIELD_NAMES,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,

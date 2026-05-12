@@ -273,7 +273,7 @@ async fn read_report_bytes_with_limit(
     Ok(bytes)
 }
 
-fn resolve_report_path(root_path: &Path, block: &LiveCanaryBlock) -> PathBuf {
+pub(crate) fn resolve_report_path(root_path: &Path, block: &LiveCanaryBlock) -> PathBuf {
     let configured = PathBuf::from(&block.no_submit_readiness_report_path);
     if configured.is_absolute() {
         return configured;

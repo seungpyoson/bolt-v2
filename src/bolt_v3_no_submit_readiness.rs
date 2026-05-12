@@ -1,7 +1,10 @@
+use std::path::PathBuf;
+
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_live_canary_gate::resolve_report_path,
     bolt_v3_live_node::{
-        BoltV3BuiltLiveNode, BoltV3LiveNodeError, connect_bolt_v3_clients,
+        BoltV3BuiltLiveNode, BoltV3LiveNodeError, build_bolt_v3_live_node, connect_bolt_v3_clients,
         disconnect_bolt_v3_clients,
     },
     bolt_v3_no_submit_readiness_schema::{
@@ -40,6 +43,62 @@ pub struct BoltV3NoSubmitReadinessReport {
     pub stages: Vec<BoltV3NoSubmitReadinessStage>,
 }
 
+#[derive(Debug)]
+pub enum BoltV3NoSubmitReadinessError {
+    MissingOperatorApprovalId,
+    MissingLiveCanaryConfig,
+    MissingReadinessReportPath,
+    OperatorApprovalIdMismatch,
+    LiveNode(BoltV3LiveNodeError),
+    ReportWrite {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+impl std::fmt::Display for BoltV3NoSubmitReadinessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingOperatorApprovalId => {
+                write!(
+                    f,
+                    "bolt-v3 no-submit readiness operator approval id is empty"
+                )
+            }
+            Self::MissingLiveCanaryConfig => {
+                write!(
+                    f,
+                    "bolt-v3 no-submit readiness requires [live_canary] config"
+                )
+            }
+            Self::MissingReadinessReportPath => write!(
+                f,
+                "bolt-v3 no-submit readiness live_canary report path is empty"
+            ),
+            Self::OperatorApprovalIdMismatch => write!(
+                f,
+                "bolt-v3 no-submit readiness operator approval id does not match [live_canary].approval_id"
+            ),
+            Self::LiveNode(error) => write!(f, "{error}"),
+            Self::ReportWrite { path, source } => write!(
+                f,
+                "bolt-v3 no-submit readiness failed to write report {}: {source}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BoltV3NoSubmitReadinessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::LiveNode(error) => Some(error),
+            Self::ReportWrite { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 impl BoltV3NoSubmitReadinessReport {
     pub fn stage_status(&self, stage: &str) -> Vec<BoltV3NoSubmitReadinessStatus> {
         self.stages
@@ -68,6 +127,51 @@ impl BoltV3NoSubmitReadinessReport {
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         std::fs::write(path, body)
     }
+
+    pub fn write_redacted_json_for_loaded_config(
+        &self,
+        loaded: &LoadedBoltV3Config,
+    ) -> Result<PathBuf, BoltV3NoSubmitReadinessError> {
+        let block = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .ok_or(BoltV3NoSubmitReadinessError::MissingLiveCanaryConfig)?;
+        if block.no_submit_readiness_report_path.trim().is_empty() {
+            return Err(BoltV3NoSubmitReadinessError::MissingReadinessReportPath);
+        }
+        let report_path = resolve_report_path(&loaded.root_path, block);
+        self.write_redacted_json(&report_path).map_err(|source| {
+            BoltV3NoSubmitReadinessError::ReportWrite {
+                path: report_path.clone(),
+                source,
+            }
+        })?;
+        Ok(report_path)
+    }
+}
+
+pub fn run_bolt_v3_no_submit_readiness(
+    loaded: &LoadedBoltV3Config,
+    operator_approval_id: &str,
+) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
+    let operator_approval_id = operator_approval_id.trim();
+    if operator_approval_id.is_empty() {
+        return Err(BoltV3NoSubmitReadinessError::MissingOperatorApprovalId);
+    }
+    let block = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or(BoltV3NoSubmitReadinessError::MissingLiveCanaryConfig)?;
+    if operator_approval_id != block.approval_id.trim() {
+        return Err(BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch);
+    }
+
+    let mut built =
+        build_bolt_v3_live_node(loaded).map_err(BoltV3NoSubmitReadinessError::LiveNode)?;
+    run_bolt_v3_no_submit_readiness_on_built_node(&mut built, loaded)
+        .map_err(BoltV3NoSubmitReadinessError::LiveNode)
 }
 
 pub fn run_bolt_v3_no_submit_readiness_on_built_node(

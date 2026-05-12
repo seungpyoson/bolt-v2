@@ -1,6 +1,6 @@
 mod support;
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use serde_json::json;
 
@@ -8,7 +8,10 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_live_node::{BoltV3BuiltLiveNode, make_bolt_v3_live_node_builder},
-    bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness_on_built_node,
+    bolt_v3_no_submit_readiness::{
+        BoltV3NoSubmitReadinessError, run_bolt_v3_no_submit_readiness,
+        run_bolt_v3_no_submit_readiness_on_built_node,
+    },
     bolt_v3_no_submit_readiness_schema::{
         FAILED_STATUS, SATISFIED_STATUS, SKIPPED_STATUS, STAGE_CONTROLLED_CONNECT,
         STAGE_CONTROLLED_DISCONNECT, STAGE_KEY, STAGES_KEY, STATUS_KEY,
@@ -74,15 +77,7 @@ fn no_submit_readiness_local_runner_writes_satisfied_connect_disconnect_report()
 fn no_submit_readiness_report_json_is_accepted_by_live_canary_gate() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.live_canary = Some(LiveCanaryBlock {
-        approval_id: "APPROVAL-001".to_string(),
-        no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
-        max_no_submit_readiness_report_bytes: 4096,
-        max_live_order_count: 1,
-        max_notional_per_order: "1.00".to_string(),
-    });
+    let loaded = loaded_with_live_canary_report_path(&report_path);
     let mut built = mock_built_live_node(&loaded);
 
     let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
@@ -95,6 +90,53 @@ fn no_submit_readiness_report_json_is_accepted_by_live_canary_gate() {
         .expect("runtime")
         .block_on(check_bolt_v3_live_canary_gate(&loaded))
         .expect("gate should accept producer report");
+}
+
+#[test]
+fn no_submit_readiness_writer_uses_live_canary_configured_report_path() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let report_path = tempdir.path().join("configured-no-submit-readiness.json");
+    let loaded = loaded_with_live_canary_report_path(&report_path);
+    let mut built = mock_built_live_node(&loaded);
+
+    let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
+        .expect("local readiness should complete against mock NT clients");
+    let written_path = report
+        .write_redacted_json_for_loaded_config(&loaded)
+        .expect("report write should use live canary configured path");
+
+    assert_eq!(written_path, report_path);
+    assert!(report_path.exists());
+}
+
+#[test]
+fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let loaded = loaded_with_live_canary_report_path(&report_path);
+
+    let error = run_bolt_v3_no_submit_readiness(&loaded, "   ")
+        .expect_err("empty operator approval id must fail before build");
+
+    assert!(matches!(
+        error,
+        BoltV3NoSubmitReadinessError::MissingOperatorApprovalId
+    ));
+}
+
+#[test]
+fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let loaded = loaded_with_live_canary_report_path(&report_path);
+
+    let error = run_bolt_v3_no_submit_readiness(&loaded, "DIFFERENT-APPROVAL")
+        .expect_err("operator approval id must match configured live canary approval id");
+
+    assert!(matches!(
+        error,
+        BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch
+    ));
 }
 
 #[test]
@@ -179,6 +221,19 @@ fn mock_built_live_node(loaded: &LoadedBoltV3Config) -> BoltV3BuiltLiveNode {
         "MOCK_DATA",
         MockDataClientConfig::new("MOCK_DATA", "MOCKVENUE"),
     )
+}
+
+fn loaded_with_live_canary_report_path(report_path: &Path) -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.live_canary = Some(LiveCanaryBlock {
+        approval_id: "APPROVAL-001".to_string(),
+        no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+        max_no_submit_readiness_report_bytes: 4096,
+        max_live_order_count: 1,
+        max_notional_per_order: "1.00".to_string(),
+    });
+    loaded
 }
 
 fn mock_built_live_node_with_failing_data_connect(

@@ -57,6 +57,7 @@ ORDER_LIFECYCLE_HTTP_METHOD_PATH_PATTERN = re.compile(
     r'"(?:GET|POST|DELETE|/(?:balance-allowance|data/orders|data/trades|positions|fee-rate|orders?|fee-rate\?token_id=))"'
 )
 ORDER_LIFECYCLE_POSITIONS_RESPONSE_LITERAL_PATTERN = re.compile(r'"\[\]"')
+ORDER_LIFECYCLE_RAW_MILLI_NANO_CONVERSION_PATTERN = re.compile(r"[*\/]\s*1_000_000\b")
 
 
 @dataclass(frozen=True)
@@ -273,6 +274,18 @@ def scan_file(
                     message=(
                         "order-lifecycle positions response body literal; move to "
                         "protocol payload fixture"
+                    ),
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_RAW_MILLI_NANO_CONVERSION_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "order-lifecycle raw millisecond/nanosecond conversion; "
+                        "use named conversion helper"
                     ),
                     excerpt=match.group(0),
                 )

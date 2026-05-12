@@ -86,6 +86,8 @@ F13ay note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13az note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects inline local CLOB positions response body literals in `tests/bolt_v3_order_lifecycle_tracer.rs`. The local Polymarket empty positions response now lives in `tests/fixtures/bolt_v3_protocol_payloads/polymarket_positions_empty.json`.
 
+F13ba note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects raw millisecond/nanosecond conversion literals in `tests/bolt_v3_order_lifecycle_tracer.rs`. Order-lifecycle tests now use named conversion helpers backed by `Duration` instead of repeated `1_000_000` multipliers/dividers.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

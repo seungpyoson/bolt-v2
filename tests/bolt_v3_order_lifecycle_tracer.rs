@@ -1177,6 +1177,16 @@ async fn wait_for_running(handle: &LiveNodeHandle) {
     }
 }
 
+fn unix_nanos_from_milliseconds(ts_ms: u64) -> UnixNanos {
+    let ts_nanos = Duration::from_millis(ts_ms).as_nanos();
+    UnixNanos::from(u64::try_from(ts_nanos).expect("millisecond timestamp should fit UnixNanos"))
+}
+
+fn unix_milliseconds_from_nanos(ts_nanos: u64) -> u64 {
+    let ts_millis = Duration::from_nanos(ts_nanos).as_millis();
+    u64::try_from(ts_millis).expect("nanosecond timestamp should fit milliseconds")
+}
+
 fn send_rejected_to_exec_engine(
     loaded: &LoadedBoltV3Config,
     submission: &RecordedSubmitOrder,
@@ -1191,8 +1201,8 @@ fn send_rejected_to_exec_engine(
         AccountId::from(account_id.as_str()),
         Ustr::from("mock_execution_rejected"),
         UUID4::new(),
-        UnixNanos::from(ts_event_ms * 1_000_000),
-        UnixNanos::from(ts_event_ms * 1_000_000),
+        unix_nanos_from_milliseconds(ts_event_ms),
+        unix_nanos_from_milliseconds(ts_event_ms),
         false,
         false,
     );
@@ -1222,8 +1232,8 @@ fn send_accepted_to_exec_engine(
         venue_order_id,
         AccountId::from(account_id.as_str()),
         UUID4::new(),
-        UnixNanos::from(ts_event_ms * 1_000_000),
-        UnixNanos::from(ts_event_ms * 1_000_000),
+        unix_nanos_from_milliseconds(ts_event_ms),
+        unix_nanos_from_milliseconds(ts_event_ms),
         false,
     );
     msgbus::send_order_event(
@@ -1259,8 +1269,8 @@ fn send_filled_to_exec_engine(
         Currency::USDC(),
         LiquiditySide::Taker,
         UUID4::new(),
-        UnixNanos::from(ts_event_ms * 1_000_000),
-        UnixNanos::from(ts_event_ms * 1_000_000),
+        unix_nanos_from_milliseconds(ts_event_ms),
+        unix_nanos_from_milliseconds(ts_event_ms),
         false,
         Some(PositionId::from(position_id.as_str())),
         None,
@@ -1284,8 +1294,8 @@ fn send_canceled_to_exec_engine(
         submission.instrument_id,
         submission.client_order_id,
         UUID4::new(),
-        UnixNanos::from(ts_event_ms * 1_000_000),
-        UnixNanos::from(ts_event_ms * 1_000_000),
+        unix_nanos_from_milliseconds(ts_event_ms),
+        unix_nanos_from_milliseconds(ts_event_ms),
         false,
         Some(venue_order_id),
         Some(AccountId::from(account_id.as_str())),
@@ -1397,7 +1407,9 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
             add_selected_instruments(&mut node, &loaded);
 
             let handle = node.handle();
-            let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+            let start_ts_ms = unix_milliseconds_from_nanos(
+                node.kernel().clock().borrow().timestamp_ns().as_u64(),
+            );
             let reference_topic = reference_publish_topic(&loaded);
             let (up, down) = selected_instruments(&loaded);
             let loaded_for_control = loaded.clone();
@@ -1476,12 +1488,10 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                         up,
                         OrderSide::Buy,
                         UUID4::new(),
-                        UnixNanos::from(
-                            offset_ts_ms(
-                                start_ts_ms,
-                                timeline_offsets_milliseconds().real_execution_cancel_command,
-                            ) * 1_000_000,
-                        ),
+                        unix_nanos_from_milliseconds(offset_ts_ms(
+                            start_ts_ms,
+                            timeline_offsets_milliseconds().real_execution_cancel_command,
+                        )),
                         None,
                     );
                     msgbus::send_trading_command(
@@ -1556,7 +1566,8 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
     add_selected_instruments(&mut node, &loaded);
 
     let handle = node.handle();
-    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let start_ts_ms =
+        unix_milliseconds_from_nanos(node.kernel().clock().borrow().timestamp_ns().as_u64());
     let reference_topic = reference_publish_topic(&loaded);
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
@@ -1693,7 +1704,8 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
     add_selected_instruments(&mut node, &loaded);
 
     let handle = node.handle();
-    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let start_ts_ms =
+        unix_milliseconds_from_nanos(node.kernel().clock().borrow().timestamp_ns().as_u64());
     let reference_topic = reference_publish_topic(&loaded);
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
@@ -1882,7 +1894,8 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
     add_selected_instruments(&mut node, &loaded);
 
     let handle = node.handle();
-    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let start_ts_ms =
+        unix_milliseconds_from_nanos(node.kernel().clock().borrow().timestamp_ns().as_u64());
     let reference_topic = reference_publish_topic(&loaded);
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
@@ -2084,7 +2097,8 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
     add_selected_instruments(&mut node, &loaded);
 
     let handle = node.handle();
-    let start_ts_ms = node.kernel().clock().borrow().timestamp_ns().as_u64() / 1_000_000;
+    let start_ts_ms =
+        unix_milliseconds_from_nanos(node.kernel().clock().borrow().timestamp_ns().as_u64());
     let reference_topic = reference_publish_topic(&loaded);
     let (up, down) = selected_instruments(&loaded);
     let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());

@@ -42,12 +42,27 @@ Preconditions:
 - `[live_canary]` approval id and caps configured
 - operator approves zero-order readiness run
 
+Command shape:
+
+```bash
+BOLT_V3_ROOT_TOML=/absolute/path/to/approved-root.toml \
+BOLT_V3_OPERATOR_APPROVAL_ID='<approval id matching [live_canary].approval_id>' \
+cargo test --test bolt_v3_no_submit_readiness_operator \
+  operator_approved_real_no_submit_readiness_writes_redacted_report \
+  -- --ignored --nocapture
+```
+
 Expected result:
 - real SSM resolution
 - real NT venue connect/disconnect
 - zero orders
 - redacted no-submit readiness report
 - PR #305 gate accepts the report
+
+Failure handling:
+- connect or disconnect failure blocks tiny-capital submit
+- missing, stale, or unsatisfied report blocks tiny-capital submit
+- venue or NT adapter capability gaps are recorded as blockers, not worked around with Bolt-owned lifecycle or adapter code
 
 ## Tiny-capital Canary
 

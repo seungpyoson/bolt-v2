@@ -14,7 +14,7 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 - [ ] T003 Create feature spec, implementation plan, data model, contracts, quickstart, and tasks under `specs/001-thin-live-canary-path/`.
 - [ ] T004 Update `AGENTS.md` SPECKIT block to point to `specs/001-thin-live-canary-path/plan.md`.
 - [ ] T005 Run `/private/tmp/no-mistakes-soak-bin status` and `/private/tmp/no-mistakes-soak-bin runs --limit 5`; record triage result in final handoff and shared soak log if a run exists.
-- [ ] T006 Verify planning artifacts with `rg -n "T[B]D|TO[D]O|fix[[:space:]]+later|NEEDS[[:space:]]+CLARIFICATION|\\[PROJ[E]CT_NAME\\]|\\[FEAT[U]RE" .specify/memory/constitution.md specs/001-thin-live-canary-path` and `git diff --check`.
+- [ ] T006 Verify planning artifacts with `rg -n -i "TB[D]|TO[D]O|fix[[:space:]]+later|NE[E]DS[[:space:]]+CLARIFICATION|\\[PROJ[E]CT_NAME\\]|\\[FEAT[U]RE" .specify/memory/constitution.md specs/001-thin-live-canary-path` and `git diff --check`.
 
 ## Phase 2: Production Entrypoint Adoption (US1)
 

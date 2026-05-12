@@ -60,14 +60,15 @@ Validated result from PR #305 gate.
 Fields:
 - approval id
 - no-submit readiness report path
-- max live order count
-- max notional per order
-- root max notional per order
+- max live order count: the canary-local order-count budget from `[live_canary]`
+- max notional per order: the canary-local per-order cap from `[live_canary]`
+- root max notional per order: the root risk ceiling from `[risk]`
 
 Rules:
 - produced before NT runner entry
 - consumed by submit admission before every live order
 - not a substitute for submit-time counters
+- canary-local notional must be less than or equal to the root risk ceiling
 
 ## SubmitAdmissionState
 
@@ -76,7 +77,7 @@ Runtime state for the tiny-capital canary submit gate.
 Fields:
 - gate report
 - admitted order count
-- per-order cap
+- per-order cap copied from `LiveCanaryGateReport.max_notional_per_order`
 - strategy/evidence availability state
 
 Rules:

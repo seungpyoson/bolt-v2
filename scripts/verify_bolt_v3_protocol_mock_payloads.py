@@ -56,6 +56,7 @@ ORDER_LIFECYCLE_SCENARIO_PRICE_LITERAL_PATTERN = re.compile(
 ORDER_LIFECYCLE_HTTP_METHOD_PATH_PATTERN = re.compile(
     r'"(?:GET|POST|DELETE|/(?:balance-allowance|data/orders|data/trades|positions|fee-rate|orders?|fee-rate\?token_id=))"'
 )
+ORDER_LIFECYCLE_POSITIONS_RESPONSE_LITERAL_PATTERN = re.compile(r'"\[\]"')
 
 
 @dataclass(frozen=True)
@@ -261,6 +262,18 @@ def scan_file(
                     path=rel,
                     line=line_number(text, match.start()),
                     message="order-lifecycle HTTP method/path literal; derive from TOML fixture",
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_POSITIONS_RESPONSE_LITERAL_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "order-lifecycle positions response body literal; move to "
+                        "protocol payload fixture"
+                    ),
                     excerpt=match.group(0),
                 )
             )

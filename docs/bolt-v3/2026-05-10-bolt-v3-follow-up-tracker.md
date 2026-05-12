@@ -84,6 +84,8 @@ F13ax note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13ay note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects local CLOB HTTP method/path literals in `tests/bolt_v3_order_lifecycle_tracer.rs`. Local Polymarket protocol methods, paths, and fee-rate query prefixes now derive from `[local_polymarket]` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml` and `[local_fee_provider]` in `tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml`.
 
+F13az note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects inline local CLOB positions response body literals in `tests/bolt_v3_order_lifecycle_tracer.rs`. The local Polymarket empty positions response now lives in `tests/fixtures/bolt_v3_protocol_payloads/polymarket_positions_empty.json`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

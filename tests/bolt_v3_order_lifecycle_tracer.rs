@@ -583,6 +583,7 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
     let empty_cursor_page_body = Arc::new(protocol_payload_fixture(
         "polymarket_empty_cursor_page.json",
     ));
+    let positions_body = Arc::new(protocol_payload_fixture("polymarket_positions_empty.json"));
     let fee_rate_body = Arc::new(protocol_payload_fixture("polymarket_fee_rate_zero.json"));
     let unexpected_request_body = Arc::new(protocol_payload_fixture(
         "polymarket_unexpected_request_error.json",
@@ -595,6 +596,7 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
             let recorded = Arc::clone(&recorded_http_requests);
             let balance_allowance_body = Arc::clone(&balance_allowance_body);
             let empty_cursor_page_body = Arc::clone(&empty_cursor_page_body);
+            let positions_body = Arc::clone(&positions_body);
             let fee_rate_body = Arc::clone(&fee_rate_body);
             let unexpected_request_body = Arc::clone(&unexpected_request_body);
             tokio::spawn(async move {
@@ -628,7 +630,7 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
                 } else if method == local_polymarket_positions_method()
                     && path == local_polymarket_positions_path()
                 {
-                    "[]".to_string()
+                    positions_body.as_ref().clone()
                 } else if method == local_polymarket_fee_rate_method()
                     && path == local_polymarket_fee_rate_path()
                 {

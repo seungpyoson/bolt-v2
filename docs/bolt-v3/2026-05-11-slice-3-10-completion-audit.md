@@ -115,3 +115,5 @@ F13bd extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so inli
 F13be extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct entry-evaluation fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs` is rejected. Entry-evaluation facts now load from `tests/fixtures/bolt_v3_decision_events/entry_evaluation_facts.json` through `tests/support/mod.rs`.
 
 F13bf extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct exit-evaluation fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs` is rejected. Exit-evaluation facts now load from `tests/fixtures/bolt_v3_decision_events/exit_evaluation_facts.json` through `tests/support/mod.rs`.
+
+F13bg extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct market-selection fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs` is rejected. Market-selection success and failed facts now load from JSON fixtures through `tests/support/mod.rs`.

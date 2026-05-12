@@ -1,0 +1,23 @@
+{
+  "market_selection_type": "rotating_market",
+  "market_selection_timestamp_milliseconds": 1000,
+  "market_selection_outcome": "failed",
+  "market_selection_failure_reason": null,
+  "rotating_market_family": "updown",
+  "underlying_asset": "ETH",
+  "cadence_seconds": 300,
+  "market_selection_rule": "active_or_next",
+  "retry_interval_seconds": 5,
+  "blocked_after_seconds": 60,
+  "polymarket_condition_id": null,
+  "polymarket_market_slug": null,
+  "polymarket_question_id": null,
+  "up_instrument_id": null,
+  "down_instrument_id": null,
+  "selected_market_observed_timestamp": null,
+  "polymarket_market_start_timestamp_milliseconds": null,
+  "polymarket_market_end_timestamp_milliseconds": null,
+  "price_to_beat_value": null,
+  "price_to_beat_observed_timestamp": null,
+  "price_to_beat_source": null
+}

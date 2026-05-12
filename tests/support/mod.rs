@@ -20,7 +20,8 @@ use async_trait::async_trait;
 use bolt_v2::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_decision_events::{
-        BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3OrderSubmissionFacts,
+        BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3MarketSelectionResultFacts,
+        BoltV3OrderSubmissionFacts,
     },
     bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
 };
@@ -368,6 +369,75 @@ bolt_v2 = "3333333333333333333333333333333333333333333333333333333333333333"
     let catalog_dir = temp_dir.join("catalog");
     fs::create_dir_all(&catalog_dir).expect("catalog dir should create");
     loaded.root.persistence.catalog_directory = catalog_dir.to_string_lossy().into_owned();
+}
+
+#[derive(Debug, Deserialize)]
+struct BoltV3MarketSelectionResultFactsFixture {
+    market_selection_type: String,
+    market_selection_timestamp_milliseconds: u64,
+    market_selection_outcome: String,
+    market_selection_failure_reason: Option<String>,
+    rotating_market_family: Option<String>,
+    underlying_asset: Option<String>,
+    cadence_seconds: Option<i64>,
+    market_selection_rule: Option<String>,
+    retry_interval_seconds: Option<u64>,
+    blocked_after_seconds: Option<u64>,
+    polymarket_condition_id: Option<String>,
+    polymarket_market_slug: Option<String>,
+    polymarket_question_id: Option<String>,
+    up_instrument_id: Option<String>,
+    down_instrument_id: Option<String>,
+    selected_market_observed_timestamp: Option<u64>,
+    polymarket_market_start_timestamp_milliseconds: Option<u64>,
+    polymarket_market_end_timestamp_milliseconds: Option<u64>,
+    price_to_beat_value: Option<f64>,
+    price_to_beat_observed_timestamp: Option<u64>,
+    price_to_beat_source: Option<String>,
+}
+
+impl From<BoltV3MarketSelectionResultFactsFixture> for BoltV3MarketSelectionResultFacts {
+    fn from(fixture: BoltV3MarketSelectionResultFactsFixture) -> Self {
+        Self {
+            market_selection_type: fixture.market_selection_type,
+            market_selection_timestamp_milliseconds: fixture
+                .market_selection_timestamp_milliseconds,
+            market_selection_outcome: fixture.market_selection_outcome,
+            market_selection_failure_reason: fixture.market_selection_failure_reason,
+            rotating_market_family: fixture.rotating_market_family,
+            underlying_asset: fixture.underlying_asset,
+            cadence_seconds: fixture.cadence_seconds,
+            market_selection_rule: fixture.market_selection_rule,
+            retry_interval_seconds: fixture.retry_interval_seconds,
+            blocked_after_seconds: fixture.blocked_after_seconds,
+            polymarket_condition_id: fixture.polymarket_condition_id,
+            polymarket_market_slug: fixture.polymarket_market_slug,
+            polymarket_question_id: fixture.polymarket_question_id,
+            up_instrument_id: fixture.up_instrument_id,
+            down_instrument_id: fixture.down_instrument_id,
+            selected_market_observed_timestamp: fixture.selected_market_observed_timestamp,
+            polymarket_market_start_timestamp_milliseconds: fixture
+                .polymarket_market_start_timestamp_milliseconds,
+            polymarket_market_end_timestamp_milliseconds: fixture
+                .polymarket_market_end_timestamp_milliseconds,
+            price_to_beat_value: fixture.price_to_beat_value,
+            price_to_beat_observed_timestamp: fixture.price_to_beat_observed_timestamp,
+            price_to_beat_source: fixture.price_to_beat_source,
+        }
+    }
+}
+
+pub fn bolt_v3_market_selection_result_facts_fixture(
+    filename: &str,
+) -> BoltV3MarketSelectionResultFacts {
+    let path = repo_path(&format!(
+        "tests/fixtures/bolt_v3_decision_events/{filename}"
+    ));
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    let fixture: BoltV3MarketSelectionResultFactsFixture = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
+    fixture.into()
 }
 
 #[derive(Debug, Deserialize)]

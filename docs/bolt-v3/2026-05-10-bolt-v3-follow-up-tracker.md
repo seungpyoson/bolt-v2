@@ -98,6 +98,8 @@ F13be note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13bf note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct exit-evaluation fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs`. Exit-evaluation facts now load from `tests/fixtures/bolt_v3_decision_events/exit_evaluation_facts.json` through `tests/support/mod.rs`.
 
+F13bg note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct market-selection fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs`. Market-selection success and failed facts now load from JSON fixtures through `tests/support/mod.rs`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

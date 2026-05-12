@@ -37,7 +37,6 @@ use bolt_v2::bolt_v3_decision_events::{
     BoltV3RejectedOrderFacts, register_bolt_v3_decision_event_types,
 };
 use bolt_v2::bolt_v3_release_identity::load_bolt_v3_release_identity;
-use bolt_v2::platform::polymarket_catalog::POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE;
 use nautilus_core::UnixNanos;
 use nautilus_model::data::Data;
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -79,29 +78,7 @@ fn market_selection_result_event_writes_through_nt_catalog_handoff() {
 
     let event = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
-        BoltV3MarketSelectionResultFacts {
-            market_selection_type: "rotating_market".to_string(),
-            market_selection_timestamp_milliseconds: 1_000,
-            market_selection_outcome: "current".to_string(),
-            market_selection_failure_reason: None,
-            rotating_market_family: Some("updown".to_string()),
-            underlying_asset: Some("ETH".to_string()),
-            cadence_seconds: Some(300),
-            market_selection_rule: Some("active_or_next".to_string()),
-            retry_interval_seconds: Some(5),
-            blocked_after_seconds: Some(60),
-            polymarket_condition_id: Some("condition-eth".to_string()),
-            polymarket_market_slug: Some("eth-updown-5m-1000".to_string()),
-            polymarket_question_id: Some("question-eth".to_string()),
-            up_instrument_id: Some("condition-eth-UP.POLYMARKET".to_string()),
-            down_instrument_id: Some("condition-eth-DOWN.POLYMARKET".to_string()),
-            selected_market_observed_timestamp: Some(1_000),
-            polymarket_market_start_timestamp_milliseconds: Some(1_000),
-            polymarket_market_end_timestamp_milliseconds: Some(301_000),
-            price_to_beat_value: Some(3_100.0),
-            price_to_beat_observed_timestamp: Some(995),
-            price_to_beat_source: Some(POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string()),
-        },
+        market_selection_result_facts(),
         UnixNanos::from(2_000),
         UnixNanos::from(2_001),
     )
@@ -205,29 +182,7 @@ fn market_selection_result_handoff_returns_catalog_write_error() {
             .unwrap();
     let event = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
-        BoltV3MarketSelectionResultFacts {
-            market_selection_type: "rotating_market".to_string(),
-            market_selection_timestamp_milliseconds: 1_000,
-            market_selection_outcome: "current".to_string(),
-            market_selection_failure_reason: None,
-            rotating_market_family: Some("updown".to_string()),
-            underlying_asset: Some("ETH".to_string()),
-            cadence_seconds: Some(300),
-            market_selection_rule: Some("active_or_next".to_string()),
-            retry_interval_seconds: Some(5),
-            blocked_after_seconds: Some(60),
-            polymarket_condition_id: Some("condition-eth".to_string()),
-            polymarket_market_slug: Some("eth-updown-5m-1000".to_string()),
-            polymarket_question_id: Some("question-eth".to_string()),
-            up_instrument_id: Some("condition-eth-UP.POLYMARKET".to_string()),
-            down_instrument_id: Some("condition-eth-DOWN.POLYMARKET".to_string()),
-            selected_market_observed_timestamp: Some(1_000),
-            polymarket_market_start_timestamp_milliseconds: Some(1_000),
-            polymarket_market_end_timestamp_milliseconds: Some(301_000),
-            price_to_beat_value: Some(3_100.0),
-            price_to_beat_observed_timestamp: Some(995),
-            price_to_beat_source: Some(POLYMARKET_GAMMA_MARKET_ANCHOR_SOURCE.to_string()),
-        },
+        market_selection_result_facts(),
         UnixNanos::from(2_000),
         UnixNanos::from(2_001),
     )
@@ -989,29 +944,15 @@ fn test_entry_evaluation_init_ts() -> UnixNanos {
 }
 
 fn failed_market_selection_result_facts(reason: Option<&str>) -> BoltV3MarketSelectionResultFacts {
-    BoltV3MarketSelectionResultFacts {
-        market_selection_type: "rotating_market".to_string(),
-        market_selection_timestamp_milliseconds: 1_000,
-        market_selection_outcome: "failed".to_string(),
-        market_selection_failure_reason: reason.map(str::to_string),
-        rotating_market_family: Some("updown".to_string()),
-        underlying_asset: Some("ETH".to_string()),
-        cadence_seconds: Some(300),
-        market_selection_rule: Some("active_or_next".to_string()),
-        retry_interval_seconds: Some(5),
-        blocked_after_seconds: Some(60),
-        polymarket_condition_id: None,
-        polymarket_market_slug: None,
-        polymarket_question_id: None,
-        up_instrument_id: None,
-        down_instrument_id: None,
-        selected_market_observed_timestamp: None,
-        polymarket_market_start_timestamp_milliseconds: None,
-        polymarket_market_end_timestamp_milliseconds: None,
-        price_to_beat_value: None,
-        price_to_beat_observed_timestamp: None,
-        price_to_beat_source: None,
-    }
+    let mut facts = support::bolt_v3_market_selection_result_facts_fixture(
+        "market_selection_failed_facts.json",
+    );
+    facts.market_selection_failure_reason = reason.map(str::to_string);
+    facts
+}
+
+fn market_selection_result_facts() -> BoltV3MarketSelectionResultFacts {
+    support::bolt_v3_market_selection_result_facts_fixture("market_selection_result_facts.json")
 }
 
 fn entry_evaluation_facts() -> BoltV3EntryEvaluationFacts {

@@ -19,7 +19,9 @@ use std::{
 use async_trait::async_trait;
 use bolt_v2::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_decision_events::{BoltV3EntryEvaluationFacts, BoltV3OrderSubmissionFacts},
+    bolt_v3_decision_events::{
+        BoltV3EntryEvaluationFacts, BoltV3ExitEvaluationFacts, BoltV3OrderSubmissionFacts,
+    },
     bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
 };
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
@@ -409,6 +411,46 @@ pub fn bolt_v3_entry_evaluation_facts_fixture(filename: &str) -> BoltV3EntryEval
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
     let fixture: BoltV3EntryEvaluationFactsFixture = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
+    fixture.into()
+}
+
+#[derive(Debug, Deserialize)]
+struct BoltV3ExitEvaluationFactsFixture {
+    authoritative_position_quantity: Option<f64>,
+    authoritative_sellable_quantity: Option<f64>,
+    open_exit_order_quantity: Option<f64>,
+    uncovered_position_quantity: Option<f64>,
+    exit_order_mechanical_outcome: String,
+    exit_order_mechanical_rejection_reason: Option<String>,
+    exit_decision: String,
+    exit_decision_reason: String,
+    archetype_metrics: Value,
+}
+
+impl From<BoltV3ExitEvaluationFactsFixture> for BoltV3ExitEvaluationFacts {
+    fn from(fixture: BoltV3ExitEvaluationFactsFixture) -> Self {
+        Self {
+            authoritative_position_quantity: fixture.authoritative_position_quantity,
+            authoritative_sellable_quantity: fixture.authoritative_sellable_quantity,
+            open_exit_order_quantity: fixture.open_exit_order_quantity,
+            uncovered_position_quantity: fixture.uncovered_position_quantity,
+            exit_order_mechanical_outcome: fixture.exit_order_mechanical_outcome,
+            exit_order_mechanical_rejection_reason: fixture.exit_order_mechanical_rejection_reason,
+            exit_decision: fixture.exit_decision,
+            exit_decision_reason: fixture.exit_decision_reason,
+            archetype_metrics: fixture.archetype_metrics,
+        }
+    }
+}
+
+pub fn bolt_v3_exit_evaluation_facts_fixture(filename: &str) -> BoltV3ExitEvaluationFacts {
+    let path = repo_path(&format!(
+        "tests/fixtures/bolt_v3_decision_events/{filename}"
+    ));
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    let fixture: BoltV3ExitEvaluationFactsFixture = serde_json::from_str(&text)
         .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
     fixture.into()
 }

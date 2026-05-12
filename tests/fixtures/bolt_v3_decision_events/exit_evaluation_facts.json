@@ -1,0 +1,11 @@
+{
+  "authoritative_position_quantity": 10.0,
+  "authoritative_sellable_quantity": 10.0,
+  "open_exit_order_quantity": 0.0,
+  "uncovered_position_quantity": 10.0,
+  "exit_order_mechanical_outcome": "accepted",
+  "exit_order_mechanical_rejection_reason": null,
+  "exit_decision": "hold",
+  "exit_decision_reason": "active_exit_not_defined",
+  "archetype_metrics": {}
+}

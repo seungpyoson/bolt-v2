@@ -44,6 +44,10 @@ DIRECT_ENTRY_EVALUATION_FACTS_PATTERN = re.compile(
     r"(?:=|,|\()\s*BoltV3EntryEvaluationFacts\s*\{|^\s*BoltV3EntryEvaluationFacts\s*\{",
     re.MULTILINE,
 )
+DIRECT_EXIT_EVALUATION_FACTS_PATTERN = re.compile(
+    r"(?:=|,|\()\s*BoltV3ExitEvaluationFacts\s*\{|^\s*BoltV3ExitEvaluationFacts\s*\{",
+    re.MULTILINE,
+)
 DECISION_EVENT_CONTEXT_FORBIDDEN_LITERAL_VALUES = {
     "release-sha",
     "config-hash",
@@ -407,6 +411,18 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     message=(
                         "direct entry-evaluation fact fixture construction; "
                         "load entry-evaluation fact fixture data outside Rust test code"
+                    ),
+                    excerpt=match.group(0).strip(),
+                )
+            )
+        for match in DIRECT_EXIT_EVALUATION_FACTS_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "direct exit-evaluation fact fixture construction; "
+                        "load exit-evaluation fact fixture data outside Rust test code"
                     ),
                     excerpt=match.group(0).strip(),
                 )

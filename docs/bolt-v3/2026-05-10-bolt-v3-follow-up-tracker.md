@@ -96,6 +96,8 @@ F13bd note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13be note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct entry-evaluation fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs`. Entry-evaluation facts now load from `tests/fixtures/bolt_v3_decision_events/entry_evaluation_facts.json` through `tests/support/mod.rs`.
 
+F13bf note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct exit-evaluation fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs`. Exit-evaluation facts now load from `tests/fixtures/bolt_v3_decision_events/exit_evaluation_facts.json` through `tests/support/mod.rs`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

@@ -59,6 +59,23 @@ Expected result:
 - redacted no-submit readiness report
 - PR #305 gate accepts the report
 
+Evidence to capture before marking T037 complete:
+- exact git SHA of the code being run
+- absolute path to the approved root TOML, without printing secret values
+- checksum of the approved root TOML
+- `[live_canary].approval_id`, `max_live_order_count`, and `max_notional_per_order`
+- configured `no_submit_readiness_report_path`
+- test exit status
+- printed redacted report path
+- confirmation that every report stage is `satisfied`
+- confirmation that the live canary gate accepted the same report
+
+Do not accept as T037 proof:
+- local mock connect/disconnect tests
+- a report generated from fake SSM or fake venue clients
+- a report with failed, skipped, missing, stale, or manually edited stages
+- logs that expose resolved secrets, private keys, or raw credential values
+
 Failure handling:
 - connect or disconnect failure blocks tiny-capital submit
 - missing, stale, or unsatisfied report blocks tiny-capital submit

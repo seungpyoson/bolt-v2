@@ -381,6 +381,64 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report_with_stage_field(&report_path, "name", &[("disconnect", "failed")]);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("unsatisfied report with name fallback must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            assert!(
+                reasons.iter().any(|reason| reason.contains("disconnect")),
+                "error should name the blocked stage from name fallback, got {reasons:?}"
+            );
+        }
+        other => panic!("expected unsatisfied report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report_with_stage_field(&report_path, "stage", &[("connect", "SATISFIED")]);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("uppercase satisfied status should pass");
+
+    assert_eq!(report.approval_id, "operator-approved-canary-001");
+}
+
 fn loaded_with_live_canary(
     loaded: LoadedBoltV3Config,
     live_canary: LiveCanaryBlock,
@@ -397,9 +455,17 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
 }
 
 fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {
+    write_no_submit_report_with_stage_field(path, "stage", stages);
+}
+
+fn write_no_submit_report_with_stage_field(
+    path: &std::path::Path,
+    stage_field: &str,
+    stages: &[(&str, &str)],
+) {
     let stages: Vec<_> = stages
         .iter()
-        .map(|(stage, status)| serde_json::json!({ "stage": stage, "status": status }))
+        .map(|(stage, status)| serde_json::json!({ stage_field: stage, "status": status }))
         .collect();
     let report = serde_json::json!({ "stages": stages });
     std::fs::write(

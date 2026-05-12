@@ -13,8 +13,8 @@ use bolt_v2::{
         run_bolt_v3_no_submit_readiness_on_built_node,
     },
     bolt_v3_no_submit_readiness_schema::{
-        FAILED_STATUS, SATISFIED_STATUS, SKIPPED_STATUS, STAGE_CONTROLLED_CONNECT,
-        STAGE_CONTROLLED_DISCONNECT, STAGE_KEY, STAGES_KEY, STATUS_KEY,
+        FAILED_STATUS, SATISFIED_STATUS, STAGE_CONTROLLED_CONNECT, STAGE_CONTROLLED_DISCONNECT,
+        STAGE_KEY, STAGES_KEY, STATUS_KEY,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
@@ -110,6 +110,27 @@ fn no_submit_readiness_writer_uses_live_canary_configured_report_path() {
 }
 
 #[test]
+fn no_submit_readiness_writer_creates_configured_report_parent_directories() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let report_path = tempdir
+        .path()
+        .join("nested")
+        .join("readiness")
+        .join("no-submit-readiness.json");
+    let loaded = loaded_with_live_canary_report_path(&report_path);
+    let mut built = mock_built_live_node(&loaded);
+
+    let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
+        .expect("local readiness should complete against mock NT clients");
+    let written_path = report
+        .write_redacted_json_for_loaded_config(&loaded)
+        .expect("report writer should create configured parent directories");
+
+    assert_eq!(written_path, report_path);
+    assert!(report_path.exists());
+}
+
+#[test]
 fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let report_path = tempdir.path().join("no-submit-readiness.json");
@@ -191,7 +212,7 @@ fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
 }
 
 #[test]
-fn no_submit_readiness_records_failed_connect_and_skips_disconnect() {
+fn no_submit_readiness_records_failed_connect_and_runs_disconnect_cleanup() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let mut built = mock_built_live_node_with_failing_data_connect(&loaded);
@@ -209,7 +230,30 @@ fn no_submit_readiness_records_failed_connect_and_skips_disconnect() {
         report
             .stage_status(STAGE_CONTROLLED_DISCONNECT)
             .iter()
-            .any(|status| status.as_str() == SKIPPED_STATUS)
+            .any(|status| status.as_str() == SATISFIED_STATUS)
+    );
+}
+
+#[test]
+fn no_submit_readiness_records_failed_disconnect_cleanup_after_connect_failure() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut built = mock_built_live_node_with_failing_data_connect_and_disconnect(&loaded);
+
+    let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
+        .expect("connect failure is recorded as failed readiness report");
+
+    assert!(
+        report
+            .stage_status(STAGE_CONTROLLED_CONNECT)
+            .iter()
+            .any(|status| status.as_str() == FAILED_STATUS)
+    );
+    assert!(
+        report
+            .stage_status(STAGE_CONTROLLED_DISCONNECT)
+            .iter()
+            .any(|status| status.as_str() == FAILED_STATUS)
     );
 }
 
@@ -272,6 +316,18 @@ fn mock_built_live_node_with_failing_data_disconnect(
         MockDataClientConfig::new("FAILING_DISCONNECT_MOCK_DATA", "MOCKVENUE").with_disconnect_failure(
             "simulated no-submit readiness disconnect failure 0x4242424242424242424242424242424242424242424242424242424242424242",
         ),
+    )
+}
+
+fn mock_built_live_node_with_failing_data_connect_and_disconnect(
+    loaded: &LoadedBoltV3Config,
+) -> BoltV3BuiltLiveNode {
+    mock_built_live_node_with_data_client(
+        loaded,
+        "FAILING_CONNECT_DISCONNECT_MOCK_DATA",
+        MockDataClientConfig::new("FAILING_CONNECT_DISCONNECT_MOCK_DATA", "MOCKVENUE")
+            .with_connect_failure("simulated no-submit readiness connect failure")
+            .with_disconnect_failure("simulated no-submit readiness disconnect failure"),
     )
 }
 

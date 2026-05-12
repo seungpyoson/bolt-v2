@@ -125,6 +125,12 @@ impl BoltV3NoSubmitReadinessReport {
         });
         let body = serde_json::to_vec_pretty(&payload)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(path, body)
     }
 
@@ -205,14 +211,21 @@ async fn run_bolt_v3_no_submit_readiness_async_on_built_node(
                 STAGE_CONTROLLED_CONNECT,
                 "controlled_connect failed; inspect NT operator logs",
             ));
-            stages.push(skipped(
-                STAGE_CONTROLLED_DISCONNECT,
-                "controlled_disconnect skipped after controlled_connect failure",
-            ));
+            record_controlled_disconnect_stage(&mut stages, built, loaded).await;
             return Ok(BoltV3NoSubmitReadinessReport { stages });
         }
     }
 
+    record_controlled_disconnect_stage(&mut stages, built, loaded).await;
+
+    Ok(BoltV3NoSubmitReadinessReport { stages })
+}
+
+async fn record_controlled_disconnect_stage(
+    stages: &mut Vec<BoltV3NoSubmitReadinessStage>,
+    built: &mut BoltV3BuiltLiveNode,
+    loaded: &LoadedBoltV3Config,
+) {
     match disconnect_bolt_v3_clients(built.node_mut(), loaded).await {
         Ok(()) => stages.push(satisfied(STAGE_CONTROLLED_DISCONNECT)),
         Err(_) => stages.push(failed(
@@ -220,8 +233,6 @@ async fn run_bolt_v3_no_submit_readiness_async_on_built_node(
             "controlled_disconnect failed; inspect NT operator logs",
         )),
     }
-
-    Ok(BoltV3NoSubmitReadinessReport { stages })
 }
 
 fn satisfied(stage: &'static str) -> BoltV3NoSubmitReadinessStage {
@@ -236,14 +247,6 @@ fn failed(stage: &'static str, detail: &'static str) -> BoltV3NoSubmitReadinessS
     BoltV3NoSubmitReadinessStage {
         stage,
         status: BoltV3NoSubmitReadinessStatus::Failed,
-        detail: detail.to_string(),
-    }
-}
-
-fn skipped(stage: &'static str, detail: &'static str) -> BoltV3NoSubmitReadinessStage {
-    BoltV3NoSubmitReadinessStage {
-        stage,
-        status: BoltV3NoSubmitReadinessStatus::Skipped,
         detail: detail.to_string(),
     }
 }

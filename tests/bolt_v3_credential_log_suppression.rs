@@ -31,11 +31,21 @@ mod support;
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
+use std::sync::OnceLock;
 
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config, bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
 };
+use serde::Deserialize;
 use tempfile::tempfile;
+
+static CREDENTIAL_LOG_SUPPRESSION_TIMING: OnceLock<CredentialLogSuppressionTimingFixture> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, Deserialize)]
+struct CredentialLogSuppressionTimingFixture {
+    logger_drain_milliseconds: u64,
+}
 
 const FORBIDDEN_CREDENTIAL_MARKERS: &[&str] = &[
     // nautilus_polymarket::common::credential::Credentials::resolve
@@ -44,6 +54,20 @@ const FORBIDDEN_CREDENTIAL_MARKERS: &[&str] = &[
     "Auto-detected Ed25519 API key",
     "Using HMAC SHA256 API key",
 ];
+
+fn credential_log_suppression_timing() -> &'static CredentialLogSuppressionTimingFixture {
+    CREDENTIAL_LOG_SUPPRESSION_TIMING.get_or_init(|| {
+        let fixture_path =
+            support::repo_path("tests/fixtures/bolt_v3_credential_log_suppression/timing.toml");
+        let toml = std::fs::read_to_string(fixture_path)
+            .expect("credential log suppression timing fixture should read");
+        toml::from_str(&toml).expect("credential log suppression timing fixture should parse")
+    })
+}
+
+fn logger_drain_delay() -> std::time::Duration {
+    std::time::Duration::from_millis(credential_log_suppression_timing().logger_drain_milliseconds)
+}
 
 #[test]
 fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams() {
@@ -99,7 +123,7 @@ fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams()
 
     // Give NT's async logger thread time to drain any messages the
     // mpsc channel still holds before we restore the real fds.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(logger_drain_delay());
 
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();

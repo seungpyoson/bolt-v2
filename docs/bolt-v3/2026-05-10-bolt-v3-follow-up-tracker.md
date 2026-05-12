@@ -116,6 +116,8 @@ F13bn note: `python3 scripts/verify_bolt_v3_reference_policy_literals.py` now en
 
 F13bo note: `python3 scripts/verify_bolt_v3_reference_policy_literals.py` now rejects raw millisecond-to-nanosecond multiplier literals in `tests/bolt_v3_reference_delivery.rs`. Mock reference-delivery `UnixNanos` construction now uses a `Duration`-based helper instead of `1_000_000`.
 
+F13bp note: `python3 scripts/verify_bolt_v3_credential_log_suppression_literals.py` now rejects inline logger-drain sleep durations in `tests/bolt_v3_credential_log_suppression.rs`, and `just fmt-check` runs that verifier. The credential-log suppression test now loads its logger-drain timing from `tests/fixtures/bolt_v3_credential_log_suppression/timing.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

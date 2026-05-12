@@ -120,6 +120,8 @@ struct SelectedBinaryOptionFixture {
     price_increment: String,
     size_increment: String,
     book_level_quantity: String,
+    created_ts_nanos: u64,
+    updated_ts_nanos: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -307,6 +309,14 @@ fn selected_binary_option_book_level_quantity() -> &'static str {
     selected_binary_option_fixture()
         .book_level_quantity
         .as_str()
+}
+
+fn selected_binary_option_created_ts() -> UnixNanos {
+    UnixNanos::from(selected_binary_option_fixture().created_ts_nanos)
+}
+
+fn selected_binary_option_updated_ts() -> UnixNanos {
+    UnixNanos::from(selected_binary_option_fixture().updated_ts_nanos)
 }
 
 fn market_snapshot_fixture() -> &'static MarketSnapshotFixture {
@@ -1079,8 +1089,8 @@ fn binary_option(instrument_id: InstrumentId) -> InstrumentAny {
         raw_symbol,
         AssetClass::Alternative,
         Currency::USDC(),
-        UnixNanos::from(1_u64),
-        UnixNanos::from(2_u64),
+        selected_binary_option_created_ts(),
+        selected_binary_option_updated_ts(),
         price_increment.precision,
         size_increment.precision,
         price_increment,

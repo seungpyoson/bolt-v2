@@ -88,6 +88,8 @@ F13az note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13ba note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects raw millisecond/nanosecond conversion literals in `tests/bolt_v3_order_lifecycle_tracer.rs`. Order-lifecycle tests now use named conversion helpers backed by `Duration` instead of repeated `1_000_000` multipliers/dividers.
 
+F13bb note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects literal `UnixNanos::from(...)` timestamps in `tests/bolt_v3_order_lifecycle_tracer.rs`. Synthetic binary-option created/updated timestamps now derive from `[selected_binary_option]` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

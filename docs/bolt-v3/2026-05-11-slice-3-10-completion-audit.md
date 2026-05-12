@@ -105,3 +105,5 @@ F13ay extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so loca
 F13az extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so inline local CLOB positions response body literals in `tests/bolt_v3_order_lifecycle_tracer.rs` are rejected. The local Polymarket empty positions response now lives in `tests/fixtures/bolt_v3_protocol_payloads/polymarket_positions_empty.json`.
 
 F13ba extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so raw millisecond/nanosecond conversion literals in `tests/bolt_v3_order_lifecycle_tracer.rs` are rejected. Order-lifecycle tests now use named conversion helpers backed by `Duration` instead of repeated `1_000_000` multipliers/dividers.
+
+F13bb extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so literal `UnixNanos::from(...)` timestamps in `tests/bolt_v3_order_lifecycle_tracer.rs` are rejected. Synthetic binary-option created/updated timestamps now derive from `[selected_binary_option]` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.

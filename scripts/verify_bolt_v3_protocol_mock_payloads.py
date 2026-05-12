@@ -58,6 +58,9 @@ ORDER_LIFECYCLE_HTTP_METHOD_PATH_PATTERN = re.compile(
 )
 ORDER_LIFECYCLE_POSITIONS_RESPONSE_LITERAL_PATTERN = re.compile(r'"\[\]"')
 ORDER_LIFECYCLE_RAW_MILLI_NANO_CONVERSION_PATTERN = re.compile(r"[*\/]\s*1_000_000\b")
+ORDER_LIFECYCLE_LITERAL_UNIX_NANOS_PATTERN = re.compile(
+    r"UnixNanos::from\(\s*\d[\d_]*_?u64\s*\)"
+)
 
 
 @dataclass(frozen=True)
@@ -287,6 +290,15 @@ def scan_file(
                         "order-lifecycle raw millisecond/nanosecond conversion; "
                         "use named conversion helper"
                     ),
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_LITERAL_UNIX_NANOS_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="order-lifecycle literal UnixNanos; derive from TOML fixture",
                     excerpt=match.group(0),
                 )
             )

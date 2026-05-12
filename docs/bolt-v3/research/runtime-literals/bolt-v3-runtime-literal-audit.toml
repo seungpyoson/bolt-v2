@@ -822,6 +822,22 @@ classification = "live_canary_gate_diagnostic_template"
 reason = "This is the fail-closed diagnostic for an empty no-submit readiness report path, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit readiness operator approval id is empty"'''
+context = '''"bolt-v3 no-submit readiness operator approval id is empty"'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This is the fail-closed diagnostic for a missing explicit operator approval id, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit readiness live_canary report path is empty"'''
+context = '''"bolt-v3 no-submit readiness live_canary report path is empty"'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This is the fail-closed diagnostic for an empty configured report path, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
 literal = '''"bolt-v3 live canary max_notional_per_order ({max_notional_per_order}) exceeds \
@@ -855,28 +871,28 @@ classification = "config_path_resolution_default"
 reason = "This is the relative-path base fallback that matches the config loader when a TOML path has no parent directory."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"stages"'''
-context = '''match report.get("stages") {'''
+context = '''pub const STAGES_KEY: &str = "stages";'''
 classification = "live_canary_readiness_report_schema_field"
-reason = "This names the no-submit readiness report stages array consumed by the fail-closed live-canary gate."
+reason = "This is the shared schema key for the no-submit readiness report stages array consumed by the fail-closed live-canary gate."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"stage"'''
-context = '''.get("stage")'''
+context = '''pub const STAGE_KEY: &str = "stage";'''
 classification = "live_canary_readiness_report_schema_field"
-reason = "This names the preferred no-submit readiness report stage identifier field for diagnostics."
+reason = "This is the shared schema key for the preferred no-submit readiness report stage identifier field."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"name"'''
-context = '''.or_else(|| stage.get("name"))'''
+context = '''pub const NAME_KEY: &str = "name";'''
 classification = "live_canary_readiness_report_schema_field"
-reason = "This names the backward-compatible readiness stage identifier field used only for diagnostics."
+reason = "This is the shared schema key for the backward-compatible readiness stage identifier field used only for diagnostics."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
@@ -887,12 +903,20 @@ classification = "live_canary_gate_diagnostic_template"
 reason = "This placeholder labels malformed readiness stages in fail-closed diagnostics when no stage identifier exists."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"status"'''
-context = '''let status = stage.get("status").and_then(Value::as_str);'''
+context = '''pub const STATUS_KEY: &str = "status";'''
 classification = "live_canary_readiness_report_schema_field"
-reason = "This names the no-submit readiness report status field consumed by the fail-closed live-canary gate."
+reason = "This is the shared schema key for the no-submit readiness report status field consumed by the fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"detail"'''
+context = '''pub const DETAIL_KEY: &str = "detail";'''
+classification = "live_canary_readiness_report_schema_field"
+reason = "This is the shared schema key for operator-safe no-submit readiness stage diagnostics."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
@@ -927,12 +951,76 @@ classification = "live_canary_gate_diagnostic_template"
 reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"satisfied"'''
-context = '''matches!(status, Some(value) if value.eq_ignore_ascii_case("satisfied"))'''
+context = '''pub const SATISFIED_STATUS: &str = "satisfied";'''
 classification = "live_canary_readiness_report_status_value"
-reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
+reason = "This is the shared readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"skipped"'''
+context = '''pub const SKIPPED_STATUS: &str = "skipped";'''
+classification = "live_canary_readiness_report_status_value"
+reason = "This is the shared readiness report status value for downstream stages skipped after an earlier no-submit readiness failure."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"forbidden_credential_env"'''
+context = '''pub const STAGE_FORBIDDEN_CREDENTIAL_ENV: &str = "forbidden_credential_env";'''
+classification = "no_submit_readiness_stage_name"
+reason = "This is the report stage name for the forbidden credential environment-variable check, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"secret_resolution"'''
+context = '''pub const STAGE_SECRET_RESOLUTION: &str = "secret_resolution";'''
+classification = "no_submit_readiness_stage_name"
+reason = "This is the report stage name for SSM secret resolution, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"adapter_mapping"'''
+context = '''pub const STAGE_ADAPTER_MAPPING: &str = "adapter_mapping";'''
+classification = "no_submit_readiness_stage_name"
+reason = "This is the report stage name for provider adapter mapping, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"live_node_build"'''
+context = '''pub const STAGE_LIVE_NODE_BUILD: &str = "live_node_build";'''
+classification = "no_submit_readiness_stage_name"
+reason = "This is the report stage name for NT LiveNode construction, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"controlled_connect"'''
+context = '''pub const STAGE_CONTROLLED_CONNECT: &str = "controlled_connect";'''
+classification = "no_submit_readiness_stage_name"
+reason = "This is the report stage name for the bounded NT controlled-connect check, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"controlled_disconnect"'''
+context = '''pub const STAGE_CONTROLLED_DISCONNECT: &str = "controlled_disconnect";'''
+classification = "no_submit_readiness_stage_name"
+reason = "This is the report stage name for the bounded NT controlled-disconnect check, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"controlled_disconnect skipped after controlled_connect failure"'''
+context = '''"controlled_disconnect skipped after controlled_connect failure",'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This operator-safe diagnostic records that disconnect was intentionally skipped after connect failed; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

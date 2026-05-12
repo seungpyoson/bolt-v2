@@ -31,6 +31,7 @@ In scope:
 - Arm admission from the actual `BoltV3LiveCanaryGateReport` returned by `check_bolt_v3_live_canary_gate`.
 - Enforce `max_live_order_count` and `max_notional_per_order` before NT submit.
 - Preserve mandatory decision evidence and prove evidence failure does not consume order budget.
+- Consume admission budget before NT submit and do not refund on NT submit error; this is fail-closed for the one-order canary.
 - Update Phase 6 task checkboxes only after verification.
 
 Out of scope:
@@ -416,7 +417,6 @@ use std::sync::Arc;
 
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 
-#[derive(Debug)]
 pub struct BoltV3BuiltLiveNode {
     node: LiveNode,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
@@ -945,7 +945,43 @@ fn submit_admission_rejects_second_strategy_submit_before_nt_submit() {
 }
 ```
 
-- [ ] **Step 3: Run strategy admission tests**
+- [ ] **Step 3: Prove evidence failure does not consume admission budget**
+
+Update `decision_evidence_failure_rejects_before_nt_submit` to construct the strategy with an armed admission handle and assert evidence failure leaves budget untouched:
+
+```rust
+let admission = armed_submit_admission(1, Decimal::new(100, 2));
+let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_admission(
+    RecordingFeeProvider::cold(),
+    Arc::new(FailingDecisionEvidenceWriter),
+    admission.clone(),
+);
+```
+
+Call the helper with the computed notional argument:
+
+```rust
+let error = strategy
+    .submit_order_with_decision_evidence(
+        intent,
+        order,
+        ClientId::from("POLYMARKET"),
+        Decimal::new(50, 2),
+    )
+    .expect_err("evidence failure must reject before NT submit");
+
+assert!(
+    error.to_string().contains("intent write failed"),
+    "{error:#}"
+);
+assert_eq!(
+    admission.admitted_order_count(),
+    0,
+    "evidence failure must happen before admission budget consumption"
+);
+```
+
+- [ ] **Step 4: Run strategy admission tests**
 
 Run:
 
@@ -1082,7 +1118,7 @@ Record repo/branch, run id if present, final status, final error code if present
 After the commands above pass on the exact local head, update `specs/001-thin-live-canary-path/tasks.md`:
 
 ```markdown
-- [x] T028 [US2] Write failing tests in `tests/bolt_v3_submit_admission.rs` for one-order cap, over-notional rejection, missing gate report, and missing evidence.
+- [x] T028 [US2] Write failing tests in `tests/bolt_v3_submit_admission.rs` for one-order cap, over-notional rejection, missing gate report, and evidence-failure-before-admission ordering.
 - [x] T029 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture`; expected failures show missing submit admission module.
 - [x] T030 [US2] Add `src/bolt_v3_submit_admission.rs` with config-derived admission state initialized from `BoltV3LiveCanaryGateReport`.
 - [x] T031 [US2] Wire strategy submit calls through submit admission before NT submit.
@@ -1112,6 +1148,6 @@ Type consistency:
 
 Execution note:
 
-- Implement this in a child branch from PR #315 head.
+- Implement this in a child branch from PR #316 head so the planning artifact stays in the implementation stack.
 - Do not request external review until the branch is clean, pushed, and exact-head CI/checks are green.
 - Do not merge without explicit user approval.

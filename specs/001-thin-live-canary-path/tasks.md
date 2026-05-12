@@ -71,9 +71,9 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Goal**: `BoltV3LiveCanaryGateReport` bounds are enforced before every live submit.
 
-**Independent Test**: `cargo test --test bolt_v3_submit_admission` proves order count, notional cap, missing report, and missing evidence all reject before NT submit.
+**Independent Test**: `cargo test --test bolt_v3_submit_admission` proves order count, notional cap, missing report, and evidence failure all reject before NT submit without consuming admission budget.
 
-- [ ] T028 [US2] Write failing tests in `tests/bolt_v3_submit_admission.rs` for one-order cap, over-notional rejection, missing gate report, and missing evidence.
+- [ ] T028 [US2] Write failing tests in `tests/bolt_v3_submit_admission.rs` for one-order cap, over-notional rejection, missing gate report, and evidence-failure-before-admission ordering.
 - [ ] T029 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture`; expected failures show missing submit admission module.
 - [ ] T030 [US2] Add `src/bolt_v3_submit_admission.rs` with config-derived admission state initialized from `BoltV3LiveCanaryGateReport`.
 - [ ] T031 [US2] Wire strategy submit calls through submit admission before NT submit.

@@ -96,8 +96,11 @@ async fn run_bolt_v3_no_submit_readiness_async_on_built_node(
 
     match connect_bolt_v3_clients(built.node_mut(), loaded).await {
         Ok(()) => stages.push(satisfied(STAGE_CONTROLLED_CONNECT)),
-        Err(error) => {
-            stages.push(failed(STAGE_CONTROLLED_CONNECT, error.to_string()));
+        Err(_) => {
+            stages.push(failed(
+                STAGE_CONTROLLED_CONNECT,
+                "controlled_connect failed; inspect NT operator logs",
+            ));
             stages.push(skipped(
                 STAGE_CONTROLLED_DISCONNECT,
                 "controlled_disconnect skipped after controlled_connect failure",
@@ -108,7 +111,10 @@ async fn run_bolt_v3_no_submit_readiness_async_on_built_node(
 
     match disconnect_bolt_v3_clients(built.node_mut(), loaded).await {
         Ok(()) => stages.push(satisfied(STAGE_CONTROLLED_DISCONNECT)),
-        Err(error) => stages.push(failed(STAGE_CONTROLLED_DISCONNECT, error.to_string())),
+        Err(_) => stages.push(failed(
+            STAGE_CONTROLLED_DISCONNECT,
+            "controlled_disconnect failed; inspect NT operator logs",
+        )),
     }
 
     Ok(BoltV3NoSubmitReadinessReport { stages })
@@ -122,11 +128,11 @@ fn satisfied(stage: &'static str) -> BoltV3NoSubmitReadinessStage {
     }
 }
 
-fn failed(stage: &'static str, detail: String) -> BoltV3NoSubmitReadinessStage {
+fn failed(stage: &'static str, detail: &'static str) -> BoltV3NoSubmitReadinessStage {
     BoltV3NoSubmitReadinessStage {
         stage,
         status: BoltV3NoSubmitReadinessStatus::Failed,
-        detail,
+        detail: detail.to_string(),
     }
 }
 

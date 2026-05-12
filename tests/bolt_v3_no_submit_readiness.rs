@@ -10,8 +10,8 @@ use bolt_v2::{
     bolt_v3_live_node::{BoltV3BuiltLiveNode, make_bolt_v3_live_node_builder},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness_on_built_node,
     bolt_v3_no_submit_readiness_schema::{
-        SATISFIED_STATUS, STAGE_CONTROLLED_CONNECT, STAGE_CONTROLLED_DISCONNECT, STAGE_KEY,
-        STAGES_KEY, STATUS_KEY,
+        FAILED_STATUS, SATISFIED_STATUS, SKIPPED_STATUS, STAGE_CONTROLLED_CONNECT,
+        STAGE_CONTROLLED_DISCONNECT, STAGE_KEY, STAGES_KEY, STATUS_KEY,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
@@ -120,14 +120,102 @@ fn no_submit_readiness_source_has_no_trade_or_runner_tokens() {
     assert!(source.contains("disconnect_bolt_v3_clients"));
 }
 
+#[test]
+fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut built = mock_built_live_node(&loaded);
+
+    let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
+        .expect("local readiness should complete against mock NT clients");
+
+    assert_no_resolved_secret_values(&format!("{report:#?}"));
+}
+
+#[test]
+fn no_submit_readiness_records_failed_connect_and_skips_disconnect() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut built = mock_built_live_node_with_failing_data_connect(&loaded);
+
+    let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
+        .expect("connect failure is recorded as failed readiness report");
+
+    assert!(
+        report
+            .stage_status(STAGE_CONTROLLED_CONNECT)
+            .iter()
+            .any(|status| status.as_str() == FAILED_STATUS)
+    );
+    assert!(
+        report
+            .stage_status(STAGE_CONTROLLED_DISCONNECT)
+            .iter()
+            .any(|status| status.as_str() == SKIPPED_STATUS)
+    );
+}
+
+#[test]
+fn no_submit_readiness_redacts_disconnect_failure_detail() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut built = mock_built_live_node_with_failing_data_disconnect(&loaded);
+
+    let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
+        .expect("disconnect failure is recorded as failed readiness report");
+
+    assert!(
+        report
+            .stage_status(STAGE_CONTROLLED_DISCONNECT)
+            .iter()
+            .any(|status| status.as_str() == FAILED_STATUS)
+    );
+    assert_no_resolved_secret_values(&format!("{report:#?}"));
+}
+
 fn mock_built_live_node(loaded: &LoadedBoltV3Config) -> BoltV3BuiltLiveNode {
+    mock_built_live_node_with_data_client(
+        loaded,
+        "MOCK_DATA",
+        MockDataClientConfig::new("MOCK_DATA", "MOCKVENUE"),
+    )
+}
+
+fn mock_built_live_node_with_failing_data_connect(
+    loaded: &LoadedBoltV3Config,
+) -> BoltV3BuiltLiveNode {
+    mock_built_live_node_with_data_client(
+        loaded,
+        "FAILING_MOCK_DATA",
+        MockDataClientConfig::new("FAILING_MOCK_DATA", "MOCKVENUE")
+            .with_connect_failure("simulated no-submit readiness connect failure"),
+    )
+}
+
+fn mock_built_live_node_with_failing_data_disconnect(
+    loaded: &LoadedBoltV3Config,
+) -> BoltV3BuiltLiveNode {
+    mock_built_live_node_with_data_client(
+        loaded,
+        "FAILING_DISCONNECT_MOCK_DATA",
+        MockDataClientConfig::new("FAILING_DISCONNECT_MOCK_DATA", "MOCKVENUE").with_disconnect_failure(
+            "simulated no-submit readiness disconnect failure 0x4242424242424242424242424242424242424242424242424242424242424242",
+        ),
+    )
+}
+
+fn mock_built_live_node_with_data_client(
+    loaded: &LoadedBoltV3Config,
+    client_id: &str,
+    data_client: MockDataClientConfig,
+) -> BoltV3BuiltLiveNode {
     let builder =
         make_bolt_v3_live_node_builder(loaded).expect("v3 builder should construct from fixture");
     let builder = builder
         .add_data_client(
-            Some("MOCK_DATA".to_string()),
+            Some(client_id.to_string()),
             Box::new(MockDataClientFactory),
-            Box::new(MockDataClientConfig::new("MOCK_DATA", "MOCKVENUE")),
+            Box::new(data_client),
         )
         .expect("mock data client should register on bolt-v3 builder");
     let builder = builder
@@ -145,4 +233,21 @@ fn mock_built_live_node(loaded: &LoadedBoltV3Config) -> BoltV3BuiltLiveNode {
         builder.build().expect("LiveNode should build with mocks"),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed()),
     )
+}
+
+fn assert_no_resolved_secret_values(text: &str) {
+    for secret_value in [
+        "0x4242424242424242424242424242424242424242424242424242424242424242",
+        "polymarket-api-key",
+        "YWJj",
+        "polymarket-passphrase",
+        "binance-api-key",
+        "chainlink-api-key",
+        "chainlink-api-secret",
+    ] {
+        assert!(
+            !text.contains(secret_value),
+            "readiness report must not contain resolved secret value {secret_value}: {text}"
+        );
+    }
 }

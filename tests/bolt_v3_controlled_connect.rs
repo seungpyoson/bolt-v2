@@ -583,12 +583,24 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
     let gate_index = source
         .find("check_bolt_v3_live_canary_gate(loaded)")
         .expect("run wrapper must call the live canary gate");
+    let submit_admission_index = source
+        .find(".submit_admission()")
+        .expect("run wrapper must arm submit admission before NT run");
+    let arm_index = source
+        .find(".arm(gate_report)")
+        .expect("run wrapper must arm the live canary gate report before NT run");
     let run_index = source
-        .find("node.run().await")
+        .find(".run(")
         .expect("run wrapper must own the single NT runner call");
     assert!(
         gate_index < run_index,
         "live canary gate must execute before NT LiveNode::run"
+    );
+    assert!(
+        gate_index < submit_admission_index
+            && submit_admission_index < arm_index
+            && arm_index < run_index,
+        "live canary gate report must arm submit admission before NT LiveNode::run"
     );
     assert_eq!(
         source.matches(".run(").count(),

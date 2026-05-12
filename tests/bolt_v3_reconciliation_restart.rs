@@ -8,6 +8,7 @@ use std::{
     io::Write,
     net::TcpListener,
     path::{Path, PathBuf},
+    process::{Command, ExitStatus},
     str::FromStr,
     sync::{Mutex, OnceLock, mpsc},
     time::Duration,
@@ -68,6 +69,9 @@ use tokio::time::sleep;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
+const RECONCILIATION_PROCESS_HELPER_ENV: &str = "BOLT_V3_RECONCILIATION_PROCESS_HELPER";
+const RECONCILIATION_PROCESS_MODE_ENV: &str = "BOLT_V3_RECONCILIATION_PROCESS_MODE";
+const RECONCILIATION_PROCESS_MARKER_PATH_ENV: &str = "BOLT_V3_RECONCILIATION_PROCESS_MARKER_PATH";
 
 #[derive(Debug, Deserialize)]
 struct OpenOrderFixture {
@@ -114,6 +118,13 @@ struct OpenOrderFixture {
     signal_poll_iterations: usize,
     signal_poll_interval_milliseconds: u64,
     fee_expected_requests: usize,
+    process_helper_seed_mode: String,
+    process_helper_restart_mode: String,
+    process_exit_seed_status_code: i32,
+    process_exit_seed_marker_file: String,
+    process_exit_restart_marker_file: String,
+    process_exit_seed_marker_text: String,
+    process_exit_restart_marker_text: String,
     up_book_bid: String,
     up_book_ask: String,
     down_book_bid: String,
@@ -550,6 +561,66 @@ fn bolt_v3_restarted_node_blocks_duplicate_entry_after_reconciliation() {
 }
 
 #[test]
+fn bolt_v3_process_death_restart_blocks_duplicate_entry_after_reconciliation() {
+    let _guard = runtime_test_mutex().lock().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    let open_order = open_order_fixture();
+    let seed_marker_path = temp_dir
+        .path()
+        .join(&open_order.process_exit_seed_marker_file);
+    let restart_marker_path = temp_dir
+        .path()
+        .join(&open_order.process_exit_restart_marker_file);
+
+    let seed_status =
+        run_reconciliation_process_helper(&open_order.process_helper_seed_mode, &seed_marker_path);
+    assert!(
+        !seed_status.success(),
+        "seed helper should terminate without orderly LiveNode stop; got {seed_status:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&seed_marker_path).expect("seed marker should be written before exit"),
+        open_order.process_exit_seed_marker_text
+    );
+
+    let restart_status = run_reconciliation_process_helper(
+        &open_order.process_helper_restart_mode,
+        &restart_marker_path,
+    );
+    assert!(
+        restart_status.success(),
+        "restart helper should prove duplicate-submit block after process death; got {restart_status:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&restart_marker_path)
+            .expect("restart marker should be written after duplicate-submit proof"),
+        open_order.process_exit_restart_marker_text
+    );
+}
+
+#[test]
+fn bolt_v3_reconciliation_process_helper() {
+    if env::var(RECONCILIATION_PROCESS_HELPER_ENV).is_err() {
+        return;
+    }
+    let mode = env::var(RECONCILIATION_PROCESS_MODE_ENV)
+        .expect("process helper mode env should be configured");
+    let marker_path = PathBuf::from(
+        env::var(RECONCILIATION_PROCESS_MARKER_PATH_ENV)
+            .expect("process helper marker path env should be configured"),
+    );
+    let open_order = open_order_fixture();
+    if mode == open_order.process_helper_seed_mode {
+        run_reconciliation_seed_process_before_exit(&open_order, &marker_path);
+    }
+    if mode == open_order.process_helper_restart_mode {
+        run_reconciliation_restart_process_duplicate_submit_proof(&open_order, &marker_path);
+        return;
+    }
+    panic!("unknown reconciliation process helper mode: {mode}");
+}
+
+#[test]
 fn pinned_nt_startup_reconciliation_registers_external_orders_with_execution_clients() {
     let nt_root = pinned_nt_checkout();
     let node_source = fs::read_to_string(nt_root.join("crates/live/src/node.rs"))
@@ -621,6 +692,142 @@ fn pinned_nt_polymarket_can_generate_mass_status_but_does_not_track_external_ord
 
 fn runtime_test_mutex() -> &'static Mutex<()> {
     RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
+}
+
+fn run_reconciliation_process_helper(mode: &str, marker_path: &Path) -> ExitStatus {
+    Command::new(env::current_exe().expect("current test binary should be available"))
+        .arg("--exact")
+        .arg("bolt_v3_reconciliation_process_helper")
+        .arg("--nocapture")
+        .env(RECONCILIATION_PROCESS_HELPER_ENV, mode)
+        .env(RECONCILIATION_PROCESS_MODE_ENV, mode)
+        .env(RECONCILIATION_PROCESS_MARKER_PATH_ENV, marker_path)
+        .status()
+        .expect("reconciliation process helper should run")
+}
+
+fn run_reconciliation_seed_process_before_exit(open_order: &OpenOrderFixture, marker_path: &Path) {
+    clear_mock_external_order_registrations();
+    clear_mock_exec_submissions();
+    let temp_dir = TempDir::new().unwrap();
+    let loaded = load_reconciliation_config(temp_dir.path(), open_order, None);
+    let up = instrument_id(&open_order.condition_id, &open_order.up_token_id, &loaded);
+    let down = instrument_id(&open_order.condition_id, &open_order.down_token_id, &loaded);
+    let mut node = build_reconciliation_node(&loaded, open_order, up, down);
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build")
+        .block_on(async {
+            node.start()
+                .await
+                .expect("seed process LiveNode start should run startup reconciliation");
+            assert_eq!(node.state(), NodeState::Running);
+            assert_reconciled_open_order(&node, up, open_order);
+            fs::write(marker_path, &open_order.process_exit_seed_marker_text)
+                .expect("seed process marker should write");
+        });
+
+    std::process::exit(open_order.process_exit_seed_status_code);
+}
+
+fn run_reconciliation_restart_process_duplicate_submit_proof(
+    open_order: &OpenOrderFixture,
+    marker_path: &Path,
+) {
+    clear_mock_external_order_registrations();
+    clear_mock_exec_submissions();
+    let temp_dir = TempDir::new().unwrap();
+    let (fee_base_url, fee_requests) = spawn_fee_rate_server(open_order.fee_expected_requests);
+    let loaded = load_reconciliation_config(temp_dir.path(), open_order, Some(fee_base_url));
+    let up = instrument_id(&open_order.condition_id, &open_order.up_token_id, &loaded);
+    let down = instrument_id(&open_order.condition_id, &open_order.down_token_id, &loaded);
+    let mut node = build_reconciliation_node(&loaded, open_order, up, down);
+    let start_ts_ms = node_clock_timestamp_ms(&node);
+    let strategy_id = StrategyId::from(strategy_config(&loaded).strategy_instance_id.as_str());
+    let selection_topic = runtime_selection_topic(&strategy_id);
+    let reference_topic = reference_publish_topic(&loaded);
+    let catalog_dir = PathBuf::from(loaded.root.persistence.catalog_directory.clone());
+    let target_id = configured_target_id(&loaded);
+    let fee_expected_requests = open_order.fee_expected_requests;
+    let fee_request_timeout = Duration::from_secs(open_order.timeout_disconnection_seconds);
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build")
+        .block_on(async {
+            node.start()
+                .await
+                .expect("restart process LiveNode start should run startup reconciliation");
+            assert_eq!(node.state(), NodeState::Running);
+            assert_reconciled_open_order(&node, up, open_order);
+            publish_entry_signal(
+                &loaded,
+                open_order,
+                start_ts_ms,
+                up,
+                down,
+                &selection_topic,
+                &reference_topic,
+                open_order.reference_initial_fair_value,
+                open_order.reference_initial_orderbook_bid,
+                open_order.reference_initial_orderbook_ask,
+            );
+            sleep(Duration::from_millis(open_order.signal_settle_milliseconds)).await;
+            tokio::task::spawn_blocking(move || {
+                for _ in 0..fee_expected_requests {
+                    fee_requests
+                        .recv_timeout(fee_request_timeout)
+                        .expect("local fee server should receive fee request");
+                }
+            })
+            .await
+            .expect("fee request waiter should join");
+            publish_entry_signal(
+                &loaded,
+                open_order,
+                start_ts_ms + open_order.signal_final_offset_ms,
+                up,
+                down,
+                &selection_topic,
+                &reference_topic,
+                open_order.reference_next_fair_value,
+                open_order.reference_next_orderbook_bid,
+                open_order.reference_next_orderbook_ask,
+            );
+
+            for _ in 0..open_order.signal_poll_iterations {
+                if !recorded_mock_exec_submissions().is_empty() {
+                    break;
+                }
+                sleep(Duration::from_millis(
+                    open_order.signal_poll_interval_milliseconds,
+                ))
+                .await;
+            }
+
+            node.stop()
+                .await
+                .expect("restart process LiveNode stop should succeed");
+        });
+
+    assert!(
+        recorded_mock_exec_submissions().is_empty(),
+        "process-restart reconciled external open order should block duplicate entry submit"
+    );
+    assert_eq!(
+        entry_submission_events(&catalog_dir, &target_id),
+        0,
+        "process-restart reconciled external open order should block duplicate entry order-submission evidence"
+    );
+    assert!(
+        selected_open_order_entry_evaluation_events(&catalog_dir, &target_id) > 0,
+        "process-restart reconciled external open order should persist selected-open-order entry no-action evidence"
+    );
+    fs::write(marker_path, &open_order.process_exit_restart_marker_text)
+        .expect("restart process marker should write");
 }
 
 fn open_order_fixture() -> OpenOrderFixture {

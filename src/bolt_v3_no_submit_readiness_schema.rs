@@ -2,6 +2,7 @@ pub const STAGES_KEY: &str = "stages";
 pub const STAGE_KEY: &str = "stage";
 pub const NAME_KEY: &str = "name";
 pub const STATUS_KEY: &str = "status";
+pub const DETAIL_KEY: &str = "detail";
 pub const SATISFIED_STATUS: &str = "satisfied";
 pub const FAILED_STATUS: &str = "failed";
 pub const SKIPPED_STATUS: &str = "skipped";

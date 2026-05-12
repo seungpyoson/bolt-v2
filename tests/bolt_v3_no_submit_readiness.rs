@@ -5,7 +5,8 @@ use std::sync::Arc;
 use serde_json::json;
 
 use bolt_v2::{
-    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_live_node::{BoltV3BuiltLiveNode, make_bolt_v3_live_node_builder},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness_on_built_node,
     bolt_v3_no_submit_readiness_schema::{
@@ -67,6 +68,33 @@ fn no_submit_readiness_local_runner_writes_satisfied_connect_disconnect_report()
     );
     assert!(recorded_mock_exec_submissions().is_empty());
     assert!(recorded_mock_data_subscriptions().is_empty());
+}
+
+#[test]
+fn no_submit_readiness_report_json_is_accepted_by_live_canary_gate() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.live_canary = Some(LiveCanaryBlock {
+        approval_id: "APPROVAL-001".to_string(),
+        no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+        max_no_submit_readiness_report_bytes: 4096,
+        max_live_order_count: 1,
+        max_notional_per_order: "1.00".to_string(),
+    });
+    let mut built = mock_built_live_node(&loaded);
+
+    let report = run_bolt_v3_no_submit_readiness_on_built_node(&mut built, &loaded)
+        .expect("local readiness should complete against mock NT clients");
+    report
+        .write_redacted_json(&report_path)
+        .expect("report write should succeed");
+
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(check_bolt_v3_live_canary_gate(&loaded))
+        .expect("gate should accept producer report");
 }
 
 fn mock_built_live_node(loaded: &LoadedBoltV3Config) -> BoltV3BuiltLiveNode {

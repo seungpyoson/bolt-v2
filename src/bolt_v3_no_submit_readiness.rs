@@ -5,9 +5,9 @@ use crate::{
         disconnect_bolt_v3_clients,
     },
     bolt_v3_no_submit_readiness_schema::{
-        FAILED_STATUS, SATISFIED_STATUS, SKIPPED_STATUS, STAGE_ADAPTER_MAPPING,
+        DETAIL_KEY, FAILED_STATUS, SATISFIED_STATUS, SKIPPED_STATUS, STAGE_ADAPTER_MAPPING,
         STAGE_CONTROLLED_CONNECT, STAGE_CONTROLLED_DISCONNECT, STAGE_FORBIDDEN_CREDENTIAL_ENV,
-        STAGE_LIVE_NODE_BUILD, STAGE_SECRET_RESOLUTION,
+        STAGE_KEY, STAGE_LIVE_NODE_BUILD, STAGE_SECRET_RESOLUTION, STAGES_KEY, STATUS_KEY,
     },
 };
 
@@ -47,6 +47,26 @@ impl BoltV3NoSubmitReadinessReport {
             .filter(|fact| fact.stage == stage)
             .map(|fact| fact.status)
             .collect()
+    }
+
+    pub fn write_redacted_json(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let stages: Vec<serde_json::Value> = self
+            .stages
+            .iter()
+            .map(|stage| {
+                serde_json::json!({
+                    STAGE_KEY: stage.stage,
+                    STATUS_KEY: stage.status.as_str(),
+                    DETAIL_KEY: stage.detail,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            STAGES_KEY: stages,
+        });
+        let body = serde_json::to_vec_pretty(&payload)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        std::fs::write(path, body)
     }
 }
 

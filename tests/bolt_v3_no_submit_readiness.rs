@@ -1,13 +1,13 @@
 mod support;
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path};
 
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_no_submit_readiness::{
         BoltV3NoSubmitReadinessStage, BoltV3NoSubmitReadinessStatus,
         BoltV3NoSubmitReadinessSubject, build_bolt_v3_no_submit_live_node_with_summary,
-        run_bolt_v3_no_submit_readiness_with,
+        run_bolt_v3_no_submit_readiness, run_bolt_v3_no_submit_readiness_with,
     },
 };
 use nautilus_live::node::NodeState;
@@ -170,6 +170,71 @@ fn no_submit_readiness_adapter_mapping_failure_redacts_resolved_secrets() {
 }
 
 #[test]
+fn no_submit_readiness_public_runner_uses_real_ssm_boundary() {
+    let source = include_str!("../src/bolt_v3_no_submit_readiness.rs");
+    let runner = source
+        .split("pub fn run_bolt_v3_no_submit_readiness(")
+        .nth(1)
+        .expect("no-submit readiness module should expose a real-SSM public runner")
+        .split("pub async fn run_bolt_v3_no_submit_readiness_with")
+        .next()
+        .expect("real-SSM runner should precede injected test helper");
+
+    for required in [
+        "check_no_forbidden_credential_env_vars(",
+        "SsmResolverSession::new()",
+        "resolve_bolt_v3_secrets(&session, loaded)",
+        "build_no_submit_live_node_after_resolution(&mut report, loaded, &resolved)",
+    ] {
+        assert!(
+            runner.contains(required),
+            "real-SSM no-submit runner must use production startup boundary `{required}`"
+        );
+    }
+    for forbidden in [
+        "resolve_bolt_v3_secrets_with",
+        "check_no_forbidden_credential_env_vars_with",
+        "fake_bolt_v3_resolver",
+        "std::env::var(",
+        "std::env::var_os(",
+    ] {
+        assert!(
+            !runner.contains(forbidden),
+            "real-SSM no-submit runner must not use injected/env fallback boundary `{forbidden}`"
+        );
+    }
+
+    let build_helper = source
+        .split("fn build_no_submit_live_node_after_resolution(")
+        .nth(1)
+        .expect("no-submit readiness module should share one post-resolution build helper")
+        .split("async fn connect_and_disconnect_for_no_submit_readiness")
+        .next()
+        .expect("post-resolution build helper should precede connect helper");
+    assert!(
+        build_helper.contains("map_bolt_v3_clients(loaded, resolved)"),
+        "shared post-resolution helper must map clients through the production adapter mapper"
+    );
+}
+
+#[test]
+#[ignore = "requires explicit approval for real SSM secret resolution and authenticated Polymarket private execution connect; no submit/cancel path"]
+fn external_polymarket_no_submit_readiness_uses_real_ssm_and_writes_redacted_report() {
+    let config_path = std::env::var("BOLT_V3_NO_SUBMIT_READINESS_CONFIG_PATH")
+        .expect("set BOLT_V3_NO_SUBMIT_READINESS_CONFIG_PATH to approved v3 root TOML");
+    let report_path = std::env::var("BOLT_V3_NO_SUBMIT_READINESS_REPORT_PATH")
+        .expect("set BOLT_V3_NO_SUBMIT_READINESS_REPORT_PATH to redacted report output path");
+    let loaded = load_bolt_v3_config(Path::new(&config_path))
+        .expect("approved no-submit v3 root TOML should load");
+
+    let report = run_bolt_v3_no_submit_readiness(&loaded);
+    let json =
+        serde_json::to_string_pretty(&report).expect("no-submit readiness report should serialize");
+    assert_no_resolved_secret_values(&loaded, &json);
+    std::fs::write(&report_path, json).expect("redacted no-submit readiness report should write");
+}
+
+#[test]
 fn no_submit_readiness_source_does_not_use_order_strategy_actor_or_runner_apis() {
     let source = include_str!("../src/bolt_v3_no_submit_readiness.rs");
     for forbidden in [
@@ -197,6 +262,10 @@ fn no_submit_readiness_source_does_not_use_order_strategy_actor_or_runner_apis()
         "subscribe_instruments",
         "subscribe_market",
         "ws_client.subscribe",
+        "python",
+        "PyO3",
+        "maturin",
+        "Command::new",
     ] {
         assert!(
             !source.contains(forbidden),

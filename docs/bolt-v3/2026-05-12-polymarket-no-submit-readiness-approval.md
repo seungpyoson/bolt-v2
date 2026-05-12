@@ -124,4 +124,6 @@ One PR scope:
 - Add runbook instructions for the manually approved external run.
 - Do not execute against real credentials in CI.
 
+Runbook: `docs/bolt-v3/2026-05-12-polymarket-no-submit-readiness-runbook.md`.
+
 Stop after this slice. If it passes, next decision is whether to approve a tiny canary design. If it fails, record the concrete NT/venue blocker and do not widen scope.

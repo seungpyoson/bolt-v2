@@ -2288,6 +2288,14 @@ reason = "Operator-facing no-submit readiness report detail; it contains no runt
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness.rs"
 kind = "string"
+literal = "\"created SSM resolver session for no-submit readiness\""
+context = "\"created SSM resolver session for no-submit readiness\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it names the production SSM setup boundary and contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
 literal = "\"disconnected configured NT clients through controlled-disconnect\""
 context = "\"disconnected configured NT clients through controlled-disconnect\","
 classification = "readiness_report_detail"

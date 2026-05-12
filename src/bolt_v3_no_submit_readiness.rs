@@ -1,4 +1,5 @@
 use nautilus_live::node::LiveNode;
+use serde::Serialize;
 
 use crate::{
     bolt_v3_adapters::{BoltV3ClientMappingError, map_bolt_v3_clients},
@@ -9,15 +10,19 @@ use crate::{
         build_bolt_v3_live_node_from_registered_builder, connect_bolt_v3_clients,
         disconnect_bolt_v3_clients, make_bolt_v3_client_registered_live_node_builder,
     },
-    bolt_v3_secrets::{check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with},
+    bolt_v3_secrets::{
+        check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
+        resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
+    },
+    secrets::SsmResolverSession,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct BoltV3NoSubmitReadinessReport {
     pub facts: Vec<BoltV3NoSubmitReadinessFact>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct BoltV3NoSubmitReadinessFact {
     pub stage: BoltV3NoSubmitReadinessStage,
     pub subject: BoltV3NoSubmitReadinessSubject,
@@ -25,9 +30,10 @@ pub struct BoltV3NoSubmitReadinessFact {
     pub detail: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum BoltV3NoSubmitReadinessStage {
     ForbiddenCredentialEnv,
+    SecretResolverSetup,
     SecretResolution,
     AdapterMapping,
     LiveNodeBuilder,
@@ -37,14 +43,14 @@ pub enum BoltV3NoSubmitReadinessStage {
     Disconnect,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum BoltV3NoSubmitReadinessStatus {
     Satisfied,
     Failed,
     Skipped,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum BoltV3NoSubmitReadinessSubject {
     Root,
     Client(String),
@@ -106,6 +112,133 @@ where
     build_bolt_v3_client_only_live_node_from_adapters(loaded, adapters)
 }
 
+pub fn run_bolt_v3_no_submit_readiness(
+    loaded: &LoadedBoltV3Config,
+) -> BoltV3NoSubmitReadinessReport {
+    let mut report = BoltV3NoSubmitReadinessReport::new();
+
+    match check_no_forbidden_credential_env_vars(&loaded.root) {
+        Ok(()) => report.push(
+            BoltV3NoSubmitReadinessStage::ForbiddenCredentialEnv,
+            BoltV3NoSubmitReadinessSubject::Root,
+            BoltV3NoSubmitReadinessStatus::Satisfied,
+            "no forbidden credential environment variables are set",
+        ),
+        Err(error) => {
+            for finding in error.findings {
+                report.push(
+                    BoltV3NoSubmitReadinessStage::ForbiddenCredentialEnv,
+                    BoltV3NoSubmitReadinessSubject::Client(finding.client_id_key.clone()),
+                    BoltV3NoSubmitReadinessStatus::Failed,
+                    finding.to_string(),
+                );
+            }
+            report.skip_after(
+                BoltV3NoSubmitReadinessStage::ForbiddenCredentialEnv,
+                &[
+                    BoltV3NoSubmitReadinessStage::SecretResolverSetup,
+                    BoltV3NoSubmitReadinessStage::SecretResolution,
+                    BoltV3NoSubmitReadinessStage::AdapterMapping,
+                    BoltV3NoSubmitReadinessStage::LiveNodeBuilder,
+                    BoltV3NoSubmitReadinessStage::ClientRegistration,
+                    BoltV3NoSubmitReadinessStage::LiveNodeBuild,
+                    BoltV3NoSubmitReadinessStage::Connect,
+                    BoltV3NoSubmitReadinessStage::Disconnect,
+                ],
+            );
+            return report;
+        }
+    }
+
+    let session = match SsmResolverSession::new() {
+        Ok(session) => {
+            report.push(
+                BoltV3NoSubmitReadinessStage::SecretResolverSetup,
+                BoltV3NoSubmitReadinessSubject::Root,
+                BoltV3NoSubmitReadinessStatus::Satisfied,
+                "created SSM resolver session for no-submit readiness",
+            );
+            session
+        }
+        Err(error) => {
+            report.push(
+                BoltV3NoSubmitReadinessStage::SecretResolverSetup,
+                BoltV3NoSubmitReadinessSubject::Root,
+                BoltV3NoSubmitReadinessStatus::Failed,
+                error.to_string(),
+            );
+            report.skip_after(
+                BoltV3NoSubmitReadinessStage::SecretResolverSetup,
+                &[
+                    BoltV3NoSubmitReadinessStage::SecretResolution,
+                    BoltV3NoSubmitReadinessStage::AdapterMapping,
+                    BoltV3NoSubmitReadinessStage::LiveNodeBuilder,
+                    BoltV3NoSubmitReadinessStage::ClientRegistration,
+                    BoltV3NoSubmitReadinessStage::LiveNodeBuild,
+                    BoltV3NoSubmitReadinessStage::Connect,
+                    BoltV3NoSubmitReadinessStage::Disconnect,
+                ],
+            );
+            return report;
+        }
+    };
+
+    let resolved = match resolve_bolt_v3_secrets(&session, loaded) {
+        Ok(resolved) => {
+            push_secret_resolution_success(&mut report, &resolved);
+            resolved
+        }
+        Err(error) => {
+            report.push(
+                BoltV3NoSubmitReadinessStage::SecretResolution,
+                BoltV3NoSubmitReadinessSubject::Client(error.client_id_key.clone()),
+                BoltV3NoSubmitReadinessStatus::Failed,
+                error.to_string(),
+            );
+            report.skip_after(
+                BoltV3NoSubmitReadinessStage::SecretResolution,
+                &[
+                    BoltV3NoSubmitReadinessStage::AdapterMapping,
+                    BoltV3NoSubmitReadinessStage::LiveNodeBuilder,
+                    BoltV3NoSubmitReadinessStage::ClientRegistration,
+                    BoltV3NoSubmitReadinessStage::LiveNodeBuild,
+                    BoltV3NoSubmitReadinessStage::Connect,
+                    BoltV3NoSubmitReadinessStage::Disconnect,
+                ],
+            );
+            return report;
+        }
+    };
+
+    let Some(mut node) = build_no_submit_live_node_after_resolution(&mut report, loaded, &resolved)
+    else {
+        return report;
+    };
+
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(async {
+            connect_and_disconnect_for_no_submit_readiness(&mut report, &mut node, loaded).await;
+        }),
+        Err(error) => {
+            report.push(
+                BoltV3NoSubmitReadinessStage::Connect,
+                BoltV3NoSubmitReadinessSubject::Root,
+                BoltV3NoSubmitReadinessStatus::Failed,
+                format!("failed to build Tokio runtime for no-submit readiness connect: {error}"),
+            );
+            report.skip_after(
+                BoltV3NoSubmitReadinessStage::Connect,
+                &[BoltV3NoSubmitReadinessStage::Disconnect],
+            );
+        }
+    }
+
+    report
+}
+
 pub async fn run_bolt_v3_no_submit_readiness_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
@@ -152,23 +285,7 @@ where
 
     let resolved = match resolve_bolt_v3_secrets_with(loaded, resolver) {
         Ok(resolved) => {
-            if resolved.clients.is_empty() {
-                report.push(
-                    BoltV3NoSubmitReadinessStage::SecretResolution,
-                    BoltV3NoSubmitReadinessSubject::Root,
-                    BoltV3NoSubmitReadinessStatus::Satisfied,
-                    "no client secrets configured",
-                );
-            } else {
-                for client_id_key in resolved.clients.keys() {
-                    report.push(
-                        BoltV3NoSubmitReadinessStage::SecretResolution,
-                        BoltV3NoSubmitReadinessSubject::Client(client_id_key.clone()),
-                        BoltV3NoSubmitReadinessStatus::Satisfied,
-                        format!("resolved secrets for client_id `{client_id_key}`"),
-                    );
-                }
-            }
+            push_secret_resolution_success(&mut report, &resolved);
             resolved
         }
         Err(error) => {
@@ -193,29 +310,24 @@ where
         }
     };
 
-    let adapters = match map_bolt_v3_clients(loaded, &resolved) {
+    let Some(mut node) = build_no_submit_live_node_after_resolution(&mut report, loaded, &resolved)
+    else {
+        return report;
+    };
+
+    connect_and_disconnect_for_no_submit_readiness(&mut report, &mut node, loaded).await;
+
+    report
+}
+
+fn build_no_submit_live_node_after_resolution(
+    report: &mut BoltV3NoSubmitReadinessReport,
+    loaded: &LoadedBoltV3Config,
+    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Option<LiveNode> {
+    let adapters = match map_bolt_v3_clients(loaded, resolved) {
         Ok(adapters) => {
-            if adapters.clients.is_empty() {
-                report.push(
-                    BoltV3NoSubmitReadinessStage::AdapterMapping,
-                    BoltV3NoSubmitReadinessSubject::Root,
-                    BoltV3NoSubmitReadinessStatus::Satisfied,
-                    "no client configs mapped",
-                );
-            } else {
-                for (client_id_key, client_id) in &adapters.clients {
-                    report.push(
-                        BoltV3NoSubmitReadinessStage::AdapterMapping,
-                        BoltV3NoSubmitReadinessSubject::Client(client_id_key.clone()),
-                        BoltV3NoSubmitReadinessStatus::Satisfied,
-                        format!(
-                            "mapped client configs for client_id `{client_id_key}`: data={} execution={}",
-                            client_id.data.is_some(),
-                            client_id.execution.is_some()
-                        ),
-                    );
-                }
-            }
+            push_adapter_mapping_success(report, &adapters);
             adapters
         }
         Err(error) => {
@@ -235,7 +347,7 @@ where
                     BoltV3NoSubmitReadinessStage::Disconnect,
                 ],
             );
-            return report;
+            return None;
         }
     };
 
@@ -249,7 +361,7 @@ where
                 BoltV3NoSubmitReadinessStatus::Satisfied,
                 "created NT LiveNodeBuilder from bolt-v3 config",
             );
-            push_registration_summary(&mut report, &summary);
+            push_registration_summary(report, &summary);
             (builder, summary)
         }
         Err(BoltV3LiveNodeError::BuilderConstruction(error)) => {
@@ -268,7 +380,7 @@ where
                     BoltV3NoSubmitReadinessStage::Disconnect,
                 ],
             );
-            return report;
+            return None;
         }
         Err(BoltV3LiveNodeError::ClientRegistration(error)) => {
             report.push(
@@ -300,7 +412,7 @@ where
                     BoltV3NoSubmitReadinessStage::Disconnect,
                 ],
             );
-            return report;
+            return None;
         }
         Err(error) => {
             report.push(
@@ -318,11 +430,11 @@ where
                     BoltV3NoSubmitReadinessStage::Disconnect,
                 ],
             );
-            return report;
+            return None;
         }
     };
 
-    let mut node = match build_bolt_v3_live_node_from_registered_builder(builder) {
+    match build_bolt_v3_live_node_from_registered_builder(builder) {
         Ok(node) => {
             report.push(
                 BoltV3NoSubmitReadinessStage::LiveNodeBuild,
@@ -330,7 +442,7 @@ where
                 BoltV3NoSubmitReadinessStatus::Satisfied,
                 "built NT LiveNode from configured clients",
             );
-            node
+            Some(node)
         }
         Err(error) => {
             report.push(
@@ -346,11 +458,17 @@ where
                     BoltV3NoSubmitReadinessStage::Disconnect,
                 ],
             );
-            return report;
+            None
         }
-    };
+    }
+}
 
-    match connect_bolt_v3_clients(&mut node, loaded).await {
+async fn connect_and_disconnect_for_no_submit_readiness(
+    report: &mut BoltV3NoSubmitReadinessReport,
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+) {
+    match connect_bolt_v3_clients(node, loaded).await {
         Ok(()) => report.push(
             BoltV3NoSubmitReadinessStage::Connect,
             BoltV3NoSubmitReadinessSubject::Root,
@@ -365,7 +483,7 @@ where
         ),
     }
 
-    match disconnect_bolt_v3_clients(&mut node, loaded).await {
+    match disconnect_bolt_v3_clients(node, loaded).await {
         Ok(()) => report.push(
             BoltV3NoSubmitReadinessStage::Disconnect,
             BoltV3NoSubmitReadinessSubject::Root,
@@ -379,8 +497,6 @@ where
             error.to_string(),
         ),
     }
-
-    report
 }
 
 fn adapter_mapping_error_subject(
@@ -394,6 +510,58 @@ fn adapter_mapping_error_subject(
         | BoltV3ClientMappingError::ValidationInvariant { client_id_key, .. } => client_id_key,
     };
     BoltV3NoSubmitReadinessSubject::Client(client_id_key.clone())
+}
+
+fn push_secret_resolution_success(
+    report: &mut BoltV3NoSubmitReadinessReport,
+    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) {
+    if resolved.clients.is_empty() {
+        report.push(
+            BoltV3NoSubmitReadinessStage::SecretResolution,
+            BoltV3NoSubmitReadinessSubject::Root,
+            BoltV3NoSubmitReadinessStatus::Satisfied,
+            "no client secrets configured",
+        );
+        return;
+    }
+
+    for client_id_key in resolved.clients.keys() {
+        report.push(
+            BoltV3NoSubmitReadinessStage::SecretResolution,
+            BoltV3NoSubmitReadinessSubject::Client(client_id_key.clone()),
+            BoltV3NoSubmitReadinessStatus::Satisfied,
+            format!("resolved secrets for client_id `{client_id_key}`"),
+        );
+    }
+}
+
+fn push_adapter_mapping_success(
+    report: &mut BoltV3NoSubmitReadinessReport,
+    adapters: &crate::bolt_v3_adapters::BoltV3ClientConfigs,
+) {
+    if adapters.clients.is_empty() {
+        report.push(
+            BoltV3NoSubmitReadinessStage::AdapterMapping,
+            BoltV3NoSubmitReadinessSubject::Root,
+            BoltV3NoSubmitReadinessStatus::Satisfied,
+            "no client configs mapped",
+        );
+        return;
+    }
+
+    for (client_id_key, client_id) in &adapters.clients {
+        report.push(
+            BoltV3NoSubmitReadinessStage::AdapterMapping,
+            BoltV3NoSubmitReadinessSubject::Client(client_id_key.clone()),
+            BoltV3NoSubmitReadinessStatus::Satisfied,
+            format!(
+                "mapped client configs for client_id `{client_id_key}`: data={} execution={}",
+                client_id.data.is_some(),
+                client_id.execution.is_some()
+            ),
+        );
+    }
 }
 
 fn push_registration_summary(

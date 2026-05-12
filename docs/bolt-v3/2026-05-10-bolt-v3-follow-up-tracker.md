@@ -126,6 +126,8 @@ F13bs note: `python3 scripts/verify_bolt_v3_fake_secret_test_literals.py` now re
 
 F13bt note: `python3 scripts/verify_bolt_v3_test_literal_smoke.py` now runs as a broad smoke fence over `tests/bolt_v3*.rs` and `tests/eth_chainlink_taker_runtime.rs` for runtime-like literal patterns already cleaned up by narrower verifiers. It explicitly classifies the remaining `"updown"` hit as a boundary-guard sentinel in `tests/bolt_v3_market_identity.rs`, not runtime config. The smoke fence found residual existing-strategy capacity assertion literals; those capacity scenario values now load from `tests/fixtures/eth_chainlink_taker_runtime/capacity.toml`.
 
+F9a note: `src/bolt_v3_no_submit_readiness.rs` now exposes a real-SSM no-submit readiness runner that uses the production forbidden-env check, `SsmResolverSession`, `resolve_bolt_v3_secrets`, v3 adapter mapping, NT client registration, controlled connect, and controlled disconnect without registering strategies, registering reference actors, calling `LiveNode::run`, or invoking order APIs. `tests/bolt_v3_no_submit_readiness.rs` keeps the authenticated Polymarket harness ignored unless explicitly approved and writes only a redacted JSON report. This is still not live-order evidence; the required external readiness artifact has not been produced.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

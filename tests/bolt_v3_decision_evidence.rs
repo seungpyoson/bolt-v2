@@ -26,6 +26,9 @@ fn strategy_build_context_rejects_missing_decision_evidence() {
         Arc::new(TestFeeProvider),
         "platform.reference.test".to_string(),
         None,
+        Some(Arc::new(
+            bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(),
+        )),
     );
     let error = match result {
         Ok(_) => panic!("missing decision evidence must reject context construction"),

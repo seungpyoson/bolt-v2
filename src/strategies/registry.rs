@@ -8,7 +8,8 @@ use nautilus_trading::Strategy;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter, clients::polymarket::FeeProvider,
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState, clients::polymarket::FeeProvider,
     validate::ValidationError,
 };
 
@@ -23,6 +24,7 @@ pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
     reference_publish_topic: String,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
 
 impl StrategyBuildContext {
@@ -30,13 +32,17 @@ impl StrategyBuildContext {
         fee_provider: Arc<dyn FeeProvider>,
         reference_publish_topic: String,
         decision_evidence: Option<Arc<dyn BoltV3DecisionEvidenceWriter>>,
+        submit_admission: Option<Arc<BoltV3SubmitAdmissionState>>,
     ) -> Result<Self> {
         let decision_evidence =
             decision_evidence.ok_or_else(|| anyhow!("decision evidence writer is required"))?;
+        let submit_admission =
+            submit_admission.ok_or_else(|| anyhow!("submit admission state is required"))?;
         Ok(Self {
             fee_provider,
             reference_publish_topic,
             decision_evidence,
+            submit_admission,
         })
     }
 
@@ -54,6 +60,10 @@ impl StrategyBuildContext {
 
     pub fn decision_evidence(&self) -> &dyn BoltV3DecisionEvidenceWriter {
         self.decision_evidence.as_ref()
+    }
+
+    pub fn submit_admission(&self) -> &BoltV3SubmitAdmissionState {
+        self.submit_admission.as_ref()
     }
 }
 
@@ -326,8 +336,11 @@ mod tests {
             Some(Arc::new(
                 crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default(),
             )),
+            Some(Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(),
+            )),
         )
-        .expect("test context should include decision evidence")
+        .expect("test context should include decision evidence and submit admission")
     }
 
     #[test]

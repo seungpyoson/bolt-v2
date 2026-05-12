@@ -32,9 +32,7 @@ mod support;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
-use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config, bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
-};
+use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with_summary;
 use tempfile::tempfile;
 
 const FORBIDDEN_CREDENTIAL_MARKERS: &[&str] = &[
@@ -77,8 +75,8 @@ fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams()
         libc::dup2(stderr_capture.as_raw_fd(), 2);
     }
 
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let (_tempdir, loaded) =
+        support::load_bolt_v3_config_with_temp_catalog("credential-log-suppression");
 
     // Build the v3 LiveNode. This is the first thing in this test
     // binary's process to call NT's logger init, so the bolt-v3

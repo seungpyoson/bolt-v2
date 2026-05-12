@@ -4,12 +4,15 @@
 //! registration binding. Concrete strategy builders live outside this core
 //! boundary so the live-node build path can stay strategy-agnostic.
 
+use std::sync::Arc;
+
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
 #[derive(Clone, Copy)]
@@ -21,11 +24,12 @@ pub struct StrategyRuntimeBinding {
     ) -> Result<StrategyId, BoltV3StrategyRegistrationError>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct StrategyRegistrationContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
     pub resolved: &'a ResolvedBoltV3Secrets,
+    pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,6 +125,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
     bindings: &[StrategyRuntimeBinding],
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::default();
@@ -138,6 +143,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
                 loaded,
                 strategy,
                 resolved,
+                submit_admission: submit_admission.clone(),
             },
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {

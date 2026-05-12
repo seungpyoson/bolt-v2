@@ -1,23 +1,30 @@
 mod support;
 
 use std::{
+    path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use bolt_v2::{
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    clients::polymarket::FeeProvider,
     config::Config,
     live_node_setup::{
         DataClientRegistration, ExecClientRegistration, build_live_node, make_live_node_config,
-        make_strategy_build_context,
     },
     platform::{
         reference::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind},
         ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionDecision, SelectionState},
         runtime::{registry_runtime_strategy_factory, runtime_selection_topic},
     },
-    strategies::{eth_chainlink_taker::EthChainlinkTaker, production_strategy_registry},
+    strategies::{
+        eth_chainlink_taker::EthChainlinkTaker, production_strategy_registry,
+        registry::StrategyBuildContext,
+    },
 };
 use nautilus_common::{
     actor::{DataActor, registry::try_get_actor_unchecked},
@@ -56,6 +63,12 @@ fn runtime_test_mutex() -> &'static Mutex<()> {
     RUNTIME_TEST_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
+fn lock_runtime_test_mutex() -> std::sync::MutexGuard<'static, ()> {
+    runtime_test_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl bolt_v2::clients::polymarket::FeeProvider for StaticFeeProvider {
     fn fee_bps(&self, _token_id: &str) -> Option<rust_decimal::Decimal> {
         Some(rust_decimal::Decimal::ZERO)
@@ -65,6 +78,31 @@ impl bolt_v2::clients::polymarket::FeeProvider for StaticFeeProvider {
         use futures_util::FutureExt;
         async { Ok(()) }.boxed()
     }
+}
+
+fn make_strategy_build_context(
+    fee_provider: Arc<dyn FeeProvider>,
+    reference_publish_topic: String,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+) -> StrategyBuildContext {
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    submit_admission
+        .arm(BoltV3LiveCanaryGateReport {
+            approval_id: "eth-chainlink-runtime-test".to_string(),
+            no_submit_readiness_report_path: PathBuf::from("eth-chainlink-runtime-test.json"),
+            max_no_submit_readiness_report_bytes: u64::from(u16::MAX),
+            max_live_order_count: u32::MAX,
+            max_notional_per_order: rust_decimal::Decimal::from(u32::MAX),
+            root_max_notional_per_order: rust_decimal::Decimal::from(u32::MAX),
+        })
+        .expect("runtime strategy tests should arm submit admission explicitly");
+    StrategyBuildContext::try_new(
+        fee_provider,
+        reference_publish_topic,
+        Some(decision_evidence),
+        Some(submit_admission),
+    )
+    .expect("runtime strategy tests should provide decision evidence and submit admission")
 }
 
 fn build_test_node() -> LiveNode {
@@ -491,7 +529,7 @@ async fn wait_for_running(handle: &LiveNodeHandle) {
 
 #[test]
 fn eth_chainlink_taker_runtime_submits_real_entry_order() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -609,7 +647,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
 
 #[test]
 fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_order_id() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -733,7 +771,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
 
 #[test]
 fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -850,7 +888,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
 
 #[test]
 fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -944,7 +982,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
 
 #[test]
 fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_freeze() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -1062,7 +1100,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
 
 #[test]
 fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -1158,7 +1196,7 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
 
 #[test]
 fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -1259,7 +1297,7 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
 
 #[test]
 fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotation_to_market_b() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -1392,7 +1430,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
 #[test]
 fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_held_down_at_best_bid()
  {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();
@@ -1571,7 +1609,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
 
 #[test]
 fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
-    let _guard = runtime_test_mutex().lock().unwrap();
+    let _guard = lock_runtime_test_mutex();
     clear_mock_exec_submissions();
 
     let mut node = build_test_node();

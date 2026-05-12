@@ -3,6 +3,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
+    str::FromStr,
 };
 
 use anyhow::{Context, Result};
@@ -23,7 +24,7 @@ use nautilus_model::{
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
 use toml::Value;
 
@@ -2828,11 +2829,29 @@ impl EthChainlinkTaker {
         intent: BoltV3OrderIntentEvidence,
         order: OrderAny,
         client_id: ClientId,
+        notional: Decimal,
     ) -> Result<()> {
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
+        self.context.submit_admission().admit(
+            &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
+                strategy_id: intent.strategy_id.clone(),
+                client_order_id: intent.client_order_id.clone(),
+                instrument_id: intent.instrument_id.clone(),
+                notional,
+            },
+        )?;
         self.submit_order(order, None, Some(client_id))
+    }
+
+    fn order_notional(price: Price, quantity: Quantity) -> Result<Decimal> {
+        let price = Decimal::from_str(&price.to_string())
+            .map_err(|error| anyhow::anyhow!("entry/exit order price is not decimal: {error}"))?;
+        let quantity = Decimal::from_str(&quantity.to_string()).map_err(|error| {
+            anyhow::anyhow!("entry/exit order quantity is not decimal: {error}")
+        })?;
+        Ok(price * quantity)
     }
 
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
@@ -2914,7 +2933,10 @@ impl EthChainlinkTaker {
             quantity: quantity.to_string(),
         };
 
-        if let Err(error) = self.submit_order_with_decision_evidence(intent, order, client_id) {
+        let notional = Self::order_notional(price, quantity)?;
+        if let Err(error) =
+            self.submit_order_with_decision_evidence(intent, order, client_id, notional)
+        {
             self.exposure = ExposureState::Managed(managed_position);
             return Err(error);
         }
@@ -3127,7 +3149,10 @@ impl EthChainlinkTaker {
             quantity: quantity.to_string(),
         };
 
-        if let Err(error) = self.submit_order_with_decision_evidence(intent, order, client_id) {
+        let notional = Self::order_notional(price, quantity)?;
+        if let Err(error) =
+            self.submit_order_with_decision_evidence(intent, order, client_id, notional)
+        {
             self.clear_pending_entry_state();
             return Err(error);
         }
@@ -4590,6 +4615,41 @@ mod tests {
         fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
         decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
     ) -> EthChainlinkTaker {
+        test_strategy_with_fee_provider_decision_evidence_and_admission(
+            fee_provider,
+            decision_evidence,
+            armed_submit_admission(1_000, Decimal::new(1000, 0)),
+        )
+    }
+
+    fn armed_submit_admission(
+        max_live_order_count: u32,
+        max_notional_per_order: Decimal,
+    ) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+        let admission =
+            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        admission
+            .arm(
+                crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+                    approval_id: "APPROVAL-001".to_string(),
+                    no_submit_readiness_report_path: std::path::PathBuf::from(
+                        "reports/no-submit-readiness.json",
+                    ),
+                    max_no_submit_readiness_report_bytes: 4096,
+                    max_live_order_count,
+                    max_notional_per_order,
+                    root_max_notional_per_order: Decimal::new(1000, 0),
+                },
+            )
+            .expect("test admission should arm");
+        admission
+    }
+
+    fn test_strategy_with_fee_provider_decision_evidence_and_admission(
+        fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+        submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+    ) -> EthChainlinkTaker {
         EthChainlinkTaker::new(
             EthChainlinkTakerConfig {
                 strategy_id: "ETHCHAINLINKTAKER-001".to_string(),
@@ -4617,8 +4677,9 @@ mod tests {
                 fee_provider,
                 "platform.reference.test.chainlink".to_string(),
                 Some(decision_evidence),
+                Some(submit_admission),
             )
-            .expect("test strategy context should include decision evidence"),
+            .expect("test strategy context should include decision evidence and submit admission"),
         )
     }
 
@@ -4672,12 +4733,12 @@ mod tests {
         strategy
     }
 
-    #[test]
-    fn decision_evidence_failure_rejects_before_nt_submit() {
-        let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-            RecordingFeeProvider::cold(),
-            Arc::new(FailingDecisionEvidenceWriter),
-        );
+    fn test_entry_order_and_intent(
+        strategy: &EthChainlinkTaker,
+    ) -> (
+        OrderAny,
+        crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+    ) {
         let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
@@ -4721,13 +4782,92 @@ mod tests {
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
+        (order, intent)
+    }
+
+    #[test]
+    fn decision_evidence_failure_rejects_before_nt_submit() {
+        let admission = armed_submit_admission(1, Decimal::new(100, 2));
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(FailingDecisionEvidenceWriter),
+            admission.clone(),
+        );
+        let (order, intent) = test_entry_order_and_intent(&strategy);
 
         let error = strategy
-            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                ClientId::from("POLYMARKET"),
+                Decimal::new(50, 2),
+            )
             .expect_err("evidence failure must reject before NT submit");
 
         assert!(
             error.to_string().contains("intent write failed"),
+            "{error:#}"
+        );
+        assert_eq!(
+            admission.admitted_order_count(),
+            0,
+            "evidence failure must happen before admission budget consumption"
+        );
+    }
+
+    #[test]
+    fn submit_admission_rejects_over_cap_before_nt_submit() {
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default()),
+            armed_submit_admission(1, Decimal::new(10, 2)),
+        );
+        let (order, intent) = test_entry_order_and_intent(&strategy);
+
+        let error = strategy
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                ClientId::from("POLYMARKET"),
+                Decimal::new(50, 2),
+            )
+            .expect_err("over-cap admission must reject before NT submit");
+
+        assert!(error.to_string().contains("exceeds cap"), "{error:#}");
+    }
+
+    #[test]
+    fn submit_admission_rejects_second_strategy_submit_before_nt_submit() {
+        let admission = armed_submit_admission(1, Decimal::new(100, 2));
+        admission
+            .admit(
+                &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
+                    strategy_id: "ETHCHAINLINKTAKER-001".to_string(),
+                    client_order_id: "O-19700101-000000-001-001-0".to_string(),
+                    instrument_id: "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
+                    notional: Decimal::new(50, 2),
+                },
+            )
+            .expect("first submit should consume budget");
+
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default()),
+            admission,
+        );
+        let (order, intent) = test_entry_order_and_intent(&strategy);
+
+        let error = strategy
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                ClientId::from("POLYMARKET"),
+                Decimal::new(50, 2),
+            )
+            .expect_err("exhausted admission must reject before NT submit");
+
+        assert!(
+            error.to_string().contains("order count exhausted"),
             "{error:#}"
         );
     }

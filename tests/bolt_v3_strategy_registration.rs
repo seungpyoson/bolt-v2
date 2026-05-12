@@ -63,7 +63,7 @@ fn bolt_v3_registers_configured_strategy_on_nt_trader_through_binding() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let mut empty_loaded = loaded.clone();
     empty_loaded.strategies.clear();
-    let (mut node, _summary) = build_bolt_v3_live_node_with_summary(
+    let (mut built, _summary) = build_bolt_v3_live_node_with_summary(
         &empty_loaded,
         |_| false,
         support::fake_bolt_v3_resolver,
@@ -71,7 +71,7 @@ fn bolt_v3_registers_configured_strategy_on_nt_trader_through_binding() {
     .expect("v3 LiveNode should build before strategy registration");
 
     let expected_strategy_id = StrategyId::from("BOLT-V3-PHASE3-STUB");
-    register_bolt_v3_strategies_on_node_with(&mut node, &loaded, |node, _strategy| {
+    register_bolt_v3_strategies_on_node_with(built.node_mut(), &loaded, |node, _strategy| {
         node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
             expected_strategy_id.as_str(),
         ))
@@ -84,7 +84,7 @@ fn bolt_v3_registers_configured_strategy_on_nt_trader_through_binding() {
     })
     .expect("injected strategy binding should register on NT trader");
 
-    let strategy_ids = node.kernel().trader().borrow().strategy_ids();
+    let strategy_ids = built.node().kernel().trader().borrow().strategy_ids();
     assert_eq!(strategy_ids, vec![expected_strategy_id]);
 }
 
@@ -123,24 +123,26 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     empty_loaded.strategies.clear();
     let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
         .expect("fixture secrets should resolve");
-    let (mut node, _summary) = build_bolt_v3_live_node_with_summary(
+    let (mut built, _summary) = build_bolt_v3_live_node_with_summary(
         &empty_loaded,
         |_| false,
         support::fake_bolt_v3_resolver,
     )
     .expect("v3 LiveNode should build before strategy registration");
 
+    let submit_admission = built.submit_admission_arc();
     let summary = register_bolt_v3_strategies_on_node_with_bindings(
-        &mut node,
+        built.node_mut(),
         &loaded,
         &resolved,
+        submit_admission,
         TEST_BINDINGS,
     )
     .expect("configured strategy should register through matching runtime binding");
 
     assert_eq!(summary.registered.len(), loaded.strategies.len());
     assert_eq!(
-        node.kernel().trader().borrow().strategy_ids(),
+        built.node().kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-PHASE3-BINDING")]
     );
 }
@@ -204,12 +206,12 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
     let (_tempdir, loaded) =
         support::load_bolt_v3_config_with_temp_catalog("strategy-registration");
 
-    let (node, _summary) =
+    let (built, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode build should register configured bolt-v3 strategies");
 
     assert_eq!(
-        node.kernel().trader().borrow().strategy_ids(),
+        built.node().kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("binary_oracle_edge_taker-001")]
     );
 }

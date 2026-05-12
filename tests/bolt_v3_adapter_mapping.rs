@@ -326,6 +326,9 @@ file_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt_v3/decision/order_intents.jsonl"
+
 [persistence.streaming]
 catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
@@ -394,8 +397,7 @@ fn live_node_build_path_runs_adapter_mapping_after_secret_resolution() {
     // the mapper sits between secret resolution and LiveNode::build, so
     // a successful build proves the mapper accepted the resolved
     // secrets without the build path silently bypassing it.
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let (_tempdir, loaded) = support::load_bolt_v3_config_with_temp_catalog("adapter-mapping");
     let _node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("v3 LiveNode should build through the adapter mapping boundary");
 }

@@ -73,11 +73,11 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: `cargo test --test bolt_v3_submit_admission` proves order count, notional cap, missing report, and evidence failure all reject before NT submit without consuming admission budget.
 
-- [ ] T028 [US2] Write failing tests in `tests/bolt_v3_submit_admission.rs` for one-order cap, over-notional rejection, missing gate report, and evidence-failure-before-admission ordering.
-- [ ] T029 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture`; expected failures show missing submit admission module.
-- [ ] T030 [US2] Add `src/bolt_v3_submit_admission.rs` with config-derived admission state initialized from `BoltV3LiveCanaryGateReport`.
-- [ ] T031 [US2] Wire strategy submit calls through submit admission before NT submit.
-- [ ] T032 [US2] Run `cargo test --test bolt_v3_submit_admission`, targeted strategy submit tests, and source-fence checks for direct `submit_order` bypasses.
+- [x] T028 [US2] Write failing tests in `tests/bolt_v3_submit_admission.rs` for one-order cap, over-notional rejection, missing gate report, and evidence-failure-before-admission ordering.
+- [x] T029 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture`; expected failures show missing submit admission module.
+- [x] T030 [US2] Add `src/bolt_v3_submit_admission.rs` with config-derived admission state initialized from `BoltV3LiveCanaryGateReport`.
+- [x] T031 [US2] Wire strategy submit calls through submit admission before NT submit.
+- [x] T032 [US2] Run `cargo test --test bolt_v3_submit_admission`, targeted strategy submit tests, and source-fence checks for direct `submit_order` bypasses.
 
 ## Phase 7: Authenticated No-submit Readiness (US4)
 

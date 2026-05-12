@@ -253,9 +253,9 @@ pub fn register_runtime_strategy(
     node: &mut LiveNode,
     context: StrategyRegistrationContext<'_>,
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
-    let raw = raw_taker_config(context.strategy).map_err(|error| binding_error(context, error))?;
+    let raw = raw_taker_config(context.strategy).map_err(|error| binding_error(&context, error))?;
     let parameters =
-        parameters_block(context.strategy).map_err(|error| binding_error(context, error))?;
+        parameters_block(context.strategy).map_err(|error| binding_error(&context, error))?;
     let venue = context
         .loaded
         .root
@@ -263,7 +263,7 @@ pub fn register_runtime_strategy(
         .get(&context.strategy.config.venue)
         .ok_or_else(|| {
             binding_message(
-                context,
+                &context,
                 format!(
                     "strategy venue `{}` is not present in loaded venues",
                     context.strategy.config.venue
@@ -272,21 +272,22 @@ pub fn register_runtime_strategy(
         })?;
     let fee_provider =
         polymarket::build_fee_provider(&context.strategy.config.venue, venue, context.resolved)
-            .map_err(|error| binding_message(context, error.to_string()))?;
+            .map_err(|error| binding_message(&context, error.to_string()))?;
     let decision_evidence = Arc::new(
         crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(
             context.loaded,
         )
-        .map_err(|error| binding_message(context, error.to_string()))?,
+        .map_err(|error| binding_message(&context, error.to_string()))?,
     );
     let build_context = StrategyBuildContext::try_new(
         fee_provider,
         parameters.runtime.reference_publish_topic,
         Some(decision_evidence),
+        Some(context.submit_admission.clone()),
     )
-    .map_err(|error| binding_message(context, error.to_string()))?;
+    .map_err(|error| binding_message(&context, error.to_string()))?;
     let registry = production_strategy_registry()
-        .map_err(|error| binding_message(context, error.to_string()))?;
+        .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
         .register_strategy(
             EthChainlinkTakerBuilder::kind(),
@@ -294,7 +295,7 @@ pub fn register_runtime_strategy(
             &build_context,
             node.kernel().trader(),
         )
-        .map_err(|error| binding_message(context, error.to_string()))
+        .map_err(|error| binding_message(&context, error.to_string()))
 }
 
 pub fn raw_taker_config(
@@ -444,14 +445,14 @@ fn nt_strategy_id(
 }
 
 fn binding_error(
-    context: StrategyRegistrationContext<'_>,
+    context: &StrategyRegistrationContext<'_>,
     error: BinaryOracleEdgeTakerRuntimeConfigError,
 ) -> BoltV3StrategyRegistrationError {
     binding_message(context, error.to_string())
 }
 
 fn binding_message(
-    context: StrategyRegistrationContext<'_>,
+    context: &StrategyRegistrationContext<'_>,
     message: String,
 ) -> BoltV3StrategyRegistrationError {
     BoltV3StrategyRegistrationError::Binding {

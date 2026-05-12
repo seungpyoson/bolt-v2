@@ -27,7 +27,7 @@ use nautilus_model::identifiers::ClientId;
 fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
     let (_tempdir, loaded) = support::load_bolt_v3_config_with_temp_catalog("client-registration");
 
-    let (node, summary) =
+    let (built, summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build through the registration boundary");
 
@@ -72,7 +72,12 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     // so the NT engines expose ClientIds matching those keys. This
     // proves the wiring goes all the way through `factory.create` and
     // `engine.register_client` without a parallel NT mock.
-    let registered_data: Vec<ClientId> = node.kernel().data_engine.borrow().registered_clients();
+    let registered_data: Vec<ClientId> = built
+        .node()
+        .kernel()
+        .data_engine
+        .borrow()
+        .registered_clients();
     assert!(
         registered_data.contains(&ClientId::from("polymarket_main")),
         "data engine should expose polymarket_main; got {registered_data:?}"
@@ -86,7 +91,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         "data engine should expose chainlink_btcusd; got {registered_data:?}"
     );
 
-    let registered_exec: Vec<ClientId> = node.kernel().exec_engine.borrow().client_ids();
+    let registered_exec: Vec<ClientId> = built.node().kernel().exec_engine.borrow().client_ids();
     assert!(
         registered_exec.contains(&ClientId::from("polymarket_main")),
         "exec engine should expose polymarket_main; got {registered_exec:?}"
@@ -203,15 +208,25 @@ fn empty_venues_root_config_registers_zero_clients() {
     let resolver = |_region: &str, _path: &str| -> Result<String, &'static str> {
         Err("resolver must not be called when no venues are configured")
     };
-    let (node, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
+    let (built, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
         .expect("empty venue set should still build a clean LiveNode");
     assert!(summary.venues.is_empty());
     assert!(
-        node.kernel()
+        built
+            .node()
+            .kernel()
             .data_engine
             .borrow()
             .registered_clients()
             .is_empty()
     );
-    assert!(node.kernel().exec_engine.borrow().client_ids().is_empty());
+    assert!(
+        built
+            .node()
+            .kernel()
+            .exec_engine
+            .borrow()
+            .client_ids()
+            .is_empty()
+    );
 }

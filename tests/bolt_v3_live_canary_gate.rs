@@ -9,8 +9,7 @@ use tokio::task::LocalSet;
 
 #[test]
 fn run_bolt_v3_live_node_rejects_missing_live_canary_before_nt_run() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let (_tempdir, loaded) = support::load_bolt_v3_config_with_temp_catalog("live-canary-gate");
     let loaded = loaded_without_live_canary(loaded);
     let mut node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");

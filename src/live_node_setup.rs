@@ -11,7 +11,8 @@ use nautilus_live::{config::LiveNodeConfig, node::LiveNode};
 use nautilus_model::identifiers::TraderId;
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter, clients::polymarket, config::Config,
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState, clients::polymarket, config::Config,
     strategies::registry::StrategyBuildContext,
 };
 
@@ -39,8 +40,9 @@ pub fn make_strategy_build_context(
         fee_provider,
         reference_publish_topic,
         Some(decision_evidence),
+        Some(Arc::new(BoltV3SubmitAdmissionState::new_unarmed())),
     )
-    .expect("decision evidence writer should be provided")
+    .expect("decision evidence writer and submit admission should be provided")
 }
 
 pub fn make_live_node_config(

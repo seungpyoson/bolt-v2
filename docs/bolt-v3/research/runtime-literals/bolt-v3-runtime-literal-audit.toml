@@ -933,3 +933,27 @@ literal = '''"satisfied"'''
 context = '''matches!(status, Some(value) if value.eq_ignore_ascii_case("satisfied"))'''
 classification = "live_canary_readiness_report_status_value"
 reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission notional {notional} exceeds cap {max_notional_per_order}"'''
+context = '''"bolt-v3 submit admission notional {notional} exceeds cap {max_notional_per_order}"'''
+classification = "submit_admission_diagnostic_template"
+reason = "This fail-closed diagnostic reports an order notional above the live-canary gate cap; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission order count exhausted: admitted {admitted_order_count}, max {max_live_order_count}"'''
+context = '''"bolt-v3 submit admission order count exhausted: admitted {admitted_order_count}, max {max_live_order_count}"'''
+classification = "submit_admission_diagnostic_template"
+reason = "This fail-closed diagnostic reports canary order-budget exhaustion; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "inner.admitted_order_count += 1;"
+classification = "submit_admission_counter_increment"
+reason = "This increments the admitted order counter once per accepted submit admission request; the order budget itself comes from the validated gate report."

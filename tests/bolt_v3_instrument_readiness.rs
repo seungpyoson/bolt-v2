@@ -3,7 +3,8 @@ mod support;
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_market_families::updown::{
-        BoltV3MarketIdentityError, MarketIdentityPlan, UpdownTargetPlan, plan_market_identity,
+        BoltV3MarketIdentityError, KEY as UPDOWN_MARKET_FAMILY_KEY, MarketIdentityPlan,
+        UpdownTargetPlan, plan_market_identity,
     },
     bolt_v3_provider_family_bindings::polymarket_updown::{
         UpdownSelectedMarketFailureReason, UpdownSelectedMarketResolution,
@@ -111,7 +112,10 @@ fn cached_current_updown_pair_resolves_selected_market_identity() {
             );
             assert_eq!(selected_market.client_id, target.client_id_key);
             assert_eq!(selected_market.venue, venue.as_str());
-            assert_eq!(selected_market.rotating_market_family, "updown");
+            assert_eq!(
+                selected_market.rotating_market_family,
+                UPDOWN_MARKET_FAMILY_KEY
+            );
             assert_eq!(
                 selected_market.polymarket_condition_id,
                 current_market.condition_id

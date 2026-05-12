@@ -135,3 +135,5 @@ F13bn extends `python3 scripts/verify_bolt_v3_reference_policy_literals.py` so `
 F13bo extends `python3 scripts/verify_bolt_v3_reference_policy_literals.py` so raw millisecond-to-nanosecond multiplier literals in `tests/bolt_v3_reference_delivery.rs` are rejected. Mock reference-delivery `UnixNanos` construction now uses a `Duration`-based helper instead of `1_000_000`.
 
 F13bp adds `python3 scripts/verify_bolt_v3_credential_log_suppression_literals.py`, wires it into `just fmt-check`, and rejects inline logger-drain sleep durations in `tests/bolt_v3_credential_log_suppression.rs`. The credential-log suppression test now loads its logger-drain timing from `tests/fixtures/bolt_v3_credential_log_suppression/timing.toml`.
+
+F13bq extends `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` so direct `"updown"` market-family literals in instrument gate/readiness tests are rejected. `tests/bolt_v3_instrument_readiness.rs` now asserts against the owning `updown::KEY` contract constant.

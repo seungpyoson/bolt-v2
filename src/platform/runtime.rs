@@ -1433,7 +1433,9 @@ mod tests {
         };
 
         let node = {
-            let _guard = BUILD_LOCK.lock().expect("build lock should not be poisoned");
+            let _guard = BUILD_LOCK
+                .lock()
+                .expect("build lock should not be poisoned");
             LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
                 .expect("builder should construct")
                 .with_name("TEST-NODE")
@@ -1545,7 +1547,9 @@ mod tests {
     }
 
     fn build_empty_node() -> LiveNode {
-        let _guard = BUILD_LOCK.lock().expect("build lock should not be poisoned");
+        let _guard = BUILD_LOCK
+            .lock()
+            .expect("build lock should not be poisoned");
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("builder should construct")
             .with_name("TEST-NODE")

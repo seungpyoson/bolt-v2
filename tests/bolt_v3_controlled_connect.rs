@@ -563,20 +563,37 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
 }
 
 #[test]
-fn live_node_module_remains_no_trade_boundary_after_controlled_connect_addition() {
+fn live_node_module_only_runs_nt_after_live_canary_gate() {
     // Source-level inspection of `src/bolt_v3_live_node.rs`. The module
     // is allowed to reference NT's `connect_data_clients`,
     // `connect_exec_clients`, and `disconnect_clients` (the pinned
-    // controlled-connect / controlled-disconnect API), but it must
-    // never enter NT's runner loop, register a strategy actor, select
-    // a market, construct an order, submit one, or call any user-level
+    // controlled-connect / controlled-disconnect API), and the single
+    // approved NT runner entrypoint inside `run_bolt_v3_live_node`. The
+    // runner call must remain behind the bolt-v3 live canary gate, and
+    // this module must still never register a strategy actor, select a
+    // market, construct an order, submit one, or call any user-level
     // market-data subscription API. The forbidden token list lives in
     // this integration test (not in the module's own source) so the
     // assertion does not self-trip; production comments in
     // `bolt_v3_live_node.rs` must avoid these substrings on purpose.
     let source = include_str!("../src/bolt_v3_live_node.rs");
+    let gate_index = source
+        .find("check_bolt_v3_live_canary_gate(loaded)")
+        .expect("run wrapper must call the live canary gate");
+    let run_index = source
+        .find("node.run().await")
+        .expect("run wrapper must own the single NT runner call");
+    assert!(
+        gate_index < run_index,
+        "live canary gate must execute before NT LiveNode::run"
+    );
+    assert_eq!(
+        source.matches(".run(").count(),
+        1,
+        "bolt-v3 live node may only reference NT run through the gated wrapper"
+    );
+
     for forbidden in [
-        ".run(",
         ".start(",
         "start_async",
         "kernel.start",

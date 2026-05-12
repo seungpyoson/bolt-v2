@@ -180,6 +180,12 @@ flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
 
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_live_order_count = 1
+max_notional_per_order = "1.00"
+
 [aws]
 region = "eu-west-1"
 
@@ -572,6 +578,38 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
 - current allowed value:
   - `none`
 - maps to the local catalog writer no-rotation behavior
+
+### `[live_canary]`
+
+This section is optional for parse/build-only checks and required before `run_bolt_v3_live_node` starts the NT runner. If it is absent, the bolt-v3 runtime gate fails closed before `LiveNode::run`.
+
+#### `approval_id`
+
+- type: non-empty string
+- required: yes when `[live_canary]` is present
+- operator approval identifier for the exact canary launch
+
+#### `no_submit_readiness_report_path`
+
+- type: path string
+- required: yes when `[live_canary]` is present
+- path to a prior no-submit readiness JSON report
+- relative paths resolve from the root TOML directory
+
+#### `max_live_order_count`
+
+- type: positive integer
+- required: yes when `[live_canary]` is present
+- approved live canary order-count bound validated before `LiveNode::run`
+- the run gate does not count orders; submit-admission code must consume this bound before any live submit
+
+#### `max_notional_per_order`
+
+- type: positive decimal string
+- required: yes when `[live_canary]` is present
+- approved per-order live canary notional bound validated before `LiveNode::run`
+- must be less than or equal to `risk.default_max_notional_per_order`
+- the run gate does not submit orders; submit-admission code must consume this bound before any live submit
 
 ### `[aws]`
 
@@ -1251,6 +1289,12 @@ catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
 replace_existing = false
 rotation_kind = "none"
+
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_live_order_count = 1
+max_notional_per_order = "1.00"
 
 [aws]
 region = "eu-west-1"

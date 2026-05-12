@@ -1405,6 +1405,18 @@ If no venues are configured, the check still emits `Satisfied` root facts for st
 
 The built `LiveNode` is discarded after the build fact is recorded. The check must not call `connect_bolt_v3_clients`, `disconnect_bolt_v3_clients`, any user-level subscription API, any runner API, any strategy actor API, or any order API. Controlled-connect remains an explicit, separate caller action under Section 11.6.
 
+### 11.8 Live canary gate boundary
+
+The bolt-v3 live canary gate is the fail-closed admission boundary before `run_bolt_v3_live_node` enters NT's `LiveNode::run` runner loop. Production code must call `run_bolt_v3_live_node` instead of calling `LiveNode::run` directly for the bolt-v3 path.
+
+The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`.
+
+The gate reads the configured `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `status = "satisfied"` case-insensitively; stage names may be carried by either `stage` or `name` for diagnostics. Missing, unreadable, unparsable, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
+
+The gate is read-only. It does not connect clients, subscribe to data, register strategies, select markets, construct orders, submit orders, cancel orders, or mutate NT state. The built `LiveNode` may already exist when the gate runs, but a gate rejection must occur before `LiveNode::run`.
+
+The gate validates canary bounds before the runner starts; it does not itself count orders or enforce per-order notional at submit time. Submit-admission code must independently consume the validated `BoltV3LiveCanaryGateReport` bounds before any live canary order is allowed.
+
 ## 12. Panic Gate: Issue `#239`
 
 ### 12.1 Required test matrix

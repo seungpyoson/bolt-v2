@@ -52,6 +52,7 @@ This slice does not own:
 - Modify `src/lib.rs`: export the new module.
 - Modify `src/bolt_v3_config.rs`: add `DecisionEvidenceBlock` under `PersistenceBlock`.
 - Modify `tests/fixtures/bolt_v3/root.toml`: add the configured decision-evidence relative path under `[persistence.decision_evidence]`.
+- Modify `tests/support/mod.rs`: add a fixture loader that rewrites the production catalog root to a temp directory before build-path tests construct file-backed evidence.
 - Modify `src/strategies/registry.rs`: make `StrategyBuildContext` evidence-mandatory through a constructor and accessors.
 - Modify `src/strategies/eth_chainlink_taker.rs`: use context accessors and submit through one evidence-recording helper.
 - Modify `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`: build the production evidence writer from loaded config and pass it into the context.
@@ -75,14 +76,20 @@ use bolt_v2::{
     clients::polymarket::FeeProvider,
     strategies::registry::StrategyBuildContext,
 };
+use anyhow::Result;
+use futures_util::future::{BoxFuture, FutureExt};
 use rust_decimal::Decimal;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct TestFeeProvider;
 
 impl FeeProvider for TestFeeProvider {
-    fn fee_bps(&self, _token_id: &str) -> anyhow::Result<Decimal> {
-        Ok(Decimal::ZERO)
+    fn fee_bps(&self, _token_id: &str) -> Option<Decimal> {
+        Some(Decimal::ZERO)
+    }
+
+    fn warm(&self, _token_id: &str) -> BoxFuture<'_, Result<()>> {
+        async { Ok(()) }.boxed()
     }
 }
 
@@ -121,6 +128,7 @@ Expected: FAIL because `tests/bolt_v3_decision_evidence.rs` or `StrategyBuildCon
 - Modify: `src/lib.rs`
 - Modify: `src/bolt_v3_config.rs`
 - Modify: `tests/fixtures/bolt_v3/root.toml`
+- Modify: `tests/support/mod.rs`
 - Modify: `tests/config_parsing.rs`
 
 - [ ] **Step 1: Add failing config parsing assertion**
@@ -139,7 +147,7 @@ assert_eq!(
 Run:
 
 ```bash
-cargo test --test config_parsing bolt_v3_root_fixture_parses -- --nocapture
+cargo test --test config_parsing parses_minimal_bolt_v3_root_and_strategy_config -- --nocapture
 ```
 
 Expected: FAIL because `decision_evidence` is not a field on `PersistenceBlock`.
@@ -171,7 +179,40 @@ In `tests/fixtures/bolt_v3/root.toml`, add:
 order_intents_relative_path = "bolt_v3/decision/order_intents.jsonl"
 ```
 
-- [ ] **Step 4: Add the evidence module skeleton**
+- [ ] **Step 4: Add temp catalog fixture loader for build-path tests**
+
+In `tests/support/mod.rs`, add:
+
+```rust
+pub fn load_bolt_v3_config_with_temp_catalog(
+    label: &str,
+) -> (TempCaseDir, bolt_v2::bolt_v3_config::LoadedBoltV3Config) {
+    let tempdir = TempCaseDir::new(label);
+    let strategy_dir = tempdir.path().join("strategies");
+    fs::create_dir_all(&strategy_dir).expect("strategy fixture dir should be created");
+    fs::copy(
+        repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategy_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should be copied");
+    let catalog_dir = tempdir.path().join("catalog");
+    let root_text = fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 root fixture should be readable")
+        .replace(
+            r#"catalog_directory = "/var/lib/bolt/catalog""#,
+            &format!(r#"catalog_directory = "{}""#, catalog_dir.display()),
+        );
+    let root_path = tempdir.path().join("root.toml");
+    fs::write(&root_path, root_text).expect("temp bolt-v3 root fixture should be written");
+    let loaded = bolt_v2::bolt_v3_config::load_bolt_v3_config(&root_path)
+        .expect("temp bolt-v3 fixture should load");
+    (tempdir, loaded)
+}
+```
+
+Any integration test that calls `build_bolt_v3_live_node_with_summary` after this slice must use this helper instead of `tests/fixtures/bolt_v3/root.toml` directly. Otherwise it will try to create the decision-evidence file under the production fixture path `/var/lib/bolt/catalog`.
+
+- [ ] **Step 5: Add the evidence module skeleton**
 
 In `src/lib.rs`, add:
 
@@ -185,7 +226,7 @@ Create `src/bolt_v3_decision_evidence.rs`:
 use std::{
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Mutex,
 };
 
@@ -263,21 +304,26 @@ pub fn decision_evidence_path(loaded: &LoadedBoltV3Config) -> Result<PathBuf> {
             .order_intents_relative_path
             .trim(),
     );
-    if relative.as_os_str().is_empty() || relative.is_absolute() {
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
         return Err(anyhow!(
-            "persistence.decision_evidence.order_intents_relative_path must be non-empty and relative"
+            "persistence.decision_evidence.order_intents_relative_path must be non-empty, relative, and stay under catalog_directory"
         ));
     }
     Ok(Path::new(&loaded.root.persistence.catalog_directory).join(relative))
 }
 ```
 
-- [ ] **Step 5: Run config and module tests**
+- [ ] **Step 6: Run config and module tests**
 
 Run:
 
 ```bash
-cargo test --test config_parsing bolt_v3_root_fixture_parses -- --nocapture
+cargo test --test config_parsing parses_minimal_bolt_v3_root_and_strategy_config -- --nocapture
 cargo test --test bolt_v3_decision_evidence strategy_build_context_rejects_missing_decision_evidence -- --nocapture
 ```
 
@@ -290,7 +336,7 @@ Expected after implementation in this task: config test passes; missing context 
 - Modify: `src/live_node_setup.rs`
 - Modify: `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
 - Modify: `src/strategies/eth_chainlink_taker.rs` test helper context
-- Modify: `tests/support/stub_runtime_strategy.rs`
+- Modify: any tests constructing `StrategyBuildContext` directly
 
 - [ ] **Step 1: Change `StrategyBuildContext`**
 
@@ -362,7 +408,7 @@ StrategyBuildContext::try_new(
 )?
 ```
 
-For tests, add a `#[cfg(test)]` helper writer in `src/bolt_v3_decision_evidence.rs`:
+For unit tests inside the library crate, add a `#[cfg(test)]` helper writer in `src/bolt_v3_decision_evidence.rs`:
 
 ```rust
 #[cfg(test)]
@@ -389,6 +435,8 @@ impl BoltV3DecisionEvidenceWriter for RecordingDecisionEvidenceWriter {
     }
 }
 ```
+
+Integration tests cannot import `#[cfg(test)]` library items. If an integration test needs a fake writer, define a local test struct implementing the public `BoltV3DecisionEvidenceWriter` trait inside that integration test or in `tests/support/mod.rs`.
 
 - [ ] **Step 3: Run context tests**
 
@@ -418,12 +466,22 @@ fn eth_chainlink_taker_has_no_direct_submit_order_bypass() {
         .expect("strategy source should be readable");
     let direct_submit_count = source.matches("self.submit_order(").count();
     assert_eq!(
-        direct_submit_count, 0,
-        "all taker submit sites must route through submit_order_with_decision_evidence"
+        direct_submit_count, 1,
+        "only submit_order_with_decision_evidence may call NT submit directly"
+    );
+    let helper_index = source
+        .find("fn submit_order_with_decision_evidence")
+        .expect("strategy must expose one submit helper");
+    let submit_index = source
+        .find("self.submit_order(")
+        .expect("helper must contain the only direct NT submit call");
+    assert!(
+        helper_index < submit_index,
+        "the only direct submit call must be inside the evidence helper"
     );
     assert!(
-        source.contains("submit_order_with_decision_evidence"),
-        "strategy must expose one submit helper that records decision evidence before NT submit"
+        source[..submit_index].contains("record_order_intent"),
+        "decision evidence must be recorded before the only direct NT submit call"
     );
 }
 ```
@@ -478,7 +536,7 @@ Run:
 cargo test --test bolt_v3_decision_evidence eth_chainlink_taker_has_no_direct_submit_order_bypass -- --nocapture
 ```
 
-Expected: PASS and source count for direct `self.submit_order(` is zero.
+Expected: PASS and source count for direct `self.submit_order(` is one: the single call inside `submit_order_with_decision_evidence`.
 
 ## Task 5: Prove Persistence Failure Blocks Before NT Submit
 
@@ -505,15 +563,74 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter for FailingD
 
 - [ ] **Step 2: Add focused unit test around the helper**
 
-Add a test that calls `submit_order_with_decision_evidence` with a failing writer and a constructed order from the existing test strategy helper:
+First change the existing helper at `src/strategies/eth_chainlink_taker.rs:4528-4563` into two helpers:
+
+```rust
+fn test_strategy() -> EthChainlinkTaker {
+    test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        Arc::new(crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default()),
+    )
+}
+
+fn test_strategy_with_fee_provider(
+    fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
+) -> EthChainlinkTaker {
+    test_strategy_with_fee_provider_and_decision_evidence(
+        fee_provider,
+        Arc::new(crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default()),
+    )
+}
+
+fn test_strategy_with_fee_provider_and_decision_evidence(
+    fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+) -> EthChainlinkTaker {
+    EthChainlinkTaker::new(
+        EthChainlinkTakerConfig {
+            strategy_id: "ETHCHAINLINKTAKER-001".to_string(),
+            client_id: "POLYMARKET".to_string(),
+            warmup_tick_count: 20,
+            period_duration_secs: 300,
+            reentry_cooldown_secs: 30,
+            max_position_usdc: 1000.0,
+            book_impact_cap_bps: 15,
+            risk_lambda: 0.5,
+            worst_case_ev_min_bps: -20,
+            exit_hysteresis_bps: 5,
+            vol_window_secs: 60,
+            vol_gap_reset_secs: 10,
+            vol_min_observations: 20,
+            vol_bridge_valid_secs: 10,
+            pricing_kurtosis: 0.0,
+            theta_decay_factor: 0.0,
+            forced_flat_stale_chainlink_ms: 1500,
+            forced_flat_thin_book_min_liquidity: 100.0,
+            lead_agreement_min_corr: 0.8,
+            lead_jitter_max_ms: 250,
+        },
+        StrategyBuildContext::try_new(
+            fee_provider,
+            "platform.reference.test.chainlink".to_string(),
+            Some(decision_evidence),
+        )
+        .expect("test strategy context should include decision evidence"),
+    )
+}
+```
+
+Then add a test that calls `submit_order_with_decision_evidence` with a failing writer and a constructed order from that helper:
 
 ```rust
 #[test]
 fn decision_evidence_failure_rejects_before_nt_submit() {
-    let mut strategy = test_strategy_with_decision_evidence(Arc::new(FailingDecisionEvidenceWriter));
-    let instrument_id = InstrumentId::from("UP.POLYMARKET");
-    let quantity = Quantity::from("1");
-    let price = Price::from("0.50");
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        Arc::new(FailingDecisionEvidenceWriter),
+    );
+    let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+    let quantity = Quantity::new(1.0, 2);
+    let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = strategy.core.order_factory().limit(
         instrument_id,
@@ -574,6 +691,7 @@ Expected after implementation: PASS and error contains `intent write failed`.
 **Files:**
 - Modify: `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
 - Modify: `tests/bolt_v3_strategy_registration.rs`
+- Modify: `tests/bolt_v3_client_registration.rs` if it constructs a full bolt-v3 live node after the writer becomes mandatory
 
 - [ ] **Step 1: Add failing strategy-registration test**
 
@@ -582,8 +700,8 @@ Extend `tests/bolt_v3_strategy_registration.rs`:
 ```rust
 #[test]
 fn binary_oracle_runtime_binding_requires_decision_evidence_persistence_config() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let (_tempdir, loaded) =
+        support::load_bolt_v3_config_with_temp_catalog("decision-evidence-config");
 
     assert_eq!(
         loaded
@@ -595,6 +713,8 @@ fn binary_oracle_runtime_binding_requires_decision_evidence_persistence_config()
     );
 }
 ```
+
+Also update build-path tests in `tests/bolt_v3_strategy_registration.rs` that call `build_bolt_v3_live_node_with_summary` so they load config via `support::load_bolt_v3_config_with_temp_catalog(...)`. Keep pure config/raw-mapping tests on the shared fixture when no file-backed writer is constructed.
 
 - [ ] **Step 2: Build writer in the runtime binding**
 

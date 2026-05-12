@@ -59,6 +59,12 @@ pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecre
     block: ProviderCredentialedBlock::Execution,
     consumer: "Polymarket execution venue",
 }];
+pub const SECRET_FIELD_NAMES: &[&str] = &[
+    "private_key_ssm_path",
+    "api_key_ssm_path",
+    "api_secret_ssm_path",
+    "passphrase_ssm_path",
+];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_polymarket::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "POLYMARKET_PK",

@@ -21,3 +21,17 @@ fn main_uses_bolt_v3_runner_wrapper_only() {
         );
     }
 }
+
+#[test]
+fn main_runs_bolt_v3_runner_inside_local_set() {
+    let source = include_str!("../src/main.rs");
+
+    assert!(
+        source.contains("tokio::task::LocalSet::new()"),
+        "production entrypoint must create a LocalSet for NT's thread-local runner context"
+    );
+    assert!(
+        source.contains("runtime.block_on(local.run_until(app))"),
+        "production entrypoint must enter the bolt-v3 runner future through LocalSet::run_until"
+    );
+}

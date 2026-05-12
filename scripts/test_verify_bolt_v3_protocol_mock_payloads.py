@@ -100,6 +100,27 @@ down_token_id = "token-down-fixture"
         assert "fixture-owned literal" in findings[0].message
 
 
+def test_reconciliation_protocol_fixture_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/fixtures/bolt_v3_existing_strategy/reconciliation/open_order.toml",
+            'condition_id = "condition-fixture-reconciled"\n',
+        )
+        write_file(
+            root,
+            "tests/bolt_v3_reconciliation_restart.rs",
+            'fn probe() { let _ = "condition-fixture-reconciled"; }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_reconciliation_restart.rs"
+        assert "fixture-owned literal" in findings[0].message
+
+
 def test_fee_provider_protocol_fixture_literal_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -454,6 +475,7 @@ def main() -> int:
         test_fixture_payload_read_is_clean,
         test_inline_protocol_json_template_is_a_finding,
         test_order_lifecycle_protocol_fixture_literal_is_a_finding,
+        test_reconciliation_protocol_fixture_literal_is_a_finding,
         test_fee_provider_protocol_fixture_literal_is_a_finding,
         test_order_lifecycle_selected_binary_option_fixture_literal_is_a_finding,
         test_order_lifecycle_numeric_scenario_fixture_literal_is_a_finding,

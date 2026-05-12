@@ -21,6 +21,7 @@ ENFORCED_TEST_FILES = (
 PROTOCOL_FIXTURE_PATHS = (
     "tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml",
     "tests/fixtures/bolt_v3_existing_strategy/polymarket_fee_provider.toml",
+    "tests/fixtures/bolt_v3_existing_strategy/reconciliation/open_order.toml",
 )
 NUMERIC_FIXTURE_KEYS = frozenset(
     (

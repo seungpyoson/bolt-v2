@@ -1,6 +1,6 @@
 mod support;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
@@ -78,17 +78,23 @@ fn report_text(report: &BoltV3StartupCheckReport) -> String {
     format!("{report:#?}")
 }
 
-fn assert_no_resolved_secret_values(text: &str) {
-    for secret_value in [
-        "0x4242424242424242424242424242424242424242424242424242424242424242",
-        "polymarket-api-key",
-        "YWJj",
-        "polymarket-passphrase",
-        "binance-api-key",
-        "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-    ] {
+fn fixture_resolved_secret_values(loaded: &LoadedBoltV3Config) -> BTreeSet<String> {
+    loaded
+        .root
+        .clients
+        .values()
+        .filter_map(|client| client.secrets.as_ref())
+        .filter_map(toml::Value::as_table)
+        .flat_map(|secrets| secrets.values())
+        .filter_map(toml::Value::as_str)
+        .filter_map(|path| support::fake_bolt_v3_resolver(&loaded.root.aws.region, path).ok())
+        .collect()
+}
+
+fn assert_no_resolved_secret_values(loaded: &LoadedBoltV3Config, text: &str) {
+    for secret_value in fixture_resolved_secret_values(loaded) {
         assert!(
-            !text.contains(secret_value),
+            !text.contains(&secret_value),
             "report must not contain resolved secret value {secret_value}: {text}"
         );
     }
@@ -160,7 +166,7 @@ fn startup_check_reports_success_facts_without_connecting() {
     assert!(binance.detail.contains("data=true"));
     assert!(binance.detail.contains("execution=false"));
 
-    assert_no_resolved_secret_values(&report_text(&report));
+    assert_no_resolved_secret_values(&loaded, &report_text(&report));
 }
 
 #[test]
@@ -269,7 +275,7 @@ fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
     let text = report_text(&report);
     assert!(text.contains(&failed_secret_context));
     assert!(text.contains(&private_key_ssm_path));
-    assert_no_resolved_secret_values(&text);
+    assert_no_resolved_secret_values(&loaded, &text);
     assert_eq!(
         skipped_stages(&report),
         vec![
@@ -325,7 +331,7 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
         "{report:#?}"
     );
 
-    assert_no_resolved_secret_values(&report_text(&report));
+    assert_no_resolved_secret_values(&loaded, &report_text(&report));
 }
 
 #[test]
@@ -358,7 +364,7 @@ fn startup_check_reports_live_node_build_failure_after_registration() {
             .all(|fact| fact.status != BoltV3StartupCheckStatus::Skipped),
         "final build failure should not retroactively skip earlier stages: {report:#?}"
     );
-    assert_no_resolved_secret_values(&report_text(&report));
+    assert_no_resolved_secret_values(&loaded, &report_text(&report));
 }
 
 #[test]

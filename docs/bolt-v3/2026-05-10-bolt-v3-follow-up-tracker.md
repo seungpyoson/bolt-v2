@@ -122,6 +122,8 @@ F13bq note: `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` now 
 
 F13br note: `python3 scripts/verify_bolt_v3_forbidden_env_test_literals.py` now rejects direct provider forbidden-env literals in `tests/bolt_v3_client_registration.rs` and `tests/bolt_v3_readiness.rs`, and `just fmt-check` runs that verifier. Those tests now derive the sample forbidden env var from the provider-owned `polymarket::FORBIDDEN_ENV_VARS` list.
 
+F13bs note: `python3 scripts/verify_bolt_v3_fake_secret_test_literals.py` now rejects fake resolver secret literals in `tests/bolt_v3_readiness.rs`, and `just fmt-check` runs that verifier. Readiness redaction assertions now derive all fake secret values by resolving fixture SSM paths through `support::fake_bolt_v3_resolver`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

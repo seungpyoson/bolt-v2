@@ -139,3 +139,5 @@ F13bp adds `python3 scripts/verify_bolt_v3_credential_log_suppression_literals.p
 F13bq extends `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` so direct `"updown"` market-family literals in instrument gate/readiness tests are rejected. `tests/bolt_v3_instrument_readiness.rs` now asserts against the owning `updown::KEY` contract constant.
 
 F13br adds `python3 scripts/verify_bolt_v3_forbidden_env_test_literals.py`, wires it into `just fmt-check`, and rejects direct provider forbidden-env literals in `tests/bolt_v3_client_registration.rs` and `tests/bolt_v3_readiness.rs`. Those tests now derive the sample forbidden env var from the provider-owned `polymarket::FORBIDDEN_ENV_VARS` list.
+
+F13bs adds `python3 scripts/verify_bolt_v3_fake_secret_test_literals.py`, wires it into `just fmt-check`, and rejects fake resolver secret literals in `tests/bolt_v3_readiness.rs`. Readiness redaction assertions now derive all fake secret values by resolving fixture SSM paths through `support::fake_bolt_v3_resolver`.

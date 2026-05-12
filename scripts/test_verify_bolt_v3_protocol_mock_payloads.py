@@ -384,6 +384,26 @@ def test_local_http_response_literal_is_a_finding() -> None:
         assert "local HTTP response literal" in findings[0].message
 
 
+def test_local_http_request_parser_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_order_lifecycle_tracer.rs",
+            (
+                "fn buffer() { let mut buffer = [0_u8; 512]; }\n"
+                'fn delimiter(request: &[u8]) { let _ = request.windows(4).any(|window| window == b"\\r\\n\\r\\n"); }\n'
+                'fn header(name: &str) { let _ = name.eq_ignore_ascii_case("content-length"); }\n'
+            ),
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 3
+        assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
+        assert "local HTTP request parser literal" in findings[0].message
+
+
 def test_fee_provider_file_is_enforced() -> None:
     verifier = load_verifier()
     if "tests/bolt_v3_polymarket_fee_provider.rs" not in verifier.ENFORCED_TEST_FILES:
@@ -417,6 +437,7 @@ def main() -> int:
         test_order_lifecycle_raw_millisecond_nanosecond_conversion_is_a_finding,
         test_order_lifecycle_literal_unix_nanos_is_a_finding,
         test_local_http_response_literal_is_a_finding,
+        test_local_http_request_parser_literal_is_a_finding,
         test_fee_provider_file_is_enforced,
         test_order_lifecycle_tracer_file_is_enforced,
     ]

@@ -7,7 +7,7 @@ mod support;
 
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, mpsc},
@@ -66,11 +66,8 @@ use support::{
 };
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener as TokioTcpListener,
-    sync::Mutex as AsyncMutex,
-    task::JoinHandle,
-    time::sleep,
+    io::AsyncWriteExt, net::TcpListener as TokioTcpListener, sync::Mutex as AsyncMutex,
+    task::JoinHandle, time::sleep,
 };
 use tokio_tungstenite::accept_async;
 use ustr::Ustr;
@@ -523,21 +520,7 @@ fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<St
     std::thread::spawn(move || {
         for _ in 0..expected_requests {
             let (mut stream, _) = listener.accept().expect("local fee server should accept");
-            let mut request = Vec::new();
-            loop {
-                let mut buffer = [0_u8; 512];
-                let read = stream
-                    .read(&mut buffer)
-                    .expect("local fee server should read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request = String::from_utf8_lossy(&request).into_owned();
+            let request = support::read_local_http_request(&mut stream, "local fee server");
             tx.send(request)
                 .expect("local fee server should record request");
 
@@ -610,17 +593,15 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
             let fee_rate_body = Arc::clone(&fee_rate_body);
             let unexpected_request_body = Arc::clone(&unexpected_request_body);
             tokio::spawn(async move {
-                let Some(request) = read_http_request(&mut socket).await else {
+                let Some(request) = support::read_local_http_request_async(&mut socket).await
+                else {
                     return;
                 };
                 let request_line = request.lines().next().unwrap_or_default();
                 let mut parts = request_line.split_whitespace();
                 let method = parts.next().unwrap_or_default().to_string();
                 let target = parts.next().unwrap_or_default().to_string();
-                let body = request
-                    .split_once("\r\n\r\n")
-                    .map(|(_, body)| body.to_string())
-                    .unwrap_or_default();
+                let body = support::local_http_request_body(&request);
                 recorded.lock().await.push(RecordedPolymarketRequest {
                     method: method.clone(),
                     target: target.clone(),
@@ -718,39 +699,6 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
         http_task,
         ws_task,
     }
-}
-
-async fn read_http_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
-    let mut request = Vec::new();
-    loop {
-        let mut buffer = [0_u8; 1024];
-        let read = socket.read(&mut buffer).await.ok()?;
-        if read == 0 {
-            break;
-        }
-        request.extend_from_slice(&buffer[..read]);
-        if request_has_complete_body(&request) {
-            break;
-        }
-    }
-    String::from_utf8(request).ok()
-}
-
-fn request_has_complete_body(request: &[u8]) -> bool {
-    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&request[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
-    request.len() >= header_end + 4 + content_length
 }
 
 fn point_execution_to_local_polymarket_server(

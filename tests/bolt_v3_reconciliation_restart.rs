@@ -5,7 +5,7 @@ use std::{
     env,
     fmt::Display,
     fs,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     path::{Path, PathBuf},
     str::FromStr,
@@ -773,21 +773,7 @@ fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<St
     std::thread::spawn(move || {
         for _ in 0..expected_requests {
             let (mut stream, _) = listener.accept().expect("local fee server should accept");
-            let mut request = Vec::new();
-            loop {
-                let mut buffer = [0_u8; 512];
-                let read = stream
-                    .read(&mut buffer)
-                    .expect("local fee server should read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request_text = String::from_utf8_lossy(&request).into_owned();
+            let request_text = support::read_local_http_request(&mut stream, "local fee server");
             tx.send(request_text)
                 .expect("local fee server should record request");
             let response = support::local_http_json_response(support::LocalHttpStatus::Ok, &body);

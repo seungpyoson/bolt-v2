@@ -64,6 +64,9 @@ ORDER_LIFECYCLE_LITERAL_UNIX_NANOS_PATTERN = re.compile(
 LOCAL_HTTP_RESPONSE_LITERAL_PATTERN = re.compile(
     r'"(?:HTTP/1\.1[^"]*|200 OK|404 Not Found)"'
 )
+LOCAL_HTTP_REQUEST_PARSER_LITERAL_PATTERN = re.compile(
+    r'(?:\[\s*0_u8\s*;\s*\d+\s*\]|windows\(\s*4\s*\)\.(?:any|position)\([^;\n]*b"\\r\\n\\r\\n"[^;\n]*\)|split_once\(\s*"\\r\\n\\r\\n"\s*\)|"content-length")'
+)
 
 
 @dataclass(frozen=True)
@@ -201,6 +204,15 @@ def scan_file(
                 line=line_number(text, match.start()),
                 message="local HTTP response literal; use shared test support helper",
                 excerpt=match.group(0),
+            )
+        )
+    for match in LOCAL_HTTP_REQUEST_PARSER_LITERAL_PATTERN.finditer(text):
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message="local HTTP request parser literal; use shared test support helper",
+                excerpt=first_nonblank_line(match.group(0)),
             )
         )
     if rel == "tests/bolt_v3_order_lifecycle_tracer.rs":

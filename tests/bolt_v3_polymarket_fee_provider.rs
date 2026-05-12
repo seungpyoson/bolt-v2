@@ -1,5 +1,5 @@
 use std::{
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     path::PathBuf,
     sync::{OnceLock, mpsc},
@@ -149,21 +149,7 @@ fn spawn_fee_rate_server() -> (String, mpsc::Receiver<String>) {
 
     std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("local fee server should accept");
-        let mut request = Vec::new();
-        loop {
-            let mut buffer = [0_u8; 512];
-            let read = stream
-                .read(&mut buffer)
-                .expect("local fee server should read request");
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..read]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        let request = String::from_utf8_lossy(&request).into_owned();
+        let request = support::read_local_http_request(&mut stream, "local fee server");
         tx.send(request)
             .expect("local fee server should record request");
 

@@ -6,6 +6,7 @@ use std::{
     any::Any,
     cell::RefCell,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -43,6 +44,7 @@ use nautilus_model::{
     types::{AccountBalance, MarginBalance, Price, Quantity},
 };
 use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -156,6 +158,74 @@ pub fn local_http_json_response(status: LocalHttpStatus, body: &str) -> String {
         body.len(),
         body
     )
+}
+
+const LOCAL_HTTP_REQUEST_BUFFER_BYTES: usize = 1024;
+const LOCAL_HTTP_HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
+const LOCAL_HTTP_CONTENT_LENGTH_HEADER: &str = "content-length";
+
+pub fn read_local_http_request<R: Read>(reader: &mut R, context: &str) -> String {
+    let mut request = Vec::new();
+    loop {
+        let mut buffer = [0_u8; LOCAL_HTTP_REQUEST_BUFFER_BYTES];
+        let read = reader
+            .read(&mut buffer)
+            .unwrap_or_else(|error| panic!("{context} should read request: {error}"));
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if local_http_request_is_complete(&request) {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&request).into_owned()
+}
+
+pub async fn read_local_http_request_async(socket: &mut tokio::net::TcpStream) -> Option<String> {
+    let mut request = Vec::new();
+    loop {
+        let mut buffer = [0_u8; LOCAL_HTTP_REQUEST_BUFFER_BYTES];
+        let read = socket.read(&mut buffer).await.ok()?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if local_http_request_is_complete(&request) {
+            break;
+        }
+    }
+    String::from_utf8(request).ok()
+}
+
+pub fn local_http_request_body(request: &str) -> String {
+    request
+        .as_bytes()
+        .windows(LOCAL_HTTP_HEADER_TERMINATOR.len())
+        .position(|window| window == LOCAL_HTTP_HEADER_TERMINATOR)
+        .and_then(|header_end| request.get(header_end + LOCAL_HTTP_HEADER_TERMINATOR.len()..))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn local_http_request_is_complete(request: &[u8]) -> bool {
+    let Some(header_end) = request
+        .windows(LOCAL_HTTP_HEADER_TERMINATOR.len())
+        .position(|window| window == LOCAL_HTTP_HEADER_TERMINATOR)
+    else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(LOCAL_HTTP_CONTENT_LENGTH_HEADER)
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    request.len() >= header_end + LOCAL_HTTP_HEADER_TERMINATOR.len() + content_length
 }
 
 #[derive(Debug, Clone, Deserialize)]

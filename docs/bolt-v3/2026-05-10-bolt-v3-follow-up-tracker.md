@@ -92,6 +92,8 @@ F13bb note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13bc note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects inline local HTTP response/status literals in enforced protocol tests. Local fee, order-lifecycle, and reconciliation HTTP responders now use `tests/support/mod.rs` `local_http_json_response` plus `LocalHttpStatus` instead of per-test response framing strings.
 
+F13bd note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects inline local HTTP request-parser literals in enforced protocol tests. Local fee, order-lifecycle, and reconciliation HTTP responders now use `tests/support/mod.rs` request reader/body helpers instead of per-test buffer/header-delimiter/content-length parsing.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

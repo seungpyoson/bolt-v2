@@ -1,0 +1,5 @@
+poll_interval_milliseconds = 10
+short_settle_milliseconds = 20
+medium_settle_milliseconds = 50
+long_settle_milliseconds = 100
+startup_settle_milliseconds = 1250

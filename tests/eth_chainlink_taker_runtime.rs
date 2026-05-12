@@ -179,9 +179,19 @@ struct RuntimeTimestampsFixture {
     entry_fill: RuntimeEventTimestampsFixture,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeTimingFixture {
+    poll_interval_milliseconds: u64,
+    short_settle_milliseconds: u64,
+    medium_settle_milliseconds: u64,
+    long_settle_milliseconds: u64,
+    startup_settle_milliseconds: u64,
+}
+
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 static TEST_NODE_CONFIG: OnceLock<Config> = OnceLock::new();
 static RUNTIME_TIMESTAMPS: OnceLock<RuntimeTimestampsFixture> = OnceLock::new();
+static RUNTIME_TIMING: OnceLock<RuntimeTimingFixture> = OnceLock::new();
 const RUNTIME_DEFAULT_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
     UpdownSelectedMarketRuntimeRole::Default;
 const RUNTIME_ROTATION_B_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
@@ -212,6 +222,35 @@ fn runtime_timestamps() -> &'static RuntimeTimestampsFixture {
             fs::read_to_string(fixture_path).expect("runtime timestamps fixture should read");
         toml::from_str(&toml).expect("runtime timestamps fixture should parse")
     })
+}
+
+fn runtime_timing() -> &'static RuntimeTimingFixture {
+    RUNTIME_TIMING.get_or_init(|| {
+        let fixture_path =
+            support::repo_path("tests/fixtures/eth_chainlink_taker_runtime/timing.toml");
+        let toml = fs::read_to_string(fixture_path).expect("runtime timing fixture should read");
+        toml::from_str(&toml).expect("runtime timing fixture should parse")
+    })
+}
+
+fn runtime_poll_interval() -> Duration {
+    Duration::from_millis(runtime_timing().poll_interval_milliseconds)
+}
+
+fn runtime_short_settle_delay() -> Duration {
+    Duration::from_millis(runtime_timing().short_settle_milliseconds)
+}
+
+fn runtime_medium_settle_delay() -> Duration {
+    Duration::from_millis(runtime_timing().medium_settle_milliseconds)
+}
+
+fn runtime_long_settle_delay() -> Duration {
+    Duration::from_millis(runtime_timing().long_settle_milliseconds)
+}
+
+fn runtime_startup_settle_delay() -> Duration {
+    Duration::from_millis(runtime_timing().startup_settle_milliseconds)
 }
 
 fn instrument_created_ts() -> UnixNanos {
@@ -1611,7 +1650,7 @@ fn entry_fill_event(
 
 async fn wait_for_running(handle: &LiveNodeHandle) {
     while !handle.is_running() {
-        sleep(Duration::from_millis(10)).await;
+        sleep(runtime_poll_interval()).await;
     }
 }
 
@@ -1685,7 +1724,7 @@ fn drive_eth_entry_submission(mut node: LiveNode, strategy_id: StrategyId) {
                 if !recorded_mock_exec_submissions().is_empty() {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -1743,7 +1782,7 @@ fn drive_eth_entry_selected_market_open_orders_no_action(
                 if !recorded_mock_exec_submissions().is_empty() {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             publish_any(
@@ -1768,7 +1807,7 @@ fn drive_eth_entry_selected_market_open_orders_no_action(
                 if found {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -1826,7 +1865,7 @@ fn drive_eth_entry_no_action_with_book_quantity(
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -1899,7 +1938,7 @@ fn drive_eth_entry_after_cached_position_for_position_strategy_no_action(
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -1941,7 +1980,7 @@ fn drive_eth_entry_missing_reference_no_action(mut node: LiveNode, strategy_id: 
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -1985,7 +2024,7 @@ fn drive_eth_entry_active_book_not_priced_no_action(mut node: LiveNode, strategy
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -2031,7 +2070,7 @@ fn drive_eth_entry_realized_vol_not_ready_no_action(mut node: LiveNode, strategy
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -2068,7 +2107,7 @@ fn drive_eth_entry_stale_reference_no_action(mut node: LiveNode, strategy_id: St
                 fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(start_ts_ms + 1, 3_101.0, 3_105.0),
             );
-            sleep(Duration::from_millis(20)).await;
+            sleep(runtime_short_settle_delay()).await;
 
             let up = eth_up_instrument_id();
             let down = eth_down_instrument_id();
@@ -2082,7 +2121,7 @@ fn drive_eth_entry_stale_reference_no_action(mut node: LiveNode, strategy_id: St
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -2132,7 +2171,7 @@ fn drive_eth_entry_freeze_no_action(mut node: LiveNode, strategy_id: StrategyId)
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -2183,7 +2222,7 @@ fn drive_eth_entry_market_not_started_no_action(mut node: LiveNode, strategy_id:
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -2213,7 +2252,7 @@ fn drive_eth_entry_market_ended_no_action(mut node: LiveNode, strategy_id: Strat
                 runtime_selection_topic(&strategy_id).into(),
                 &short_lived_selection_snapshot(start_ts_ms, start_ts_ms, market_end_ts_ms),
             );
-            sleep(Duration::from_millis(1_250)).await;
+            sleep(runtime_startup_settle_delay()).await;
             publish_any(
                 fixture_reference_publish_topic().to_string().into(),
                 &reference_snapshot(market_end_ts_ms + 250, 3_100.0, 3_102.0),
@@ -2235,7 +2274,7 @@ fn drive_eth_entry_market_ended_no_action(mut node: LiveNode, strategy_id: Strat
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -2285,7 +2324,7 @@ fn drive_eth_entry_pre_submit_rejection(mut node: LiveNode, strategy_id: Strateg
             );
 
             for _ in 0..50 {
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -2349,7 +2388,7 @@ fn drive_eth_exit_pre_submit_rejection_with_quantity(
                 runtime_selection_topic(&strategy_id).into(),
                 &freeze_selection_snapshot(start_ts_ms),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             handle.stop();
         };
@@ -2379,7 +2418,7 @@ fn drive_eth_exit_sellable_rejection(mut node: LiveNode, strategy_id: StrategyId
                 runtime_selection_topic(&strategy_id).into(),
                 &selection_snapshot(start_ts_ms),
             );
-            sleep(Duration::from_millis(20)).await;
+            sleep(runtime_short_settle_delay()).await;
 
             if let Some(mut actor) =
                 try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
@@ -2416,7 +2455,7 @@ fn drive_eth_exit_sellable_rejection(mut node: LiveNode, strategy_id: StrategyId
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             handle.stop();
         };
@@ -2496,7 +2535,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
                 if !recorded_mock_exec_submissions().is_empty() {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             publish_deltas(
@@ -2507,7 +2546,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             handle.stop();
         };
@@ -2740,7 +2779,7 @@ fn eth_chainlink_taker_runtime_writes_market_selection_result_without_submit() {
                 runtime_selection_topic(&strategy_id).into(),
                 &selection_snapshot_with_market_facts(start_ts_ms, price_to_beat_observed_ts_ms),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             handle.stop();
         };
@@ -2918,7 +2957,7 @@ fn assert_failed_market_selection_result_without_submit(reason: &str) {
                 runtime_selection_topic(&strategy_id).into(),
                 &idle_selection_snapshot(reason, published_at_ms),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             handle.stop();
         };
@@ -5753,7 +5792,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
                 runtime_selection_topic(&strategy_id).into(),
                 &selection_snapshot(start_ts_ms),
             );
-            sleep(Duration::from_millis(20)).await;
+            sleep(runtime_short_settle_delay()).await;
 
             if let Some(mut actor) =
                 try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
@@ -5790,7 +5829,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
             assert!(recorded_mock_exec_submissions().is_empty());
 
             std::fs::remove_file(&occupied_path).unwrap();
@@ -5813,7 +5852,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_submit_blocked_after_decision_evidence
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(100)).await;
+            sleep(runtime_long_settle_delay()).await;
 
             handle.stop();
         };
@@ -5895,7 +5934,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
                 if !recorded_mock_exec_submissions().is_empty() {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -5934,7 +5973,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -6021,7 +6060,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
                 if !recorded_mock_exec_submissions().is_empty() {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             let entry_submission = recorded_mock_exec_submissions()
@@ -6039,7 +6078,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
                     PositionId::from("P-RT-ENTRY-001"),
                 ),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
@@ -6050,7 +6089,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -6138,7 +6177,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
                 if !recorded_mock_exec_submissions().is_empty() {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -6231,7 +6270,7 @@ fn eth_chainlink_taker_runtime_reducing_trading_state_allows_exit_order_submit()
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             if let Some(mut actor) =
                 try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
@@ -6257,7 +6296,7 @@ fn eth_chainlink_taker_runtime_reducing_trading_state_allows_exit_order_submit()
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -6269,7 +6308,7 @@ fn eth_chainlink_taker_runtime_reducing_trading_state_allows_exit_order_submit()
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             handle.stop();
         };
@@ -6413,7 +6452,7 @@ fn eth_chainlink_taker_runtime_writes_fail_closed_exit_evaluation_before_submit(
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             if let Some(mut actor) =
                 try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
@@ -6451,7 +6490,7 @@ fn eth_chainlink_taker_runtime_writes_fail_closed_exit_evaluation_before_submit(
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -6597,7 +6636,7 @@ fn eth_chainlink_taker_runtime_writes_ev_hysteresis_exit_evaluation_before_submi
                 if !recorded_mock_exec_submissions().is_empty() {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -6625,7 +6664,7 @@ fn eth_chainlink_taker_runtime_writes_ev_hysteresis_exit_evaluation_before_submi
             } else {
                 panic!("runtime strategy actor should be registered");
             }
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             publish_any(
                 runtime_selection_topic(&strategy_id).into(),
@@ -6648,7 +6687,7 @@ fn eth_chainlink_taker_runtime_writes_ev_hysteresis_exit_evaluation_before_submi
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -6800,7 +6839,7 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
             assert_eq!(recorded_mock_exec_submissions().len(), 1);
 
@@ -6902,7 +6941,7 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
                 runtime_selection_topic(&strategy_id).into(),
                 &freeze_selection_snapshot(start_ts_ms),
             );
-            sleep(Duration::from_millis(100)).await;
+            sleep(runtime_long_settle_delay()).await;
 
             assert!(
                 recorded_mock_exec_submissions().is_empty(),
@@ -6987,7 +7026,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
                 switchboard::get_book_deltas_topic(market_a_down),
                 &book_deltas(market_a_down, 0.480, 0.490),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
 
             if let Some(mut actor) =
                 try_get_actor_unchecked::<EthChainlinkTaker>(&strategy_id.inner())
@@ -7020,7 +7059,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
                 switchboard::get_book_deltas_topic(market_b_down),
                 &book_deltas(market_b_down, 0.500, 0.510),
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(runtime_medium_settle_delay()).await;
             assert!(
                 recorded_mock_exec_submissions().is_empty(),
                 "{:?}",
@@ -7035,7 +7074,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -7208,7 +7247,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
                 if recorded_mock_exec_submissions().len() == 1 {
                     break;
                 }
-                sleep(Duration::from_millis(10)).await;
+                sleep(runtime_poll_interval()).await;
             }
 
             handle.stop();
@@ -7308,7 +7347,7 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
                 switchboard::get_book_deltas_topic(down),
                 &book_deltas(down, 0.520, 0.530),
             );
-            sleep(Duration::from_millis(100)).await;
+            sleep(runtime_long_settle_delay()).await;
 
             assert!(
                 recorded_mock_exec_submissions().is_empty(),

@@ -127,3 +127,5 @@ F13bj extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` s
 F13bk extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct decision-event timestamp literals in `tests/bolt_v3_order_intent_gate.rs` are rejected. Order-intent gate event/init timestamps now reuse `tests/fixtures/bolt_v3_decision_events/event_timestamps.json`.
 
 F13bl extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so direct `UnixNanos::from(<literal>)` timestamp construction in `tests/eth_chainlink_taker_runtime.rs` is rejected. Existing-strategy runtime synthetic instrument/event timestamps now load from `tests/fixtures/eth_chainlink_taker_runtime/timestamps.toml`.
+
+F13bm extends `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` so literal `sleep(Duration::from_millis(...))` and `sleep(Duration::from_secs(...))` calls in `tests/eth_chainlink_taker_runtime.rs` are rejected. Existing-strategy runtime async wait/settle durations now load from `tests/fixtures/eth_chainlink_taker_runtime/timing.toml`.

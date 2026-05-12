@@ -409,6 +409,24 @@ def test_runtime_unix_nanos_literal_is_a_finding() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_runtime_sleep_duration_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        write_runtime_test(
+            root,
+            "async fn probe() { sleep(Duration::from_millis(10)).await; }\n",
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert findings
+        assert "existing-strategy runtime sleep duration literal" in findings[0].message
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_canonical_fixture_definitions_are_allowed() -> None:
     verifier = load_verifier()
     root = REPO_ROOT / ".tmp_verify_bolt_v3_existing_strategy_runtime_literals"
@@ -467,6 +485,7 @@ def main() -> int:
         test_selection_freeze_reason_literal_is_a_finding,
         test_price_to_beat_source_literal_is_a_finding,
         test_runtime_unix_nanos_literal_is_a_finding,
+        test_runtime_sleep_duration_literal_is_a_finding,
         test_canonical_fixture_definitions_are_allowed,
     ]
     for test in tests:

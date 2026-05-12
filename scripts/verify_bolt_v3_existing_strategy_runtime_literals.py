@@ -43,6 +43,9 @@ MARKET_SELECTION_CONTEXT_LITERAL_FIELD_PATTERN = re.compile(
 UNIX_NANOS_LITERAL_PATTERN = re.compile(
     r"UnixNanos::from\(\s*\d[\d_]*(?:_u64)?\s*\)"
 )
+SLEEP_DURATION_LITERAL_PATTERN = re.compile(
+    r"sleep\(\s*Duration::from_(?:millis|secs)\(\s*\d[\d_]*\s*\)\s*\)"
+)
 FORBIDDEN_LITERALS = {
     "eth_chainlink_taker": (
         "existing-strategy runtime archetype literal; use ETH_CHAINLINK_TAKER_KIND"
@@ -398,6 +401,19 @@ def scan_runtime_file(
                 message=(
                     "existing-strategy runtime timestamp literal; "
                     "derive from runtime timestamp fixture"
+                ),
+                excerpt=match.group(0),
+            )
+        )
+
+    for match in SLEEP_DURATION_LITERAL_PATTERN.finditer(text):
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message=(
+                    "existing-strategy runtime sleep duration literal; "
+                    "derive from runtime timing fixture"
                 ),
                 excerpt=match.group(0),
             )

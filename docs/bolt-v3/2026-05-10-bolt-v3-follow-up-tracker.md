@@ -110,6 +110,8 @@ F13bk note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13bl note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now rejects direct `UnixNanos::from(<literal>)` timestamp construction in `tests/eth_chainlink_taker_runtime.rs`. Existing-strategy runtime synthetic instrument/event timestamps now load from `tests/fixtures/eth_chainlink_taker_runtime/timestamps.toml`.
 
+F13bm note: `python3 scripts/verify_bolt_v3_existing_strategy_runtime_literals.py` now rejects literal `sleep(Duration::from_millis(...))` and `sleep(Duration::from_secs(...))` calls in `tests/eth_chainlink_taker_runtime.rs`. Existing-strategy runtime async wait/settle durations now load from `tests/fixtures/eth_chainlink_taker_runtime/timing.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

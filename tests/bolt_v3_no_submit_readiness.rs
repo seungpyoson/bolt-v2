@@ -97,6 +97,29 @@ fn no_submit_readiness_report_json_is_accepted_by_live_canary_gate() {
         .expect("gate should accept producer report");
 }
 
+#[test]
+fn no_submit_readiness_source_has_no_trade_or_runner_tokens() {
+    let source = include_str!("../src/bolt_v3_no_submit_readiness.rs");
+    for forbidden in [
+        ".run(",
+        "run_bolt_v3_live_node",
+        "submit_order",
+        "submit_order_list",
+        "cancel_order",
+        "CancelAllOrders",
+        "replace_order",
+        "amend_order",
+        "subscribe",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "no-submit readiness must not contain trade or runner token `{forbidden}`"
+        );
+    }
+    assert!(source.contains("connect_bolt_v3_clients"));
+    assert!(source.contains("disconnect_bolt_v3_clients"));
+}
+
 fn mock_built_live_node(loaded: &LoadedBoltV3Config) -> BoltV3BuiltLiveNode {
     let builder =
         make_bolt_v3_live_node_builder(loaded).expect("v3 builder should construct from fixture");

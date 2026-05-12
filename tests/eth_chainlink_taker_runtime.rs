@@ -188,10 +188,29 @@ struct RuntimeTimingFixture {
     startup_settle_milliseconds: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeCapacityPositionLimitFixture {
+    max_position_usdc: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeCapacityOrderFixture {
+    quantity: String,
+    price: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeCapacityFixture {
+    position_limit_reached: RuntimeCapacityPositionLimitFixture,
+    open_entry: RuntimeCapacityOrderFixture,
+    cached_position_entry: RuntimeCapacityOrderFixture,
+}
+
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 static TEST_NODE_CONFIG: OnceLock<Config> = OnceLock::new();
 static RUNTIME_TIMESTAMPS: OnceLock<RuntimeTimestampsFixture> = OnceLock::new();
 static RUNTIME_TIMING: OnceLock<RuntimeTimingFixture> = OnceLock::new();
+static RUNTIME_CAPACITY: OnceLock<RuntimeCapacityFixture> = OnceLock::new();
 const RUNTIME_DEFAULT_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
     UpdownSelectedMarketRuntimeRole::Default;
 const RUNTIME_ROTATION_B_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
@@ -230,6 +249,15 @@ fn runtime_timing() -> &'static RuntimeTimingFixture {
             support::repo_path("tests/fixtures/eth_chainlink_taker_runtime/timing.toml");
         let toml = fs::read_to_string(fixture_path).expect("runtime timing fixture should read");
         toml::from_str(&toml).expect("runtime timing fixture should parse")
+    })
+}
+
+fn runtime_capacity() -> &'static RuntimeCapacityFixture {
+    RUNTIME_CAPACITY.get_or_init(|| {
+        let fixture_path =
+            support::repo_path("tests/fixtures/eth_chainlink_taker_runtime/capacity.toml");
+        let toml = fs::read_to_string(fixture_path).expect("runtime capacity fixture should read");
+        toml::from_str(&toml).expect("runtime capacity fixture should parse")
     })
 }
 
@@ -1418,11 +1446,11 @@ fn seed_cached_open_position(
 }
 
 fn cached_position_entry_quantity() -> Quantity {
-    Quantity::from("5")
+    Quantity::from(runtime_capacity().cached_position_entry.quantity.as_str())
 }
 
 fn cached_position_entry_price() -> Price {
-    Price::from("0.450")
+    Price::from(runtime_capacity().cached_position_entry.price.as_str())
 }
 
 fn cached_position_entry_notional_usdc() -> f64 {
@@ -1430,11 +1458,31 @@ fn cached_position_entry_notional_usdc() -> f64 {
 }
 
 fn cross_strategy_open_entry_order_quantity() -> Quantity {
-    Quantity::from("100")
+    Quantity::from(runtime_capacity().open_entry.quantity.as_str())
+}
+
+fn open_entry_capacity_order_quantity() -> Quantity {
+    Quantity::from(runtime_capacity().open_entry.quantity.as_str())
+}
+
+fn open_entry_capacity_order_price() -> Price {
+    Price::from(runtime_capacity().open_entry.price.as_str())
 }
 
 fn fixture_notional_usdc(quantity: Quantity, price: Price) -> f64 {
     quantity.as_f64() * price.as_f64()
+}
+
+fn position_limit_reached_max_position_usdc() -> f64 {
+    runtime_capacity().position_limit_reached.max_position_usdc
+}
+
+fn remaining_entry_capacity_usdc(
+    max_position_usdc: f64,
+    open_entry_notional_usdc: f64,
+    filled_entry_notional_usdc: f64,
+) -> f64 {
+    (max_position_usdc - open_entry_notional_usdc - filled_entry_notional_usdc).max(f64::default())
 }
 
 fn seed_cached_position_with_entry(
@@ -3894,6 +3942,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = strategy_id_from_fixture_config();
+    let max_position_usdc = position_limit_reached_max_position_usdc();
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -3910,7 +3959,7 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
     strategy_factory(
         &trader,
         ETH_CHAINLINK_TAKER_KIND,
-        &strategy_raw_config_with_max_position_usdc(0.0),
+        &strategy_raw_config_with_max_position_usdc(max_position_usdc),
     )
     .unwrap();
 
@@ -3962,7 +4011,11 @@ fn eth_chainlink_taker_runtime_writes_position_limit_reached_no_action_without_s
                     .event_facts
                     .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(0.0)
+                Some(remaining_entry_capacity_usdc(
+                    max_position_usdc,
+                    f64::default(),
+                    f64::default()
+                ))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -3987,6 +4040,10 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = strategy_id_from_fixture_config();
+    let open_order_quantity = open_entry_capacity_order_quantity();
+    let open_order_price = open_entry_capacity_order_price();
+    let open_order_notional = fixture_notional_usdc(open_order_quantity, open_order_price);
+    let max_position_usdc = open_order_notional;
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4003,7 +4060,7 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
     strategy_factory(
         &trader,
         ETH_CHAINLINK_TAKER_KIND,
-        &strategy_raw_config_with_max_position_usdc(45.0),
+        &strategy_raw_config_with_max_position_usdc(max_position_usdc),
     )
     .unwrap();
 
@@ -4013,8 +4070,8 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
         &node,
         strategy_id,
         up,
-        Quantity::from("100"),
-        Price::from("0.450"),
+        open_order_quantity,
+        open_order_price,
     );
     drive_eth_entry_no_action(node, strategy_id);
 
@@ -4063,14 +4120,18 @@ fn eth_chainlink_taker_runtime_writes_open_entry_capacity_from_nt_cache() {
                     .event_facts
                     .get(BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(45.0)
+                Some(open_order_notional)
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(0.0)
+                Some(remaining_entry_capacity_usdc(
+                    max_position_usdc,
+                    open_order_notional,
+                    f64::default()
+                ))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -4090,6 +4151,7 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
     let open_order_quantity = cross_strategy_open_entry_order_quantity();
     let open_order_price = cached_position_entry_price();
     let open_order_notional = fixture_notional_usdc(open_order_quantity, open_order_price);
+    let max_position_usdc = open_order_notional;
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4106,7 +4168,7 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
     strategy_factory(
         &trader,
         ETH_CHAINLINK_TAKER_KIND,
-        &strategy_raw_config_with_max_position_usdc(open_order_notional),
+        &strategy_raw_config_with_max_position_usdc(max_position_usdc),
     )
     .unwrap();
 
@@ -4171,7 +4233,11 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_open_entry_capacity_from_nt
                     .event_facts
                     .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(0.0)
+                Some(remaining_entry_capacity_usdc(
+                    max_position_usdc,
+                    open_order_notional,
+                    f64::default()
+                ))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -4188,6 +4254,7 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = strategy_id_from_fixture_config();
     let filled_entry_notional = cached_position_entry_notional_usdc();
+    let max_position_usdc = filled_entry_notional;
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4204,7 +4271,7 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
     strategy_factory(
         &trader,
         ETH_CHAINLINK_TAKER_KIND,
-        &strategy_raw_config_with_max_position_usdc(filled_entry_notional),
+        &strategy_raw_config_with_max_position_usdc(max_position_usdc),
     )
     .unwrap();
 
@@ -4252,14 +4319,18 @@ fn eth_chainlink_taker_runtime_writes_filled_entry_capacity_from_nt_cache() {
                     .event_facts
                     .get(BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(0.0)
+                Some(f64::default())
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(0.0)
+                Some(remaining_entry_capacity_usdc(
+                    max_position_usdc,
+                    f64::default(),
+                    filled_entry_notional
+                ))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),
@@ -4277,6 +4348,7 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_
     let strategy_id = strategy_id_from_fixture_config();
     let other_strategy_id = strategy_id_from_multi_fixture(1);
     let filled_entry_notional = cached_position_entry_notional_usdc();
+    let max_position_usdc = filled_entry_notional;
     let evidence = BoltV3StrategyDecisionEvidence::from_persistence_block(
         common_decision_context(),
         &decision_persistence_block(temp_dir.path()),
@@ -4293,7 +4365,7 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_
     strategy_factory(
         &trader,
         ETH_CHAINLINK_TAKER_KIND,
-        &strategy_raw_config_with_max_position_usdc(filled_entry_notional),
+        &strategy_raw_config_with_max_position_usdc(max_position_usdc),
     )
     .unwrap();
 
@@ -4345,14 +4417,18 @@ fn eth_chainlink_taker_runtime_counts_other_strategy_filled_entry_capacity_from_
                     .event_facts
                     .get(BOLT_V3_OPEN_ENTRY_NOTIONAL_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(0.0)
+                Some(f64::default())
             );
             assert_eq!(
                 decoded
                     .event_facts
                     .get(BOLT_V3_STRATEGY_REMAINING_ENTRY_CAPACITY_FACT_KEY)
                     .and_then(serde_json::Value::as_f64),
-                Some(0.0)
+                Some(remaining_entry_capacity_usdc(
+                    max_position_usdc,
+                    f64::default(),
+                    filled_entry_notional
+                ))
             );
         }
         other => panic!("expected Data::Custom, got {other:?}"),

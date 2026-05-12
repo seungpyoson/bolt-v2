@@ -1,0 +1,10 @@
+[position_limit_reached]
+max_position_usdc = 0.0
+
+[open_entry]
+quantity = "100"
+price = "0.450"
+
+[cached_position_entry]
+quantity = "5"
+price = "0.450"

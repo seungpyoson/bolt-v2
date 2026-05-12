@@ -124,6 +124,8 @@ F13br note: `python3 scripts/verify_bolt_v3_forbidden_env_test_literals.py` now 
 
 F13bs note: `python3 scripts/verify_bolt_v3_fake_secret_test_literals.py` now rejects fake resolver secret literals in `tests/bolt_v3_readiness.rs`, and `just fmt-check` runs that verifier. Readiness redaction assertions now derive all fake secret values by resolving fixture SSM paths through `support::fake_bolt_v3_resolver`.
 
+F13bt note: `python3 scripts/verify_bolt_v3_test_literal_smoke.py` now runs as a broad smoke fence over `tests/bolt_v3*.rs` and `tests/eth_chainlink_taker_runtime.rs` for runtime-like literal patterns already cleaned up by narrower verifiers. It explicitly classifies the remaining `"updown"` hit as a boundary-guard sentinel in `tests/bolt_v3_market_identity.rs`, not runtime config. The smoke fence found residual existing-strategy capacity assertion literals; those capacity scenario values now load from `tests/fixtures/eth_chainlink_taker_runtime/capacity.toml`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

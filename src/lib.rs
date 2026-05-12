@@ -8,6 +8,7 @@ pub mod bolt_v3_instrument_readiness;
 pub mod bolt_v3_live_node;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_market_identity;
+pub mod bolt_v3_no_submit_readiness;
 pub mod bolt_v3_order_intent_gate;
 pub mod bolt_v3_provider_family_bindings;
 pub mod bolt_v3_providers;

@@ -2260,3 +2260,75 @@ literal = "\"up\""
 context = "pub const BOLT_V3_UPDOWN_SIDE_UP_VALUE: &str = \"up\";"
 classification = "decision_event_contract_value_constant"
 reason = "This is an exported Bolt-v3 decision-event contract value constant; runtime code compares against the named constant instead of repeating inline literals."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"built NT LiveNode from configured clients\""
+context = "\"built NT LiveNode from configured clients\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"connected configured NT clients through controlled-connect\""
+context = "\"connected configured NT clients through controlled-connect\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"created NT LiveNodeBuilder from bolt-v3 config\""
+context = "\"created NT LiveNodeBuilder from bolt-v3 config\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"disconnected configured NT clients through controlled-disconnect\""
+context = "\"disconnected configured NT clients through controlled-disconnect\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"mapped client configs for client_id `{client_id_key}`: data={} execution={}\""
+context = "\"mapped client configs for client_id `{client_id_key}`: data={} execution={}\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; client id and booleans are derived from loaded TOML and adapter mapping, not hardcoded runtime values."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"no NT clients registered because no clients are configured\""
+context = "\"no NT clients registered because no clients are configured\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"no client configs mapped\""
+context = "\"no client configs mapped\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"no client secrets configured\""
+context = "\"no client secrets configured\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; it contains no runtime selector, credential, venue, market, quantity, timeout, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = "\"registered NT clients for client_id `{client_id_key}`: data={} execution={}\""
+context = "\"registered NT clients for client_id `{client_id_key}`: data={} execution={}\","
+classification = "readiness_report_detail"
+reason = "Operator-facing no-submit readiness report detail; client id and booleans are derived from loaded TOML and NT registration summary, not hardcoded runtime values."

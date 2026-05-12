@@ -315,16 +315,38 @@ fn build_live_node_with_clients(
     adapters: BoltV3ClientConfigs,
     resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
 ) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let builder =
-        make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
-    let (builder, summary) = register_bolt_v3_clients(builder, adapters)
-        .map_err(BoltV3LiveNodeError::ClientRegistration)?;
-    let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    let (mut node, summary) = build_bolt_v3_client_only_live_node_from_adapters(loaded, adapters)?;
     register_bolt_v3_reference_actors(&mut node, loaded)
         .map_err(BoltV3LiveNodeError::ReferenceActorRegistration)?;
     register_bolt_v3_strategies(&mut node, loaded, resolved)
         .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     Ok((node, summary))
+}
+
+pub fn build_bolt_v3_client_only_live_node_from_adapters(
+    loaded: &LoadedBoltV3Config,
+    adapters: BoltV3ClientConfigs,
+) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let (builder, summary) = make_bolt_v3_client_registered_live_node_builder(loaded, adapters)?;
+    let node = build_bolt_v3_live_node_from_registered_builder(builder)?;
+    Ok((node, summary))
+}
+
+pub(crate) fn make_bolt_v3_client_registered_live_node_builder(
+    loaded: &LoadedBoltV3Config,
+    adapters: BoltV3ClientConfigs,
+) -> Result<(LiveNodeBuilder, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let builder =
+        make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
+    let (builder, summary) = register_bolt_v3_clients(builder, adapters)
+        .map_err(BoltV3LiveNodeError::ClientRegistration)?;
+    Ok((builder, summary))
+}
+
+pub(crate) fn build_bolt_v3_live_node_from_registered_builder(
+    builder: LiveNodeBuilder,
+) -> Result<LiveNode, BoltV3LiveNodeError> {
+    builder.build().map_err(BoltV3LiveNodeError::Build)
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

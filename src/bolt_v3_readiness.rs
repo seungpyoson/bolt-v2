@@ -1,10 +1,11 @@
 use crate::{
     bolt_v3_adapters::{BoltV3ClientMappingError, map_bolt_v3_clients},
-    bolt_v3_client_registration::{
-        BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
-    },
+    bolt_v3_client_registration::{BoltV3ClientRegistrationError, BoltV3RegistrationSummary},
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_live_node::make_bolt_v3_live_node_builder,
+    bolt_v3_live_node::{
+        BoltV3LiveNodeError, build_bolt_v3_live_node_from_registered_builder,
+        make_bolt_v3_client_registered_live_node_builder,
+    },
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with},
 };
 
@@ -208,55 +209,72 @@ where
         }
     };
 
-    let builder = match make_bolt_v3_live_node_builder(loaded) {
-        Ok(builder) => {
-            report.push(
-                BoltV3StartupCheckStage::LiveNodeBuilder,
-                BoltV3StartupCheckSubject::Root,
-                BoltV3StartupCheckStatus::Satisfied,
-                "created NT LiveNodeBuilder from bolt-v3 config",
-            );
-            builder
-        }
-        Err(error) => {
-            report.push(
-                BoltV3StartupCheckStage::LiveNodeBuilder,
-                BoltV3StartupCheckSubject::Root,
-                BoltV3StartupCheckStatus::Failed,
-                error.to_string(),
-            );
-            report.skip_after(
-                BoltV3StartupCheckStage::LiveNodeBuilder,
-                &[
+    let (builder, _summary) =
+        match make_bolt_v3_client_registered_live_node_builder(loaded, adapters) {
+            Ok((builder, summary)) => {
+                report.push(
+                    BoltV3StartupCheckStage::LiveNodeBuilder,
+                    BoltV3StartupCheckSubject::Root,
+                    BoltV3StartupCheckStatus::Satisfied,
+                    "created NT LiveNodeBuilder from bolt-v3 config",
+                );
+                push_registration_summary(&mut report, &summary);
+                (builder, summary)
+            }
+            Err(BoltV3LiveNodeError::BuilderConstruction(error)) => {
+                report.push(
+                    BoltV3StartupCheckStage::LiveNodeBuilder,
+                    BoltV3StartupCheckSubject::Root,
+                    BoltV3StartupCheckStatus::Failed,
+                    error.to_string(),
+                );
+                report.skip_after(
+                    BoltV3StartupCheckStage::LiveNodeBuilder,
+                    &[
+                        BoltV3StartupCheckStage::ClientRegistration,
+                        BoltV3StartupCheckStage::LiveNodeBuild,
+                    ],
+                );
+                return report;
+            }
+            Err(BoltV3LiveNodeError::ClientRegistration(error)) => {
+                report.push(
+                    BoltV3StartupCheckStage::LiveNodeBuilder,
+                    BoltV3StartupCheckSubject::Root,
+                    BoltV3StartupCheckStatus::Satisfied,
+                    "created NT LiveNodeBuilder from bolt-v3 config",
+                );
+                report.push(
                     BoltV3StartupCheckStage::ClientRegistration,
-                    BoltV3StartupCheckStage::LiveNodeBuild,
-                ],
-            );
-            return report;
-        }
-    };
+                    client_registration_error_subject(&error),
+                    BoltV3StartupCheckStatus::Failed,
+                    error.to_string(),
+                );
+                report.skip_after(
+                    BoltV3StartupCheckStage::ClientRegistration,
+                    &[BoltV3StartupCheckStage::LiveNodeBuild],
+                );
+                return report;
+            }
+            Err(error) => {
+                report.push(
+                    BoltV3StartupCheckStage::LiveNodeBuilder,
+                    BoltV3StartupCheckSubject::Root,
+                    BoltV3StartupCheckStatus::Failed,
+                    error.to_string(),
+                );
+                report.skip_after(
+                    BoltV3StartupCheckStage::LiveNodeBuilder,
+                    &[
+                        BoltV3StartupCheckStage::ClientRegistration,
+                        BoltV3StartupCheckStage::LiveNodeBuild,
+                    ],
+                );
+                return report;
+            }
+        };
 
-    let builder = match register_bolt_v3_clients(builder, adapters) {
-        Ok((builder, summary)) => {
-            push_registration_summary(&mut report, &summary);
-            builder
-        }
-        Err(error) => {
-            report.push(
-                BoltV3StartupCheckStage::ClientRegistration,
-                client_registration_error_subject(&error),
-                BoltV3StartupCheckStatus::Failed,
-                error.to_string(),
-            );
-            report.skip_after(
-                BoltV3StartupCheckStage::ClientRegistration,
-                &[BoltV3StartupCheckStage::LiveNodeBuild],
-            );
-            return report;
-        }
-    };
-
-    match builder.build() {
+    match build_bolt_v3_live_node_from_registered_builder(builder) {
         Ok(_node) => {
             report.push(
                 BoltV3StartupCheckStage::LiveNodeBuild,

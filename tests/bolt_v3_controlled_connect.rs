@@ -562,19 +562,35 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
         .expect("controlled-disconnect must remain callable after a connect-timeout");
 }
 
+fn source_between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    let start_index = source
+        .find(start)
+        .unwrap_or_else(|| panic!("source should contain start marker {start}"));
+    let end_index = source[start_index..]
+        .find(end)
+        .map(|offset| start_index + offset)
+        .unwrap_or_else(|| panic!("source should contain end marker {end}"));
+    &source[start_index..end_index]
+}
+
 #[test]
-fn live_node_module_remains_no_trade_boundary_after_controlled_connect_addition() {
-    // Source-level inspection of `src/bolt_v3_live_node.rs`. The module
-    // is allowed to reference NT's `connect_data_clients`,
-    // `connect_exec_clients`, and `disconnect_clients` (the pinned
-    // controlled-connect / controlled-disconnect API), but it must
-    // never enter NT's runner loop, register a strategy actor, select
-    // a market, construct an order, submit one, or call any user-level
-    // market-data subscription API. The forbidden token list lives in
-    // this integration test (not in the module's own source) so the
-    // assertion does not self-trip; production comments in
-    // `bolt_v3_live_node.rs` must avoid these substrings on purpose.
+fn controlled_connect_and_disconnect_boundaries_remain_no_trade() {
+    // Source-level inspection of only the controlled-connect and
+    // controlled-disconnect boundaries. This file also owns the explicit
+    // production runner wrapper, so scanning the whole module would blur
+    // the two contracts.
     let source = include_str!("../src/bolt_v3_live_node.rs");
+    let controlled_connect = source_between(
+        source,
+        "pub async fn connect_bolt_v3_clients",
+        "pub async fn disconnect_bolt_v3_clients",
+    );
+    let controlled_disconnect = source_between(
+        source,
+        "pub async fn disconnect_bolt_v3_clients",
+        "pub async fn run_bolt_v3_live_node",
+    );
+    let boundary_source = format!("{controlled_connect}\n{controlled_disconnect}");
     for forbidden in [
         ".run(",
         ".start(",
@@ -600,9 +616,9 @@ fn live_node_module_remains_no_trade_boundary_after_controlled_connect_addition(
         "ws_client.subscribe",
     ] {
         assert!(
-            !source.contains(forbidden),
-            "src/bolt_v3_live_node.rs must remain a no-trade boundary; \
-             source unexpectedly references `{forbidden}`"
+            !boundary_source.contains(forbidden),
+            "controlled-connect/disconnect must remain no-trade; \
+             boundary source unexpectedly references `{forbidden}`"
         );
     }
 }

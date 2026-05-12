@@ -68,7 +68,6 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
 const RECONCILIATION_PROCESS_HELPER_ENV: &str = "BOLT_V3_RECONCILIATION_PROCESS_HELPER";
 const RECONCILIATION_PROCESS_MODE_ENV: &str = "BOLT_V3_RECONCILIATION_PROCESS_MODE";
 const RECONCILIATION_PROCESS_MARKER_PATH_ENV: &str = "BOLT_V3_RECONCILIATION_PROCESS_MARKER_PATH";
@@ -840,7 +839,9 @@ fn open_order_fixture() -> OpenOrderFixture {
 }
 
 fn node_clock_timestamp_ms(node: &LiveNode) -> u64 {
-    node.kernel().clock().borrow().timestamp_ns().as_u64() / NANOSECONDS_PER_MILLISECOND
+    let timestamp_ns = node.kernel().clock().borrow().timestamp_ns().as_u64();
+    u64::try_from(Duration::from_nanos(timestamp_ns).as_millis())
+        .expect("NT clock timestamp milliseconds should fit u64")
 }
 
 fn load_reconciliation_config(

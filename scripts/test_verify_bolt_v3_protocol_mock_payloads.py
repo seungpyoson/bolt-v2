@@ -349,6 +349,38 @@ def test_order_lifecycle_raw_millisecond_nanosecond_conversion_is_a_finding() ->
         assert "raw millisecond/nanosecond conversion" in findings[0].message
 
 
+def test_reconciliation_raw_millisecond_nanosecond_conversion_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_reconciliation_restart.rs",
+            "fn probe(ts_ns: u64) -> u64 { ts_ns / 1_000_000 }\n",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_reconciliation_restart.rs"
+        assert "raw millisecond/nanosecond conversion" in findings[0].message
+
+
+def test_reconciliation_named_millisecond_nanosecond_conversion_constant_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_reconciliation_restart.rs",
+            "const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;\n",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert findings[0].path == "tests/bolt_v3_reconciliation_restart.rs"
+        assert "raw millisecond/nanosecond conversion" in findings[0].message
+
+
 def test_order_lifecycle_literal_unix_nanos_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -435,6 +467,8 @@ def main() -> int:
         test_order_lifecycle_http_method_and_path_literals_are_findings,
         test_order_lifecycle_positions_response_literal_is_a_finding,
         test_order_lifecycle_raw_millisecond_nanosecond_conversion_is_a_finding,
+        test_reconciliation_raw_millisecond_nanosecond_conversion_is_a_finding,
+        test_reconciliation_named_millisecond_nanosecond_conversion_constant_is_a_finding,
         test_order_lifecycle_literal_unix_nanos_is_a_finding,
         test_local_http_response_literal_is_a_finding,
         test_local_http_request_parser_literal_is_a_finding,

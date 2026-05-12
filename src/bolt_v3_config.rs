@@ -27,6 +27,8 @@ pub struct BoltV3RootConfig {
     pub risk: RiskBlock,
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
+    #[serde(default)]
+    pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
     pub venues: BTreeMap<String, VenueBlock>,
 }
@@ -179,6 +181,20 @@ impl LogLevel {
 pub struct PersistenceBlock {
     pub catalog_directory: String,
     pub streaming: StreamingBlock,
+}
+
+/// Operator approval and canary bounds required by the bolt-v3 live
+/// canary gate before `run_bolt_v3_live_node` may enter NT's runner
+/// loop. Field semantics are defined by the `[live_canary]` schema
+/// section.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveCanaryBlock {
+    pub approval_id: String,
+    pub no_submit_readiness_report_path: String,
+    pub max_no_submit_readiness_report_bytes: u64,
+    pub max_live_order_count: u32,
+    pub max_notional_per_order: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

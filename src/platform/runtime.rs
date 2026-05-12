@@ -1143,10 +1143,18 @@ mod tests {
     use nautilus_live::node::LiveNode;
     use nautilus_model::identifiers::{ClientId, TraderId};
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
     use tokio_util::sync::CancellationToken;
+
+    static BUILD_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_build() -> std::sync::MutexGuard<'static, ()> {
+        BUILD_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn config_with_runtime_strategy(kind: &str) -> Config {
         Config {
@@ -1430,18 +1438,21 @@ mod tests {
             captured: Arc::clone(&captured),
         };
 
-        let node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .expect("builder should construct")
-            .with_name("TEST-NODE")
-            .with_logging(LoggerConfig::default())
-            .with_timeout_connection(1)
-            .with_timeout_disconnection_secs(1)
-            .with_delay_post_stop_secs(0)
-            .with_delay_shutdown_secs(0)
-            .add_data_client(Some("BINANCE".to_string()), Box::new(factory), config)
-            .expect("data client should register with builder")
-            .build()
-            .expect("node should build");
+        let node = {
+            let _guard = lock_build();
+            LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+                .expect("builder should construct")
+                .with_name("TEST-NODE")
+                .with_logging(LoggerConfig::default())
+                .with_timeout_connection(1)
+                .with_timeout_disconnection_secs(1)
+                .with_delay_post_stop_secs(0)
+                .with_delay_shutdown_secs(0)
+                .add_data_client(Some("BINANCE".to_string()), Box::new(factory), config)
+                .expect("data client should register with builder")
+                .build()
+                .expect("node should build")
+        };
 
         assert_eq!(
             node.kernel().data_engine().registered_clients(),
@@ -1540,6 +1551,7 @@ mod tests {
     }
 
     fn build_empty_node() -> LiveNode {
+        let _guard = lock_build();
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("builder should construct")
             .with_name("TEST-NODE")

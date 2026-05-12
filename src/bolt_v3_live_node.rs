@@ -19,7 +19,7 @@
 //!   None of these steps open a network connection or run the event
 //!   loop.
 //! - returns the resulting `nautilus_live::node::LiveNode` to the caller
-//!   without entering the NT runner loop
+//!   without entering the NT runner loop from the build path
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
 //! - installs module-level logger filters from provider-owned bindings
@@ -28,10 +28,11 @@
 //!
 //! The caller owns the `LiveNode`; the build path never opens an
 //! external network connection. The opt-in controlled-connect boundary
-//! may open adapter sockets, but this module never starts the event
-//! loop, subscribes to market data through any user-level `subscribe_*`
-//! API, registers a strategy actor, constructs an order, or enables
-//! any submit path.
+//! may open adapter sockets. The sole approved NT runner entrypoint in
+//! this module is [`run_bolt_v3_live_node`], which first applies the
+//! bolt-v3 live canary gate. This module still never calls user-level
+//! market-data subscription APIs, registers a strategy actor, constructs
+//! an order, or enables any submit path.
 
 use std::{collections::HashMap, str::FromStr, time::Duration};
 
@@ -56,6 +57,7 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
+    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
@@ -105,6 +107,13 @@ pub enum BoltV3LiveNodeError {
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
     Build(anyhow::Error),
+    /// The live canary gate rejected entry to NT's runner loop before
+    /// `LiveNode::run` was invoked. This variant wraps the specific
+    /// fail-closed reason from [`BoltV3LiveCanaryGateError`].
+    LiveCanaryGate(BoltV3LiveCanaryGateError),
+    /// NT returned an error from `LiveNode::run` after the live canary
+    /// gate accepted the loaded config and readiness report.
+    Run(anyhow::Error),
     /// The bolt-v3 controlled-connect boundary
     /// ([`connect_bolt_v3_clients`]) bounds the dispatched
     /// `NautilusKernel::connect_data_clients` and
@@ -175,6 +184,13 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 write!(f, "bolt-v3 client registration failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
+            BoltV3LiveNodeError::LiveCanaryGate(error) => {
+                write!(
+                    f,
+                    "bolt-v3 live canary gate rejected runtime start: {error}"
+                )
+            }
+            BoltV3LiveNodeError::Run(error) => write!(f, "LiveNode run failed: {error}"),
             BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => write!(
                 f,
                 "bolt-v3 controlled-connect exceeded the configured \
@@ -211,6 +227,8 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
+            BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
+            BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::ConnectTimeout { .. }
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. } => None,
@@ -238,6 +256,25 @@ pub fn build_bolt_v3_live_node(
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let (node, _summary) = build_live_node_with_clients(loaded, adapters)?;
     Ok(node)
+}
+
+/// Single bolt-v3 entrypoint for entering NT's runner loop.
+///
+/// The caller builds the `LiveNode` separately, then this function checks
+/// the loaded config's `[live_canary]` section and referenced no-submit
+/// readiness report before entering the NT runner loop. Production callers
+/// must use this wrapper rather than invoking the NT runner method directly.
+/// If the gate rejects, NT's runner loop is never entered.
+pub async fn run_bolt_v3_live_node(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let _gate_report = check_bolt_v3_live_canary_gate(loaded)
+        .await
+        .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
+    // This F1 slice validates the approved canary bounds before the runner loop.
+    // Submit admission must consume these bounds in the later live-order slice.
+    node.run().await.map_err(BoltV3LiveNodeError::Run)
 }
 
 /// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller

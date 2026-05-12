@@ -209,3 +209,18 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
   - `docs/bolt-v3/2026-04-25-bolt-v3-contract-ledger.md` Entries 1, 5, and 12
 - implementation status:
   - approved doctrine; verifier locations are not yet selected
+
+## 16. Bolt-v3 live canary gate
+
+- invariant:
+  - Bolt-v3 live canary admission must fail closed before `LiveNode::run`
+    unless operator approval, no-submit readiness evidence, and canary
+    bounds satisfy the runtime contract.
+- canonical owner:
+  - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 11.8
+- dependent references:
+  - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section `[live_canary]`
+  - `src/bolt_v3_live_canary_gate.rs`
+  - `src/bolt_v3_live_node.rs::run_bolt_v3_live_node`
+- implementation status:
+  - implemented for the bolt-v3 run wrapper; submit-time cap consumption remains a separate live-submit blocker

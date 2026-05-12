@@ -4,6 +4,17 @@
 # `just live-check` validates secret-config completeness only.
 # `just live-resolve` performs actual secret resolution.
 # `just live` runs using the generated runtime config.
+#
+# Bolt-v3 note: this file is the legacy live-config render input, not the
+# bolt-v3 root TOML. A bolt-v3 root TOML used with `run_bolt_v3_live_node`
+# must include `[live_canary]`; see `docs/bolt-v3/2026-04-25-bolt-v3-schema.md`.
+#
+#[live_canary]
+#approval_id = "operator-approved-canary-001"
+#no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+#max_no_submit_readiness_report_bytes = 4096
+#max_live_order_count = 1
+#max_notional_per_order = "1.00"
 
 [node]
 name = "BOLT-V2-001"

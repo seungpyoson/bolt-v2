@@ -293,6 +293,13 @@ fn parse_positive_decimal(
 
 fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>> {
     let mut reasons = Vec::new();
+    let report = match report.as_object() {
+        Some(report) => report,
+        None => {
+            reasons.push(format!("expected JSON object, got {report}"));
+            return Err(reasons);
+        }
+    };
     match report.get("stages") {
         None => reasons.push("stages array is missing".to_string()),
         Some(stages_value) => match stages_value.as_array() {

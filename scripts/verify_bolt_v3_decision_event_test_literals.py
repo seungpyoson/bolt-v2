@@ -481,6 +481,8 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     excerpt=match.group(0).strip(),
                 )
             )
+
+    if rel in {DECISION_EVENT_HANDOFF_TEST_FILE, ORDER_INTENT_GATE_TEST_FILE}:
         for match in DECISION_EVENT_TIMESTAMP_LITERAL_PATTERN.finditer(text):
             findings.append(
                 Finding(

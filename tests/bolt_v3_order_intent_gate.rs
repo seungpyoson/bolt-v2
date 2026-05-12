@@ -113,8 +113,8 @@ fn entry_order_submission_event(
     BoltV3EntryOrderSubmissionDecisionEvent::entry_order_submission(
         common,
         support::bolt_v3_order_submission_facts_fixture("entry_order_submission_facts.json"),
-        UnixNanos::from(3_000),
-        UnixNanos::from(3_001),
+        entry_order_submission_event_ts(),
+        entry_order_submission_init_ts(),
     )
     .unwrap()
 }
@@ -125,10 +125,46 @@ fn exit_order_submission_event(
     BoltV3ExitOrderSubmissionDecisionEvent::exit_order_submission(
         common,
         support::bolt_v3_order_submission_facts_fixture("exit_order_submission_facts.json"),
-        UnixNanos::from(4_000),
-        UnixNanos::from(4_001),
+        exit_order_submission_event_ts(),
+        exit_order_submission_init_ts(),
     )
     .unwrap()
+}
+
+fn decision_event_timestamps() -> support::BoltV3DecisionEventTimestampsFixture {
+    support::bolt_v3_decision_event_timestamps_fixture("event_timestamps.json")
+}
+
+fn entry_order_submission_event_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .entry_order_submission
+            .event_ts_nanos,
+    )
+}
+
+fn entry_order_submission_init_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .entry_order_submission
+            .init_ts_nanos,
+    )
+}
+
+fn exit_order_submission_event_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .exit_order_submission
+            .event_ts_nanos,
+    )
+}
+
+fn exit_order_submission_init_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .exit_order_submission
+            .init_ts_nanos,
+    )
 }
 
 fn common_fields(temp_dir: &std::path::Path) -> BoltV3DecisionEventCommonFields {

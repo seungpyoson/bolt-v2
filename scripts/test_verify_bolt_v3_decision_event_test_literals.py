@@ -258,6 +258,24 @@ fn probe() {
         assert "decision-event timestamp literal" in findings[0].message
 
 
+def test_order_intent_gate_timestamp_literals_are_findings() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_order_intent_gate.rs",
+            """
+fn probe() {
+    let _ = UnixNanos::from(3_000);
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert "decision-event timestamp literal" in findings[0].message
+
+
 def test_decision_event_handoff_decision_value_literals_are_findings() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -500,6 +518,7 @@ def main() -> int:
         test_decision_event_handoff_direct_market_selection_facts_is_a_finding,
         test_decision_event_handoff_direct_pre_submit_rejection_facts_is_a_finding,
         test_decision_event_handoff_timestamp_literals_are_findings,
+        test_order_intent_gate_timestamp_literals_are_findings,
         test_decision_event_handoff_decision_value_literals_are_findings,
         test_eth_chainlink_runtime_context_literal_is_a_finding,
         test_eth_chainlink_runtime_decision_reason_literal_is_a_finding,

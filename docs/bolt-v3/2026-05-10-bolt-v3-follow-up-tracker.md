@@ -106,6 +106,8 @@ F13bi note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13bj note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct pre-submit rejection fact construction in `tests/bolt_v3_decision_event_handoff.rs`. Entry/exit pre-submit rejection facts now load from JSON fixtures through `tests/support/mod.rs`.
 
+F13bk note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct decision-event timestamp literals in `tests/bolt_v3_order_intent_gate.rs`. Order-intent gate event/init timestamps now reuse `tests/fixtures/bolt_v3_decision_events/event_timestamps.json`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

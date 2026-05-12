@@ -123,3 +123,5 @@ F13bh extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` s
 F13bi extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so inline decision-value literals in `tests/bolt_v3_decision_event_handoff.rs` are rejected. Supported values now use exported event-contract constants; unsupported negative-case values now load from `tests/fixtures/bolt_v3_decision_events/negative_cases.json`.
 
 F13bj extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct pre-submit rejection fact construction in `tests/bolt_v3_decision_event_handoff.rs` is rejected. Entry/exit pre-submit rejection facts now load from JSON fixtures through `tests/support/mod.rs`.
+
+F13bk extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct decision-event timestamp literals in `tests/bolt_v3_order_intent_gate.rs` are rejected. Order-intent gate event/init timestamps now reuse `tests/fixtures/bolt_v3_decision_events/event_timestamps.json`.

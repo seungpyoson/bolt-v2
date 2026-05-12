@@ -532,3 +532,100 @@ literal = "\"registered NT clients for venue `{venue_key}`: data={} execution={}
 context = "\"registered NT clients for venue `{venue_key}`: data={} execution={}\","
 classification = "startup_readiness_diagnostic_template"
 reason = "This template renders the client-registration fact with venue key and registered client presence booleans; it is diagnostic output, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bolt-v3 live canary max_notional_per_order ({max_notional_per_order}) exceeds \
+                 risk.default_max_notional_per_order ({root_max_notional_per_order})"'''
+context = '''"bolt-v3 live canary max_notional_per_order ({max_notional_per_order}) exceeds \'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is the fail-closed diagnostic template for a live-canary notional cap above the root risk cap, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''reasons.join("; ")'''
+classification = "diagnostic_separator"
+reason = "This separator joins multiple failed no-submit readiness stage diagnostics for display only."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"max_notional_per_order"'''
+context = '''"max_notional_per_order",'''
+classification = "validation_field_label"
+reason = "This label identifies the live-canary config field being parsed as a positive decimal."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"."'''
+context = '''.unwrap_or_else(|| Path::new("."))'''
+classification = "config_path_resolution_default"
+reason = "This is the relative-path base fallback that matches the config loader when a TOML path has no parent directory."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"stages"'''
+context = '''match report.get("stages").and_then(Value::as_array) {'''
+classification = "live_canary_readiness_report_schema_field"
+reason = "This names the no-submit readiness report stages array consumed by the fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"stage"'''
+context = '''.get("stage")'''
+classification = "live_canary_readiness_report_schema_field"
+reason = "This names the preferred no-submit readiness report stage identifier field for diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"name"'''
+context = '''.or_else(|| stage.get("name"))'''
+classification = "live_canary_readiness_report_schema_field"
+reason = "This names the backward-compatible readiness stage identifier field used only for diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"<unnamed>"'''
+context = '''.unwrap_or("<unnamed>");'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This placeholder labels malformed readiness stages in fail-closed diagnostics when no stage identifier exists."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"status"'''
+context = '''let status = stage.get("status").and_then(Value::as_str);'''
+classification = "live_canary_readiness_report_schema_field"
+reason = "This names the no-submit readiness report status field consumed by the fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"stage `{name}` status is `{}`"'''
+context = '''"stage `{name}` status is `{}`",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This template renders which readiness stage failed the satisfied-status requirement."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"stages array is empty"'''
+context = '''Some(_) => reasons.push("stages array is empty".to_string()),'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"satisfied"'''
+context = '''matches!(status, Some(value) if value.eq_ignore_ascii_case("satisfied"))'''
+classification = "live_canary_readiness_report_status_value"
+reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."

@@ -19,7 +19,12 @@ use rust_decimal::Decimal;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 
-use crate::bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config};
+use crate::{
+    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
+    bolt_v3_no_submit_readiness_schema::{
+        NAME_KEY, SATISFIED_STATUS, STAGE_KEY, STAGES_KEY, STATUS_KEY,
+    },
+};
 
 /// Successful live canary gate evaluation.
 ///
@@ -310,7 +315,7 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
             return Err(reasons);
         }
     };
-    match report.get("stages") {
+    match report.get(STAGES_KEY) {
         None => reasons.push("stages array is missing".to_string()),
         Some(stages_value) => match stages_value.as_array() {
             None => reasons.push(format!("stages must be an array, got {stages_value}")),
@@ -318,11 +323,11 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
             Some(stages) => {
                 for stage in stages {
                     let name = stage
-                        .get("stage")
-                        .or_else(|| stage.get("name"))
+                        .get(STAGE_KEY)
+                        .or_else(|| stage.get(NAME_KEY))
                         .and_then(Value::as_str)
                         .unwrap_or("<unnamed>");
-                    let status = stage.get("status").and_then(Value::as_str);
+                    let status = stage.get(STATUS_KEY).and_then(Value::as_str);
                     if !matches_satisfied_status(status) {
                         reasons.push(format!(
                             "stage `{name}` status is `{}`",
@@ -342,7 +347,7 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
 }
 
 fn matches_satisfied_status(status: Option<&str>) -> bool {
-    matches!(status, Some(value) if value.eq_ignore_ascii_case("satisfied"))
+    matches!(status, Some(value) if value.eq_ignore_ascii_case(SATISFIED_STATUS))
 }
 
 #[cfg(test)]

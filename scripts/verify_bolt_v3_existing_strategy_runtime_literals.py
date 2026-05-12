@@ -40,6 +40,9 @@ MARKET_SELECTION_CONTEXT_SPAN_PATTERN = re.compile(
 MARKET_SELECTION_CONTEXT_LITERAL_FIELD_PATTERN = re.compile(
     r"\b(?:market_selection_type|rotating_market_family|underlying_asset|cadence_seconds|market_selection_rule|retry_interval_seconds|blocked_after_seconds)\s*:\s*(?:\"[^\"]*\"|Some\s*\(\s*\"[^\"]*\"|Some\s*\(\s*[0-9])",
 )
+UNIX_NANOS_LITERAL_PATTERN = re.compile(
+    r"UnixNanos::from\(\s*\d[\d_]*(?:_u64)?\s*\)"
+)
 FORBIDDEN_LITERALS = {
     "eth_chainlink_taker": (
         "existing-strategy runtime archetype literal; use ETH_CHAINLINK_TAKER_KIND"
@@ -386,6 +389,19 @@ def scan_runtime_file(
                     excerpt=field_match.group(0),
                 )
             )
+
+    for match in UNIX_NANOS_LITERAL_PATTERN.finditer(text):
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message=(
+                    "existing-strategy runtime timestamp literal; "
+                    "derive from runtime timestamp fixture"
+                ),
+                excerpt=match.group(0),
+            )
+        )
 
     return findings
 

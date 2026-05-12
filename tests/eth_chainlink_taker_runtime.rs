@@ -145,6 +145,7 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_trading::Strategy;
 use rust_decimal::prelude::ToPrimitive;
+use serde::Deserialize;
 use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
     UpdownSelectedMarketRuntimeRole, clear_mock_exec_submissions, recorded_mock_exec_submissions,
@@ -158,8 +159,29 @@ struct StaticFeeProvider;
 #[derive(Debug, Default)]
 struct MissingFeeProvider;
 
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeInstrumentTimestampsFixture {
+    created_ts_nanos: u64,
+    updated_ts_nanos: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeEventTimestampsFixture {
+    event_ts_nanos: u64,
+    init_ts_nanos: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeTimestampsFixture {
+    instrument: RuntimeInstrumentTimestampsFixture,
+    position_opened: RuntimeEventTimestampsFixture,
+    order_filled: RuntimeEventTimestampsFixture,
+    entry_fill: RuntimeEventTimestampsFixture,
+}
+
 static RUNTIME_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 static TEST_NODE_CONFIG: OnceLock<Config> = OnceLock::new();
+static RUNTIME_TIMESTAMPS: OnceLock<RuntimeTimestampsFixture> = OnceLock::new();
 const RUNTIME_DEFAULT_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
     UpdownSelectedMarketRuntimeRole::Default;
 const RUNTIME_ROTATION_B_SELECTED_MARKET: UpdownSelectedMarketRuntimeRole =
@@ -180,6 +202,48 @@ fn test_node_config() -> &'static Config {
         let toml = fs::read_to_string(fixture_path).expect("test node fixture should read");
         toml::from_str(&toml).expect("test node fixture should parse")
     })
+}
+
+fn runtime_timestamps() -> &'static RuntimeTimestampsFixture {
+    RUNTIME_TIMESTAMPS.get_or_init(|| {
+        let fixture_path =
+            support::repo_path("tests/fixtures/eth_chainlink_taker_runtime/timestamps.toml");
+        let toml =
+            fs::read_to_string(fixture_path).expect("runtime timestamps fixture should read");
+        toml::from_str(&toml).expect("runtime timestamps fixture should parse")
+    })
+}
+
+fn instrument_created_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().instrument.created_ts_nanos)
+}
+
+fn instrument_updated_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().instrument.updated_ts_nanos)
+}
+
+fn position_opened_event_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().position_opened.event_ts_nanos)
+}
+
+fn position_opened_init_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().position_opened.init_ts_nanos)
+}
+
+fn order_filled_event_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().order_filled.event_ts_nanos)
+}
+
+fn order_filled_init_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().order_filled.init_ts_nanos)
+}
+
+fn entry_fill_event_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().entry_fill.event_ts_nanos)
+}
+
+fn entry_fill_init_ts() -> UnixNanos {
+    UnixNanos::from(runtime_timestamps().entry_fill.init_ts_nanos)
 }
 
 fn config_str<'a>(config: &'a Value, key: &str) -> &'a str {
@@ -1275,8 +1339,8 @@ fn polymarket_binary_option_with_size_increment(
         instrument_id.symbol,
         AssetClass::Alternative,
         Currency::USDC(),
-        UnixNanos::from(1_u64),
-        UnixNanos::from(2_u64),
+        instrument_created_ts(),
+        instrument_updated_ts(),
         price_increment.precision,
         size_increment.precision,
         price_increment,
@@ -1476,8 +1540,8 @@ fn position_opened_event(
         currency: Currency::USDC(),
         avg_px_open,
         event_id: UUID4::new(),
-        ts_event: UnixNanos::from(1_u64),
-        ts_init: UnixNanos::from(1_u64),
+        ts_event: position_opened_event_ts(),
+        ts_init: position_opened_init_ts(),
     }
 }
 
@@ -1504,8 +1568,8 @@ fn order_filled_event(
         Currency::USDC(),
         LiquiditySide::Taker,
         UUID4::new(),
-        UnixNanos::from(1_u64),
-        UnixNanos::from(1_u64),
+        order_filled_event_ts(),
+        order_filled_init_ts(),
         false,
         None,
         Some(Money::from("0.01 USDC")),
@@ -1535,8 +1599,8 @@ fn entry_fill_event(
         Currency::USDC(),
         LiquiditySide::Taker,
         UUID4::new(),
-        UnixNanos::from(2_u64),
-        UnixNanos::from(2_u64),
+        entry_fill_event_ts(),
+        entry_fill_init_ts(),
         false,
         None,
         Some(Money::from("0.01 USDC")),

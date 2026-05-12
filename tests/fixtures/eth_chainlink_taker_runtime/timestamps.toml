@@ -1,0 +1,15 @@
+[instrument]
+created_ts_nanos = 1
+updated_ts_nanos = 2
+
+[position_opened]
+event_ts_nanos = 1
+init_ts_nanos = 1
+
+[order_filled]
+event_ts_nanos = 1
+init_ts_nanos = 1
+
+[entry_fill]
+event_ts_nanos = 2
+init_ts_nanos = 2

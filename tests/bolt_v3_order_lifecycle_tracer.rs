@@ -60,8 +60,9 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use serde::Deserialize;
 use support::{
-    MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
-    RecordedSubmitOrder, clear_mock_exec_submissions, recorded_mock_exec_submissions,
+    LocalHttpStatus, MockDataClientConfig, MockDataClientFactory, MockExecClientConfig,
+    MockExecutionClientFactory, RecordedSubmitOrder, clear_mock_exec_submissions,
+    recorded_mock_exec_submissions,
 };
 use tempfile::TempDir;
 use tokio::{
@@ -542,9 +543,8 @@ fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<St
 
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(),
-                body
+                "{}",
+                support::local_http_json_response(LocalHttpStatus::Ok, &body)
             )
             .expect("local fee server should write response");
         }
@@ -627,58 +627,62 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
                     body,
                 });
                 let path = target.split('?').next().unwrap_or_default();
-                let response_body = if method == local_polymarket_balance_allowance_method()
+                let (status, response_body) = if method
+                    == local_polymarket_balance_allowance_method()
                     && path == local_polymarket_balance_allowance_path()
                 {
-                    balance_allowance_body.as_ref().clone()
+                    (LocalHttpStatus::Ok, balance_allowance_body.as_ref().clone())
                 } else if (method == local_polymarket_orders_data_method()
                     && path == local_polymarket_orders_data_path())
                     || (method == local_polymarket_trades_data_method()
                         && path == local_polymarket_trades_data_path())
                 {
-                    empty_cursor_page_body.as_ref().clone()
+                    (LocalHttpStatus::Ok, empty_cursor_page_body.as_ref().clone())
                 } else if method == local_polymarket_positions_method()
                     && path == local_polymarket_positions_path()
                 {
-                    positions_body.as_ref().clone()
+                    (LocalHttpStatus::Ok, positions_body.as_ref().clone())
                 } else if method == local_polymarket_fee_rate_method()
                     && path == local_polymarket_fee_rate_path()
                 {
-                    fee_rate_body.as_ref().clone()
+                    (LocalHttpStatus::Ok, fee_rate_body.as_ref().clone())
                 } else if method == local_polymarket_submit_order_method()
                     && path == local_polymarket_submit_order_path()
                 {
-                    protocol_payload_template(
-                        "polymarket_order_success_template.json",
-                        &[("order_id", local_polymarket_order_id())],
+                    (
+                        LocalHttpStatus::Ok,
+                        protocol_payload_template(
+                            "polymarket_order_success_template.json",
+                            &[("order_id", local_polymarket_order_id())],
+                        ),
                     )
                 } else if method == local_polymarket_cancel_orders_method()
                     && path == local_polymarket_cancel_orders_path()
                 {
-                    protocol_payload_template(
-                        "polymarket_cancel_success_template.json",
-                        &[("order_id", local_polymarket_order_id())],
+                    (
+                        LocalHttpStatus::Ok,
+                        protocol_payload_template(
+                            "polymarket_cancel_success_template.json",
+                            &[("order_id", local_polymarket_order_id())],
+                        ),
                     )
                 } else if method == local_polymarket_cancel_order_method()
                     && path == local_polymarket_cancel_order_path()
                 {
-                    protocol_payload_template(
-                        "polymarket_cancel_success_template.json",
-                        &[("order_id", local_polymarket_order_id())],
+                    (
+                        LocalHttpStatus::Ok,
+                        protocol_payload_template(
+                            "polymarket_cancel_success_template.json",
+                            &[("order_id", local_polymarket_order_id())],
+                        ),
                     )
                 } else {
-                    unexpected_request_body.as_ref().clone()
+                    (
+                        LocalHttpStatus::NotFound,
+                        unexpected_request_body.as_ref().clone(),
+                    )
                 };
-                let status = if response_body.contains("unexpected") {
-                    "404 Not Found"
-                } else {
-                    "200 OK"
-                };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    response_body.len(),
-                    response_body
-                );
+                let response = support::local_http_json_response(status, &response_body);
                 let _ = socket.write_all(response.as_bytes()).await;
             });
         }

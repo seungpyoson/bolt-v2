@@ -169,9 +169,8 @@ fn spawn_fee_rate_server() -> (String, mpsc::Receiver<String>) {
 
         write!(
             stream,
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            body.len(),
-            body
+            "{}",
+            support::local_http_json_response(support::LocalHttpStatus::Ok, &body)
         )
         .expect("local fee server should write response");
     });

@@ -61,6 +61,9 @@ ORDER_LIFECYCLE_RAW_MILLI_NANO_CONVERSION_PATTERN = re.compile(r"[*\/]\s*1_000_0
 ORDER_LIFECYCLE_LITERAL_UNIX_NANOS_PATTERN = re.compile(
     r"UnixNanos::from\(\s*\d[\d_]*_?u64\s*\)"
 )
+LOCAL_HTTP_RESPONSE_LITERAL_PATTERN = re.compile(
+    r'"(?:HTTP/1\.1[^"]*|200 OK|404 Not Found)"'
+)
 
 
 @dataclass(frozen=True)
@@ -188,6 +191,15 @@ def scan_file(
                 path=rel,
                 line=line_number(text, match.start()),
                 message="numeric fixture-owned literal; derive from TOML fixture",
+                excerpt=match.group(0),
+            )
+        )
+    for match in LOCAL_HTTP_RESPONSE_LITERAL_PATTERN.finditer(text):
+        findings.append(
+            Finding(
+                path=rel,
+                line=line_number(text, match.start()),
+                message="local HTTP response literal; use shared test support helper",
                 excerpt=match.group(0),
             )
         )

@@ -790,11 +790,7 @@ fn spawn_fee_rate_server(expected_requests: usize) -> (String, mpsc::Receiver<St
             let request_text = String::from_utf8_lossy(&request).into_owned();
             tx.send(request_text)
                 .expect("local fee server should record request");
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
+            let response = support::local_http_json_response(support::LocalHttpStatus::Ok, &body);
             stream
                 .write_all(response.as_bytes())
                 .expect("local fee server should write response");

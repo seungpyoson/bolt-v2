@@ -107,3 +107,5 @@ F13az extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so inli
 F13ba extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so raw millisecond/nanosecond conversion literals in `tests/bolt_v3_order_lifecycle_tracer.rs` are rejected. Order-lifecycle tests now use named conversion helpers backed by `Duration` instead of repeated `1_000_000` multipliers/dividers.
 
 F13bb extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so literal `UnixNanos::from(...)` timestamps in `tests/bolt_v3_order_lifecycle_tracer.rs` are rejected. Synthetic binary-option created/updated timestamps now derive from `[selected_binary_option]` in `tests/fixtures/bolt_v3_existing_strategy/order_lifecycle_tracer.toml`.
+
+F13bc extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so inline local HTTP response/status literals in enforced protocol tests are rejected. Local fee, order-lifecycle, and reconciliation HTTP responders now use `tests/support/mod.rs` `local_http_json_response` plus `LocalHttpStatus` instead of per-test response framing strings.

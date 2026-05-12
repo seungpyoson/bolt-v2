@@ -134,6 +134,30 @@ pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalHttpStatus {
+    Ok,
+    NotFound,
+}
+
+impl LocalHttpStatus {
+    fn line(self) -> &'static str {
+        match self {
+            Self::Ok => "200 OK",
+            Self::NotFound => "404 Not Found",
+        }
+    }
+}
+
+pub fn local_http_json_response(status: LocalHttpStatus, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        status.line(),
+        body.len(),
+        body
+    )
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdownSelectedMarketLegFixture {
     pub outcome: String,

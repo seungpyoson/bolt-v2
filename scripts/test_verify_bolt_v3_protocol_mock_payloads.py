@@ -365,6 +365,25 @@ def test_order_lifecycle_literal_unix_nanos_is_a_finding() -> None:
         assert "literal UnixNanos" in findings[0].message
 
 
+def test_local_http_response_literal_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_order_lifecycle_tracer.rs",
+            (
+                'fn probe() { let _ = "HTTP/1.1 200 OK\\r\\n"; }\n'
+                'fn status() { let _ = "404 Not Found"; }\n'
+            ),
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 2
+        assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
+        assert "local HTTP response literal" in findings[0].message
+
+
 def test_fee_provider_file_is_enforced() -> None:
     verifier = load_verifier()
     if "tests/bolt_v3_polymarket_fee_provider.rs" not in verifier.ENFORCED_TEST_FILES:
@@ -397,6 +416,7 @@ def main() -> int:
         test_order_lifecycle_positions_response_literal_is_a_finding,
         test_order_lifecycle_raw_millisecond_nanosecond_conversion_is_a_finding,
         test_order_lifecycle_literal_unix_nanos_is_a_finding,
+        test_local_http_response_literal_is_a_finding,
         test_fee_provider_file_is_enforced,
         test_order_lifecycle_tracer_file_is_enforced,
     ]

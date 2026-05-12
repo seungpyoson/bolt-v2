@@ -32,6 +32,8 @@
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
+use std::sync::Arc;
+
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -271,10 +273,18 @@ pub fn register_runtime_strategy(
     let fee_provider =
         polymarket::build_fee_provider(&context.strategy.config.venue, venue, context.resolved)
             .map_err(|error| binding_message(context, error.to_string()))?;
-    let build_context = StrategyBuildContext {
+    let decision_evidence = Arc::new(
+        crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(
+            context.loaded,
+        )
+        .map_err(|error| binding_message(context, error.to_string()))?,
+    );
+    let build_context = StrategyBuildContext::try_new(
         fee_provider,
-        reference_publish_topic: parameters.runtime.reference_publish_topic,
-    };
+        parameters.runtime.reference_publish_topic,
+        Some(decision_evidence),
+    )
+    .map_err(|error| binding_message(context, error.to_string()))?;
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(context, error.to_string()))?;
     registry

@@ -25,8 +25,7 @@ use nautilus_model::identifiers::ClientId;
 
 #[test]
 fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let (_tempdir, loaded) = support::load_bolt_v3_config_with_temp_catalog("client-registration");
 
     let (node, summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)

@@ -61,11 +61,11 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Strategy construction and submit tests fail closed when evidence writer is absent or persistence fails.
 
-- [ ] T023 [US2] Write failing tests that construct the strategy without decision evidence and expect construction rejection.
-- [ ] T024 [US2] Write failing tests that simulate evidence persistence failure and expect submit rejection before NT submit.
-- [ ] T025 [US2] Remove optional/fallback evidence submit path from the registered strategy implementation.
-- [ ] T026 [US2] Make bolt-v3 strategy registration provide mandatory decision evidence.
-- [ ] T027 [US2] Run targeted strategy tests and source-fence search for fallback direct submit branches.
+- [x] T023 [US2] Write failing tests that construct the strategy without decision evidence and expect construction rejection.
+- [x] T024 [US2] Write failing tests that simulate evidence persistence failure and expect submit rejection before NT submit.
+- [x] T025 [US2] Remove optional/fallback evidence submit path from the registered strategy implementation.
+- [x] T026 [US2] Make bolt-v3 strategy registration provide mandatory decision evidence.
+- [x] T027 [US2] Run targeted strategy tests and source-fence search for fallback direct submit branches.
 
 ## Phase 6: Submit Admission Consumes Gate Report (US2)
 

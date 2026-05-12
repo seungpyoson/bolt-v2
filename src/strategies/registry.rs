@@ -7,7 +7,10 @@ use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
 use toml::Value;
 
-use crate::{clients::polymarket::FeeProvider, validate::ValidationError};
+use crate::{
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter, clients::polymarket::FeeProvider,
+    validate::ValidationError,
+};
 
 pub trait RuntimeStrategy: Strategy + DataActor + Component + std::fmt::Debug {}
 
@@ -17,8 +20,41 @@ pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 
 #[derive(Clone)]
 pub struct StrategyBuildContext {
-    pub fee_provider: Arc<dyn FeeProvider>,
-    pub reference_publish_topic: String,
+    fee_provider: Arc<dyn FeeProvider>,
+    reference_publish_topic: String,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+}
+
+impl StrategyBuildContext {
+    pub fn try_new(
+        fee_provider: Arc<dyn FeeProvider>,
+        reference_publish_topic: String,
+        decision_evidence: Option<Arc<dyn BoltV3DecisionEvidenceWriter>>,
+    ) -> Result<Self> {
+        let decision_evidence =
+            decision_evidence.ok_or_else(|| anyhow!("decision evidence writer is required"))?;
+        Ok(Self {
+            fee_provider,
+            reference_publish_topic,
+            decision_evidence,
+        })
+    }
+
+    pub fn fee_provider(&self) -> &dyn FeeProvider {
+        self.fee_provider.as_ref()
+    }
+
+    pub fn fee_provider_arc(&self) -> Arc<dyn FeeProvider> {
+        self.fee_provider.clone()
+    }
+
+    pub fn reference_publish_topic(&self) -> &str {
+        &self.reference_publish_topic
+    }
+
+    pub fn decision_evidence(&self) -> &dyn BoltV3DecisionEvidenceWriter {
+        self.decision_evidence.as_ref()
+    }
 }
 
 pub trait StrategyBuilder: Send + Sync + 'static {
@@ -267,9 +303,9 @@ mod tests {
                 .and_then(Value::as_str)
                 .context("context builder requires expected_reference_publish_topic")?;
             anyhow::ensure!(
-                context.reference_publish_topic == expected_topic,
+                context.reference_publish_topic() == expected_topic,
                 "expected reference publish topic {expected_topic}, got {}",
-                context.reference_publish_topic
+                context.reference_publish_topic()
             );
             Ok(Box::new(TestStrategy::new(strategy_id)))
         }
@@ -284,10 +320,14 @@ mod tests {
     }
 
     fn test_context() -> StrategyBuildContext {
-        StrategyBuildContext {
-            fee_provider: Arc::new(NoopFeeProvider),
-            reference_publish_topic: "platform.reference.test".to_string(),
-        }
+        StrategyBuildContext::try_new(
+            Arc::new(NoopFeeProvider),
+            "platform.reference.test".to_string(),
+            Some(Arc::new(
+                crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default(),
+            )),
+        )
+        .expect("test context should include decision evidence")
     }
 
     #[test]

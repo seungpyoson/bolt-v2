@@ -201,8 +201,8 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
 #[test]
 fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
     let _guard = lock_live_node_test();
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let (_tempdir, loaded) =
+        support::load_bolt_v3_config_with_temp_catalog("strategy-registration");
 
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
@@ -211,6 +211,21 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
     assert_eq!(
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("binary_oracle_edge_taker-001")]
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_binding_requires_decision_evidence_persistence_config() {
+    let (_tempdir, loaded) =
+        support::load_bolt_v3_config_with_temp_catalog("decision-evidence-config");
+
+    assert_eq!(
+        loaded
+            .root
+            .persistence
+            .decision_evidence
+            .order_intents_relative_path,
+        "bolt_v3/decision/order_intents.jsonl"
     );
 }
 

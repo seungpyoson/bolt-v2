@@ -22,6 +22,14 @@ classification = "no_identity_clock_sentinel"
 reason = "The no-identity adapter entry point supplies an empty market-identity plan, so this deterministic clock closure is never invoked and is documented as a sentinel for that no-filter path."
 
 [[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''b"\n"'''
+context = ".write_all(b\"\\n\")"
+classification = "decision_evidence_jsonl_record_terminator"
+reason = "The decision-evidence writer emits JSON Lines records; this byte literal is the JSONL record delimiter, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"nautilus_polymarket::common::credential\""

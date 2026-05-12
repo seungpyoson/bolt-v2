@@ -279,16 +279,11 @@ fn sandbox_startup_rejects_position_check_interval() {
 
 #[test]
 fn builds_bolt_v3_livenode_without_running_event_loop() {
-    use bolt_v2::{
-        bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
-        bolt_v3_live_node::build_bolt_v3_live_node_with,
-    };
+    use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
     use nautilus_common::enums::Environment;
     use nautilus_live::node::NodeState;
 
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded: LoadedBoltV3Config =
-        load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let (_tempdir, loaded) = support::load_bolt_v3_config_with_temp_catalog("live-node-run");
 
     // No forbidden env vars are set in the test predicate, and the fake
     // resolver supplies all configured SSM paths, so the build proceeds.
@@ -333,6 +328,7 @@ fn wires_runtime_capture_from_bolt_v3_persistence_config() {
         let routed_root = BoltV3RootConfig {
             persistence: PersistenceBlock {
                 catalog_directory: catalog_root.to_string_lossy().to_string(),
+                decision_evidence: original_root.persistence.decision_evidence.clone(),
                 streaming: StreamingBlock {
                     catalog_fs_protocol: original_root.persistence.streaming.catalog_fs_protocol,
                     flush_interval_milliseconds: original_root

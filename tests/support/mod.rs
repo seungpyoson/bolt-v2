@@ -67,6 +67,35 @@ pub fn recorded_mock_exec_submissions() -> Vec<RecordedSubmitOrder> {
     mock_exec_submissions().lock().unwrap().clone()
 }
 
+#[derive(Debug, Default)]
+pub struct RecordingDecisionEvidenceWriter {
+    records: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>>,
+}
+
+impl RecordingDecisionEvidenceWriter {
+    pub fn records(&self) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+    for RecordingDecisionEvidenceWriter
+{
+    fn record_order_intent(
+        &self,
+        intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+    ) -> anyhow::Result<()> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(intent.clone());
+        Ok(())
+    }
+}
+
 pub struct TempCaseDir {
     path: PathBuf,
 }
@@ -91,6 +120,31 @@ impl TempCaseDir {
 
 pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+pub fn load_bolt_v3_config_with_temp_catalog(
+    label: &str,
+) -> (TempCaseDir, bolt_v2::bolt_v3_config::LoadedBoltV3Config) {
+    let tempdir = TempCaseDir::new(label);
+    let strategy_dir = tempdir.path().join("strategies");
+    fs::create_dir_all(&strategy_dir).expect("strategy fixture dir should be created");
+    fs::copy(
+        repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategy_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should be copied");
+    let catalog_dir = tempdir.path().join("catalog");
+    let root_text = fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 root fixture should be readable")
+        .replace(
+            r#"catalog_directory = "/var/lib/bolt/catalog""#,
+            &format!(r#"catalog_directory = "{}""#, catalog_dir.display()),
+        );
+    let root_path = tempdir.path().join("root.toml");
+    fs::write(&root_path, root_text).expect("temp bolt-v3 root fixture should be written");
+    let loaded = bolt_v2::bolt_v3_config::load_bolt_v3_config(&root_path)
+        .expect("temp bolt-v3 fixture should load");
+    (tempdir, loaded)
 }
 
 pub fn runtime_toml_with_reference_venue(

@@ -700,6 +700,14 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(loaded.root.trader_id, "BOLT-001");
     assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
     assert_eq!(
+        loaded
+            .root
+            .persistence
+            .decision_evidence
+            .order_intents_relative_path,
+        "bolt_v3/decision/order_intents.jsonl"
+    );
+    assert_eq!(
         loaded.root.venues["polymarket_main"].kind.as_str(),
         "polymarket"
     );
@@ -990,6 +998,9 @@ file_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt_v3/decision/order_intents.jsonl"
+
 [persistence.streaming]
 catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
@@ -1124,6 +1135,9 @@ file_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt_v3/decision/order_intents.jsonl"
+
 [persistence.streaming]
 catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
@@ -1251,6 +1265,9 @@ file_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt_v3/decision/order_intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"

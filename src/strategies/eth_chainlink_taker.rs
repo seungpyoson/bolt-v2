@@ -18,6 +18,7 @@ use nautilus_model::{
     enums::{BookAction, OrderSide, TimeInForce},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
+    orders::OrderAny,
     types::{Price, Quantity},
 };
 use nautilus_system::trader::Trader;
@@ -27,6 +28,7 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
+    bolt_v3_decision_evidence::{BoltV3OrderIntentEvidence, BoltV3OrderIntentKind},
     platform::{
         polymarket_catalog::polymarket_instrument_id,
         reference::ReferenceSnapshot,
@@ -1318,7 +1320,7 @@ impl EthChainlinkTaker {
     }
 
     fn refresh_fee_readiness(&mut self) {
-        refresh_fee_readiness_for_active(&mut self.active, self.context.fee_provider.as_ref());
+        refresh_fee_readiness_for_active(&mut self.active, self.context.fee_provider());
     }
 
     fn trigger_fee_warm_for_market(&self) {
@@ -1330,7 +1332,7 @@ impl EthChainlinkTaker {
             return;
         };
         for token_id in token_ids {
-            let fee_provider = self.context.fee_provider.clone();
+            let fee_provider = self.context.fee_provider_arc();
             handle.spawn(async move {
                 let _ = fee_provider.warm(&token_id).await;
             });
@@ -1353,7 +1355,7 @@ impl EthChainlinkTaker {
         self.selection_handler = Some(selection_handler);
 
         let actor_id = self.actor_id().inner();
-        let reference_topic = self.context.reference_publish_topic.clone();
+        let reference_topic = self.context.reference_publish_topic().to_string();
         let reference_handler = ShareableMessageHandler::from_any(move |message: &dyn Any| {
             let Some(snapshot) = message.downcast_ref::<ReferenceSnapshot>() else {
                 return;
@@ -1373,10 +1375,7 @@ impl EthChainlinkTaker {
             msgbus::unsubscribe_any(selection_topic.into(), &handler);
         }
         if let Some(handler) = self.reference_handler.take() {
-            msgbus::unsubscribe_any(
-                self.context.reference_publish_topic.clone().into(),
-                &handler,
-            );
+            msgbus::unsubscribe_any(self.context.reference_publish_topic().into(), &handler);
         }
         self.replace_book_subscriptions(OutcomeBookSubscriptions::default());
     }
@@ -2068,7 +2067,7 @@ impl EthChainlinkTaker {
             OutcomeSide::Up => self.active.outcome_fees.up_token_id.as_deref(),
             OutcomeSide::Down => self.active.outcome_fees.down_token_id.as_deref(),
         }?;
-        self.context.fee_provider.fee_bps(token_id)?.to_f64()
+        self.context.fee_provider().fee_bps(token_id)?.to_f64()
     }
 
     fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
@@ -2535,7 +2534,7 @@ impl EthChainlinkTaker {
             OutcomeSide::Up => open_position.outcome_fees.up_token_id.as_deref(),
             OutcomeSide::Down => open_position.outcome_fees.down_token_id.as_deref(),
         }?;
-        self.context.fee_provider.fee_bps(token_id)?.to_f64()
+        self.context.fee_provider().fee_bps(token_id)?.to_f64()
     }
 
     fn exit_evaluation_at(&self, now_ms: u64) -> ExitEvaluation {
@@ -2824,6 +2823,18 @@ impl EthChainlinkTaker {
         }
     }
 
+    fn submit_order_with_decision_evidence(
+        &mut self,
+        intent: BoltV3OrderIntentEvidence,
+        order: OrderAny,
+        client_id: ClientId,
+    ) -> Result<()> {
+        self.context
+            .decision_evidence()
+            .record_order_intent(&intent)?;
+        self.submit_order(order, None, Some(client_id))
+    }
+
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         let mut decision = self.exit_submission_decision_at(now_ms);
 
@@ -2893,7 +2904,17 @@ impl EthChainlinkTaker {
             client_order_id,
         );
 
-        if let Err(error) = self.submit_order(order, None, Some(client_id)) {
+        let intent = BoltV3OrderIntentEvidence {
+            strategy_id: self.config.strategy_id.clone(),
+            intent_kind: BoltV3OrderIntentKind::Exit,
+            instrument_id: instrument_id.to_string(),
+            client_order_id: client_order_id.to_string(),
+            order_side: format!("{order_side:?}"),
+            price: price.to_string(),
+            quantity: quantity.to_string(),
+        };
+
+        if let Err(error) = self.submit_order_with_decision_evidence(intent, order, client_id) {
             self.exposure = ExposureState::Managed(managed_position);
             return Err(error);
         }
@@ -3096,7 +3117,17 @@ impl EthChainlinkTaker {
             client_order_id,
         );
 
-        if let Err(error) = self.submit_order(order, None, Some(client_id)) {
+        let intent = BoltV3OrderIntentEvidence {
+            strategy_id: self.config.strategy_id.clone(),
+            intent_kind: BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.to_string(),
+            client_order_id: client_order_id.to_string(),
+            order_side: format!("{order_side:?}"),
+            price: price.to_string(),
+            quantity: quantity.to_string(),
+        };
+
+        if let Err(error) = self.submit_order_with_decision_evidence(intent, order, client_id) {
             self.clear_pending_entry_state();
             return Err(error);
         }
@@ -4525,12 +4556,39 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FailingDecisionEvidenceWriter;
+
+    impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+        for FailingDecisionEvidenceWriter
+    {
+        fn record_order_intent(
+            &self,
+            _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("intent write failed")
+        }
+    }
+
     fn test_strategy() -> EthChainlinkTaker {
-        test_strategy_with_fee_provider(RecordingFeeProvider::cold())
+        test_strategy_with_fee_provider_and_decision_evidence(
+            RecordingFeeProvider::cold(),
+            Arc::new(crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default()),
+        )
     }
 
     fn test_strategy_with_fee_provider(
         fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
+    ) -> EthChainlinkTaker {
+        test_strategy_with_fee_provider_and_decision_evidence(
+            fee_provider,
+            Arc::new(crate::bolt_v3_decision_evidence::RecordingDecisionEvidenceWriter::default()),
+        )
+    }
+
+    fn test_strategy_with_fee_provider_and_decision_evidence(
+        fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
     ) -> EthChainlinkTaker {
         EthChainlinkTaker::new(
             EthChainlinkTakerConfig {
@@ -4555,10 +4613,12 @@ mod tests {
                 lead_agreement_min_corr: 0.8,
                 lead_jitter_max_ms: 250,
             },
-            StrategyBuildContext {
+            StrategyBuildContext::try_new(
                 fee_provider,
-                reference_publish_topic: "platform.reference.test.chainlink".to_string(),
-            },
+                "platform.reference.test.chainlink".to_string(),
+                Some(decision_evidence),
+            )
+            .expect("test strategy context should include decision evidence"),
         )
     }
 
@@ -4610,6 +4670,66 @@ mod tests {
         strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
         strategy
+    }
+
+    #[test]
+    fn decision_evidence_failure_rejects_before_nt_submit() {
+        let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+            RecordingFeeProvider::cold(),
+            Arc::new(FailingDecisionEvidenceWriter),
+        );
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+            strategy_id: strategy.config.strategy_id.clone(),
+            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.to_string(),
+            client_order_id: client_order_id.to_string(),
+            order_side: "Buy".to_string(),
+            price: price.to_string(),
+            quantity: quantity.to_string(),
+        };
+
+        let error = strategy
+            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .expect_err("evidence failure must reject before NT submit");
+
+        assert!(
+            error.to_string().contains("intent write failed"),
+            "{error:#}"
+        );
     }
 
     fn ready_to_trade_strategy_with_live_fees(

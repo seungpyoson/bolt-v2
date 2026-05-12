@@ -249,6 +249,7 @@ mod tests {
     use crate::bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config};
     use crate::bolt_v3_providers::{
         binance::{self, ResolvedBoltV3BinanceSecrets},
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -285,6 +286,8 @@ mod tests {
             "/bolt/polymarket_main/passphrase" => "poly-passphrase".to_string(),
             "/bolt/binance_reference/api_key" => "binance-api-key".to_string(),
             "/bolt/binance_reference/api_secret" => synthetic_binance_secret(),
+            "/bolt/chainlink_btcusd/api_key" => "chainlink-api-key".to_string(),
+            "/bolt/chainlink_btcusd/api_secret" => "chainlink-api-secret".to_string(),
             _ => panic!("unexpected SSM path: {path}"),
         }
     }
@@ -358,7 +361,7 @@ mod tests {
         })
         .expect("fixture secrets should resolve");
 
-        assert_eq!(resolved.venues.len(), 2);
+        assert_eq!(resolved.venues.len(), 3);
         assert!(
             calls.iter().all(|(region, _)| region == "eu-west-1"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
@@ -370,6 +373,8 @@ mod tests {
             "/bolt/polymarket_main/passphrase",
             "/bolt/binance_reference/api_key",
             "/bolt/binance_reference/api_secret",
+            "/bolt/chainlink_btcusd/api_key",
+            "/bolt/chainlink_btcusd/api_secret",
         ] {
             assert!(
                 calls.iter().any(|(_, called_path)| called_path == path),
@@ -390,6 +395,12 @@ mod tests {
             .expect("binance_reference should resolve to Binance secrets");
         assert_eq!(binance.api_key, "binance-api-key");
         assert_eq!(binance.api_secret, synthetic_binance_secret());
+
+        let chainlink = resolved
+            .get_as::<ResolvedBoltV3ChainlinkSecrets>("chainlink_btcusd")
+            .expect("chainlink_btcusd should resolve to Chainlink secrets");
+        assert_eq!(chainlink.api_key, "chainlink-api-key");
+        assert_eq!(chainlink.api_secret, "chainlink-api-secret");
     }
 
     #[test]
@@ -404,12 +415,15 @@ mod tests {
 
         assert!(debug.contains("polymarket_main"));
         assert!(debug.contains("binance_reference"));
+        assert!(debug.contains("chainlink_btcusd"));
         for secret in [
             "poly-private-key",
             "poly-api-key",
             "poly-passphrase",
             "binance-api-key",
             synthetic_binance_secret().as_str(),
+            "chainlink-api-key",
+            "chainlink-api-secret",
         ] {
             assert!(
                 !debug.contains(secret),

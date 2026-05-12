@@ -46,7 +46,7 @@ use bolt_v2::{
     bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
     bolt_v3_providers::{
         ReferenceCapability, binance, binance::ResolvedBoltV3BinanceSecrets,
-        binding_for_provider_key, chainlink, polymarket,
+        binding_for_provider_key, chainlink, chainlink::ResolvedBoltV3ChainlinkSecrets, polymarket,
         polymarket::ResolvedBoltV3PolymarketSecrets,
     },
     bolt_v3_secrets::{
@@ -162,15 +162,19 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             api_secret: "binding-binance-api-secret".to_string(),
         }),
     );
+    venues.insert(
+        "chainlink_btcusd".to_string(),
+        Arc::new(ResolvedBoltV3ChainlinkSecrets {
+            api_key: "binding-chainlink-api-key".to_string(),
+            api_secret: "binding-chainlink-api-secret".to_string(),
+        }),
+    );
     ResolvedBoltV3Secrets { venues }
 }
 
 fn fixture_loaded_config_with_chainlink_venue() -> LoadedBoltV3Config {
     let root_text = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture root should be readable");
-    let root_text = format!(
-        "{root_text}\n\n[venues.chainlink_btcusd]\nkind = \"chainlink\"\n\n[venues.chainlink_btcusd.data]\ninstrument_id = \"BTCUSD.CHAINLINK\"\nfeed_id = \"0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472\"\nprice_scale = 8\nws_url = \"wss://streams.chain.link\"\nws_reconnect_alert_threshold = 5\n\n[venues.chainlink_btcusd.secrets]\napi_key_ssm_path = \"/bolt/chainlink_btcusd/api_key\"\napi_secret_ssm_path = \"/bolt/chainlink_btcusd/api_secret\"\n"
-    );
     let root: BoltV3RootConfig =
         toml::from_str(&root_text).expect("fixture plus chainlink bolt-v3 venue should parse");
     LoadedBoltV3Config {

@@ -49,11 +49,11 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 - [x] T018a [US3] Add provider-owned reference capability metadata so reference-role validation can stay provider-agnostic.
 - [x] T018b [US3] Add the minimal Chainlink bolt-v3 provider binding needed for an oracle-capable reference venue.
-- [ ] T018c [US3] Write failing validation tests proving strategy config accepts multiple exchange reference roles and rejects missing oracle/orderbook reference capabilities.
-- [ ] T019 [US3] Run targeted strategy/config tests; expected failure shows current config cannot express all required reference roles.
-- [ ] T020 [US3] Extend strategy-archetype validation in `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` to validate reference roles generically.
-- [ ] T021 [US3] Extend fixtures under `tests/fixtures/bolt_v3/` only for operator-visible runtime values, not test-local timing scaffolding.
-- [ ] T022 [US3] Run `cargo test --test config_parsing` and targeted tests for the initial registered taker strategy.
+- [x] T018c [US3] Write failing validation tests proving strategy config accepts multiple exchange reference roles and rejects missing oracle/orderbook reference capabilities.
+- [x] T019 [US3] Run targeted strategy/config tests; expected failure shows current config cannot express all required reference roles.
+- [x] T020 [US3] Extend strategy-archetype validation in `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` to validate reference roles generically.
+- [x] T021 [US3] Extend fixtures under `tests/fixtures/bolt_v3/` only for operator-visible runtime values, not test-local timing scaffolding.
+- [x] T022 [US3] Run `cargo test --test config_parsing` and targeted tests for the initial registered taker strategy.
 
 ## Phase 5: Mandatory Decision Evidence (US2)
 

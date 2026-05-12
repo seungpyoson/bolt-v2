@@ -207,11 +207,51 @@ reason = "This is the accepted strategy_archetype registry key for the currently
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = "1"
+context = "minimum_count: 1,"
+classification = "archetype_reference_capability_contract"
+reason = "The binary_oracle_edge_taker archetype requires at least one provider-declared oracle reference capability; this is strategy contract cardinality, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = "\"primary\""
-context = "if strategy.reference_data.contains_key(\"primary\") {"
-classification = "archetype_reference_data_role"
-reason = "The binary_oracle_edge_taker archetype contract requires the [reference_data.primary] role; this literal names that archetype-owned role."
+literal = "\"oracle-capable reference_data role\""
+context = "description: \"oracle-capable reference_data role\","
+classification = "archetype_reference_capability_diagnostic"
+reason = "This string is the strategy-owned diagnostic label for the oracle capability requirement, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = "1"
+context = "minimum_count: 1,"
+classification = "archetype_reference_capability_contract"
+reason = "The binary_oracle_edge_taker archetype requires at least one provider-declared orderbook reference capability; this is strategy contract cardinality, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = "\"orderbook-capable reference_data role\""
+context = "description: \"orderbook-capable reference_data role\","
+classification = "archetype_reference_capability_diagnostic"
+reason = "This string is the strategy-owned diagnostic label for the orderbook capability requirement, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "0_usize"
+context = "let mut count = 0_usize;"
+classification = "validation_counter_initializer"
+reason = "This initializes the local capability-match counter used by validation; it is not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "1"
+context = "count += 1;"
+classification = "validation_counter_increment"
+reason = "This increments the local capability-match counter once per matching provider binding; it is not an operator-tunable runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"

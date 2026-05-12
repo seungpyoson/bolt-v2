@@ -451,6 +451,7 @@ mod tests {
             .as_table()
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
-        assert!(strategy.reference_data.contains_key("primary"));
+        assert!(strategy.reference_data.contains_key("oracle"));
+        assert!(strategy.reference_data.contains_key("exchange"));
     }
 }

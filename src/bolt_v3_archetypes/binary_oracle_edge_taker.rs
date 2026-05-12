@@ -13,8 +13,8 @@
 //!    introduce its own parameter row without reaching back into core
 //!    config.
 //! 2. The archetype's bolt-v3 startup-validation policy:
-//!    - the required reference-data role
-//!      (`[reference_data.primary]`),
+//!    - the required reference-data capabilities
+//!      (one oracle-capable role and one orderbook-capable role),
 //!    - the allowed `[parameters.entry_order]` combination
 //!      (`order_type=limit`, `time_in_force=fok`, all boolean flags
 //!      `false`),
@@ -28,22 +28,38 @@
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype` based on
 //! `strategy.strategy_archetype`. Archetype-specific error-message
 //! policy (the headline "is not allowed for `binary_oracle_edge_taker`"
-//! phrase, the per-field rule listing, and the
-//! "requires `[reference_data.primary]`" phrase) lives here so that a
+//! phrase and the per-field rule listing) lives here so that a
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::{bolt_v3_archetypes::ArchetypeValidationBinding, bolt_v3_config::BoltV3StrategyConfig};
+use crate::{
+    bolt_v3_archetypes::{ArchetypeValidationBinding, ReferenceCapabilityRequirement},
+    bolt_v3_config::BoltV3StrategyConfig,
+    bolt_v3_providers::ReferenceCapability,
+};
 
 pub const KEY: &str = "binary_oracle_edge_taker";
+pub const REFERENCE_CAPABILITY_REQUIREMENTS: &[ReferenceCapabilityRequirement] = &[
+    ReferenceCapabilityRequirement {
+        capability: ReferenceCapability::Oracle,
+        minimum_count: 1,
+        description: "oracle-capable reference_data role",
+    },
+    ReferenceCapabilityRequirement {
+        capability: ReferenceCapability::Orderbook,
+        minimum_count: 1,
+        description: "orderbook-capable reference_data role",
+    },
+];
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
     ArchetypeValidationBinding {
         key: KEY,
         validate_strategy,
+        reference_capability_requirements: REFERENCE_CAPABILITY_REQUIREMENTS,
     }
 }
 
@@ -87,7 +103,7 @@ pub fn validate_strategy(
     strategy: &BoltV3StrategyConfig,
     default_max_notional: Option<&Decimal>,
 ) -> Vec<String> {
-    let mut errors = validate_required_reference_data(context, strategy);
+    let mut errors = Vec::new();
 
     let parameters = match strategy.parameters.clone().try_into::<ParametersBlock>() {
         Ok(value) => value,
@@ -110,16 +126,6 @@ pub fn validate_strategy(
         default_max_notional,
     ));
     errors
-}
-
-fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
-    if strategy.reference_data.contains_key("primary") {
-        Vec::new()
-    } else {
-        vec![format!(
-            "{context}: strategy_archetype `binary_oracle_edge_taker` requires [reference_data.primary]"
-        )]
-    }
 }
 
 fn validate_order_parameters(

@@ -148,3 +148,17 @@ instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_s
 [venues.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
 api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+
+[venues.chainlink_btcusd]
+kind = "chainlink"
+
+[venues.chainlink_btcusd.data]
+instrument_id = "BTCUSD.CHAINLINK"
+feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
+price_scale = 8
+ws_url = "wss://streams.chain.link"
+ws_reconnect_alert_threshold = 5
+
+[venues.chainlink_btcusd.secrets]
+api_key_ssm_path = "/bolt/chainlink_btcusd/api_key"
+api_secret_ssm_path = "/bolt/chainlink_btcusd/api_secret"

@@ -707,8 +707,13 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         loaded.root.venues["binance_reference"].kind.as_str(),
         "binance"
     );
+    assert_eq!(
+        loaded.root.venues["chainlink_btcusd"].kind.as_str(),
+        "chainlink"
+    );
     assert!(loaded.root.venues["polymarket_main"].execution.is_some());
     assert!(loaded.root.venues["binance_reference"].execution.is_none());
+    assert!(loaded.root.venues["chainlink_btcusd"].execution.is_none());
 
     assert_eq!(loaded.strategies.len(), 1);
     let strategy = &loaded.strategies[0].config;
@@ -738,9 +743,11 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         parameters.exit_order.time_in_force,
         ArchetypeTimeInForce::Ioc
     );
-    assert!(strategy.reference_data.contains_key("primary"));
+    assert!(strategy.reference_data.contains_key("oracle"));
+    assert!(strategy.reference_data.contains_key("exchange"));
+    assert_eq!(strategy.reference_data["oracle"].venue, "chainlink_btcusd");
     assert_eq!(
-        strategy.reference_data["primary"].venue,
+        strategy.reference_data["exchange"].venue,
         "binance_reference"
     );
 }
@@ -1298,6 +1305,106 @@ fn rejects_unsupported_root_and_strategy_schema_versions() {
             .any(|m| m.contains("schema_version=7 is unsupported")),
         "expected unsupported strategy schema version, got: {strategy_messages:#?}"
     );
+}
+
+#[test]
+fn binary_oracle_rejects_missing_oracle_capable_reference_role() {
+    use bolt_v2::bolt_v3_validate::validate_strategies;
+
+    let root = bolt_v3_root_with_chainlink_reference();
+    let strategy = binary_oracle_strategy_with_reference_data(
+        r#"[reference_data.exchange]
+venue = "binance_reference"
+instrument_id = "BTCUSDT.BINANCE"
+"#,
+    );
+
+    let messages = validate_strategies(&root, &[strategy]);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("oracle-capable reference_data role")),
+        "expected missing oracle-capable reference role error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn binary_oracle_rejects_missing_orderbook_capable_reference_role() {
+    use bolt_v2::bolt_v3_validate::validate_strategies;
+
+    let root = bolt_v3_root_with_chainlink_reference();
+    let strategy = binary_oracle_strategy_with_reference_data(
+        r#"[reference_data.oracle]
+venue = "chainlink_btcusd"
+instrument_id = "BTCUSD.CHAINLINK"
+"#,
+    );
+
+    let messages = validate_strategies(&root, &[strategy]);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("orderbook-capable reference_data role")),
+        "expected missing orderbook-capable reference role error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn binary_oracle_accepts_oracle_and_orderbook_reference_roles() {
+    use bolt_v2::bolt_v3_validate::validate_strategies;
+
+    let root = bolt_v3_root_with_chainlink_reference();
+    let strategy = binary_oracle_strategy_with_reference_data(
+        r#"[reference_data.oracle]
+venue = "chainlink_btcusd"
+instrument_id = "BTCUSD.CHAINLINK"
+
+[reference_data.exchange]
+venue = "binance_reference"
+instrument_id = "BTCUSDT.BINANCE"
+"#,
+    );
+
+    let messages = validate_strategies(&root, &[strategy]);
+    assert!(
+        messages.is_empty(),
+        "oracle+orderbook reference roles should validate, got: {messages:#?}"
+    );
+}
+
+fn bolt_v3_root_with_chainlink_reference() -> bolt_v2::bolt_v3_config::BoltV3RootConfig {
+    let root_text = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture root should be readable");
+    toml::from_str(&root_text).expect("fixture plus chainlink venue should parse")
+}
+
+fn binary_oracle_strategy_with_reference_data(
+    reference_data: &str,
+) -> bolt_v2::bolt_v3_config::LoadedStrategy {
+    use bolt_v2::bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy};
+
+    let strategy_path = support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml");
+    let strategy_text =
+        std::fs::read_to_string(&strategy_path).expect("strategy fixture should be readable");
+    let reference_start = strategy_text
+        .find("[reference_data.oracle]")
+        .expect("strategy fixture should contain reference_data.oracle block");
+    let parameters_start = strategy_text
+        .find("[parameters.entry_order]")
+        .expect("strategy fixture should contain parameters block after reference_data");
+    let mutated = format!(
+        "{}{}\n{}",
+        &strategy_text[..reference_start],
+        reference_data.trim(),
+        &strategy_text[parameters_start..]
+    );
+    let config: BoltV3StrategyConfig =
+        toml::from_str(&mutated).expect("mutated strategy should parse");
+    LoadedStrategy {
+        config_path: strategy_path,
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config,
+    }
 }
 
 fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {

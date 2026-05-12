@@ -363,6 +363,7 @@ mod tests {
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
         ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
         binance::{self, ResolvedBoltV3BinanceSecrets},
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     };
     use crate::bolt_v3_secrets::{
@@ -491,6 +492,13 @@ mod tests {
         }
     }
 
+    fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
+        ResolvedBoltV3ChainlinkSecrets {
+            api_key: "fixture-chainlink-api-key".to_string(),
+            api_secret: "fixture-chainlink-api-secret".to_string(),
+        }
+    }
+
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
         venues.insert(
@@ -500,6 +508,10 @@ mod tests {
         venues.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
+        );
+        venues.insert(
+            "chainlink_btcusd".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
         );
         ResolvedBoltV3Secrets { venues }
     }
@@ -775,13 +787,17 @@ mod tests {
     #[test]
     fn missing_resolved_secrets_for_polymarket_execution_is_a_mapping_error() {
         let loaded = fixture_loaded_config();
-        // Provide the binance_reference secret entry so map iteration
+        // Provide the earlier venue secret entries so map iteration
         // reaches `polymarket_main` (which is alphabetically later in
         // the BTreeMap) and trips on the missing polymarket secrets.
         let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
         venues.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
+        );
+        venues.insert(
+            "chainlink_btcusd".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
         );
         let resolved = ResolvedBoltV3Secrets { venues };
 
@@ -839,6 +855,10 @@ mod tests {
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
         );
+        venues.insert(
+            "chainlink_btcusd".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
+        );
         let resolved = ResolvedBoltV3Secrets { venues };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
@@ -867,6 +887,8 @@ mod tests {
         for raw_secret in [
             fixture_binance_secrets().api_key.as_str(),
             fixture_binance_secrets().api_secret.as_str(),
+            fixture_chainlink_secrets().api_key.as_str(),
+            fixture_chainlink_secrets().api_secret.as_str(),
         ] {
             assert!(
                 !debug.contains(raw_secret),

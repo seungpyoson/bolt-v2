@@ -510,11 +510,54 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         errors.extend(target_errors);
 
         errors.extend(validate_reference_data(&context, root, strategy));
+        errors.extend(validate_reference_capability_requirements(
+            &context, root, strategy,
+        ));
         errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
             &context,
             strategy,
             default_max_notional_decimal.as_ref(),
         ));
+    }
+
+    errors
+}
+
+fn validate_reference_capability_requirements(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    let Some(requirements) = crate::bolt_v3_archetypes::reference_capability_requirements(strategy)
+    else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+
+    for requirement in requirements {
+        let mut count = 0_usize;
+        for block in strategy.reference_data.values() {
+            let Some(venue) = root.venues.get(&block.venue) else {
+                continue;
+            };
+            let Some(binding) =
+                crate::bolt_v3_providers::binding_for_provider_key(venue.kind.as_str())
+            else {
+                continue;
+            };
+            if binding.supports_reference_capability(requirement.capability) {
+                count += 1;
+            }
+        }
+
+        if count < requirement.minimum_count {
+            errors.push(format!(
+                "{context}: strategy_archetype `{}` requires at least {} {}",
+                strategy.strategy_archetype.as_str(),
+                requirement.minimum_count,
+                requirement.description
+            ));
+        }
     }
 
     errors

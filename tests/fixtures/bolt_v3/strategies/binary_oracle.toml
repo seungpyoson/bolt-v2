@@ -15,7 +15,11 @@ market_selection_rule = "active_or_next"
 retry_interval_seconds = 5
 blocked_after_seconds = 60
 
-[reference_data.primary]
+[reference_data.oracle]
+venue = "chainlink_btcusd"
+instrument_id = "BTCUSD.CHAINLINK"
+
+[reference_data.exchange]
 venue = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 

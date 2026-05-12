@@ -24,16 +24,24 @@ pub mod binary_oracle_edge_taker;
 
 use rust_decimal::Decimal;
 
-use crate::bolt_v3_config::BoltV3StrategyConfig;
+use crate::{bolt_v3_config::BoltV3StrategyConfig, bolt_v3_providers::ReferenceCapability};
+
+pub struct ReferenceCapabilityRequirement {
+    pub capability: ReferenceCapability,
+    pub minimum_count: usize,
+    pub description: &'static str,
+}
 
 pub struct ArchetypeValidationBinding {
     pub key: &'static str,
     pub validate_strategy: fn(&str, &BoltV3StrategyConfig, Option<&Decimal>) -> Vec<String>,
+    pub reference_capability_requirements: &'static [ReferenceCapabilityRequirement],
 }
 
 const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidationBinding {
     key: binary_oracle_edge_taker::KEY,
     validate_strategy: binary_oracle_edge_taker::validate_strategy,
+    reference_capability_requirements: binary_oracle_edge_taker::REFERENCE_CAPABILITY_REQUIREMENTS,
 }];
 
 pub fn validation_bindings() -> &'static [ArchetypeValidationBinding] {
@@ -57,4 +65,13 @@ pub fn validate_strategy_archetype(
             strategy.strategy_archetype.as_str()
         )],
     }
+}
+
+pub fn reference_capability_requirements(
+    strategy: &BoltV3StrategyConfig,
+) -> Option<&'static [ReferenceCapabilityRequirement]> {
+    validation_bindings()
+        .iter()
+        .find(|binding| binding.key == strategy.strategy_archetype.as_str())
+        .map(|binding| binding.reference_capability_requirements)
 }

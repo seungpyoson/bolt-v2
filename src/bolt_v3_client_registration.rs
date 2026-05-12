@@ -144,7 +144,8 @@ mod tests {
         },
         bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
         bolt_v3_providers::{
-            binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+            binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
+            polymarket::ResolvedBoltV3PolymarketSecrets,
         },
         bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
     };
@@ -179,6 +180,13 @@ mod tests {
         }
     }
 
+    fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
+        ResolvedBoltV3ChainlinkSecrets {
+            api_key: "fixture-chainlink-api-key".to_string(),
+            api_secret: "fixture-chainlink-api-secret".to_string(),
+        }
+    }
+
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
         venues.insert(
@@ -188,6 +196,10 @@ mod tests {
         venues.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
+        );
+        venues.insert(
+            "chainlink_btcusd".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
         );
         ResolvedBoltV3Secrets { venues }
     }
@@ -204,13 +216,13 @@ mod tests {
     }
 
     #[test]
-    fn fixture_venues_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
+    fn fixture_venues_register_polymarket_binance_and_chainlink_clients() {
         let adapters = fixture_adapters();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");
 
-        assert_eq!(summary.venues.len(), 2);
+        assert_eq!(summary.venues.len(), 3);
         let polymarket = summary
             .venues
             .get("polymarket_main")
@@ -234,6 +246,18 @@ mod tests {
         assert!(
             !binance.execution,
             "binance_reference has no [execution] block in the fixture"
+        );
+        let chainlink = summary
+            .venues
+            .get("chainlink_btcusd")
+            .expect("chainlink_btcusd must appear in summary");
+        assert!(
+            chainlink.data,
+            "chainlink_btcusd has a [data] block in the fixture"
+        );
+        assert!(
+            !chainlink.execution,
+            "chainlink_btcusd has no [execution] block in the fixture"
         );
     }
 

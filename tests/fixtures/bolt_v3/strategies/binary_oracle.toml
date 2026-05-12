@@ -41,3 +41,21 @@ is_quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
+
+[parameters.runtime]
+reference_publish_topic = "platform.reference.test.chainlink"
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 15
+risk_lambda = 0.5
+exit_hysteresis_bps = 5
+vol_window_secs = 60
+vol_gap_reset_secs = 10
+vol_min_observations = 20
+vol_bridge_valid_secs = 10
+pricing_kurtosis = 0.0
+theta_decay_factor = 0.0
+forced_flat_stale_chainlink_ms = 1500
+forced_flat_thin_book_min_liquidity = 100.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250

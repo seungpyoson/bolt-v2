@@ -738,6 +738,11 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         parameters.entry_order.time_in_force,
         ArchetypeTimeInForce::Fok
     );
+    assert_eq!(
+        parameters.runtime.reference_publish_topic,
+        "platform.reference.test.chainlink"
+    );
+    assert_eq!(parameters.runtime.warmup_tick_count, 20);
     assert_eq!(parameters.exit_order.order_type, ArchetypeOrderType::Market);
     assert_eq!(
         parameters.exit_order.time_in_force,
@@ -749,6 +754,59 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(
         strategy.reference_data["exchange"].venue,
         "binance_reference"
+    );
+}
+
+#[test]
+fn binary_oracle_rejects_missing_runtime_strategy_parameters() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let tempdir = TempCaseDir::new("bolt-v3-missing-runtime-parameters");
+    let strategy_dir = tempdir.path().join("strategies");
+    std::fs::create_dir_all(&strategy_dir).expect("strategy dir should be created");
+    std::fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        tempdir.path().join("root.toml"),
+    )
+    .expect("root fixture should be copied");
+    let strategy_fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let runtime_block = r#"
+[parameters.runtime]
+reference_publish_topic = "platform.reference.test.chainlink"
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 15
+risk_lambda = 0.5
+exit_hysteresis_bps = 5
+vol_window_secs = 60
+vol_gap_reset_secs = 10
+vol_min_observations = 20
+vol_bridge_valid_secs = 10
+pricing_kurtosis = 0.0
+theta_decay_factor = 0.0
+forced_flat_stale_chainlink_ms = 1500
+forced_flat_thin_book_min_liquidity = 100.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
+"#;
+    let mutated = if strategy_fixture.contains(runtime_block) {
+        strategy_fixture.replace(runtime_block, "")
+    } else {
+        strategy_fixture
+    };
+    std::fs::write(strategy_dir.join("binary_oracle.toml"), mutated)
+        .expect("mutated strategy fixture should be written");
+
+    let error = load_bolt_v3_config(&tempdir.path().join("root.toml"))
+        .expect_err("missing runtime parameters must fail during config load")
+        .to_string();
+
+    assert!(
+        error.contains("parameters.runtime"),
+        "missing runtime parameters must be rejected, got: {error}"
     );
 }
 

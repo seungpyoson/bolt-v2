@@ -8,6 +8,7 @@ mod support;
 use std::sync::{Mutex, MutexGuard};
 
 use bolt_v2::{
+    bolt_v3_archetypes::binary_oracle_edge_taker,
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
     bolt_v3_strategy_registration::{
@@ -15,6 +16,8 @@ use bolt_v2::{
         register_bolt_v3_strategies_on_node_with,
         register_bolt_v3_strategies_on_node_with_bindings, register_bolt_v3_strategies_with,
     },
+    strategies::{eth_chainlink_taker::EthChainlinkTakerBuilder, registry::StrategyBuilder},
+    validate::ValidationError,
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
@@ -126,6 +129,59 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy)
+        .expect("binary oracle strategy should map into existing taker raw config");
+
+    let mut errors: Vec<ValidationError> = Vec::new();
+    EthChainlinkTakerBuilder::validate_config(
+        &raw,
+        "strategies.bitcoin_updown_main.parameters.runtime",
+        &mut errors,
+    );
+
+    assert!(
+        errors.is_empty(),
+        "mapped taker config should validate: {errors:?}"
+    );
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+    assert_eq!(
+        table.get("strategy_id").and_then(|value| value.as_str()),
+        Some("bitcoin_updown_main")
+    );
+    assert_eq!(
+        table.get("client_id").and_then(|value| value.as_str()),
+        Some("polymarket_main")
+    );
+    assert_eq!(
+        table
+            .get("period_duration_secs")
+            .and_then(|value| value.as_integer()),
+        Some(300)
+    );
+    assert_eq!(
+        table
+            .get("warmup_tick_count")
+            .and_then(|value| value.as_integer()),
+        Some(20)
+    );
+    assert!(
+        table.get("reference_publish_topic").is_none(),
+        "reference_publish_topic belongs in StrategyBuildContext, not raw taker config"
+    );
+}
+
+#[test]
 fn bolt_v3_rejects_unsupported_strategy_archetype_before_runtime() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -160,7 +216,12 @@ fn bolt_v3_core_strategy_registration_has_no_concrete_strategy_leakage() {
         "src/bolt_v3_live_node.rs",
         "src/bolt_v3_strategy_registration.rs",
     ];
-    let forbidden = ["eth_chainlink_taker", "binary_oracle_edge_taker"];
+    let forbidden = [
+        "eth_chainlink_taker",
+        "binary_oracle_edge_taker",
+        "polymarket_main",
+        "chainlink_btcusd",
+    ];
 
     for relative in source_paths {
         let path = support::repo_path(relative);
@@ -174,4 +235,13 @@ fn bolt_v3_core_strategy_registration_has_no_concrete_strategy_leakage() {
             );
         }
     }
+
+    let mapping_source = std::fs::read_to_string(support::repo_path(
+        "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+    ))
+    .expect("runtime binding module should be readable");
+    assert!(
+        mapping_source.contains("binary_oracle_edge_taker"),
+        "concrete runtime binding module should own concrete strategy mapping"
+    );
 }

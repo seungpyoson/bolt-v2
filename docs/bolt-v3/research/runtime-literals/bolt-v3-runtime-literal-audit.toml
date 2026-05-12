@@ -238,6 +238,198 @@ classification = "archetype_reference_capability_diagnostic"
 reason = "This string is the strategy-owned diagnostic label for the orderbook capability requirement, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"runtime"'''
+context = '''&& !parameters.contains_key("runtime")'''
+classification = "archetype_parameter_schema_field"
+reason = "This names the required binary_oracle_edge_taker [parameters.runtime] schema block; it is a strategy-owned config field name, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''
+context = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''
+classification = "archetype_runtime_mapping_diagnostic"
+reason = "This template renders a fail-closed diagnostic when a validated strategy field cannot be represented in the existing taker raw config shape."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"parameters.maximum_position_notional"'''
+context = '''"parameters.maximum_position_notional",'''
+classification = "archetype_runtime_mapping_field_label"
+reason = "This labels the canonical bolt-v3 strategy parameter used to populate the existing taker max_position_usdc field."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"target.cadence_seconds"'''
+context = '''"target.cadence_seconds",'''
+classification = "archetype_runtime_mapping_field_label"
+reason = "This labels the canonical bolt-v3 target cadence used to populate the existing taker period_duration_secs field."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''"strategy_id",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from bolt-v3 TOML, not a code default."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''insert_string(&mut table, "client_id", strategy.config.venue.clone());'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from bolt-v3 TOML, not a code default."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"warmup_tick_count"'''
+context = '''"warmup_tick_count",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"period_duration_secs"'''
+context = '''insert_u64(&mut table, "period_duration_secs", period_duration_secs);'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from target.cadence_seconds."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reentry_cooldown_secs"'''
+context = '''"reentry_cooldown_secs",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"max_position_usdc"'''
+context = '''insert_float(&mut table, "max_position_usdc", max_position_usdc);'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from parameters.maximum_position_notional."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"book_impact_cap_bps"'''
+context = '''"book_impact_cap_bps",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"risk_lambda"'''
+context = '''insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"worst_case_ev_min_bps"'''
+context = '''"worst_case_ev_min_bps",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from edge_threshold_basis_points."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_hysteresis_bps"'''
+context = '''"exit_hysteresis_bps",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_window_secs"'''
+context = '''"vol_window_secs",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_gap_reset_secs"'''
+context = '''"vol_gap_reset_secs",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_min_observations"'''
+context = '''"vol_min_observations",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_bridge_valid_secs"'''
+context = '''"vol_bridge_valid_secs",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"pricing_kurtosis"'''
+context = '''"pricing_kurtosis",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"theta_decay_factor"'''
+context = '''"theta_decay_factor",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"forced_flat_stale_chainlink_ms"'''
+context = '''"forced_flat_stale_chainlink_ms",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"forced_flat_thin_book_min_liquidity"'''
+context = '''"forced_flat_thin_book_min_liquidity",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"lead_agreement_min_corr"'''
+context = '''"lead_agreement_min_corr",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"lead_jitter_max_ms"'''
+context = '''"lead_jitter_max_ms",'''
+classification = "existing_taker_raw_config_field"
+reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from [parameters.runtime]."
+
+[[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = "0_usize"

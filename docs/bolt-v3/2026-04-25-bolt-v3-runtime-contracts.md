@@ -1409,9 +1409,9 @@ The built `LiveNode` is discarded after the build fact is recorded. The check mu
 
 The bolt-v3 live canary gate is the fail-closed admission boundary before `run_bolt_v3_live_node` enters NT's `LiveNode::run` runner loop. Production code must call `run_bolt_v3_live_node` instead of calling `LiveNode::run` directly for the bolt-v3 path.
 
-The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`.
+The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_no_submit_readiness_report_bytes` is positive, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`.
 
-The gate reads the configured `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `status = "satisfied"` case-insensitively; stage names may be carried by either `stage` or `name` for diagnostics. Missing, unreadable, unparsable, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
+The gate reads at most the configured `max_no_submit_readiness_report_bytes` from `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `status = "satisfied"` case-insensitively; stage names may be carried by either `stage` or `name` for diagnostics. Missing, unreadable, oversized, unparsable, non-array, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
 
 The gate is read-only. It does not connect clients, subscribe to data, register strategies, select markets, construct orders, submit orders, cancel orders, or mutate NT state. The built `LiveNode` may already exist when the gate runs, but a gate rejection must occur before `LiveNode::run`.
 

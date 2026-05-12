@@ -12,6 +12,7 @@
 #[live_canary]
 #approval_id = "operator-approved-canary-001"
 #no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+#max_no_submit_readiness_report_bytes = 4096
 #max_live_order_count = 1
 #max_notional_per_order = "1.00"
 

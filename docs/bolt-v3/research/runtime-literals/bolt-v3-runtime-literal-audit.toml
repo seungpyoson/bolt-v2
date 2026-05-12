@@ -570,7 +570,7 @@ reason = "This is the relative-path base fallback that matches the config loader
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
 literal = '''"stages"'''
-context = '''match report.get("stages").and_then(Value::as_array) {'''
+context = '''match report.get("stages") {'''
 classification = "live_canary_readiness_report_schema_field"
 reason = "This names the no-submit readiness report stages array consumed by the fail-closed live-canary gate."
 
@@ -617,8 +617,24 @@ reason = "This template renders which readiness stage failed the satisfied-statu
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
+literal = '''"bolt-v3 no-submit readiness report {} is {length} bytes, exceeding configured limit {max_length}"'''
+context = '''"bolt-v3 no-submit readiness report {} is {length} bytes, exceeding configured limit {max_length}",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This fail-closed diagnostic reports that the configured no-submit readiness evidence file exceeds the operator-provided byte cap."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "1"
+context = "file.take(max_length.saturating_add(1))"
+classification = "bounded_read_sentinel"
+reason = "The gate reads one byte beyond the configured cap to detect oversized reports without reading an unbounded file."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
 literal = '''"stages array is empty"'''
-context = '''Some(_) => reasons.push("stages array is empty".to_string()),'''
+context = '''Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),'''
 classification = "live_canary_gate_diagnostic_template"
 reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
 

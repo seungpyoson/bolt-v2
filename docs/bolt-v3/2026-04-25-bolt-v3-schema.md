@@ -183,6 +183,7 @@ rotation_kind = "none"
 [live_canary]
 approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 4096
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 
@@ -595,6 +596,13 @@ This section is optional for parse/build-only checks and required before `run_bo
 - required: yes when `[live_canary]` is present
 - path to a prior no-submit readiness JSON report
 - relative paths resolve from the root TOML directory
+
+#### `max_no_submit_readiness_report_bytes`
+
+- type: positive integer
+- required: yes when `[live_canary]` is present
+- maximum no-submit readiness JSON report size read by the fail-closed gate
+- reports larger than this bound reject before JSON parsing
 
 #### `max_live_order_count`
 
@@ -1293,6 +1301,7 @@ rotation_kind = "none"
 [live_canary]
 approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 4096
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 

@@ -46,6 +46,13 @@ fn fixture_secret_path(loaded: &LoadedBoltV3Config, client_id: &str, field: &str
         .to_string()
 }
 
+fn fixture_forbidden_env_var() -> &'static str {
+    polymarket::FORBIDDEN_ENV_VARS
+        .first()
+        .copied()
+        .expect("Polymarket provider binding should define forbidden env vars")
+}
+
 fn statuses_for(
     report: &BoltV3StartupCheckReport,
     stage: BoltV3StartupCheckStage,
@@ -196,7 +203,7 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
 
     let report = run_bolt_v3_startup_check_with(
         &loaded,
-        |var| var == "POLYMARKET_PK",
+        |var| var == fixture_forbidden_env_var(),
         support::fake_bolt_v3_resolver,
     );
 

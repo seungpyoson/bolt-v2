@@ -120,6 +120,8 @@ F13bp note: `python3 scripts/verify_bolt_v3_credential_log_suppression_literals.
 
 F13bq note: `python3 scripts/verify_bolt_v3_instrument_fixture_literals.py` now rejects direct `"updown"` market-family literals in instrument gate/readiness tests. `tests/bolt_v3_instrument_readiness.rs` now asserts against the owning `updown::KEY` contract constant.
 
+F13br note: `python3 scripts/verify_bolt_v3_forbidden_env_test_literals.py` now rejects direct provider forbidden-env literals in `tests/bolt_v3_client_registration.rs` and `tests/bolt_v3_readiness.rs`, and `just fmt-check` runs that verifier. Those tests now derive the sample forbidden env var from the provider-owned `polymarket::FORBIDDEN_ENV_VARS` list.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

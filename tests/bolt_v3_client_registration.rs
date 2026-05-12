@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
+    bolt_v3_providers::polymarket,
 };
 use nautilus_model::identifiers::ClientId;
 
@@ -65,6 +66,13 @@ fn fixture_secret_string(loaded: &LoadedBoltV3Config, client_id: &str, field: &s
         .and_then(toml::Value::as_str)
         .unwrap_or_else(|| panic!("fixture client {client_id} should define secrets.{field}"))
         .to_string()
+}
+
+fn fixture_forbidden_env_var() -> &'static str {
+    polymarket::FORBIDDEN_ENV_VARS
+        .first()
+        .copied()
+        .expect("Polymarket provider binding should define forbidden env vars")
 }
 
 #[test]
@@ -168,7 +176,7 @@ fn forbidden_credential_env_var_fails_before_registration() {
     // must never run when a credential env var is set.
     let error = build_bolt_v3_live_node_with_summary(
         &loaded,
-        |var| var == "POLYMARKET_PK",
+        |var| var == fixture_forbidden_env_var(),
         support::fake_bolt_v3_resolver,
     )
     .expect_err("forbidden env var must block before registration");

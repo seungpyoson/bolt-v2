@@ -27,6 +27,7 @@ struct PolymarketFeeProviderFixture {
 struct LocalFeeProviderFixture {
     token_id_suffix: String,
     bind_addr: String,
+    fee_rate_query_prefix: String,
 }
 
 fn fee_provider_fixture() -> &'static PolymarketFeeProviderFixture {
@@ -43,6 +44,10 @@ fn fee_provider_fixture() -> &'static PolymarketFeeProviderFixture {
 
 fn local_fee_provider_fixture() -> &'static LocalFeeProviderFixture {
     &fee_provider_fixture().local_fee_provider
+}
+
+fn local_fee_provider_fee_rate_query_prefix() -> &'static str {
+    local_fee_provider_fixture().fee_rate_query_prefix.as_str()
 }
 
 fn existing_strategy_root_fixture() -> PathBuf {
@@ -95,7 +100,7 @@ fn token_id_from_request(request: &str) -> &str {
     let Some(path) = request.split_ascii_whitespace().nth(1) else {
         panic!("fee-rate request should include path: {request:?}");
     };
-    let Some(token_id) = path.strip_prefix("/fee-rate?token_id=") else {
+    let Some(token_id) = path.strip_prefix(local_fee_provider_fee_rate_query_prefix()) else {
         panic!("fee-rate request should target token fee endpoint: {request:?}");
     };
     token_id

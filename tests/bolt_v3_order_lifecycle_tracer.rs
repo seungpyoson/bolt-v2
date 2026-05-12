@@ -96,6 +96,23 @@ struct LocalPolymarketFixture {
     http_timeout_seconds: i64,
     ack_timeout_seconds: i64,
     bind_addr: String,
+    balance_allowance_method: String,
+    balance_allowance_path: String,
+    orders_data_method: String,
+    orders_data_path: String,
+    trades_data_method: String,
+    trades_data_path: String,
+    positions_method: String,
+    positions_path: String,
+    fee_rate_method: String,
+    fee_rate_path: String,
+    fee_rate_query_prefix: String,
+    submit_order_method: String,
+    submit_order_path: String,
+    cancel_orders_method: String,
+    cancel_orders_path: String,
+    cancel_order_method: String,
+    cancel_order_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +217,74 @@ fn local_polymarket_ack_timeout_seconds() -> i64 {
 
 fn local_polymarket_bind_addr() -> &'static str {
     local_polymarket_fixture().bind_addr.as_str()
+}
+
+fn local_polymarket_balance_allowance_method() -> &'static str {
+    local_polymarket_fixture().balance_allowance_method.as_str()
+}
+
+fn local_polymarket_balance_allowance_path() -> &'static str {
+    local_polymarket_fixture().balance_allowance_path.as_str()
+}
+
+fn local_polymarket_orders_data_method() -> &'static str {
+    local_polymarket_fixture().orders_data_method.as_str()
+}
+
+fn local_polymarket_orders_data_path() -> &'static str {
+    local_polymarket_fixture().orders_data_path.as_str()
+}
+
+fn local_polymarket_trades_data_method() -> &'static str {
+    local_polymarket_fixture().trades_data_method.as_str()
+}
+
+fn local_polymarket_trades_data_path() -> &'static str {
+    local_polymarket_fixture().trades_data_path.as_str()
+}
+
+fn local_polymarket_positions_method() -> &'static str {
+    local_polymarket_fixture().positions_method.as_str()
+}
+
+fn local_polymarket_positions_path() -> &'static str {
+    local_polymarket_fixture().positions_path.as_str()
+}
+
+fn local_polymarket_fee_rate_method() -> &'static str {
+    local_polymarket_fixture().fee_rate_method.as_str()
+}
+
+fn local_polymarket_fee_rate_path() -> &'static str {
+    local_polymarket_fixture().fee_rate_path.as_str()
+}
+
+fn local_polymarket_fee_rate_query_prefix() -> &'static str {
+    local_polymarket_fixture().fee_rate_query_prefix.as_str()
+}
+
+fn local_polymarket_submit_order_method() -> &'static str {
+    local_polymarket_fixture().submit_order_method.as_str()
+}
+
+fn local_polymarket_submit_order_path() -> &'static str {
+    local_polymarket_fixture().submit_order_path.as_str()
+}
+
+fn local_polymarket_cancel_orders_method() -> &'static str {
+    local_polymarket_fixture().cancel_orders_method.as_str()
+}
+
+fn local_polymarket_cancel_orders_path() -> &'static str {
+    local_polymarket_fixture().cancel_orders_path.as_str()
+}
+
+fn local_polymarket_cancel_order_method() -> &'static str {
+    local_polymarket_fixture().cancel_order_method.as_str()
+}
+
+fn local_polymarket_cancel_order_path() -> &'static str {
+    local_polymarket_fixture().cancel_order_path.as_str()
 }
 
 fn selected_binary_option_fixture() -> &'static SelectedBinaryOptionFixture {
@@ -530,26 +615,47 @@ async fn start_local_polymarket_execution_server() -> LocalPolymarketExecutionSe
                     body,
                 });
                 let path = target.split('?').next().unwrap_or_default();
-                let response_body = match (method.as_str(), path) {
-                    ("GET", "/balance-allowance") => balance_allowance_body.as_ref().clone(),
-                    ("GET", "/data/orders") | ("GET", "/data/trades") => {
-                        empty_cursor_page_body.as_ref().clone()
-                    }
-                    ("GET", "/positions") => "[]".to_string(),
-                    ("GET", "/fee-rate") => fee_rate_body.as_ref().clone(),
-                    ("POST", "/order") => protocol_payload_template(
+                let response_body = if method == local_polymarket_balance_allowance_method()
+                    && path == local_polymarket_balance_allowance_path()
+                {
+                    balance_allowance_body.as_ref().clone()
+                } else if (method == local_polymarket_orders_data_method()
+                    && path == local_polymarket_orders_data_path())
+                    || (method == local_polymarket_trades_data_method()
+                        && path == local_polymarket_trades_data_path())
+                {
+                    empty_cursor_page_body.as_ref().clone()
+                } else if method == local_polymarket_positions_method()
+                    && path == local_polymarket_positions_path()
+                {
+                    "[]".to_string()
+                } else if method == local_polymarket_fee_rate_method()
+                    && path == local_polymarket_fee_rate_path()
+                {
+                    fee_rate_body.as_ref().clone()
+                } else if method == local_polymarket_submit_order_method()
+                    && path == local_polymarket_submit_order_path()
+                {
+                    protocol_payload_template(
                         "polymarket_order_success_template.json",
                         &[("order_id", local_polymarket_order_id())],
-                    ),
-                    ("DELETE", "/orders") => protocol_payload_template(
+                    )
+                } else if method == local_polymarket_cancel_orders_method()
+                    && path == local_polymarket_cancel_orders_path()
+                {
+                    protocol_payload_template(
                         "polymarket_cancel_success_template.json",
                         &[("order_id", local_polymarket_order_id())],
-                    ),
-                    ("DELETE", "/order") => protocol_payload_template(
+                    )
+                } else if method == local_polymarket_cancel_order_method()
+                    && path == local_polymarket_cancel_order_path()
+                {
+                    protocol_payload_template(
                         "polymarket_cancel_success_template.json",
                         &[("order_id", local_polymarket_order_id())],
-                    ),
-                    _ => unexpected_request_body.as_ref().clone(),
+                    )
+                } else {
+                    unexpected_request_body.as_ref().clone()
                 };
                 let status = if response_body.contains("unexpected") {
                     "404 Not Found"
@@ -1326,8 +1432,8 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                     );
                     wait_for_local_clob_request_count(
                         &server,
-                        "GET",
-                        "/fee-rate",
+                        local_polymarket_fee_rate_method(),
+                        local_polymarket_fee_rate_path(),
                         local_polymarket_fee_requests_per_binary_market(),
                     )
                     .await;
@@ -1354,7 +1460,12 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                         &down_book_deltas(down),
                     );
 
-                    let post_order = wait_for_local_clob_request(&server, "POST", "/order").await;
+                    let post_order = wait_for_local_clob_request(
+                        &server,
+                        local_polymarket_submit_order_method(),
+                        local_polymarket_submit_order_path(),
+                    )
+                    .await;
                     sleep(order_lifecycle_post_order_cancel_delay()).await;
                     let cancel = CancelAllOrders::new(
                         TraderId::from(loaded_for_control.root.trader_id.as_str()),
@@ -1375,8 +1486,12 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
                         MessagingSwitchboard::exec_engine_execute(),
                         TradingCommand::CancelAllOrders(cancel),
                     );
-                    let cancel_orders =
-                        wait_for_local_clob_request(&server, "DELETE", "/orders").await;
+                    let cancel_orders = wait_for_local_clob_request(
+                        &server,
+                        local_polymarket_cancel_orders_method(),
+                        local_polymarket_cancel_orders_path(),
+                    )
+                    .await;
 
                     handle.stop();
                     (post_order, cancel_orders)
@@ -1392,13 +1507,13 @@ fn bolt_v3_existing_strategy_reaches_real_polymarket_submit_and_cancel_http_thro
             .await
             .expect("mixed real-exec LiveNode run should finish before timeout");
 
-            assert_eq!(post_order.target, "/order");
+            assert_eq!(post_order.target, local_polymarket_submit_order_path());
             assert!(
                 post_order.body.contains("\"owner\""),
                 "real NT Polymarket submitter should send signed order body through local CLOB: {}",
                 post_order.body
             );
-            assert_eq!(cancel_orders.target, "/orders");
+            assert_eq!(cancel_orders.target, local_polymarket_cancel_orders_path());
             assert!(
                 cancel_orders.body.contains(local_polymarket_order_id()),
                 "real NT Polymarket cancel should reference accepted venue order id: {}",
@@ -1539,7 +1654,7 @@ fn bolt_v3_existing_strategy_reaches_mock_submit_through_nt_livenode_run() {
                 .split_ascii_whitespace()
                 .nth(1)
                 .unwrap_or_default()
-                .starts_with("/fee-rate?token_id="),
+                .starts_with(local_polymarket_fee_rate_query_prefix()),
             "unexpected fee request path: {request:?}"
         );
     }
@@ -1728,7 +1843,7 @@ fn bolt_v3_existing_strategy_recovers_after_nt_order_reject_event() {
                 .split_ascii_whitespace()
                 .nth(1)
                 .unwrap_or_default()
-                .starts_with("/fee-rate?token_id="),
+                .starts_with(local_polymarket_fee_rate_query_prefix()),
             "unexpected fee request path: {request:?}"
         );
     }
@@ -1930,7 +2045,7 @@ fn bolt_v3_existing_strategy_exits_after_nt_order_fill_event() {
                 .split_ascii_whitespace()
                 .nth(1)
                 .unwrap_or_default()
-                .starts_with("/fee-rate?token_id="),
+                .starts_with(local_polymarket_fee_rate_query_prefix()),
             "unexpected fee request path: {request:?}"
         );
     }
@@ -2195,7 +2310,7 @@ fn bolt_v3_existing_strategy_resubmits_exit_after_nt_cancel_event() {
                 .split_ascii_whitespace()
                 .nth(1)
                 .unwrap_or_default()
-                .starts_with("/fee-rate?token_id="),
+                .starts_with(local_polymarket_fee_rate_query_prefix()),
             "unexpected fee request path: {request:?}"
         );
     }

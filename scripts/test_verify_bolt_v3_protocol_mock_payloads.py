@@ -296,6 +296,22 @@ def test_order_lifecycle_scenario_price_literal_is_a_finding() -> None:
         assert "scenario price literal" in findings[1].message
 
 
+def test_order_lifecycle_http_method_and_path_literals_are_findings() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_order_lifecycle_tracer.rs",
+            'fn probe() { let _ = ("POST", "/order", "/fee-rate?token_id="); }\n',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 3
+        assert findings[0].path == "tests/bolt_v3_order_lifecycle_tracer.rs"
+        assert "HTTP method/path literal" in findings[0].message
+
+
 def test_fee_provider_file_is_enforced() -> None:
     verifier = load_verifier()
     if "tests/bolt_v3_polymarket_fee_provider.rs" not in verifier.ENFORCED_TEST_FILES:
@@ -324,6 +340,7 @@ def main() -> int:
         test_order_lifecycle_poll_attempt_literal_is_a_finding,
         test_order_lifecycle_timestamp_offset_literal_is_a_finding,
         test_order_lifecycle_scenario_price_literal_is_a_finding,
+        test_order_lifecycle_http_method_and_path_literals_are_findings,
         test_fee_provider_file_is_enforced,
         test_order_lifecycle_tracer_file_is_enforced,
     ]

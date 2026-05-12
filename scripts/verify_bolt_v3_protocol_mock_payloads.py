@@ -53,6 +53,9 @@ ORDER_LIFECYCLE_TIMESTAMP_OFFSET_PATTERN = re.compile(r"\bstart_ts_ms\s*\+\s*\d[
 ORDER_LIFECYCLE_SCENARIO_PRICE_LITERAL_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.])(?:[2-9][\d_]{3,}\.\d[\d_]*|0\.[1-9]\d{2,})(?![A-Za-z0-9_.])"
 )
+ORDER_LIFECYCLE_HTTP_METHOD_PATH_PATTERN = re.compile(
+    r'"(?:GET|POST|DELETE|/(?:balance-allowance|data/orders|data/trades|positions|fee-rate|orders?|fee-rate\?token_id=))"'
+)
 
 
 @dataclass(frozen=True)
@@ -249,6 +252,15 @@ def scan_file(
                     path=rel,
                     line=line_number(text, match.start()),
                     message="order-lifecycle scenario price literal; derive from TOML fixture",
+                    excerpt=match.group(0),
+                )
+            )
+        for match in ORDER_LIFECYCLE_HTTP_METHOD_PATH_PATTERN.finditer(text):
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message="order-lifecycle HTTP method/path literal; derive from TOML fixture",
                     excerpt=match.group(0),
                 )
             )

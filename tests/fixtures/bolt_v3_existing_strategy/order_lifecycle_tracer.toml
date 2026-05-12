@@ -8,6 +8,23 @@ fee_requests_per_binary_market = 2
 http_timeout_seconds = 1
 ack_timeout_seconds = 1
 bind_addr = "127.0.0.1:0"
+balance_allowance_method = "GET"
+balance_allowance_path = "/balance-allowance"
+orders_data_method = "GET"
+orders_data_path = "/data/orders"
+trades_data_method = "GET"
+trades_data_path = "/data/trades"
+positions_method = "GET"
+positions_path = "/positions"
+fee_rate_method = "GET"
+fee_rate_path = "/fee-rate"
+fee_rate_query_prefix = "/fee-rate?token_id="
+submit_order_method = "POST"
+submit_order_path = "/order"
+cancel_orders_method = "DELETE"
+cancel_orders_path = "/orders"
+cancel_order_method = "DELETE"
+cancel_order_path = "/order"
 
 [selected_binary_option]
 price_increment = "0.001"

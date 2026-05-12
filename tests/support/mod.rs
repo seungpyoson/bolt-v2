@@ -19,7 +19,7 @@ use std::{
 use async_trait::async_trait;
 use bolt_v2::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_decision_events::BoltV3OrderSubmissionFacts,
+    bolt_v3_decision_events::{BoltV3EntryEvaluationFacts, BoltV3OrderSubmissionFacts},
     bolt_v3_release_identity::{bolt_v3_compiled_nautilus_trader_revision, bolt_v3_config_hash},
 };
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
@@ -44,6 +44,7 @@ use nautilus_model::{
     types::{AccountBalance, MarginBalance, Price, Quantity},
 };
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::io::AsyncReadExt;
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -365,6 +366,51 @@ bolt_v2 = "3333333333333333333333333333333333333333333333333333333333333333"
     let catalog_dir = temp_dir.join("catalog");
     fs::create_dir_all(&catalog_dir).expect("catalog dir should create");
     loaded.root.persistence.catalog_directory = catalog_dir.to_string_lossy().into_owned();
+}
+
+#[derive(Debug, Deserialize)]
+struct BoltV3EntryEvaluationFactsFixture {
+    updown_side: Option<String>,
+    entry_decision: String,
+    entry_no_action_reason: Option<String>,
+    seconds_to_market_end: u64,
+    has_selected_market_open_orders: bool,
+    updown_market_mechanical_outcome: String,
+    updown_market_mechanical_rejection_reason: Option<String>,
+    entry_filled_notional: f64,
+    open_entry_notional: f64,
+    strategy_remaining_entry_capacity: f64,
+    archetype_metrics: Value,
+}
+
+impl From<BoltV3EntryEvaluationFactsFixture> for BoltV3EntryEvaluationFacts {
+    fn from(fixture: BoltV3EntryEvaluationFactsFixture) -> Self {
+        Self {
+            updown_side: fixture.updown_side,
+            entry_decision: fixture.entry_decision,
+            entry_no_action_reason: fixture.entry_no_action_reason,
+            seconds_to_market_end: fixture.seconds_to_market_end,
+            has_selected_market_open_orders: fixture.has_selected_market_open_orders,
+            updown_market_mechanical_outcome: fixture.updown_market_mechanical_outcome,
+            updown_market_mechanical_rejection_reason: fixture
+                .updown_market_mechanical_rejection_reason,
+            entry_filled_notional: fixture.entry_filled_notional,
+            open_entry_notional: fixture.open_entry_notional,
+            strategy_remaining_entry_capacity: fixture.strategy_remaining_entry_capacity,
+            archetype_metrics: fixture.archetype_metrics,
+        }
+    }
+}
+
+pub fn bolt_v3_entry_evaluation_facts_fixture(filename: &str) -> BoltV3EntryEvaluationFacts {
+    let path = repo_path(&format!(
+        "tests/fixtures/bolt_v3_decision_events/{filename}"
+    ));
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    let fixture: BoltV3EntryEvaluationFactsFixture = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()));
+    fixture.into()
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,0 +1,15 @@
+{
+  "updown_side": "up",
+  "entry_decision": "enter",
+  "entry_no_action_reason": null,
+  "seconds_to_market_end": 240,
+  "has_selected_market_open_orders": false,
+  "updown_market_mechanical_outcome": "accepted",
+  "updown_market_mechanical_rejection_reason": null,
+  "entry_filled_notional": 0.0,
+  "open_entry_notional": 0.0,
+  "strategy_remaining_entry_capacity": 100.0,
+  "archetype_metrics": {
+    "expected_edge_basis_points": 42.0
+  }
+}

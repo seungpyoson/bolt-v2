@@ -111,3 +111,5 @@ F13bb extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so lite
 F13bc extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so inline local HTTP response/status literals in enforced protocol tests are rejected. Local fee, order-lifecycle, and reconciliation HTTP responders now use `tests/support/mod.rs` `local_http_json_response` plus `LocalHttpStatus` instead of per-test response framing strings.
 
 F13bd extends `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` so inline local HTTP request-parser literals in enforced protocol tests are rejected. Local fee, order-lifecycle, and reconciliation HTTP responders now use `tests/support/mod.rs` request reader/body helpers instead of per-test buffer/header-delimiter/content-length parsing.
+
+F13be extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct entry-evaluation fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs` is rejected. Entry-evaluation facts now load from `tests/fixtures/bolt_v3_decision_events/entry_evaluation_facts.json` through `tests/support/mod.rs`.

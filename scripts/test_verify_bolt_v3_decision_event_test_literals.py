@@ -158,6 +158,26 @@ fn probe() {
         )
 
 
+def test_decision_event_handoff_direct_entry_evaluation_facts_is_a_finding() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_decision_event_handoff.rs",
+            """
+fn probe() {
+    let _ = BoltV3EntryEvaluationFacts {
+        entry_decision: "enter".to_string(),
+    };
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 1
+        assert "direct entry-evaluation fact fixture construction" in findings[0].message
+
+
 def test_eth_chainlink_runtime_context_literal_is_a_finding() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -373,6 +393,7 @@ def main() -> int:
         test_order_intent_gate_direct_event_fixture_construction_is_a_finding,
         test_decision_event_context_identity_literal_is_a_finding,
         test_decision_event_handoff_fixture_literal_is_a_finding,
+        test_decision_event_handoff_direct_entry_evaluation_facts_is_a_finding,
         test_eth_chainlink_runtime_context_literal_is_a_finding,
         test_eth_chainlink_runtime_decision_reason_literal_is_a_finding,
         test_provider_source_label_literal_is_a_finding,

@@ -1017,19 +1017,7 @@ fn failed_market_selection_result_facts(reason: Option<&str>) -> BoltV3MarketSel
 }
 
 fn entry_evaluation_facts() -> BoltV3EntryEvaluationFacts {
-    BoltV3EntryEvaluationFacts {
-        updown_side: Some("up".to_string()),
-        entry_decision: "enter".to_string(),
-        entry_no_action_reason: None,
-        seconds_to_market_end: 240,
-        has_selected_market_open_orders: false,
-        updown_market_mechanical_outcome: "accepted".to_string(),
-        updown_market_mechanical_rejection_reason: None,
-        entry_filled_notional: 0.0,
-        open_entry_notional: 0.0,
-        strategy_remaining_entry_capacity: 100.0,
-        archetype_metrics: entry_archetype_metrics(),
-    }
+    support::bolt_v3_entry_evaluation_facts_fixture("entry_evaluation_facts.json")
 }
 
 fn exit_evaluation_facts() -> BoltV3ExitEvaluationFacts {

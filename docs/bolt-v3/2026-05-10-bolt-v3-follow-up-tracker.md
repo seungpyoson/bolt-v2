@@ -94,6 +94,8 @@ F13bc note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejec
 
 F13bd note: `python3 scripts/verify_bolt_v3_protocol_mock_payloads.py` now rejects inline local HTTP request-parser literals in enforced protocol tests. Local fee, order-lifecycle, and reconciliation HTTP responders now use `tests/support/mod.rs` request reader/body helpers instead of per-test buffer/header-delimiter/content-length parsing.
 
+F13be note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct entry-evaluation fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs`. Entry-evaluation facts now load from `tests/fixtures/bolt_v3_decision_events/entry_evaluation_facts.json` through `tests/support/mod.rs`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

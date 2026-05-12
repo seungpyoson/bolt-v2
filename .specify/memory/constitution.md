@@ -1,50 +1,64 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# Bolt-v3 Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. NT-First Thin Layer
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+Bolt-v3 MUST remain a thin Rust layer over NautilusTrader. Bolt-v3 owns TOML schema parsing, SSM-only secret resolution, provider/market/strategy registration, strategy decision policy, pre-submit admission gates, and compact audit evidence for Bolt-derived decisions.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+NautilusTrader owns runtime adapter behavior, protocols, market data, execution, order lifecycle, cache semantics, portfolio/account/order/fill state, reconciliation, and venue wire translation. Bolt-v3 MUST NOT rebuild those surfaces with local order lifecycle machinery, reconciliation machinery, mock venue worlds, or adapter simulators as proof of live readiness.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### II. Generic Core, Concrete Edges
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+Bolt-v3 core MUST be venue-agnostic, market-family-agnostic, and strategy-agnostic. Concrete provider keys, market-family keys, strategy archetypes, and NT adapter bindings live only in registry or binding modules selected by TOML configuration.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+Adding a venue, market family, or strategy MUST NOT require changing core build, secret, admission, or runtime loop logic. If a concrete provider leaks into core, the slice fails the constitution gate.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### III. Single Path And Config-Controlled Runtime
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+There is one config format, one secret source, one production build path, and one live submit admission path. Every runtime value comes from TOML configuration. Credentials resolve only from AWS SSM through the Rust AWS SDK. Environment variable fallbacks, Python runtime layers, hardcoded IDs, hardcoded quantities, hardcoded timeouts, and alternate submit paths are forbidden.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+Changing a wallet, credential set, venue, target market, strategy, notional cap, timing bound, or approval token must require editing one coherent TOML section, not scattered code or multiple config locations.
+
+### IV. Test-First Safety Gates
+
+Implementation MUST be TDD. For every production behavior change: write the failing test, verify the expected failure, implement the smallest code change, verify green, then run the phase verification gate.
+
+Live trading stays fail-closed. No live submit may occur unless production entrypoint, live canary gate, submit admission, mandatory decision evidence, no-submit readiness evidence, configured caps, and explicit operator approval all pass on the exact head being run.
+
+### V. Evidence Before Claims
+
+Claims about readiness require current evidence from exact files, exact commands, exact SHAs, exact PR/check state, or live run artifacts. Passing tests or local mocks are not live readiness unless the checked behavior covers the stated live requirement.
+
+External review is requested only after the branch is clean, pushed, all local findings are resolved, and exact-head CI is green. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
+
+### VI. Minimal Slice Discipline
+
+One branch or PR covers one named slice. Slices must be independently reviewable and must name residual scope. Prefer deletion, reuse of NT surfaces, and compact contracts over new frameworks. Do not expand verifier ecosystems for test-local literals, mock venue universes, or documentation stacks that do not reduce live-trading risk.
+
+Backtesting and research analytics are valuable but outside the tiny-capital live-canary MVP unless they are required to prove the canary safety gate. They belong in a separate spec when the running production-shaped spine exists.
+
+## Additional Constraints
+
+- Language/runtime: pure Rust binary using NautilusTrader Rust APIs directly.
+- Secret source: AWS SSM through Rust AWS SDK only.
+- Runtime config: TOML only.
+- Current repo source of truth: `main` after merge.
+- Current live proof boundary: real SSM and real venue artifacts, not mock-only tests.
+- Old Bolt v1 repository is forbidden as a source.
+- Raw secrets, private keys, and credential values must never be printed in docs, logs, test output, PRs, or chat.
+
+## Development Workflow
+
+1. Evidence: inspect current `main`, exact file paths, exact lines, exact command output.
+2. Contract: update this constitution or feature contracts before runtime code when the boundary changes.
+3. Plan: decompose into independently reviewable slices with tests and verification commands.
+4. TDD implementation: red, green, refactor, verification gate for each behavior slice.
+5. Review: no external review request until local branch is clean, pushed, exact-head checks are green, and known findings are resolved.
+6. Merge: no merge without explicit user approval.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes convenience, local habit, and stale branch artifacts. Any PR that violates a MUST rule requires redesign, not waiver-by-documentation. Amendments require an explicit user-approved diff, a migration note for affected specs/plans, and a version bump.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-05-12

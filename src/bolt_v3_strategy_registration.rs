@@ -7,7 +7,10 @@
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
 
-use crate::bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey};
+use crate::{
+    bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey},
+    bolt_v3_secrets::ResolvedBoltV3Secrets,
+};
 
 #[derive(Clone, Copy)]
 pub struct StrategyRuntimeBinding {
@@ -18,9 +21,11 @@ pub struct StrategyRuntimeBinding {
     ) -> Result<StrategyId, BoltV3StrategyRegistrationError>,
 }
 
+#[derive(Clone, Copy)]
 pub struct StrategyRegistrationContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
+    pub resolved: &'a ResolvedBoltV3Secrets,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,6 +120,7 @@ where
 pub fn register_bolt_v3_strategies_on_node_with_bindings(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::default();
@@ -126,8 +132,14 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
             .ok_or_else(|| BoltV3StrategyRegistrationError::UnsupportedStrategy {
                 strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
             })?;
-        let registered_strategy_id =
-            (binding.register)(node, StrategyRegistrationContext { loaded, strategy })?;
+        let registered_strategy_id = (binding.register)(
+            node,
+            StrategyRegistrationContext {
+                loaded,
+                strategy,
+                resolved,
+            },
+        )?;
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             strategy_archetype: strategy.config.strategy_archetype.clone(),

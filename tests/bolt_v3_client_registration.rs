@@ -33,7 +33,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
             .expect("v3 LiveNode should build through the registration boundary");
 
     // The summary records bolt-v3's intent at the registration boundary.
-    assert_eq!(summary.venues.len(), 2, "two configured venues");
+    assert_eq!(summary.venues.len(), 3, "three configured venues");
     let polymarket = summary
         .venues
         .get("polymarket_main")
@@ -55,6 +55,18 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         !binance.execution,
         "fixture binance_reference has no [execution] block"
     );
+    let chainlink = summary
+        .venues
+        .get("chainlink_btcusd")
+        .expect("chainlink_btcusd must appear in summary");
+    assert!(
+        chainlink.data,
+        "fixture chainlink_btcusd has a [data] block"
+    );
+    assert!(
+        !chainlink.execution,
+        "fixture chainlink_btcusd has no [execution] block"
+    );
 
     // NT-side state confirms the actual registrations happened. The
     // bolt-v3 venue identifier is reused as the NT registration name,
@@ -70,6 +82,10 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         registered_data.contains(&ClientId::from("binance_reference")),
         "data engine should expose binance_reference; got {registered_data:?}"
     );
+    assert!(
+        registered_data.contains(&ClientId::from("chainlink_btcusd")),
+        "data engine should expose chainlink_btcusd; got {registered_data:?}"
+    );
 
     let registered_exec: Vec<ClientId> = node.kernel().exec_engine.borrow().client_ids();
     assert!(
@@ -79,6 +95,10 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     assert!(
         !registered_exec.contains(&ClientId::from("binance_reference")),
         "binance_reference has no [execution] block, must not be on the exec engine; got {registered_exec:?}"
+    );
+    assert!(
+        !registered_exec.contains(&ClientId::from("chainlink_btcusd")),
+        "chainlink_btcusd has no [execution] block, must not be on the exec engine; got {registered_exec:?}"
     );
 }
 

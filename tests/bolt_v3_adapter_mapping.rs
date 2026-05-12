@@ -8,6 +8,7 @@ use bolt_v2::{
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets,
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
     bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
@@ -37,6 +38,13 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
     }
 }
 
+fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
+    ResolvedBoltV3ChainlinkSecrets {
+        api_key: "regression-chainlink-api-key".to_string(),
+        api_secret: "regression-chainlink-api-secret".to_string(),
+    }
+}
+
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
     venues.insert(
@@ -46,6 +54,10 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     venues.insert(
         "binance_reference".to_string(),
         Arc::new(fixture_binance_secrets()),
+    );
+    venues.insert(
+        "chainlink_btcusd".to_string(),
+        Arc::new(fixture_chainlink_secrets()),
     );
     ResolvedBoltV3Secrets { venues }
 }

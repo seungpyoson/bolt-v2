@@ -38,8 +38,8 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 - [x] T013 [US3] Write failing tests in `tests/bolt_v3_strategy_registration.rs` for fake binding registration, unsupported strategy rejection, and no concrete strategy key in core registration code.
 - [x] T014 [US3] Run `cargo test --test bolt_v3_strategy_registration -- --nocapture`; expected failures show missing bolt-v3 strategy registration surface.
 - [x] T015 [US3] Add `src/bolt_v3_strategy_registration.rs` with a generic `StrategyRuntimeBinding` interface and injected binding-table surface.
-- [ ] T016 [US3] Wire production strategy registration into `src/bolt_v3_live_node.rs` after Phase 4 provides the concrete `binary_oracle_edge_taker` runtime binding.
-- [ ] T017 [US3] Run `cargo test --test bolt_v3_strategy_registration` and `cargo test --test bolt_v3_provider_binding`.
+- [x] T016 [US3] Wire production strategy registration into `src/bolt_v3_live_node.rs` after Phase 4 provides the concrete `binary_oracle_edge_taker` runtime binding.
+- [x] T017 [US3] Run `cargo test --test bolt_v3_strategy_registration` and `cargo test --test bolt_v3_provider_binding`.
 
 ## Phase 4: Initial Binary-oracle Edge Taker Activation (US3)
 

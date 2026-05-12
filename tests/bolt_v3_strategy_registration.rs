@@ -11,6 +11,7 @@ use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
         register_bolt_v3_strategies_on_node_with,
@@ -60,9 +61,14 @@ fn bolt_v3_registers_configured_strategy_on_nt_trader_through_binding() {
     let _guard = lock_live_node_test();
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let (mut node, _summary) =
-        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect("v3 LiveNode should build before strategy registration");
+    let mut empty_loaded = loaded.clone();
+    empty_loaded.strategies.clear();
+    let (mut node, _summary) = build_bolt_v3_live_node_with_summary(
+        &empty_loaded,
+        |_| false,
+        support::fake_bolt_v3_resolver,
+    )
+    .expect("v3 LiveNode should build before strategy registration");
 
     let expected_strategy_id = StrategyId::from("BOLT-V3-PHASE3-STUB");
     register_bolt_v3_strategies_on_node_with(&mut node, &loaded, |node, _strategy| {
@@ -113,13 +119,24 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let (mut node, _summary) =
-        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect("v3 LiveNode should build before strategy registration");
+    let mut empty_loaded = loaded.clone();
+    empty_loaded.strategies.clear();
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve");
+    let (mut node, _summary) = build_bolt_v3_live_node_with_summary(
+        &empty_loaded,
+        |_| false,
+        support::fake_bolt_v3_resolver,
+    )
+    .expect("v3 LiveNode should build before strategy registration");
 
-    let summary =
-        register_bolt_v3_strategies_on_node_with_bindings(&mut node, &loaded, TEST_BINDINGS)
-            .expect("configured strategy should register through matching runtime binding");
+    let summary = register_bolt_v3_strategies_on_node_with_bindings(
+        &mut node,
+        &loaded,
+        &resolved,
+        TEST_BINDINGS,
+    )
+    .expect("configured strategy should register through matching runtime binding");
 
     assert_eq!(summary.registered.len(), loaded.strategies.len());
     assert_eq!(
@@ -157,7 +174,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         .expect("mapped raw taker config should be a table");
     assert_eq!(
         table.get("strategy_id").and_then(|value| value.as_str()),
-        Some("bitcoin_updown_main")
+        Some("binary_oracle_edge_taker-001")
     );
     assert_eq!(
         table.get("client_id").and_then(|value| value.as_str()),
@@ -178,6 +195,22 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
     assert!(
         table.get("reference_publish_topic").is_none(),
         "reference_publish_topic belongs in StrategyBuildContext, not raw taker config"
+    );
+}
+
+#[test]
+fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
+    let _guard = lock_live_node_test();
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    let (node, _summary) =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect("v3 LiveNode build should register configured bolt-v3 strategies");
+
+    assert_eq!(
+        node.kernel().trader().borrow().strategy_ids(),
+        vec![StrategyId::from("binary_oracle_edge_taker-001")]
     );
 }
 

@@ -273,7 +273,7 @@ reason = "This labels the canonical bolt-v3 target cadence used to populate the 
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"strategy_id"'''
-context = '''"strategy_id",'''
+context = '''insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);'''
 classification = "existing_taker_raw_config_field"
 reason = "This is a field name in the existing EthChainlinkTakerBuilder raw config contract populated from bolt-v3 TOML, not a code default."
 

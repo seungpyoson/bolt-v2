@@ -24,7 +24,10 @@ pub mod binary_oracle_edge_taker;
 
 use rust_decimal::Decimal;
 
-use crate::{bolt_v3_config::BoltV3StrategyConfig, bolt_v3_providers::ReferenceCapability};
+use crate::{
+    bolt_v3_config::BoltV3StrategyConfig, bolt_v3_providers::ReferenceCapability,
+    bolt_v3_strategy_registration::StrategyRuntimeBinding,
+};
 
 pub struct ReferenceCapabilityRequirement {
     pub capability: ReferenceCapability,
@@ -44,8 +47,14 @@ const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidation
     reference_capability_requirements: binary_oracle_edge_taker::REFERENCE_CAPABILITY_REQUIREMENTS,
 }];
 
+const RUNTIME_BINDINGS: &[StrategyRuntimeBinding] = &[binary_oracle_edge_taker::RUNTIME_BINDING];
+
 pub fn validation_bindings() -> &'static [ArchetypeValidationBinding] {
     VALIDATION_BINDINGS
+}
+
+pub fn runtime_bindings() -> &'static [StrategyRuntimeBinding] {
+    RUNTIME_BINDINGS
 }
 
 pub fn validate_strategy_archetype(

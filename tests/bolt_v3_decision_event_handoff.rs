@@ -6,6 +6,7 @@ use bolt_v2::bolt_v3_config::{
 use bolt_v2::bolt_v3_decision_event_context::bolt_v3_decision_event_common_fields;
 use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_ARCHETYPE_METRICS_FACT_KEY, BOLT_V3_CLIENT_ORDER_ID_FACT_KEY,
+    BOLT_V3_ENTRY_DECISION_ENTER_VALUE, BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE,
     BOLT_V3_ENTRY_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_ENTRY_EVALUATION_EVENT_VALUE,
     BOLT_V3_ENTRY_NO_ACTION_ACTIVE_BOOK_NOT_PRICED_REASON,
     BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON, BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON,
@@ -19,7 +20,7 @@ use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INSTRUMENT_ID_MISSING_REASON,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
     BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_ENTRY_PRE_SUBMIT_REJECTION_REASONS,
-    BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
+    BOLT_V3_EXIT_DECISION_HOLD_VALUE, BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON,
     BOLT_V3_EXIT_EVALUATION_DECISION_EVENT_TYPE, BOLT_V3_EXIT_EVALUATION_EVENT_VALUE,
     BOLT_V3_EXIT_ORDER_MECHANICAL_REJECTION_REASON_FACT_KEY,
     BOLT_V3_EXIT_ORDER_SUBMISSION_DECISION_EVENT_TYPE,
@@ -27,7 +28,8 @@ use bolt_v2::bolt_v3_decision_events::{
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_INVALID_QUANTITY_REASON,
     BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASON_FACT_KEY, BOLT_V3_EXIT_PRE_SUBMIT_REJECTION_REASONS,
     BOLT_V3_MARKET_SELECTION_DECISION_EVENT_TYPE, BOLT_V3_MARKET_SELECTION_FAILURE_REASON_FACT_KEY,
-    BOLT_V3_MARKET_SELECTION_FAILURE_REASONS, BoltV3DecisionEventCatalogHandoff,
+    BOLT_V3_MARKET_SELECTION_FAILURE_REASONS, BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE,
+    BOLT_V3_UPDOWN_SIDE_UP_VALUE, BoltV3DecisionEventCatalogHandoff,
     BoltV3DecisionEventCommonFields, BoltV3EntryEvaluationDecisionEvent,
     BoltV3EntryEvaluationFacts, BoltV3EntryOrderSubmissionDecisionEvent,
     BoltV3EntryPreSubmitRejectionDecisionEvent, BoltV3ExitEvaluationDecisionEvent,
@@ -43,8 +45,6 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use serde_json::Value;
 use std::fs;
 use tempfile::TempDir;
-
-const TEST_UNSUPPORTED_DECISION_REASON: &str = "some_new_reason";
 
 fn decision_event_json_fixture(filename: &str) -> Value {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -62,6 +62,10 @@ fn entry_archetype_metrics() -> Value {
 
 fn exit_archetype_metrics() -> Value {
     decision_event_json_fixture("exit_archetype_metrics.json")
+}
+
+fn unsupported_decision_reason() -> String {
+    support::bolt_v3_decision_event_negative_cases_fixture().unsupported_reason
 }
 
 #[test]
@@ -143,16 +147,17 @@ fn market_selection_result_rejects_missing_failure_reason_for_failed_outcome() {
 
 #[test]
 fn market_selection_result_rejects_unknown_failure_reason() {
+    let unsupported_reason = unsupported_decision_reason();
     let error = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
-        failed_market_selection_result_facts(Some(TEST_UNSUPPORTED_DECISION_REASON)),
+        failed_market_selection_result_facts(Some(unsupported_reason.as_str())),
         market_selection_event_ts(),
         market_selection_init_ts(),
     )
     .unwrap_err();
 
     assert!(error.to_string().contains(&format!(
-        "unsupported market_selection_failure_reason `{TEST_UNSUPPORTED_DECISION_REASON}`"
+        "unsupported market_selection_failure_reason `{unsupported_reason}`"
     )));
 }
 
@@ -249,12 +254,16 @@ fn entry_evaluation_handoff_preserves_same_timestamp_events() {
     )
     .unwrap();
 
-    for decision in ["enter", "no_action"] {
+    for decision in [
+        BOLT_V3_ENTRY_DECISION_ENTER_VALUE,
+        BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE,
+    ] {
         let mut facts = entry_evaluation_facts();
         facts.entry_decision = decision.to_string();
-        facts.entry_no_action_reason = (decision == "no_action")
+        facts.entry_no_action_reason = (decision == BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE)
             .then(|| BOLT_V3_ENTRY_NO_ACTION_INSUFFICIENT_EDGE_REASON.to_string());
-        facts.updown_side = (decision == "enter").then(|| "up".to_string());
+        facts.updown_side = (decision == BOLT_V3_ENTRY_DECISION_ENTER_VALUE)
+            .then(|| BOLT_V3_UPDOWN_SIDE_UP_VALUE.to_string());
 
         let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
             common_fields(),
@@ -292,7 +301,7 @@ fn entry_evaluation_handoff_preserves_same_timestamp_events() {
 #[test]
 fn entry_evaluation_rejects_no_action_without_reason() {
     let mut facts = entry_evaluation_facts();
-    facts.entry_decision = "no_action".to_string();
+    facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
     facts.updown_side = None;
     facts.entry_no_action_reason = None;
 
@@ -314,7 +323,7 @@ fn entry_evaluation_rejects_no_action_without_reason() {
 #[test]
 fn entry_evaluation_accepts_market_cooling_down_no_action_reason() {
     let mut facts = entry_evaluation_facts();
-    facts.entry_decision = "no_action".to_string();
+    facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
     facts.updown_side = None;
     facts.entry_no_action_reason =
         Some(BOLT_V3_ENTRY_NO_ACTION_MARKET_COOLING_DOWN_REASON.to_string());
@@ -340,7 +349,7 @@ fn entry_evaluation_accepts_market_cooling_down_no_action_reason() {
 #[test]
 fn entry_evaluation_accepts_recovery_mode_no_action_reason() {
     let mut facts = entry_evaluation_facts();
-    facts.entry_decision = "no_action".to_string();
+    facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
     facts.updown_side = None;
     facts.entry_no_action_reason = Some(BOLT_V3_ENTRY_NO_ACTION_RECOVERY_MODE_REASON.to_string());
 
@@ -365,7 +374,7 @@ fn entry_evaluation_accepts_recovery_mode_no_action_reason() {
 #[test]
 fn entry_evaluation_accepts_one_position_invariant_no_action_reason() {
     let mut facts = entry_evaluation_facts();
-    facts.entry_decision = "no_action".to_string();
+    facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
     facts.updown_side = None;
     facts.entry_no_action_reason =
         Some(BOLT_V3_ENTRY_NO_ACTION_ONE_POSITION_INVARIANT_REASON.to_string());
@@ -391,7 +400,7 @@ fn entry_evaluation_accepts_one_position_invariant_no_action_reason() {
 #[test]
 fn entry_evaluation_accepts_thin_book_no_action_reason() {
     let mut facts = entry_evaluation_facts();
-    facts.entry_decision = "no_action".to_string();
+    facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
     facts.updown_side = None;
     facts.entry_no_action_reason = Some(BOLT_V3_ENTRY_NO_ACTION_THIN_BOOK_REASON.to_string());
 
@@ -416,7 +425,7 @@ fn entry_evaluation_accepts_thin_book_no_action_reason() {
 #[test]
 fn entry_evaluation_accepts_fast_venue_incoherent_no_action_reason() {
     let mut facts = entry_evaluation_facts();
-    facts.entry_decision = "no_action".to_string();
+    facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
     facts.updown_side = None;
     facts.entry_no_action_reason =
         Some(BOLT_V3_ENTRY_NO_ACTION_FAST_VENUE_INCOHERENT_REASON.to_string());
@@ -442,7 +451,7 @@ fn entry_evaluation_accepts_fast_venue_incoherent_no_action_reason() {
 #[test]
 fn entry_evaluation_accepts_freeze_no_action_reason() {
     let mut facts = entry_evaluation_facts();
-    facts.entry_decision = "no_action".to_string();
+    facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
     facts.updown_side = None;
     facts.entry_no_action_reason = Some(BOLT_V3_ENTRY_NO_ACTION_FREEZE_REASON.to_string());
 
@@ -471,7 +480,7 @@ fn entry_evaluation_accepts_book_state_no_action_reasons() {
         BOLT_V3_ENTRY_NO_ACTION_METADATA_MISMATCH_REASON,
     ] {
         let mut facts = entry_evaluation_facts();
-        facts.entry_decision = "no_action".to_string();
+        facts.entry_decision = BOLT_V3_ENTRY_DECISION_NO_ACTION_VALUE.to_string();
         facts.entry_no_action_reason = Some(reason.to_string());
         facts.updown_side = None;
 
@@ -628,11 +637,12 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
 
 #[test]
 fn entry_pre_submit_rejection_rejects_unknown_reason() {
+    let unsupported_reason = unsupported_decision_reason();
     let error = BoltV3EntryPreSubmitRejectionDecisionEvent::entry_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
             order: BoltV3RejectedOrderFacts::from(order_submission_facts_without_client_order_id()),
-            rejection_reason: TEST_UNSUPPORTED_DECISION_REASON.to_string(),
+            rejection_reason: unsupported_reason.clone(),
             authoritative_position_quantity: None,
             authoritative_sellable_quantity: None,
             open_exit_order_quantity: None,
@@ -644,7 +654,7 @@ fn entry_pre_submit_rejection_rejects_unknown_reason() {
     .unwrap_err();
 
     assert!(error.to_string().contains(&format!(
-        "unsupported entry_pre_submit_rejection_reason `{TEST_UNSUPPORTED_DECISION_REASON}`"
+        "unsupported entry_pre_submit_rejection_reason `{unsupported_reason}`"
     )));
 }
 
@@ -793,13 +803,14 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
 
 #[test]
 fn exit_pre_submit_rejection_rejects_unknown_reason() {
+    let unsupported_reason = unsupported_decision_reason();
     let error = BoltV3ExitPreSubmitRejectionDecisionEvent::exit_pre_submit_rejection(
         common_fields(),
         BoltV3PreSubmitRejectionFacts {
             order: BoltV3RejectedOrderFacts::from(
                 exit_order_submission_facts_without_client_order_id(),
             ),
-            rejection_reason: TEST_UNSUPPORTED_DECISION_REASON.to_string(),
+            rejection_reason: unsupported_reason.clone(),
             authoritative_position_quantity: Some(10.0),
             authoritative_sellable_quantity: Some(10.0),
             open_exit_order_quantity: Some(0.0),
@@ -811,7 +822,7 @@ fn exit_pre_submit_rejection_rejects_unknown_reason() {
     .unwrap_err();
 
     assert!(error.to_string().contains(&format!(
-        "unsupported exit_pre_submit_rejection_reason `{TEST_UNSUPPORTED_DECISION_REASON}`"
+        "unsupported exit_pre_submit_rejection_reason `{unsupported_reason}`"
     )));
 }
 
@@ -887,9 +898,9 @@ fn exit_evaluation_event_writes_through_nt_catalog_handoff() {
 #[test]
 fn exit_evaluation_rejects_missing_mechanical_rejection_reason() {
     let mut facts = exit_evaluation_facts();
-    facts.exit_order_mechanical_outcome = "rejected".to_string();
+    facts.exit_order_mechanical_outcome = BOLT_V3_MECHANICAL_OUTCOME_REJECTED_VALUE.to_string();
     facts.exit_order_mechanical_rejection_reason = None;
-    facts.exit_decision = "hold".to_string();
+    facts.exit_decision = BOLT_V3_EXIT_DECISION_HOLD_VALUE.to_string();
     facts.exit_decision_reason =
         BOLT_V3_EXIT_DECISION_ORDER_MECHANICAL_REJECTION_REASON.to_string();
 

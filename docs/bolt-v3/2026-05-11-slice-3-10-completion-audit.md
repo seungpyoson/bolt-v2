@@ -119,3 +119,5 @@ F13bf extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` s
 F13bg extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct market-selection fact fixture construction in `tests/bolt_v3_decision_event_handoff.rs` is rejected. Market-selection success and failed facts now load from JSON fixtures through `tests/support/mod.rs`.
 
 F13bh extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so direct decision-event timestamp literals in `tests/bolt_v3_decision_event_handoff.rs` are rejected. Handoff event/init timestamps now load from `tests/fixtures/bolt_v3_decision_events/event_timestamps.json`.
+
+F13bi extends `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` so inline decision-value literals in `tests/bolt_v3_decision_event_handoff.rs` are rejected. Supported values now use exported event-contract constants; unsupported negative-case values now load from `tests/fixtures/bolt_v3_decision_events/negative_cases.json`.

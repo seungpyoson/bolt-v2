@@ -469,6 +469,19 @@ pub fn bolt_v3_decision_event_timestamps_fixture(
         .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()))
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoltV3DecisionEventNegativeCasesFixture {
+    pub unsupported_reason: String,
+}
+
+pub fn bolt_v3_decision_event_negative_cases_fixture() -> BoltV3DecisionEventNegativeCasesFixture {
+    let path = repo_path("tests/fixtures/bolt_v3_decision_events/negative_cases.json");
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()))
+}
+
 #[derive(Debug, Deserialize)]
 struct BoltV3EntryEvaluationFactsFixture {
     updown_side: Option<String>,

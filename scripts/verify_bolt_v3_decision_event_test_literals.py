@@ -164,6 +164,9 @@ DECISION_EVENT_VALUE_FORBIDDEN_LITERAL_VALUES = {
     "up",
     "down",
 }
+DECISION_EVENT_HANDOFF_DECISION_VALUE_FORBIDDEN_LITERAL_VALUES = (
+    DECISION_EVENT_VALUE_FORBIDDEN_LITERAL_VALUES | {"some_new_reason"}
+)
 
 @dataclass(frozen=True)
 class Finding:
@@ -232,6 +235,22 @@ def scan_file(root: Path, path: Path, reason_values: set[str]) -> list[Finding]:
                     line=line_number(text, match.start()),
                     message="inline decision-event JSON object fixture; move fixture data out of Rust test",
                     excerpt="json!({",
+                )
+            )
+
+        for match in RUST_STRING_LITERAL_PATTERN.finditer(text):
+            value = string_value(match.group(0))
+            if value not in DECISION_EVENT_HANDOFF_DECISION_VALUE_FORBIDDEN_LITERAL_VALUES:
+                continue
+            findings.append(
+                Finding(
+                    path=rel,
+                    line=line_number(text, match.start()),
+                    message=(
+                        "decision-event decision value literal; use exported "
+                        "event contract constants or fixture data"
+                    ),
+                    excerpt=match.group(0),
                 )
             )
 

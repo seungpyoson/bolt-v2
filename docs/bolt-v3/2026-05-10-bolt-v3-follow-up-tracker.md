@@ -102,6 +102,8 @@ F13bg note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now
 
 F13bh note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects direct decision-event timestamp literals in `tests/bolt_v3_decision_event_handoff.rs`. Handoff event/init timestamps now load from `tests/fixtures/bolt_v3_decision_events/event_timestamps.json`.
 
+F13bi note: `python3 scripts/verify_bolt_v3_decision_event_test_literals.py` now rejects inline decision-value literals in `tests/bolt_v3_decision_event_handoff.rs`. Supported decision values now use exported event-contract constants; unsupported negative-case values now load from `tests/fixtures/bolt_v3_decision_events/negative_cases.json`.
+
 ## Reference-Producer Narrow Proof
 
 The reference-producer slice proved only:

@@ -167,7 +167,7 @@ def test_decision_event_handoff_direct_entry_evaluation_facts_is_a_finding() -> 
             """
 fn probe() {
     let _ = BoltV3EntryEvaluationFacts {
-        entry_decision: "enter".to_string(),
+        entry_decision: fixture_entry_decision(),
     };
 }
 """,
@@ -187,7 +187,7 @@ def test_decision_event_handoff_direct_exit_evaluation_facts_is_a_finding() -> N
             """
 fn probe() {
     let _ = BoltV3ExitEvaluationFacts {
-        exit_decision: "hold".to_string(),
+        exit_decision: fixture_exit_decision(),
     };
 }
 """,
@@ -207,7 +207,7 @@ def test_decision_event_handoff_direct_market_selection_facts_is_a_finding() -> 
             """
 fn probe() {
     let _ = BoltV3MarketSelectionResultFacts {
-        market_selection_outcome: "current".to_string(),
+        market_selection_outcome: fixture_market_selection_outcome(),
     };
 }
 """,
@@ -236,6 +236,28 @@ fn probe() {
         findings = verifier.scan_root(root)
         assert len(findings) == 2
         assert "decision-event timestamp literal" in findings[0].message
+
+
+def test_decision_event_handoff_decision_value_literals_are_findings() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_decision_event_handoff.rs",
+            '''
+fn probe() {
+    let _ = "enter";
+    let _ = "no_action";
+    let _ = "up";
+    let _ = "hold";
+    let _ = "some_new_reason";
+}
+''',
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 5
+        assert "decision-event decision value literal" in findings[0].message
 
 
 def test_eth_chainlink_runtime_context_literal_is_a_finding() -> None:
@@ -457,6 +479,7 @@ def main() -> int:
         test_decision_event_handoff_direct_exit_evaluation_facts_is_a_finding,
         test_decision_event_handoff_direct_market_selection_facts_is_a_finding,
         test_decision_event_handoff_timestamp_literals_are_findings,
+        test_decision_event_handoff_decision_value_literals_are_findings,
         test_eth_chainlink_runtime_context_literal_is_a_finding,
         test_eth_chainlink_runtime_decision_reason_literal_is_a_finding,
         test_provider_source_label_literal_is_a_finding,

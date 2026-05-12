@@ -218,6 +218,26 @@ fn probe() {
         assert "direct market-selection fact fixture construction" in findings[0].message
 
 
+def test_decision_event_handoff_timestamp_literals_are_findings() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "tests/bolt_v3_decision_event_handoff.rs",
+            """
+const TEST_EVENT_TS_NANOS: u64 = 2_500;
+fn probe() {
+    let _ = UnixNanos::from(2_000);
+    let _ = UnixNanos::from(TEST_EVENT_TS_NANOS);
+}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+        assert len(findings) == 2
+        assert "decision-event timestamp literal" in findings[0].message
+
+
 def test_eth_chainlink_runtime_context_literal_is_a_finding() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -436,6 +456,7 @@ def main() -> int:
         test_decision_event_handoff_direct_entry_evaluation_facts_is_a_finding,
         test_decision_event_handoff_direct_exit_evaluation_facts_is_a_finding,
         test_decision_event_handoff_direct_market_selection_facts_is_a_finding,
+        test_decision_event_handoff_timestamp_literals_are_findings,
         test_eth_chainlink_runtime_context_literal_is_a_finding,
         test_eth_chainlink_runtime_decision_reason_literal_is_a_finding,
         test_provider_source_label_literal_is_a_finding,

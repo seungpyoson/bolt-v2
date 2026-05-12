@@ -44,8 +44,6 @@ use serde_json::Value;
 use std::fs;
 use tempfile::TempDir;
 
-const TEST_ENTRY_EVALUATION_EVENT_TS_NANOS: u64 = 2_500;
-const TEST_ENTRY_EVALUATION_INIT_TS_NANOS: u64 = 2_501;
 const TEST_UNSUPPORTED_DECISION_REASON: &str = "some_new_reason";
 
 fn decision_event_json_fixture(filename: &str) -> Value {
@@ -79,8 +77,8 @@ fn market_selection_result_event_writes_through_nt_catalog_handoff() {
     let event = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
         market_selection_result_facts(),
-        UnixNanos::from(2_000),
-        UnixNanos::from(2_001),
+        market_selection_event_ts(),
+        market_selection_init_ts(),
     )
     .unwrap();
 
@@ -131,8 +129,8 @@ fn market_selection_result_rejects_missing_failure_reason_for_failed_outcome() {
     let error = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
         failed_market_selection_result_facts(None),
-        UnixNanos::from(2_000),
-        UnixNanos::from(2_001),
+        market_selection_event_ts(),
+        market_selection_init_ts(),
     )
     .unwrap_err();
 
@@ -148,8 +146,8 @@ fn market_selection_result_rejects_unknown_failure_reason() {
     let error = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
         failed_market_selection_result_facts(Some(TEST_UNSUPPORTED_DECISION_REASON)),
-        UnixNanos::from(2_000),
-        UnixNanos::from(2_001),
+        market_selection_event_ts(),
+        market_selection_init_ts(),
     )
     .unwrap_err();
 
@@ -164,8 +162,8 @@ fn market_selection_result_accepts_allowed_failure_reasons() {
         BoltV3MarketSelectionDecisionEvent::market_selection_result(
             common_fields(),
             failed_market_selection_result_facts(Some(reason)),
-            UnixNanos::from(2_000),
-            UnixNanos::from(2_001),
+            market_selection_event_ts(),
+            market_selection_init_ts(),
         )
         .unwrap();
     }
@@ -183,8 +181,8 @@ fn market_selection_result_handoff_returns_catalog_write_error() {
     let event = BoltV3MarketSelectionDecisionEvent::market_selection_result(
         common_fields(),
         market_selection_result_facts(),
-        UnixNanos::from(2_000),
-        UnixNanos::from(2_001),
+        market_selection_event_ts(),
+        market_selection_init_ts(),
     )
     .unwrap();
 
@@ -480,8 +478,8 @@ fn entry_evaluation_accepts_book_state_no_action_reasons() {
         let event = BoltV3EntryEvaluationDecisionEvent::entry_evaluation(
             common_fields(),
             facts,
-            UnixNanos::from(TEST_ENTRY_EVALUATION_EVENT_TS_NANOS),
-            UnixNanos::from(TEST_ENTRY_EVALUATION_INIT_TS_NANOS),
+            test_entry_evaluation_event_ts(),
+            test_entry_evaluation_init_ts(),
         )
         .unwrap();
 
@@ -510,8 +508,8 @@ fn entry_order_submission_event_writes_through_nt_catalog_handoff() {
     let event = BoltV3EntryOrderSubmissionDecisionEvent::entry_order_submission(
         common_fields(),
         order_facts,
-        UnixNanos::from(3_000),
-        UnixNanos::from(3_001),
+        entry_order_submission_event_ts(),
+        entry_order_submission_init_ts(),
     )
     .unwrap();
 
@@ -552,8 +550,8 @@ fn entry_order_submission_rejects_missing_client_order_id() {
     let error = BoltV3EntryOrderSubmissionDecisionEvent::entry_order_submission(
         common_fields(),
         order_submission_facts_without_client_order_id(),
-        UnixNanos::from(3_000),
-        UnixNanos::from(3_001),
+        entry_order_submission_event_ts(),
+        entry_order_submission_init_ts(),
     )
     .unwrap_err();
 
@@ -583,8 +581,8 @@ fn entry_pre_submit_rejection_event_writes_null_client_order_id() {
             open_exit_order_quantity: None,
             uncovered_position_quantity: None,
         },
-        UnixNanos::from(4_000),
-        UnixNanos::from(4_001),
+        entry_pre_submit_rejection_event_ts(),
+        entry_pre_submit_rejection_init_ts(),
     )
     .unwrap();
 
@@ -640,8 +638,8 @@ fn entry_pre_submit_rejection_rejects_unknown_reason() {
             open_exit_order_quantity: None,
             uncovered_position_quantity: None,
         },
-        UnixNanos::from(4_000),
-        UnixNanos::from(4_001),
+        entry_pre_submit_rejection_event_ts(),
+        entry_pre_submit_rejection_init_ts(),
     )
     .unwrap_err();
 
@@ -665,8 +663,8 @@ fn entry_pre_submit_rejection_accepts_allowed_reasons() {
                 open_exit_order_quantity: None,
                 uncovered_position_quantity: None,
             },
-            UnixNanos::from(4_000),
-            UnixNanos::from(4_001),
+            entry_pre_submit_rejection_event_ts(),
+            entry_pre_submit_rejection_init_ts(),
         )
         .unwrap();
     }
@@ -685,8 +683,8 @@ fn entry_pre_submit_rejection_accepts_missing_instrument_id_reason() {
             open_exit_order_quantity: None,
             uncovered_position_quantity: None,
         },
-        UnixNanos::from(4_000),
-        UnixNanos::from(4_001),
+        entry_pre_submit_rejection_event_ts(),
+        entry_pre_submit_rejection_init_ts(),
     )
     .unwrap();
 }
@@ -707,8 +705,8 @@ fn exit_order_submission_event_writes_through_nt_catalog_handoff() {
     let event = BoltV3ExitOrderSubmissionDecisionEvent::exit_order_submission(
         common_fields(),
         order_facts,
-        UnixNanos::from(5_000),
-        UnixNanos::from(5_001),
+        exit_order_submission_event_ts(),
+        exit_order_submission_init_ts(),
     )
     .unwrap();
 
@@ -756,8 +754,8 @@ fn exit_pre_submit_rejection_event_writes_null_client_order_id() {
             open_exit_order_quantity: Some(0.0),
             uncovered_position_quantity: Some(10.0),
         },
-        UnixNanos::from(6_000),
-        UnixNanos::from(6_001),
+        exit_pre_submit_rejection_event_ts(),
+        exit_pre_submit_rejection_init_ts(),
     )
     .unwrap();
 
@@ -807,8 +805,8 @@ fn exit_pre_submit_rejection_rejects_unknown_reason() {
             open_exit_order_quantity: Some(0.0),
             uncovered_position_quantity: Some(10.0),
         },
-        UnixNanos::from(6_000),
-        UnixNanos::from(6_001),
+        exit_pre_submit_rejection_event_ts(),
+        exit_pre_submit_rejection_init_ts(),
     )
     .unwrap_err();
 
@@ -832,8 +830,8 @@ fn exit_pre_submit_rejection_accepts_allowed_reasons() {
                 open_exit_order_quantity: Some(0.0),
                 uncovered_position_quantity: Some(10.0),
             },
-            UnixNanos::from(6_000),
-            UnixNanos::from(6_001),
+            exit_pre_submit_rejection_event_ts(),
+            exit_pre_submit_rejection_init_ts(),
         )
         .unwrap();
     }
@@ -850,8 +848,8 @@ fn exit_evaluation_event_writes_through_nt_catalog_handoff() {
     let event = BoltV3ExitEvaluationDecisionEvent::exit_evaluation(
         common_fields(),
         exit_evaluation_facts(),
-        UnixNanos::from(6_500),
-        UnixNanos::from(6_501),
+        exit_evaluation_event_ts(),
+        exit_evaluation_init_ts(),
     )
     .unwrap();
 
@@ -898,8 +896,8 @@ fn exit_evaluation_rejects_missing_mechanical_rejection_reason() {
     let error = BoltV3ExitEvaluationDecisionEvent::exit_evaluation(
         common_fields(),
         facts,
-        UnixNanos::from(6_500),
-        UnixNanos::from(6_501),
+        exit_evaluation_event_ts(),
+        exit_evaluation_init_ts(),
     )
     .unwrap_err();
 
@@ -936,11 +934,95 @@ fn test_target_ids() -> Vec<String> {
 }
 
 fn test_entry_evaluation_event_ts() -> UnixNanos {
-    UnixNanos::from(TEST_ENTRY_EVALUATION_EVENT_TS_NANOS)
+    UnixNanos::from(decision_event_timestamps().entry_evaluation.event_ts_nanos)
 }
 
 fn test_entry_evaluation_init_ts() -> UnixNanos {
-    UnixNanos::from(TEST_ENTRY_EVALUATION_INIT_TS_NANOS)
+    UnixNanos::from(decision_event_timestamps().entry_evaluation.init_ts_nanos)
+}
+
+fn decision_event_timestamps() -> support::BoltV3DecisionEventTimestampsFixture {
+    support::bolt_v3_decision_event_timestamps_fixture("event_timestamps.json")
+}
+
+fn market_selection_event_ts() -> UnixNanos {
+    UnixNanos::from(decision_event_timestamps().market_selection.event_ts_nanos)
+}
+
+fn market_selection_init_ts() -> UnixNanos {
+    UnixNanos::from(decision_event_timestamps().market_selection.init_ts_nanos)
+}
+
+fn entry_order_submission_event_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .entry_order_submission
+            .event_ts_nanos,
+    )
+}
+
+fn entry_order_submission_init_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .entry_order_submission
+            .init_ts_nanos,
+    )
+}
+
+fn entry_pre_submit_rejection_event_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .entry_pre_submit_rejection
+            .event_ts_nanos,
+    )
+}
+
+fn entry_pre_submit_rejection_init_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .entry_pre_submit_rejection
+            .init_ts_nanos,
+    )
+}
+
+fn exit_order_submission_event_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .exit_order_submission
+            .event_ts_nanos,
+    )
+}
+
+fn exit_order_submission_init_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .exit_order_submission
+            .init_ts_nanos,
+    )
+}
+
+fn exit_pre_submit_rejection_event_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .exit_pre_submit_rejection
+            .event_ts_nanos,
+    )
+}
+
+fn exit_pre_submit_rejection_init_ts() -> UnixNanos {
+    UnixNanos::from(
+        decision_event_timestamps()
+            .exit_pre_submit_rejection
+            .init_ts_nanos,
+    )
+}
+
+fn exit_evaluation_event_ts() -> UnixNanos {
+    UnixNanos::from(decision_event_timestamps().exit_evaluation.event_ts_nanos)
+}
+
+fn exit_evaluation_init_ts() -> UnixNanos {
+    UnixNanos::from(decision_event_timestamps().exit_evaluation.init_ts_nanos)
 }
 
 fn failed_market_selection_result_facts(reason: Option<&str>) -> BoltV3MarketSelectionResultFacts {

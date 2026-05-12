@@ -1,0 +1,30 @@
+{
+  "market_selection": {
+    "event_ts_nanos": 2000,
+    "init_ts_nanos": 2001
+  },
+  "entry_evaluation": {
+    "event_ts_nanos": 2500,
+    "init_ts_nanos": 2501
+  },
+  "entry_order_submission": {
+    "event_ts_nanos": 3000,
+    "init_ts_nanos": 3001
+  },
+  "entry_pre_submit_rejection": {
+    "event_ts_nanos": 4000,
+    "init_ts_nanos": 4001
+  },
+  "exit_order_submission": {
+    "event_ts_nanos": 5000,
+    "init_ts_nanos": 5001
+  },
+  "exit_pre_submit_rejection": {
+    "event_ts_nanos": 6000,
+    "init_ts_nanos": 6001
+  },
+  "exit_evaluation": {
+    "event_ts_nanos": 6500,
+    "init_ts_nanos": 6501
+  }
+}

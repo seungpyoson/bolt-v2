@@ -440,6 +440,35 @@ pub fn bolt_v3_market_selection_result_facts_fixture(
     fixture.into()
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoltV3DecisionEventTimestampFixture {
+    pub event_ts_nanos: u64,
+    pub init_ts_nanos: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoltV3DecisionEventTimestampsFixture {
+    pub market_selection: BoltV3DecisionEventTimestampFixture,
+    pub entry_evaluation: BoltV3DecisionEventTimestampFixture,
+    pub entry_order_submission: BoltV3DecisionEventTimestampFixture,
+    pub entry_pre_submit_rejection: BoltV3DecisionEventTimestampFixture,
+    pub exit_order_submission: BoltV3DecisionEventTimestampFixture,
+    pub exit_pre_submit_rejection: BoltV3DecisionEventTimestampFixture,
+    pub exit_evaluation: BoltV3DecisionEventTimestampFixture,
+}
+
+pub fn bolt_v3_decision_event_timestamps_fixture(
+    filename: &str,
+) -> BoltV3DecisionEventTimestampsFixture {
+    let path = repo_path(&format!(
+        "tests/fixtures/bolt_v3_decision_events/{filename}"
+    ));
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} should read: {error}", path.display()));
+    serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} should parse: {error}", path.display()))
+}
+
 #[derive(Debug, Deserialize)]
 struct BoltV3EntryEvaluationFactsFixture {
     updown_side: Option<String>,

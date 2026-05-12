@@ -163,6 +163,22 @@ fn no_submit_readiness_source_has_no_trade_or_runner_tokens() {
 }
 
 #[test]
+fn no_submit_readiness_operator_harness_feeds_report_to_live_canary_gate() {
+    let source = include_str!("../tests/bolt_v3_no_submit_readiness_operator.rs");
+    let report_write_index = source
+        .find(".write_redacted_json_for_loaded_config(&loaded)")
+        .expect("operator harness must write the configured readiness report");
+    let gate_index = source
+        .find("check_bolt_v3_live_canary_gate(&loaded)")
+        .expect("operator harness must prove the live canary gate consumes the report");
+
+    assert!(
+        report_write_index < gate_index,
+        "operator harness must write the report before checking gate acceptance"
+    );
+}
+
+#[test]
 fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

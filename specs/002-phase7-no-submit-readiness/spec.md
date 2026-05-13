@@ -62,6 +62,7 @@ As the operator, I can use the Phase 7 report as a prerequisite for Phase 8 plan
 - Secret resolver setup failure before any venue client is built.
 - SSM path exists but value cannot be resolved or parsed.
 - Venue authentication failure, geo block, wrong market, wrong instrument, stale Chainlink or exchange reference data, or missing required reference venue.
+- Controlled connect, reference-readiness, or disconnect timeout.
 - Disconnect fails after connect fails.
 - Redacted report or debug output contains a resolved credential value.
 - `config/live.local.toml` is legacy render input and not a bolt-v3 root TOML.

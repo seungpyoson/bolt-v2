@@ -20,7 +20,7 @@
 - [ ] T001 Record fresh-main evidence and stale PR audit summary in `specs/002-phase7-no-submit-readiness/research.md`.
 - [ ] T002 Run `no-mistakes daemon status` and record availability in handoff.
 - [ ] T003 Run Claude, DeepSeek, and GLM external review on `specs/002-phase7-no-submit-readiness/` plan artifacts.
-- [ ] T004 Triage all review findings into accepted fixes or evidence-backed disprovals in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
+- [ ] T004 Triage all review findings into accepted fixes, evidence-backed disprovals, or explicit non-blocking deferrals in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
 - [ ] T005 Stop before implementation unless Claude, DeepSeek, and GLM all approve or the user explicitly overrides a non-blocking disagreement.
 
 ---
@@ -30,7 +30,7 @@
 **Purpose**: Shared report schema and gate compatibility.
 
 - [ ] T006 [P] [US1] Write failing schema compatibility test in `tests/bolt_v3_no_submit_readiness.rs` proving producer report JSON is accepted by `check_bolt_v3_live_canary_gate`.
-- [ ] T007 [P] [US1] Write failing source-fence test in `tests/bolt_v3_no_submit_readiness.rs` proving `src/bolt_v3_no_submit_readiness.rs` contains no submit, cancel, replace, amend, subscribe, or runner-loop tokens.
+- [ ] T007 [P] [US1] Write failing source-fence test in `tests/bolt_v3_no_submit_readiness.rs` proving `src/bolt_v3_no_submit_readiness.rs` and `tests/bolt_v3_no_submit_readiness_operator.rs` contain no submit, cancel, replace, amend, subscribe, or runner-loop tokens.
 - [ ] T008 [US1] Add shared no-submit report schema constants in `src/bolt_v3_no_submit_readiness_schema.rs`.
 - [ ] T009 [US1] Update `src/bolt_v3_live_canary_gate.rs` to consume shared schema constants without changing existing fail-closed behavior.
 - [ ] T010 [US1] Export the schema module from `src/lib.rs`.
@@ -46,12 +46,13 @@
 
 - [ ] T012 [P] [US1] Write failing local runner test in `tests/bolt_v3_no_submit_readiness.rs` for satisfied controlled-connect and controlled-disconnect stages.
 - [ ] T013 [P] [US1] Write failing redaction test in `tests/bolt_v3_no_submit_readiness.rs` proving resolved secret values do not appear in debug or JSON output.
-- [ ] T014 [P] [US1] Write failing connect-failure cleanup test in `tests/bolt_v3_no_submit_readiness.rs`.
+- [ ] T014 [P] [US1] Write failing connect-failure, reference-readiness failure, byte-cap, and double-failure cleanup tests in `tests/bolt_v3_no_submit_readiness.rs`.
 - [ ] T015 [US1] Add `src/bolt_v3_no_submit_readiness.rs` report model, redaction model, and local sequencing API.
 - [ ] T016 [US1] Add current-main-safe controlled-connect/disconnect runner support in `src/bolt_v3_live_node.rs` without exposing broad `node_mut`.
 - [ ] T017 [US1] Export `bolt_v3_no_submit_readiness` from `src/lib.rs`.
 - [ ] T018 [US1] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and capture green output.
 - [ ] T019 [US1] Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and capture green output.
+- [ ] T020 [US1] Run focused clippy on new Phase 7 files when the local test slice is green.
 
 ---
 
@@ -61,12 +62,12 @@
 
 **Independent Test**: `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture` shows ignored by default.
 
-- [ ] T020 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving missing approval id fails before secret resolution.
-- [ ] T021 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving approval mismatch fails before secret resolution.
-- [ ] T022 [US2] Implement real-run approval validation in `src/bolt_v3_no_submit_readiness.rs`.
-- [ ] T023 [US2] Add ignored operator harness in `tests/bolt_v3_no_submit_readiness_operator.rs`.
-- [ ] T024 [US2] Run default operator-harness test and capture ignored-by-default output.
-- [ ] T025 [US2] Do not run ignored real SSM/venue command without explicit user approval in current thread.
+- [ ] T021 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving missing approval id fails before secret resolution.
+- [ ] T022 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving approval mismatch fails before secret resolution.
+- [ ] T023 [US2] Implement real-run approval validation in `src/bolt_v3_no_submit_readiness.rs`.
+- [ ] T024 [US2] Add ignored operator harness in `tests/bolt_v3_no_submit_readiness_operator.rs`.
+- [ ] T025 [US2] Run default operator-harness test and capture ignored-by-default output.
+- [ ] T026 [US2] Do not run ignored real SSM/venue command without explicit user approval in current thread.
 
 ---
 
@@ -76,9 +77,9 @@
 
 **Independent Test**: Source/docs checks show Phase 8 remains blocked pending real report and strategy-input safety audit.
 
-- [ ] T026 [P] [US3] Add Phase 8 boundary assertions to `tests/bolt_v3_no_submit_readiness.rs` or `tests/bolt_v3_live_canary_gate.rs`.
-- [ ] T027 [US3] Update `specs/002-phase7-no-submit-readiness/quickstart.md` only with explicit blocked-live wording and no executable live-capital command.
-- [ ] T028 [US3] Record Phase 8 blocked state in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
+- [ ] T027 [P] [US3] Add Phase 8 boundary assertions to `tests/bolt_v3_no_submit_readiness.rs`.
+- [ ] T028 [US3] Update `specs/002-phase7-no-submit-readiness/quickstart.md` only with explicit blocked-live wording and no executable live-capital command.
+- [ ] T029 [US3] Record Phase 8 blocked state in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
 
 ---
 
@@ -86,16 +87,16 @@
 
 **Purpose**: Verify Phase 7 branch before PR or implementation-complete claim.
 
-- [ ] T029 Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`.
-- [ ] T030 Run `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture`.
-- [ ] T031 Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
-- [ ] T032 Run relevant integration tests for live-node controlled connect if touched.
-- [ ] T033 Run `cargo fmt --check`.
-- [ ] T034 Run `git diff --check`.
-- [ ] T035 Run runtime literal/hardcode checks relevant to new files.
-- [ ] T036 Run no-mistakes status/checks if available.
-- [ ] T037 Run full `cargo test` and clippy only when branch is locally green enough for PR readiness.
-- [ ] T038 Keep worktree clean before requesting further external review or opening PR.
+- [ ] T030 Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`.
+- [ ] T031 Run `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture`.
+- [ ] T032 Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
+- [ ] T033 Run relevant integration tests for live-node controlled connect if touched.
+- [ ] T034 Run `cargo fmt --check`.
+- [ ] T035 Run `git diff --check`.
+- [ ] T036 Run runtime literal/hardcode checks relevant to new files.
+- [ ] T037 Run no-mistakes status/checks if available.
+- [ ] T038 Run full `cargo test` and clippy only when branch is locally green enough for PR readiness.
+- [ ] T039 Keep worktree clean before requesting further external review or opening PR.
 
 ## Dependencies & Execution Order
 

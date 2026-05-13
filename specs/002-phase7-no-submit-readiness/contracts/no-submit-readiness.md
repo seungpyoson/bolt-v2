@@ -46,6 +46,10 @@ Required behavior:
 6. Write redacted report.
 7. Return failure when any required readiness stage is not satisfied.
 
+## Reference-readiness Stage
+
+The `reference_readiness` stage passes only when every configured reference required by the loaded strategy can report operator-safe readiness through existing NT/client surfaces within configured timing bounds. Missing Chainlink readiness, missing exchange reference readiness, wrong market or instrument, stale data, auth failure, geo block, and timeout all fail closed. Phase 7 must not implement an alternate market-data cache or reference simulator to satisfy this stage.
+
 ## Out of Scope
 
 - Live order.

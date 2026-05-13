@@ -50,7 +50,7 @@ Post-run proof:
 - Redacted report path.
 - Live-canary gate acceptance of report.
 
-Current blocker: main does not expose a no-run NT/client-owned reference data read proof for `reference_readiness`. The implementation must fail that stage closed until that surface exists; do not treat controlled-connect success as reference readiness.
+Reference-readiness rule: do not treat controlled-connect success as reference readiness. A real report can satisfy the gate only when controlled NT start populates NT cache with every `[reference_data.*]` instrument required by loaded strategies, then controlled stop succeeds.
 
 ## Phase 8 Boundary
 

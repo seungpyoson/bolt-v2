@@ -19,10 +19,10 @@ Local readiness tests use fake secret resolution and mock NT clients.
 Required guarantees:
 
 1. Build through current bolt-v3 live-node path.
-2. Run controlled connect and controlled disconnect only.
+2. Run controlled NT start/reference-cache-readiness/stop only.
 3. Write redacted report to configured path.
 4. Feed report to live-canary gate.
-5. Prove source contains no submit, cancel, replace, amend, subscribe, or runner-loop call.
+5. Prove source contains no submit, cancel, replace, amend, or runner-loop call.
 
 ## Real Operator Contract
 
@@ -41,14 +41,14 @@ Required behavior:
 1. Reject missing or mismatched approval before secret resolution.
 2. Resolve secrets only through Rust AWS SDK SSM path.
 3. Build production-shaped bolt-v3 runtime.
-4. Perform controlled connect/readiness/disconnect.
+4. Perform controlled NT start/readiness/stop.
 5. Place zero orders.
 6. Write redacted report.
 7. Return failure when any required readiness stage is not satisfied.
 
 ## Reference-readiness Stage
 
-The `reference_readiness` stage passes only when every configured reference required by the loaded strategy can report operator-safe readiness through existing NT/client surfaces within configured timing bounds. Missing Chainlink readiness, missing exchange reference readiness, wrong market or instrument, stale data, auth failure, geo block, and timeout all fail closed. Phase 7 must not implement an alternate market-data cache or reference simulator to satisfy this stage.
+The `reference_readiness` stage passes only when every configured `[reference_data.*]` instrument required by every loaded strategy is present in NT cache after controlled NT start. Missing Chainlink readiness, missing exchange reference readiness, wrong market or instrument, stale data, auth failure, geo block, and timeout all fail closed. Phase 7 must not implement an alternate market-data cache, direct provider read path, or reference simulator to satisfy this stage.
 
 ## Out of Scope
 

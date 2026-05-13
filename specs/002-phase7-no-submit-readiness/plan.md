@@ -5,7 +5,7 @@
 
 ## Summary
 
-Add a fresh Phase 7 no-submit readiness evidence path from current main. The slice reuses bolt-v3 config, SSM-only secret resolution, live-node build, client registration, and controlled NT connect/disconnect boundaries. It writes a redacted readiness report accepted by the existing live-canary gate while proving no submit, cancel, replace, amend, subscribe, runner-loop, or live-capital action can occur in Phase 7 default flow.
+Add a fresh Phase 7 no-submit readiness evidence path from current main. The slice reuses bolt-v3 config, SSM-only secret resolution, live-node build, client registration, and NT-owned lifecycle/cache surfaces. It writes a redacted readiness report accepted by the existing live-canary gate only after reference data required by the loaded strategies is visible through NT-owned cache evidence. It proves no submit, cancel, replace, amend, runner-loop, or live-capital action can occur in Phase 7 default flow.
 
 ## Technical Context
 
@@ -23,7 +23,7 @@ Add a fresh Phase 7 no-submit readiness evidence path from current main. The sli
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-- **NT-First Thin Layer**: PASS. Plan uses existing NT controlled connect/disconnect and does not implement adapter, lifecycle, cache, order, fill, cancel, or reconciliation behavior.
+- **NT-First Thin Layer**: PASS. Plan uses existing NT start/stop lifecycle and cache evidence for authenticated readiness and does not implement adapter, cache, order, fill, cancel, or reconciliation behavior.
 - **Generic Core, Concrete Edges**: PASS. Plan keeps readiness generic over loaded config and existing registration surfaces. Provider-specific checks stay in config/adapter/reference client surfaces.
 - **Single Path And Config-Controlled Runtime**: PASS. Plan uses bolt-v3 root TOML and `[live_canary]` report path. Credentials use SSM through Rust SDK only.
 - **Test-First Safety Gates**: PASS. Tasks require one failing behavior/source-fence test before implementation.
@@ -36,7 +36,8 @@ Add a fresh Phase 7 no-submit readiness evidence path from current main. The sli
 - Production entrypoint builds and runs through bolt-v3 live node: `src/main.rs`.
 - `BoltV3LiveNodeRuntime` is current runtime carrier; stale `BoltV3BuiltLiveNode` from PR #319 must not return.
 - Existing startup readiness is build-only: `src/bolt_v3_readiness.rs`.
-- Existing controlled NT boundaries are `connect_bolt_v3_clients` and `disconnect_bolt_v3_clients` in `src/bolt_v3_live_node.rs`.
+- Existing controlled NT boundaries include `connect_bolt_v3_clients` and `disconnect_bolt_v3_clients` in `src/bolt_v3_live_node.rs`, but current implementation evidence shows connect success alone is not reference readiness.
+- NT `LiveNode::start()` connects data clients, flushes instrument events into NT cache, connects execution clients, performs startup reconciliation, and starts strategy shells without entering `LiveNode::run()`.
 - Existing live-canary gate validates no-submit readiness report shape in `src/bolt_v3_live_canary_gate.rs`.
 - Existing Phase 6 submit admission must be preserved in `src/bolt_v3_submit_admission.rs`.
 
@@ -46,9 +47,13 @@ Detailed decisions are in [research.md](research.md).
 
 - Use a new `src/bolt_v3_no_submit_readiness.rs` module for report model, redaction, and sequencing.
 - Use a small shared schema module only if it removes duplicated report-key literals between producer and gate.
-- Do not expose general `node_mut`; prefer a current-main-safe function inside `src/bolt_v3_live_node.rs` that runs controlled connect/disconnect against the opaque runtime.
+- Do not expose general `node_mut`; prefer current-main-safe helpers inside `src/bolt_v3_live_node.rs` that run bounded NT start/stop and inspect required reference instruments through NT cache against the opaque runtime.
 - Keep real SSM/venue readiness behind an ignored operator test requiring explicit approval inputs.
 - Do not update `config/live.local.toml`; it is legacy render input.
+
+## Implementation Discovery
+
+Initial Phase 7 implementation proved controlled connect/disconnect can produce redacted reports, but it also proved that connect success cannot honestly satisfy `reference_readiness`: bolt-v3 currently has no no-run reference snapshot/read proof, and the strategy consumes `ReferenceSnapshot` from msgbus only after strategy shell subscription. The revised path must therefore use NT `LiveNode::start()`/`stop()` without `run()` so NT owns data-client connection, data-event flush into cache, execution-client connection, and cleanup. The readiness stage passes only when every `[reference_data.*]` instrument required by every loaded strategy is present in NT cache after controlled start.
 
 ## Phase 1 Design Summary
 

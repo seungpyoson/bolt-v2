@@ -16,13 +16,13 @@
 
 **Alternatives considered**: Extend startup readiness directly. Rejected because it would weaken existing source fences and blur build-only vs authenticated-connect evidence.
 
-## Decision: Reuse current live-node build and controlled-connect boundaries
+## Decision: Use NT start/stop for reference-readiness proof
 
-**Decision**: Build through current bolt-v3 live-node path, then run a narrow controlled-connect/readiness/disconnect sequence without runner entry.
+**Decision**: Build through current bolt-v3 live-node path, then run a bounded NT `LiveNode::start()` / reference-cache inspection / `LiveNode::stop()` sequence without `LiveNode::run()`.
 
-**Rationale**: This keeps NT ownership intact and avoids a duplicate readiness architecture. `connect_bolt_v3_clients` and `disconnect_bolt_v3_clients` already centralize bounded NT client operations.
+**Rationale**: Controlled connect success alone does not prove reference readiness. NT `LiveNode::start()` is the existing lifecycle surface that connects data clients, flushes data events into NT cache before execution clients connect, performs startup reconciliation, and starts strategy shells without entering the runner loop. Inspecting required `[reference_data.*].instrument_id` values in NT cache after start uses NT-owned cache evidence instead of an alternate readiness read path.
 
-**Alternatives considered**: Add a separate mock venue world or direct client connection stack. Rejected as dual path and not NT-first.
+**Alternatives considered**: Add a separate mock venue world, direct client connection stack, or treat connect success as reference readiness. Rejected as dual path, not NT-first, or false readiness.
 
 ## Decision: Do not expose raw mutable LiveNode as a public API
 

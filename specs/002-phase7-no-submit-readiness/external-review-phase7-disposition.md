@@ -33,7 +33,7 @@ Phase 8 live action remains blocked until a real no-submit report exists, live-c
 
 ## Implementation Discovery
 
-Current main exposes controlled bolt-v3 NT connect/disconnect without entering the runner loop, but it does not expose a no-run reference data read proof that can satisfy `reference_readiness`. Phase 7 implementation therefore fails that stage closed instead of treating connect success as reference readiness. A gate-accepted real readiness report remains blocked until an existing NT/client-owned read proof surface is added or identified without introducing a dual readiness path.
+Current main exposes controlled bolt-v3 NT connect/disconnect without entering the runner loop, but connect success alone cannot satisfy `reference_readiness`. The revised Phase 7 plan uses bounded NT `LiveNode::start()` / required reference-instrument cache inspection / `LiveNode::stop()` without `LiveNode::run()`. This keeps lifecycle and cache ownership in NT and avoids a direct provider-read dual path.
 
 ## Decision
 

@@ -49,10 +49,28 @@
 - [x] T014 [P] [US1] Write failing connect-failure, reference-readiness failure, byte-cap, and double-failure cleanup tests in `tests/bolt_v3_no_submit_readiness.rs`.
 - [x] T015 [US1] Add `src/bolt_v3_no_submit_readiness.rs` report model, redaction model, and local sequencing API.
 - [x] T016 [US1] Add current-main-safe controlled-connect/disconnect runner support in `src/bolt_v3_live_node.rs` without exposing broad `node_mut`.
-- [ ] T017 [US1] Export `bolt_v3_no_submit_readiness` from `src/lib.rs`.
+- [x] T017 [US1] Export `bolt_v3_no_submit_readiness` from `src/lib.rs`.
 - [x] T018 [US1] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and capture green output.
 - [x] T019 [US1] Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and capture green output.
 - [x] T020 [US1] Run focused clippy on new Phase 7 files when the local test slice is green.
+
+---
+
+## Phase 3B: Implementation Discovery Correction - Reference Readiness Through NT Cache
+
+**Goal**: Replace connect-success reference readiness with an NT-owned cache proof after controlled start.
+
+**Independent Test**: `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` proves missing required reference instruments fail closed and all required cache entries satisfy `reference_readiness`.
+
+- [x] T040 [US1] Record revised NT start/stop/cache-readiness design in `specs/002-phase7-no-submit-readiness/plan.md`, `research.md`, `contracts/no-submit-readiness.md`, `quickstart.md`, and `external-review-phase7-disposition.md`.
+- [ ] T041 [US1] Run Claude, DeepSeek, and GLM external review on revised Phase 7 plan at clean pushed head before runtime code changes.
+- [ ] T042 [US1] Triage revised-plan review findings into accepted fixes, evidence-backed disprovals, or explicit user-approved deferrals.
+- [ ] T043 [P] [US1] Write failing behavior test in `tests/bolt_v3_no_submit_readiness.rs` proving required strategy `reference_data` instruments missing from NT cache fail `reference_readiness`.
+- [ ] T044 [P] [US1] Write failing behavior test in `tests/bolt_v3_no_submit_readiness.rs` proving all required strategy `reference_data` instruments present in NT cache satisfy `reference_readiness`.
+- [ ] T045 [US1] Implement bounded NT `LiveNode::start()` / readiness / `LiveNode::stop()` helper in `src/bolt_v3_live_node.rs` without `run()` and without broad `node_mut`.
+- [ ] T046 [US1] Implement `reference_readiness` over required strategy `reference_data` instruments using NT cache evidence only.
+- [ ] T047 [US1] Update `tests/bolt_v3_no_submit_readiness_operator.rs` so the ignored real harness only expects gate acceptance after NT cache reference proof.
+- [ ] T048 [US1] Re-run targeted tests, focused clippy, source fences, `cargo fmt --check`, `git diff --check`, and no-mistakes after implementation correction.
 
 ---
 

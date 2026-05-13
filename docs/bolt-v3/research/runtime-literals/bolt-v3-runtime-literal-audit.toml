@@ -615,28 +615,116 @@ classification = "config_path_resolution_default"
 reason = "This is the relative-path base fallback that matches the config loader when a TOML path has no parent directory."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"stages"'''
-context = '''match report.get("stages") {'''
-classification = "live_canary_readiness_report_schema_field"
-reason = "This names the no-submit readiness report stages array consumed by the fail-closed live-canary gate."
+context = '''pub const STAGES_KEY: &str = "stages";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the no-submit readiness report stages array shared by the producer and fail-closed live-canary gate."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"stage"'''
-context = '''.get("stage")'''
-classification = "live_canary_readiness_report_schema_field"
-reason = "This names the preferred no-submit readiness report stage identifier field for diagnostics."
+context = '''pub const STAGE_KEY: &str = "stage";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the preferred no-submit readiness report stage identifier field shared by the producer and fail-closed live-canary gate."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"name"'''
-context = '''.or_else(|| stage.get("name"))'''
-classification = "live_canary_readiness_report_schema_field"
-reason = "This names the backward-compatible readiness stage identifier field used only for diagnostics."
+context = '''pub const NAME_KEY: &str = "name";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the backward-compatible no-submit readiness report stage identifier field consumed by the fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"status"'''
+context = '''pub const STATUS_KEY: &str = "status";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the no-submit readiness report status field shared by the producer and fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"satisfied"'''
+context = '''pub const STATUS_SATISFIED: &str = "satisfied";'''
+classification = "no_submit_readiness_report_status_value"
+reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"controlled_connect"'''
+context = '''pub const CONTROLLED_CONNECT_STAGE: &str = "controlled_connect";'''
+classification = "no_submit_readiness_report_stage_name"
+reason = "This names the controlled NT start stage in the Phase 7 no-submit readiness evidence schema."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"reference_readiness"'''
+context = '''pub const REFERENCE_READINESS_STAGE: &str = "reference_readiness";'''
+classification = "no_submit_readiness_report_stage_name"
+reason = "This names the required reference-data readiness stage in the Phase 7 no-submit readiness evidence schema."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"controlled_disconnect"'''
+context = '''pub const CONTROLLED_DISCONNECT_STAGE: &str = "controlled_disconnect";'''
+classification = "no_submit_readiness_report_stage_name"
+reason = "This names the controlled NT stop stage in the Phase 7 no-submit readiness evidence schema."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"[redacted]"'''
+context = '''pub const REDACTED_DETAIL_MARKER: &str = "[redacted]";'''
+classification = "no_submit_readiness_report_redaction_marker"
+reason = "This is the fixed redaction marker for readiness report diagnostics after resolved secret values are removed."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit readiness operator approval id is empty"'''
+context = '''"bolt-v3 no-submit readiness operator approval id is empty"'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports an empty operator approval id before runtime build or secret resolution."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit readiness report {} is {length} bytes, exceeding configured limit {max_length}"'''
+context = '''"bolt-v3 no-submit readiness report {} is {length} bytes, exceeding configured limit {max_length}",'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports that the redacted readiness evidence file exceeds the operator-provided byte cap."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"{} reference_data.{role} instrument_id `{instrument_id}`"'''
+context = '''"{} reference_data.{role} instrument_id `{instrument_id}`",'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This diagnostic identifies a configured strategy reference instrument missing from NT cache readiness evidence."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''", "'''
+context = '''missing.join(", ")'''
+classification = "diagnostic_separator"
+reason = "This separator joins multiple missing reference-instrument diagnostics for display only."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"."'''
+context = '''.unwrap_or_else(|| Path::new("."))'''
+classification = "config_path_resolution_default"
+reason = "This is the relative-path base fallback that matches the config loader when a TOML path has no parent directory."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
@@ -645,14 +733,6 @@ literal = '''"<unnamed>"'''
 context = '''.unwrap_or("<unnamed>");'''
 classification = "live_canary_gate_diagnostic_template"
 reason = "This placeholder labels malformed readiness stages in fail-closed diagnostics when no stage identifier exists."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"status"'''
-context = '''let status = stage.get("status").and_then(Value::as_str);'''
-classification = "live_canary_readiness_report_schema_field"
-reason = "This names the no-submit readiness report status field consumed by the fail-closed live-canary gate."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
@@ -685,14 +765,6 @@ literal = '''"stages array is empty"'''
 context = '''Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),'''
 classification = "live_canary_gate_diagnostic_template"
 reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"satisfied"'''
-context = '''matches!(status, Some(value) if value.eq_ignore_ascii_case("satisfied"))'''
-classification = "live_canary_readiness_report_status_value"
-reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"

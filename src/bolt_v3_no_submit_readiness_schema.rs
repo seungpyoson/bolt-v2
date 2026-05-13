@@ -3,3 +3,7 @@ pub const STAGE_KEY: &str = "stage";
 pub const NAME_KEY: &str = "name";
 pub const STATUS_KEY: &str = "status";
 pub const STATUS_SATISFIED: &str = "satisfied";
+pub const CONTROLLED_CONNECT_STAGE: &str = "controlled_connect";
+pub const REFERENCE_READINESS_STAGE: &str = "reference_readiness";
+pub const CONTROLLED_DISCONNECT_STAGE: &str = "controlled_disconnect";
+pub const REDACTED_DETAIL_MARKER: &str = "[redacted]";

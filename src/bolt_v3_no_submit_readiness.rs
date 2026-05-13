@@ -17,6 +17,10 @@ use crate::{
         BoltV3LiveNodeError, BoltV3LiveNodeRuntime, build_bolt_v3_live_node,
         controlled_no_submit_readiness,
     },
+    bolt_v3_no_submit_readiness_schema::{
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, REDACTED_DETAIL_MARKER,
+        REFERENCE_READINESS_STAGE,
+    },
 };
 
 #[derive(Debug)]
@@ -193,27 +197,27 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
     let mut stages = Vec::new();
     let connected = push_result_stage(
         &mut stages,
-        "controlled_connect",
+        CONTROLLED_CONNECT_STAGE,
         controlled_connect,
         redacted_values,
     );
     if connected {
         push_result_stage(
             &mut stages,
-            "reference_readiness",
+            REFERENCE_READINESS_STAGE,
             reference_readiness,
             redacted_values,
         );
     } else {
         stages.push(BoltV3NoSubmitReadinessStage {
-            stage: "reference_readiness",
+            stage: REFERENCE_READINESS_STAGE,
             status: BoltV3NoSubmitReadinessStatus::Skipped,
             detail: Some("controlled connect failed".to_string()),
         });
     }
     push_result_stage(
         &mut stages,
-        "controlled_disconnect",
+        CONTROLLED_DISCONNECT_STAGE,
         controlled_disconnect,
         redacted_values,
     );
@@ -355,6 +359,6 @@ fn redact_detail(detail: &str, redacted_values: &[String]) -> String {
         .iter()
         .filter(|value| !value.is_empty())
         .fold(detail.to_string(), |acc, value| {
-            acc.replace(value, "[redacted]")
+            acc.replace(value, REDACTED_DETAIL_MARKER)
         })
 }

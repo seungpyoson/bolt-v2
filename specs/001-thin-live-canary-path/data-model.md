@@ -69,6 +69,7 @@ Rules:
 - consumed by submit admission before every live order
 - not a substitute for submit-time counters
 - canary-local notional must be less than or equal to the root risk ceiling
+- `max notional per order` is the canary-specific cap; `root max notional per order` is the global `[risk]` cap that bounds every canary cap
 
 ## SubmitAdmissionState
 

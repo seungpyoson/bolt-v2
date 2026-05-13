@@ -48,6 +48,20 @@ Root TOML preflight:
 - reject legacy operator config shapes with `[node]`, `[polymarket]`, `[reference.*]`, `[[rulesets]]`, or `[[strategies]]` as T037 inputs
 - do not derive the approval id or report path from example or fixture files
 
+Shape-only preflight commands, without printing secret values:
+
+```bash
+test -f "$BOLT_V3_ROOT_TOML"
+rg -q '^\[runtime\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[nautilus\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[risk\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[aws\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[persistence\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[live_canary\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^no_submit_readiness_report_path[[:space:]]*=' "$BOLT_V3_ROOT_TOML"
+! rg -q '^\[node\]|^\[polymarket\]|^\[reference|^\[\[rulesets\]\]|^\[\[strategies\]\]' "$BOLT_V3_ROOT_TOML"
+```
+
 Command shape:
 
 ```bash

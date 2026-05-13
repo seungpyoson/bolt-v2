@@ -25,7 +25,7 @@
 - [x] Requirements assign submit, accept, reject, fill, cancel, cache, lifecycle, and reconciliation ownership to NT.
 - [x] Requirements forbid Bolt-owned order lifecycle and reconciliation.
 - [x] Requirements forbid adapter forks, mock venue proof, and NT cache forks.
-- [x] Requirements require production bolt-v3 runner wrapper and forbid direct `LiveNode::run` in Phase 8 harness code.
+- [x] Requirements require production bolt-v3 runner wrapper within a `tokio::task::LocalSet` context and forbid direct `LiveNode::run` in Phase 8 harness code.
 
 ## Secrets And Config
 

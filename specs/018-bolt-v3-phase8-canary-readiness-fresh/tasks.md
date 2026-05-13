@@ -63,7 +63,7 @@
 
 ### Tests First
 
-- [ ] T024 [US3] Write failing source test requiring `#[ignore]`, exact operator inputs, `build_bolt_v3_live_node`, and `run_bolt_v3_live_node`.
+- [ ] T024 [US3] Write failing source test requiring `#[ignore]`, exact operator inputs, `build_bolt_v3_live_node`, and `run_bolt_v3_live_node` within a `tokio::task::LocalSet` context.
 - [ ] T025 [US3] Write failing source test requiring one-order cap and forbidding loops/manual submit.
 - [ ] T026 [US3] Write failing source test forbidding direct exec-engine cancel and Bolt-owned reconciliation.
 

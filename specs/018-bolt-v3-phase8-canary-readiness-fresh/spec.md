@@ -44,7 +44,7 @@ As the operator, I can inspect an ignored operator harness that can run the prod
 
 **Why this priority**: The live-capital command must be ready for review, but it must remain inert by default and must not run without explicit runtime approval.
 
-**Independent Test**: Default test run reports the operator harness ignored; source fences prove the harness uses `build_bolt_v3_live_node` and `run_bolt_v3_live_node` only, never direct `LiveNode::run`, manual submit, manual cancel, or Bolt-owned reconciliation.
+**Independent Test**: Default test run reports the operator harness ignored; source fences prove the harness uses `build_bolt_v3_live_node` and `run_bolt_v3_live_node` within a `tokio::task::LocalSet` context only, never direct `LiveNode::run`, manual submit, manual cancel, or Bolt-owned reconciliation.
 
 **Acceptance Scenarios**:
 
@@ -72,13 +72,13 @@ As the operator, I can inspect an ignored operator harness that can run the prod
 - **FR-002**: Phase 8 MUST NOT place any live order unless the user explicitly approves an exact command and exact head SHA in the current thread.
 - **FR-003**: Phase 8 MUST block live order approval until Phase 7 authenticated no-submit readiness is present on `main` or an explicitly approved base and a real redacted no-submit report is accepted by the live canary gate.
 - **FR-004**: Phase 8 MUST consume the existing Phase 6 `BoltV3SubmitAdmissionState` and MUST NOT add a second submit admission path.
-- **FR-005**: Phase 8 MUST use the production bolt-v3 LiveNode path through `build_bolt_v3_live_node` and `run_bolt_v3_live_node`; direct `LiveNode::run` in Phase 8 harness code is forbidden.
+- **FR-005**: Phase 8 MUST use the production bolt-v3 LiveNode path through `build_bolt_v3_live_node` and `run_bolt_v3_live_node` within a `tokio::task::LocalSet` context; direct `LiveNode::run` in Phase 8 harness code is forbidden.
 - **FR-006**: Phase 8 MUST produce redacted dry/no-submit canary evidence before any live-order command can be considered.
 - **FR-007**: Canary evidence MUST join decision intent, live canary gate result, submit admission result, NT runtime capture identity, and observed NT order lifecycle evidence where applicable.
 - **FR-008**: Phase 8 MUST rely on NT for order submit, accept, reject, fill, cancel, restart reconciliation, cache state, and adapter behavior.
 - **FR-009**: Phase 8 MUST NOT implement Bolt-owned order lifecycle, Bolt-owned reconciliation, mock venue proof, adapter forks, cache forks, or alternate secret sources.
 - **FR-010**: Phase 8 MUST fail closed if strategy-input safety audit is blocked or incomplete.
-- **FR-011**: Strategy-input safety audit MUST cover Chainlink feed id correctness and environment, Data Streams semantics, Binance/Bybit/OKX/Kraken/Deribit/Hyperliquid reference venue semantics, weighting/staleness/disable rules, realized volatility, `pricing_kurtosis`, theta decay, fee/rebate assumptions, market selection, option pricing, edge threshold economics, adverse selection, liquidity, spread, and book impact.
+- **FR-011**: Strategy-input safety audit MUST cover Chainlink feed id correctness and environment, Data Streams semantics, Binance/Bybit/OKX/Kraken/Deribit/Hyperliquid reference venue semantics, weighting/staleness/disable rules, realized volatility including fail-closed handling for non-positive values, `pricing_kurtosis`, theta decay, fee/rebate assumptions, market selection, option pricing including fail-closed handling for non-positive time to expiry, edge threshold economics, adverse selection, liquidity, spread, and book impact.
 - **FR-012**: Phase 8 MUST keep SSM as the only credential source and MUST NOT add env-var credential fallback. Operator env vars may identify non-secret paths, hashes, approval ids, and exact commands only.
 - **FR-013**: Phase 8 MUST preserve pure Rust runtime behavior and MUST NOT introduce a Python runtime layer.
 - **FR-014**: Phase 8 MUST include behavior tests before implementation for each canary slice.

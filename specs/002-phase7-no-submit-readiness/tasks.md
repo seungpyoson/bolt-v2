@@ -17,11 +17,11 @@
 
 **Purpose**: Lock fresh-main planning and obtain external plan approval before runtime code.
 
-- [ ] T001 Record fresh-main evidence and stale PR audit summary in `specs/002-phase7-no-submit-readiness/research.md`.
-- [ ] T002 Run `no-mistakes daemon status` and record availability in handoff.
-- [ ] T003 Run Claude, DeepSeek, and GLM external review on `specs/002-phase7-no-submit-readiness/` plan artifacts.
-- [ ] T004 Triage all review findings into accepted fixes, evidence-backed disprovals, or explicit non-blocking deferrals in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
-- [ ] T005 Stop before implementation unless Claude, DeepSeek, and GLM all approve or the user explicitly overrides a non-blocking disagreement.
+- [x] T001 Record fresh-main evidence and stale PR audit summary in `specs/002-phase7-no-submit-readiness/research.md`.
+- [x] T002 Run `no-mistakes daemon status` and record availability in handoff.
+- [x] T003 Run Claude, DeepSeek, and GLM external review on `specs/002-phase7-no-submit-readiness/` plan artifacts.
+- [x] T004 Triage all review findings into accepted fixes, evidence-backed disprovals, or explicit non-blocking deferrals in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
+- [x] T005 Stop before implementation unless Claude, DeepSeek, and GLM all approve or the user explicitly overrides a non-blocking disagreement.
 
 ---
 
@@ -29,12 +29,12 @@
 
 **Purpose**: Shared report schema and gate compatibility.
 
-- [ ] T006 [P] [US1] Write failing schema compatibility test in `tests/bolt_v3_no_submit_readiness.rs` proving producer report JSON is accepted by `check_bolt_v3_live_canary_gate`.
-- [ ] T007 [P] [US1] Write failing source-fence test in `tests/bolt_v3_no_submit_readiness.rs` proving `src/bolt_v3_no_submit_readiness.rs` and `tests/bolt_v3_no_submit_readiness_operator.rs` contain no submit, cancel, replace, amend, subscribe, or runner-loop tokens.
-- [ ] T008 [US1] Add shared no-submit report schema constants in `src/bolt_v3_no_submit_readiness_schema.rs`.
-- [ ] T009 [US1] Update `src/bolt_v3_live_canary_gate.rs` to consume shared schema constants without changing existing fail-closed behavior.
-- [ ] T010 [US1] Export the schema module from `src/lib.rs`.
-- [ ] T011 [US1] Run targeted schema/gate tests and capture red/green evidence.
+- [x] T006 [P] [US1] Write failing schema compatibility test in `tests/bolt_v3_no_submit_readiness.rs` proving producer report JSON is accepted by `check_bolt_v3_live_canary_gate`.
+- [x] T007 [P] [US1] Write failing source-fence test in `tests/bolt_v3_no_submit_readiness.rs` proving `src/bolt_v3_no_submit_readiness.rs` and `tests/bolt_v3_no_submit_readiness_operator.rs` contain no submit, cancel, replace, amend, subscribe, or runner-loop tokens.
+- [x] T008 [US1] Add shared no-submit report schema constants in `src/bolt_v3_no_submit_readiness_schema.rs`.
+- [x] T009 [US1] Update `src/bolt_v3_live_canary_gate.rs` to consume shared schema constants without changing existing fail-closed behavior.
+- [x] T010 [US1] Export the schema module from `src/lib.rs`.
+- [x] T011 [US1] Run targeted schema/gate tests and capture red/green evidence.
 
 ---
 

@@ -10,7 +10,8 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 - **CLI** — `clap` derive, subcommands: `run`, `secrets check`, `secrets resolve`.
 - **Config** — TOML via `serde` + custom schema; secrets resolved from AWS SSM at startup.
 - **Data / Persistence** — Apache Arrow + Parquet.
-- **Exchange adapters** — Binance, Bybit, Deribit, Hyperliquid, Kraken, OKX, Polymarket, Chainlink.
+- **Exchange adapters** — Binance, Bybit, Deribit, Hyperliquid, Kraken, OKX, Polymarket.
+- **Oracles** — Chainlink Data Streams Report (`chainlink-data-streams-report`).
 
 ## Layout
 
@@ -37,7 +38,7 @@ All via `just` (must be installed). The justfile is the single source of truth �
 | `just deny` | `cargo deny check bans`. |
 | `just deny-advisories` | `cargo deny check advisories`. |
 | `just check-aarch64` | `cargo check --target aarch64-unknown-linux-gnu`. |
-| `just setup` | Install pinned versions of `cargo-nextest`, `cargo-deny`, `cargo-zigbuild`, + Zig. |
+| `just setup` | Install pinned `cargo-nextest`, `cargo-deny`, `cargo-zigbuild`; verify Zig 0.15.2 is installed. |
 | `just live` | Generate runtime config from `config/live.local.toml` → `config/live.toml`, then run. |
 | `just ci-lint-workflow` | Lint CI workflow YAML + shell scripts for hardcoded cargo invocations. |
 

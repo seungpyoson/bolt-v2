@@ -47,6 +47,169 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
         .insert(key.to_string(), value);
 }
 
+fn archetype_key_leak_findings<'a>(
+    entries: impl IntoIterator<Item = (&'a str, &'a str)>,
+    allowed_paths: &[&str],
+    archetype_keys: &[&str],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (path, source) in entries {
+        if allowed_paths.contains(&path) {
+            continue;
+        }
+        for key in archetype_keys {
+            if source.contains(key) {
+                findings.push(format!("{path} contains concrete archetype key `{key}`"));
+            }
+        }
+    }
+    findings
+}
+
+fn archetype_key_leak_findings_from_entries(
+    entries: &[(&str, &str)],
+    allowed_paths: &[&str],
+    archetype_keys: &[&str],
+) -> Vec<String> {
+    archetype_key_leak_findings(entries.iter().copied(), allowed_paths, archetype_keys)
+}
+
+fn collect_rust_sources(
+    repo_root: &std::path::Path,
+    dir: &std::path::Path,
+    entries: &mut Vec<(String, String)>,
+) {
+    let mut children = std::fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", dir.display()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("failed to list {}: {error}", dir.display()));
+    children.sort_by_key(|entry| entry.path());
+
+    for entry in children {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_sources(repo_root, &path, entries);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            let rel = path
+                .strip_prefix(repo_root)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to relativize {} against {}: {error}",
+                        path.display(),
+                        repo_root.display()
+                    )
+                })
+                .to_string_lossy()
+                .replace('\\', "/");
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+            entries.push((rel, source));
+        }
+    }
+}
+
+fn discover_archetype_keys_and_allowed_paths(
+    repo_root: &std::path::Path,
+) -> (Vec<String>, Vec<String>) {
+    let archetypes_dir = repo_root.join("src/bolt_v3_archetypes");
+    let mut children = std::fs::read_dir(&archetypes_dir)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", archetypes_dir.display()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("failed to list {}: {error}", archetypes_dir.display()));
+    children.sort_by_key(|entry| entry.path());
+
+    let mut keys = Vec::new();
+    let mut allowed_paths = vec!["src/bolt_v3_archetypes/mod.rs".to_string()];
+    for entry in children {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs")
+            || path.file_name().and_then(|name| name.to_str()) == Some("mod.rs")
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(repo_root)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "failed to relativize {} against {}: {error}",
+                    path.display(),
+                    repo_root.display()
+                )
+            })
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        let Some(key_line) = source
+            .lines()
+            .find(|line| line.trim_start().starts_with("pub const KEY: &str = "))
+        else {
+            panic!("{rel} must declare pub const KEY: &str");
+        };
+        let Some((_, tail)) = key_line.split_once('"') else {
+            panic!("{rel} KEY declaration must contain a string literal");
+        };
+        let Some((key, _)) = tail.split_once('"') else {
+            panic!("{rel} KEY declaration must contain a closed string literal");
+        };
+        keys.push(key.to_string());
+        allowed_paths.push(rel);
+    }
+
+    (keys, allowed_paths)
+}
+
+#[test]
+fn archetype_key_leak_scanner_rejects_core_file() {
+    let findings = archetype_key_leak_findings_from_entries(
+        &[(
+            "src/bolt_v3_live_node.rs",
+            "let archetype = \"binary_oracle_edge_taker\";",
+        )],
+        &[
+            "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+            "src/bolt_v3_archetypes/mod.rs",
+        ],
+        &["binary_oracle_edge_taker"],
+    );
+
+    assert_eq!(
+        findings,
+        vec![
+            "src/bolt_v3_live_node.rs contains concrete archetype key `binary_oracle_edge_taker`"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn production_source_must_not_leak_concrete_archetype_keys_outside_archetype_bindings() {
+    // Adding a strategy archetype must stay mechanical: a concrete
+    // archetype key may appear in its own binding module and in the
+    // archetype registry, but not in Bolt-v3 core assembly,
+    // validation, provider, live-node, or runtime source. Fixtures,
+    // docs, and tests are intentionally outside this production-source
+    // scan.
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut entries = Vec::new();
+    collect_rust_sources(repo_root, &repo_root.join("src"), &mut entries);
+    let (keys, allowed_paths) = discover_archetype_keys_and_allowed_paths(repo_root);
+    let entry_refs = entries
+        .iter()
+        .map(|(path, source)| (path.as_str(), source.as_str()));
+    let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
+    let allowed_refs = allowed_paths.iter().map(String::as_str).collect::<Vec<_>>();
+
+    let findings = archetype_key_leak_findings(entry_refs, &allowed_refs, &key_refs);
+
+    assert!(
+        findings.is_empty(),
+        "concrete strategy archetype keys must stay inside their binding module \
+         and the archetype registry:\n{}",
+        findings.join("\n")
+    );
+}
+
 #[test]
 fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");

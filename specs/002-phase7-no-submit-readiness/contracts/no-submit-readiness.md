@@ -48,7 +48,9 @@ Required behavior:
 
 ## Reference-readiness Stage
 
-The `reference_readiness` stage passes only when every configured `[reference_data.*]` instrument required by every loaded strategy is present in NT cache after controlled NT start. Missing Chainlink readiness, missing exchange reference readiness, wrong market or instrument, stale data, auth failure, geo block, and timeout all fail closed. Phase 7 must not implement an alternate market-data cache, direct provider read path, or reference simulator to satisfy this stage.
+The `reference_readiness` stage passes only when every configured `[reference_data.*]` instrument required by every loaded strategy is present in NT cache after controlled NT start. Missing configured Chainlink or exchange reference instruments, wrong market or instrument, auth failure, geo block, cache-population timeout, and stop failure all fail closed.
+
+Phase 7 does not prove live price-stream freshness for Chainlink or exchange references because it never enters the NT runner loop. Feed/source freshness, realized market-data values, and strategy-input economics remain Phase 8 safety-audit scope before any live-capital action. Phase 7 must not implement an alternate market-data cache, direct provider read path, or reference simulator to satisfy this stage.
 
 ## Out of Scope
 

@@ -31,6 +31,7 @@ Required proof before approved run:
 - `[live_canary]` approval id present.
 - `[live_canary].no_submit_readiness_report_path` present.
 - Operator approval id matches config.
+- Empty or segregated live account approved for read-only startup reconciliation.
 
 Approved command shape:
 
@@ -50,7 +51,9 @@ Post-run proof:
 - Redacted report path.
 - Live-canary gate acceptance of report.
 
-Reference-readiness rule: do not treat controlled-connect success as reference readiness. A real report can satisfy the gate only when controlled NT start populates NT cache with every `[reference_data.*]` instrument required by loaded strategies, then controlled stop succeeds.
+Reference-readiness rule: do not treat controlled-connect success as reference readiness. A real report can satisfy the gate only when controlled NT start populates NT cache with every `[reference_data.*]` instrument required by loaded strategies before the bounded timeout, then controlled stop succeeds.
+
+Freshness scope: Phase 7 proves configured reference instruments are reachable through NT cache after authenticated startup. It does not prove live Chainlink or exchange price-stream freshness because `LiveNode::run()` is not entered. Freshness and strategy-input economics remain Phase 8 safety-audit scope before any live-capital action.
 
 ## Phase 8 Boundary
 

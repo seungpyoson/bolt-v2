@@ -1,7 +1,8 @@
 # Phase 7 External Review Disposition
 
 **Branch**: `017-bolt-v3-phase7-no-submit-readiness-fresh`
-**Plan head reviewed**: `28da07386d81469fa7cb3f1b0ecfef625a4e0e88`
+**Initial plan head reviewed**: `28da07386d81469fa7cb3f1b0ecfef625a4e0e88`
+**Revised plan head reviewed**: `9945334fef2571cef5653d4ac6130457b03da939`
 **Base**: `d6f55774c32b71a242dcf78b8292a7f9e537afab`
 
 ## Required Review Results
@@ -21,6 +22,23 @@
 - `reference_readiness` stage needs clearer pass/fail contract. Accepted: contract now defines required reference readiness and fail-closed cases.
 - Add explicit reference-readiness failure, report byte-cap, and double-failure cleanup test coverage. Accepted: T014 now covers these cases.
 - Focused clippy should happen before late PR readiness. Accepted: T019a added after local Phase 7 tests.
+
+## Revised Plan Review Results
+
+| Reviewer | Job | Source | Verdict | Blocking Findings |
+| --- | --- | --- | --- | --- |
+| Claude | `ef74f70a-4738-48b5-a654-5181e9cae44a` | sent | APPROVE | None |
+| DeepSeek | `job_edbe9919-21db-4dbe-9bfd-7bea74ef3a56` | sent | APPROVE | None |
+| GLM | `job_83a6f76c-9ff5-410d-89cb-9e2360b47983` | sent | APPROVE | None |
+
+## Revised Plan Accepted Non-blocking Findings
+
+- Chainlink/freshness scope was over-broad for a no-run cache-presence check. Accepted: contract and quickstart now distinguish configured reference-instrument reachability from Phase 8 feed/source freshness.
+- Cache population may be asynchronous after `LiveNode::start()`. Accepted: plan, research, and T046 now require bounded polling using existing live-node timeout config.
+- Strategy `on_start()` side effects must be explicit. Accepted: plan, research, and T048 now require a strategy `on_start`/submit-admission audit; source fences are not claimed as runtime-subscription fences.
+- Stop must run even if reference-cache inspection fails or startup partially fails. Accepted: plan, research, T043, T044, and T045 now require stop recording across those paths.
+- Real operator path can read existing account state through startup reconciliation. Accepted: quickstart now requires an empty or segregated approved account before any ignored real harness run.
+- Source-fence coverage must include the new helper direction. Accepted: T048 keeps source fences in the implementation correction gate.
 
 ## Non-blocking Deferrals
 

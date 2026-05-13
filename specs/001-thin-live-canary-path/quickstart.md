@@ -44,7 +44,7 @@ Preconditions:
 
 Root TOML preflight:
 - use an approved bolt-v3 root TOML, not the legacy `config/live.local.toml` shape
-- require bolt-v3 root sections such as `[runtime]`, `[nautilus]`, `[risk]`, `[aws]`, `[venues.*]`, `[persistence.*]`, and `[live_canary]`
+- require bolt-v3 root sections that match `BoltV3RootConfig`: `[runtime]`, `[nautilus]`, `[risk]`, `[logging]`, `[persistence]`, `[persistence.decision_evidence]`, `[persistence.streaming]`, `[aws]`, at least one `[venues.<id>]`, and `[live_canary]`
 - reject legacy operator config shapes with `[node]`, `[polymarket]`, `[reference.*]`, `[[rulesets]]`, or `[[strategies]]` as T037 inputs
 - do not derive the approval id or report path from example or fixture files
 
@@ -55,8 +55,12 @@ test -f "$BOLT_V3_ROOT_TOML"
 rg -q '^\[runtime\]' "$BOLT_V3_ROOT_TOML"
 rg -q '^\[nautilus\]' "$BOLT_V3_ROOT_TOML"
 rg -q '^\[risk\]' "$BOLT_V3_ROOT_TOML"
-rg -q '^\[aws\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[logging\]' "$BOLT_V3_ROOT_TOML"
 rg -q '^\[persistence\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[persistence\.decision_evidence\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[persistence\.streaming\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[aws\]' "$BOLT_V3_ROOT_TOML"
+rg -q '^\[venues\.[^]]+\]' "$BOLT_V3_ROOT_TOML"
 rg -q '^\[live_canary\]' "$BOLT_V3_ROOT_TOML"
 rg -q '^no_submit_readiness_report_path[[:space:]]*=' "$BOLT_V3_ROOT_TOML"
 ! rg -q '^\[node\]|^\[polymarket\]|^\[reference|^\[\[rulesets\]\]|^\[\[strategies\]\]' "$BOLT_V3_ROOT_TOML"

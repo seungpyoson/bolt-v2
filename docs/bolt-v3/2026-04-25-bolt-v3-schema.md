@@ -174,6 +174,9 @@ file_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt_v3/decision/order_intents.jsonl"
+
 [persistence.streaming]
 catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
@@ -545,6 +548,19 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - persistence behavior and local-evidence requirements are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
 
 There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNodeBuilder` does not expose a state-directory wiring (load/save state are booleans only), so a TOML key would not flow to NT. A future slice may reintroduce this once a supported path exists.
+
+### `[persistence.decision_evidence]`
+
+This section carries the configured local decision-evidence output path.
+It is required in the current live-trading scope because strategy submit admission is fail-closed on decision-evidence persistence.
+
+#### `order_intents_relative_path`
+
+- type: relative path string
+- required: yes
+- must be non-empty, relative, and stay under `persistence.catalog_directory`
+- stores redacted bolt-v3 order-intent evidence before NT submit
+- absolute paths and parent-directory escapes are rejected
 
 ### `[persistence.streaming]`
 
@@ -1291,6 +1307,9 @@ file_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt_v3/decision/order_intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"

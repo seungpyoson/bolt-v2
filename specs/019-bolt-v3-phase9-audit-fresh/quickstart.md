@@ -1,6 +1,6 @@
 # Quickstart: Phase 9 Audit Verification
 
-Run from `/Users/spson/Projects/Claude/bolt-v2/.worktrees/019-bolt-v3-phase9-audit-fresh`.
+Run from the root of the `PHASE_NINE_WORKTREE`.
 
 ## Anchor
 

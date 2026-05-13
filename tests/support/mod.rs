@@ -35,6 +35,35 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static MOCK_EXEC_SUBMISSIONS: OnceLock<Mutex<Vec<RecordedSubmitOrder>>> = OnceLock::new();
 
+#[derive(Debug, Default)]
+pub struct RecordingDecisionEvidenceWriter {
+    records: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>>,
+}
+
+impl RecordingDecisionEvidenceWriter {
+    pub fn records(&self) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+    for RecordingDecisionEvidenceWriter
+{
+    fn record_order_intent(
+        &self,
+        intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+    ) -> anyhow::Result<()> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(intent.clone());
+        Ok(())
+    }
+}
+
 fn mock_data_subscriptions() -> &'static Mutex<Vec<String>> {
     MOCK_DATA_SUBSCRIPTIONS.get_or_init(|| Mutex::new(Vec::new()))
 }

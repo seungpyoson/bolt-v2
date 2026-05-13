@@ -60,9 +60,12 @@ use crate::{
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
     bolt_v3_secrets::{
-        BoltV3SecretError, ForbiddenEnvVarError, check_no_forbidden_credential_env_vars,
-        check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets,
-        resolve_bolt_v3_secrets_with,
+        BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
+        check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
+        resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
+    },
+    bolt_v3_strategy_registration::{
+        BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
@@ -106,6 +109,7 @@ pub enum BoltV3LiveNodeError {
     AdapterMapping(BoltV3AdapterMappingError),
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
+    StrategyRegistration(BoltV3StrategyRegistrationError),
     Build(anyhow::Error),
     /// The live canary gate rejected entry to NT's runner loop before
     /// `LiveNode::run` was invoked. This variant wraps the specific
@@ -196,6 +200,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ClientRegistration(error) => {
                 write!(f, "bolt-v3 client registration failed: {error}")
             }
+            BoltV3LiveNodeError::StrategyRegistration(error) => {
+                write!(f, "bolt-v3 strategy registration failed: {error}")
+            }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
             BoltV3LiveNodeError::LiveCanaryGate(error) => {
                 write!(
@@ -253,6 +260,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::AdapterMapping(error) => Some(error),
             BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
+            BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
             BoltV3LiveNodeError::Run(error) => error.source(),
@@ -286,7 +294,7 @@ pub fn build_bolt_v3_live_node(
         resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (node, _summary) = build_live_node_with_clients(loaded, adapters)?;
+    let (node, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
     Ok(node)
 }
 
@@ -390,18 +398,26 @@ where
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_with_clients(loaded, adapters)
+    build_live_node_with_clients(loaded, &resolved, adapters)
 }
 
 fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
-    let node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    let _strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
+        &mut node,
+        loaded,
+        resolved,
+        crate::bolt_v3_archetypes::runtime_bindings(),
+    )
+    .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     Ok((node, summary))
 }
 

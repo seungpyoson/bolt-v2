@@ -35,11 +35,11 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: `cargo test --test bolt_v3_strategy_registration` proves injected fake strategy binding can register through core and unsupported strategy fails closed.
 
-- [ ] T013 [US3] Write failing tests in `tests/bolt_v3_strategy_registration.rs` for fake binding registration, unsupported strategy rejection, and no concrete strategy key in core registration code.
-- [ ] T014 [US3] Run `cargo test --test bolt_v3_strategy_registration -- --nocapture`; expected failures show missing bolt-v3 strategy registration surface.
-- [ ] T015 [US3] Add `src/bolt_v3_strategy_registration.rs` with a generic `StrategyBinding` interface and production binding table.
-- [ ] T016 [US3] Wire strategy registration into `src/bolt_v3_live_node.rs` after NT client registration and before runner entry.
-- [ ] T017 [US3] Run `cargo test --test bolt_v3_strategy_registration` and `cargo test --test bolt_v3_provider_binding`.
+- [x] T013 [US3] Write failing tests in `tests/bolt_v3_strategy_registration.rs` for fake binding registration, unsupported strategy rejection, and no concrete strategy key in core registration code.
+- [x] T014 [US3] Run `cargo test --test bolt_v3_strategy_registration -- --nocapture`; expected failures show missing bolt-v3 strategy registration surface.
+- [x] T015 [US3] Add `src/bolt_v3_strategy_registration.rs` with a generic `StrategyBinding` interface and production binding table.
+- [x] T016 [US3] Wire strategy registration into `src/bolt_v3_live_node.rs` after NT client registration and before runner entry.
+- [x] T017 [US3] Run `cargo test --test bolt_v3_strategy_registration` and `cargo test --test bolt_v3_provider_binding`.
 
 ## Phase 4: Initial Binary-oracle Edge Taker Activation (US3)
 
@@ -47,11 +47,11 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Existing strategy tests plus new config tests prove Polymarket option venue, Chainlink primary reference, and multiple exchange reference roles are configured through TOML.
 
-- [ ] T018 [US3] Write failing validation tests proving strategy config accepts multiple exchange reference roles and rejects missing primary oracle/reference roles.
-- [ ] T019 [US3] Run targeted strategy/config tests; expected failure shows current config cannot express all required reference roles.
-- [ ] T020 [US3] Extend strategy-archetype validation in `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` to validate reference roles generically.
-- [ ] T021 [US3] Extend fixtures under `tests/fixtures/bolt_v3/` only for operator-visible runtime values, not test-local timing scaffolding.
-- [ ] T022 [US3] Run `cargo test --test config_parsing` and targeted tests for the initial registered taker strategy.
+- [x] T018 [US3] Write failing validation tests proving strategy config accepts multiple exchange reference roles and rejects missing primary oracle/reference roles.
+- [x] T019 [US3] Run targeted strategy/config tests; expected failure shows current config cannot express all required reference roles.
+- [x] T020 [US3] Extend strategy-archetype validation in `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` to validate reference roles generically.
+- [x] T021 [US3] Extend fixtures under `tests/fixtures/bolt_v3/` only for operator-visible runtime values, not test-local timing scaffolding.
+- [x] T022 [US3] Run `cargo test --test config_parsing` and targeted tests for the initial registered taker strategy.
 
 ## Phase 5: Mandatory Decision Evidence (US2)
 
@@ -59,11 +59,11 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Strategy construction and submit tests fail closed when evidence writer is absent or persistence fails.
 
-- [ ] T023 [US2] Write failing tests that construct the strategy without decision evidence and expect construction rejection.
-- [ ] T024 [US2] Write failing tests that simulate evidence persistence failure and expect submit rejection before NT submit.
-- [ ] T025 [US2] Remove optional/fallback evidence submit path from the registered strategy implementation.
-- [ ] T026 [US2] Make bolt-v3 strategy registration provide mandatory decision evidence.
-- [ ] T027 [US2] Run targeted strategy tests and source-fence search for fallback direct submit branches.
+- [x] T023 [US2] Write failing tests that construct the strategy without decision evidence and expect construction rejection.
+- [x] T024 [US2] Write failing tests that simulate evidence persistence failure and expect submit rejection before NT submit.
+- [x] T025 [US2] Remove optional/fallback evidence submit path from the registered strategy implementation.
+- [x] T026 [US2] Make bolt-v3 strategy registration provide mandatory decision evidence.
+- [x] T027 [US2] Run targeted strategy tests and source-fence search for fallback direct submit branches.
 
 ## Phase 6: Submit Admission Consumes Gate Report (US2)
 

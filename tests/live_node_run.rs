@@ -333,6 +333,7 @@ fn wires_runtime_capture_from_bolt_v3_persistence_config() {
         let routed_root = BoltV3RootConfig {
             persistence: PersistenceBlock {
                 catalog_directory: catalog_root.to_string_lossy().to_string(),
+                decision_evidence: original_root.persistence.decision_evidence.clone(),
                 streaming: StreamingBlock {
                     catalog_fs_protocol: original_root.persistence.streaming.catalog_fs_protocol,
                     flush_interval_milliseconds: original_root

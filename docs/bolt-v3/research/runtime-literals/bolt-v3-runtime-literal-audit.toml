@@ -661,3 +661,195 @@ literal = '''"satisfied"'''
 context = '''matches!(status, Some(value) if value.eq_ignore_ascii_case("satisfied"))'''
 classification = "live_canary_readiness_report_status_value"
 reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''
+context = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''
+classification = "strategy_archetype_diagnostic_template"
+reason = "This diagnostic reports a config-to-existing-strategy numeric conversion failure; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"parameters.maximum_position_notional"'''
+context = '''"parameters.maximum_position_notional",'''
+classification = "strategy_archetype_source_field_name"
+reason = "This names the bolt-v3 TOML source field converted into the existing taker config shape."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"target.cadence_seconds"'''
+context = '''"target.cadence_seconds",'''
+classification = "strategy_archetype_source_field_name"
+reason = "This names the bolt-v3 TOML source field converted into the existing taker config shape."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''insert_string(&mut table, "client_id", strategy.config.venue.clone());'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"warmup_tick_count"'''
+context = '''"warmup_tick_count",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"period_duration_secs"'''
+context = '''"period_duration_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reentry_cooldown_secs"'''
+context = '''"reentry_cooldown_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"max_position_usdc"'''
+context = '''insert_float(&mut table, "max_position_usdc", max_position_usdc);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"book_impact_cap_bps"'''
+context = '''"book_impact_cap_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"risk_lambda"'''
+context = '''insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"worst_case_ev_min_bps"'''
+context = '''"worst_case_ev_min_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_hysteresis_bps"'''
+context = '''"exit_hysteresis_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_window_secs"'''
+context = '''"vol_window_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_gap_reset_secs"'''
+context = '''"vol_gap_reset_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_min_observations"'''
+context = '''"vol_min_observations",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vol_bridge_valid_secs"'''
+context = '''"vol_bridge_valid_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"pricing_kurtosis"'''
+context = '''"pricing_kurtosis",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"theta_decay_factor"'''
+context = '''"theta_decay_factor",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"forced_flat_stale_chainlink_ms"'''
+context = '''"forced_flat_stale_chainlink_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"forced_flat_thin_book_min_liquidity"'''
+context = '''"forced_flat_thin_book_min_liquidity",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"lead_agreement_min_corr"'''
+context = '''"lead_agreement_min_corr",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"lead_jitter_max_ms"'''
+context = '''"lead_jitter_max_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''b"\n"'''
+context = '''.write_all(b"\n")'''
+classification = "decision_evidence_jsonl_record_separator"
+reason = "This is the JSONL line separator for one evidence record per line, not a runtime operator value."

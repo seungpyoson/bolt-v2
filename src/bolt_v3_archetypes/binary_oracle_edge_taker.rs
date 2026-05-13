@@ -33,10 +33,26 @@
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
+use toml::{Value, map::Map};
 
-use crate::{bolt_v3_archetypes::ArchetypeValidationBinding, bolt_v3_config::BoltV3StrategyConfig};
+use nautilus_model::identifiers::StrategyId;
+
+use crate::{
+    bolt_v3_archetypes::ArchetypeValidationBinding,
+    bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy},
+    bolt_v3_market_families::updown,
+    bolt_v3_providers::polymarket,
+    bolt_v3_strategy_registration::{
+        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
+    },
+    strategies::{
+        eth_chainlink_taker::EthChainlinkTakerBuilder,
+        production_strategy_registry,
+        registry::{StrategyBuildContext, StrategyBuilder},
+    },
+};
 
 pub const KEY: &str = "binary_oracle_edge_taker";
 
@@ -47,14 +63,41 @@ pub fn validation_binding() -> ArchetypeValidationBinding {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
+    key: KEY,
+    register: register_runtime_strategy,
+};
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ParametersBlock {
     pub edge_threshold_basis_points: i64,
     pub order_notional_target: String,
     pub maximum_position_notional: String,
+    pub runtime: RuntimeParametersBlock,
     pub entry_order: OrderParams,
     pub exit_order: OrderParams,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeParametersBlock {
+    pub reference_publish_topic: String,
+    pub warmup_tick_count: u64,
+    pub reentry_cooldown_secs: u64,
+    pub book_impact_cap_bps: u64,
+    pub risk_lambda: f64,
+    pub exit_hysteresis_bps: i64,
+    pub vol_window_secs: u64,
+    pub vol_gap_reset_secs: u64,
+    pub vol_min_observations: u64,
+    pub vol_bridge_valid_secs: u64,
+    pub pricing_kurtosis: f64,
+    pub theta_decay_factor: f64,
+    pub forced_flat_stale_chainlink_ms: u64,
+    pub forced_flat_thin_book_min_liquidity: f64,
+    pub lead_agreement_min_corr: f64,
+    pub lead_jitter_max_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -110,6 +153,364 @@ pub fn validate_strategy(
         default_max_notional,
     ));
     errors
+}
+
+#[derive(Debug)]
+pub enum BinaryOracleEdgeTakerRuntimeConfigError {
+    WrongArchetype {
+        expected: &'static str,
+        actual: String,
+    },
+    Parameters {
+        strategy_instance_id: String,
+        message: String,
+    },
+    Target {
+        strategy_instance_id: String,
+        message: String,
+    },
+    Numeric {
+        strategy_instance_id: String,
+        field: &'static str,
+        value: String,
+    },
+    StrategyId {
+        strategy_instance_id: String,
+        value: String,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for BinaryOracleEdgeTakerRuntimeConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongArchetype { expected, actual } => {
+                write!(
+                    f,
+                    "expected strategy archetype `{expected}`, got `{actual}`"
+                )
+            }
+            Self::Parameters {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} parameters are invalid: {message}"
+            ),
+            Self::Target {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} target is invalid: {message}"
+            ),
+            Self::Numeric {
+                strategy_instance_id,
+                field,
+                value,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"
+            ),
+            Self::StrategyId {
+                strategy_instance_id,
+                value,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} maps to invalid NT StrategyId `{value}`: {message}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BinaryOracleEdgeTakerRuntimeConfigError {}
+
+pub fn register_runtime_strategy(
+    node: &mut nautilus_live::node::LiveNode,
+    context: StrategyRegistrationContext<'_>,
+) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
+    let raw = raw_taker_config(context.strategy).map_err(|error| binding_error(&context, error))?;
+    let parameters =
+        parameters_block(context.strategy).map_err(|error| binding_error(&context, error))?;
+    let venue = context
+        .loaded
+        .root
+        .venues
+        .get(&context.strategy.config.venue)
+        .ok_or_else(|| {
+            binding_message(
+                &context,
+                format!(
+                    "strategy venue `{}` is not present in loaded venues",
+                    context.strategy.config.venue
+                ),
+            )
+        })?;
+    let fee_provider =
+        polymarket::build_fee_provider(&context.strategy.config.venue, venue, context.resolved)
+            .map_err(|error| binding_message(&context, error.to_string()))?;
+    let build_context = StrategyBuildContext::try_new(
+        fee_provider,
+        parameters.runtime.reference_publish_topic,
+        Some(context.decision_evidence.clone()),
+    )
+    .map_err(|error| binding_message(&context, error.to_string()))?;
+    let registry = production_strategy_registry()
+        .map_err(|error| binding_message(&context, error.to_string()))?;
+    registry
+        .register_strategy(
+            EthChainlinkTakerBuilder::kind(),
+            &raw,
+            &build_context,
+            node.kernel().trader(),
+        )
+        .map_err(|error| binding_message(&context, error.to_string()))
+}
+
+pub fn raw_taker_config(
+    strategy: &LoadedStrategy,
+) -> Result<Value, BinaryOracleEdgeTakerRuntimeConfigError> {
+    if strategy.config.strategy_archetype.as_str() != KEY {
+        return Err(BinaryOracleEdgeTakerRuntimeConfigError::WrongArchetype {
+            expected: KEY,
+            actual: strategy.config.strategy_archetype.as_str().to_string(),
+        });
+    }
+
+    let parameters = parameters_block(strategy)?;
+    let target = updown::deserialize_target_block(&strategy.config.target).map_err(|message| {
+        BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message,
+        }
+    })?;
+
+    let max_position_usdc = decimal_string_to_f64(
+        &strategy.config.strategy_instance_id,
+        "parameters.maximum_position_notional",
+        &parameters.maximum_position_notional,
+    )?;
+    let period_duration_secs = i64_to_u64(
+        &strategy.config.strategy_instance_id,
+        "target.cadence_seconds",
+        target.cadence_seconds,
+    )?;
+
+    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
+    let mut table = Map::new();
+    insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);
+    insert_string(&mut table, "client_id", strategy.config.venue.clone());
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "warmup_tick_count",
+        parameters.runtime.warmup_tick_count,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "period_duration_secs",
+        period_duration_secs,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "reentry_cooldown_secs",
+        parameters.runtime.reentry_cooldown_secs,
+    )?;
+    insert_float(&mut table, "max_position_usdc", max_position_usdc);
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "book_impact_cap_bps",
+        parameters.runtime.book_impact_cap_bps,
+    )?;
+    insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);
+    insert_i64(
+        &mut table,
+        "worst_case_ev_min_bps",
+        parameters.edge_threshold_basis_points,
+    );
+    insert_i64(
+        &mut table,
+        "exit_hysteresis_bps",
+        parameters.runtime.exit_hysteresis_bps,
+    );
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vol_window_secs",
+        parameters.runtime.vol_window_secs,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vol_gap_reset_secs",
+        parameters.runtime.vol_gap_reset_secs,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vol_min_observations",
+        parameters.runtime.vol_min_observations,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vol_bridge_valid_secs",
+        parameters.runtime.vol_bridge_valid_secs,
+    )?;
+    insert_float(
+        &mut table,
+        "pricing_kurtosis",
+        parameters.runtime.pricing_kurtosis,
+    );
+    insert_float(
+        &mut table,
+        "theta_decay_factor",
+        parameters.runtime.theta_decay_factor,
+    );
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "forced_flat_stale_chainlink_ms",
+        parameters.runtime.forced_flat_stale_chainlink_ms,
+    )?;
+    insert_float(
+        &mut table,
+        "forced_flat_thin_book_min_liquidity",
+        parameters.runtime.forced_flat_thin_book_min_liquidity,
+    );
+    insert_float(
+        &mut table,
+        "lead_agreement_min_corr",
+        parameters.runtime.lead_agreement_min_corr,
+    );
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "lead_jitter_max_ms",
+        parameters.runtime.lead_jitter_max_ms,
+    )?;
+
+    Ok(Value::Table(table))
+}
+
+fn parameters_block(
+    strategy: &LoadedStrategy,
+) -> Result<ParametersBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
+    strategy
+        .config
+        .parameters
+        .clone()
+        .try_into()
+        .map_err(
+            |error| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: error.to_string(),
+            },
+        )
+}
+
+fn nt_strategy_id(
+    strategy: &LoadedStrategy,
+) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let mut value = strategy.config.strategy_archetype.as_str().to_string();
+    value.push('-');
+    value.push_str(&strategy.config.order_id_tag);
+    StrategyId::new_checked(&value).map_err(|error| {
+        BinaryOracleEdgeTakerRuntimeConfigError::StrategyId {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            value: value.clone(),
+            message: error.to_string(),
+        }
+    })?;
+    Ok(value)
+}
+
+fn binding_error(
+    context: &StrategyRegistrationContext<'_>,
+    error: BinaryOracleEdgeTakerRuntimeConfigError,
+) -> BoltV3StrategyRegistrationError {
+    binding_message(context, error.to_string())
+}
+
+fn binding_message(
+    context: &StrategyRegistrationContext<'_>,
+    message: String,
+) -> BoltV3StrategyRegistrationError {
+    BoltV3StrategyRegistrationError::Binding {
+        strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
+        strategy_archetype: context
+            .strategy
+            .config
+            .strategy_archetype
+            .as_str()
+            .to_string(),
+        message,
+    }
+}
+
+fn decimal_string_to_f64(
+    strategy_instance_id: &str,
+    field: &'static str,
+    value: &str,
+) -> Result<f64, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let decimal = crate::bolt_v3_validate::parse_decimal_string(value).map_err(|_| {
+        BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            field,
+            value: value.to_string(),
+        }
+    })?;
+    decimal
+        .to_f64()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            field,
+            value: value.to_string(),
+        })
+}
+
+fn i64_to_u64(
+    strategy_instance_id: &str,
+    field: &'static str,
+    value: i64,
+) -> Result<u64, BinaryOracleEdgeTakerRuntimeConfigError> {
+    u64::try_from(value).map_err(|_| BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+        strategy_instance_id: strategy_instance_id.to_string(),
+        field,
+        value: value.to_string(),
+    })
+}
+
+fn insert_string(table: &mut Map<String, Value>, key: &'static str, value: String) {
+    table.insert(key.to_string(), Value::String(value));
+}
+
+fn insert_i64(table: &mut Map<String, Value>, key: &'static str, value: i64) {
+    table.insert(key.to_string(), Value::Integer(value));
+}
+
+fn insert_u64(
+    table: &mut Map<String, Value>,
+    strategy_instance_id: &str,
+    key: &'static str,
+    value: u64,
+) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
+    let converted =
+        i64::try_from(value).map_err(|_| BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            field: key,
+            value: value.to_string(),
+        })?;
+    table.insert(key.to_string(), Value::Integer(converted));
+    Ok(())
+}
+
+fn insert_float(table: &mut Map<String, Value>, key: &'static str, value: f64) {
+    table.insert(key.to_string(), Value::Float(value));
 }
 
 fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {

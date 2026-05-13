@@ -114,6 +114,12 @@ pub enum BoltV3LiveNodeError {
     /// NT returned an error from `LiveNode::run` after the live canary
     /// gate accepted the loaded config and readiness report.
     Run(anyhow::Error),
+    /// NT runtime capture could not be wired from the validated
+    /// bolt-v3 `[persistence]` config before the runner loop started.
+    RuntimeCaptureWire(anyhow::Error),
+    /// NT runtime capture failed during shutdown after the runner loop
+    /// exited or after the capture worker asked the LiveNode to stop.
+    RuntimeCaptureShutdown(anyhow::Error),
     /// The bolt-v3 controlled-connect boundary
     /// ([`connect_bolt_v3_clients`]) bounds the dispatched
     /// `NautilusKernel::connect_data_clients` and
@@ -191,6 +197,12 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 )
             }
             BoltV3LiveNodeError::Run(error) => write!(f, "LiveNode run failed: {error}"),
+            BoltV3LiveNodeError::RuntimeCaptureWire(error) => {
+                write!(f, "NT runtime capture wiring failed: {error}")
+            }
+            BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => {
+                write!(f, "NT runtime capture shutdown failed: {error}")
+            }
             BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => write!(
                 f,
                 "bolt-v3 controlled-connect exceeded the configured \
@@ -229,6 +241,8 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
             BoltV3LiveNodeError::Run(error) => error.source(),
+            BoltV3LiveNodeError::RuntimeCaptureWire(error)
+            | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
             BoltV3LiveNodeError::ConnectTimeout { .. }
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. } => None,
@@ -274,7 +288,43 @@ pub async fn run_bolt_v3_live_node(
         .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
     // This F1 slice validates the approved canary bounds before the runner loop.
     // Submit admission must consume these bounds in the later live-order slice.
-    node.run().await.map_err(BoltV3LiveNodeError::Run)
+    let mut capture_guards = wire_bolt_v3_runtime_capture(node, node.handle(), loaded)
+        .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
+    let mut capture_failure_receiver = capture_guards.take_failure_receiver();
+
+    let run_result = {
+        let run_future = node.run();
+        tokio::pin!(run_future);
+
+        if let Some(receiver) = capture_failure_receiver.as_mut() {
+            tokio::select! {
+                result = &mut run_future => result,
+                _ = receiver => {
+                    log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");
+                    run_future.await
+                }
+            }
+        } else {
+            run_future.await
+        }
+    };
+    let shutdown_result = capture_guards.shutdown().await;
+
+    match (run_result, shutdown_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(run_error), Ok(())) => Err(BoltV3LiveNodeError::Run(run_error)),
+        (Ok(()), Err(shutdown_error)) => {
+            Err(BoltV3LiveNodeError::RuntimeCaptureShutdown(shutdown_error))
+        }
+        (Err(run_error), Err(shutdown_error)) => {
+            log::error!("Live node run error during NT runtime capture shutdown: {run_error}");
+            Err(BoltV3LiveNodeError::RuntimeCaptureShutdown(
+                anyhow::anyhow!(
+                    "NT runtime capture shutdown error: {shutdown_error}; node run error: {run_error}"
+                ),
+            ))
+        }
+    }
 }
 
 /// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller

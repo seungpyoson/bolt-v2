@@ -77,7 +77,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
                             )
                         })?;
                     println!(
-                        "venues.{venue_key}: secret config complete ({})",
+                        "venues.{venue_key}: required secret fields present ({})",
                         binding.secret_field_names.join(", ")
                     );
                 }

@@ -925,6 +925,9 @@ file_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+
 [persistence.streaming]
 catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
@@ -1059,6 +1062,9 @@ file_level = "INFO"
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+
 [persistence.streaming]
 catalog_fs_protocol = "file"
 flush_interval_milliseconds = 1000
@@ -1186,6 +1192,9 @@ file_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"

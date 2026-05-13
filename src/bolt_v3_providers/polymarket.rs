@@ -28,10 +28,12 @@ use std::{any::Any, sync::Arc};
 
 use nautilus_model::identifiers::{AccountId, TraderId};
 use nautilus_polymarket::{
+    common::credential::Secrets as PolymarketSecrets,
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
     filters::{InstrumentFilter, MarketSlugFilter},
+    http::clob::PolymarketClobHttpClient,
 };
 use serde::Deserialize;
 
@@ -50,6 +52,7 @@ use crate::{
         SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    clients::polymarket::{FeeProvider, PolymarketClobFeeProvider},
     secrets::pad_base64,
 };
 
@@ -428,6 +431,56 @@ pub fn map_adapters(
         None => None,
     };
     Ok(BoltV3VenueAdapterConfig { data, execution })
+}
+
+pub fn build_fee_provider(
+    venue_key: &str,
+    venue: &VenueBlock,
+    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError> {
+    let value =
+        venue
+            .execution
+            .as_ref()
+            .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
+                venue_key: venue_key.to_string(),
+                field: "execution",
+                message: "is required by the existing taker fee-provider boundary".to_string(),
+            })?;
+    let cfg: PolymarketExecutionConfig =
+        value.clone().try_into().map_err(|error: toml::de::Error| {
+            BoltV3AdapterMappingError::SchemaParse {
+                venue_key: venue_key.to_string(),
+                block: "execution",
+                message: error.to_string(),
+            }
+        })?;
+    let secrets = secrets_for(venue_key, resolved)?;
+    let secrets = PolymarketSecrets::resolve(
+        Some(secrets.private_key.as_str()),
+        Some(secrets.api_key.clone()),
+        Some(secrets.api_secret.clone()),
+        Some(secrets.passphrase.clone()),
+        cfg.funder_address.clone(),
+    )
+    .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
+        venue_key: venue_key.to_string(),
+        field: "execution",
+        message: format!("failed to resolve Polymarket fee credentials: {error}"),
+    })?;
+    let client = PolymarketClobHttpClient::new(
+        secrets.credential,
+        secrets.address,
+        Some(cfg.base_url_http),
+        cfg.http_timeout_seconds,
+    )
+    .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
+        venue_key: venue_key.to_string(),
+        field: "execution.base_url_http",
+        message: format!("failed to create Polymarket fee HTTP client: {error}"),
+    })?;
+
+    Ok(Arc::new(PolymarketClobFeeProvider::new(client)))
 }
 
 fn map_data(

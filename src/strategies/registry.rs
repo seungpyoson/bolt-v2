@@ -1,13 +1,16 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::identifiers::StrategyId;
 use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
 use toml::Value;
 
-use crate::{clients::polymarket::FeeProvider, validate::ValidationError};
+use crate::{
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter, clients::polymarket::FeeProvider,
+    validate::ValidationError,
+};
 
 pub trait RuntimeStrategy: Strategy + DataActor + Component + std::fmt::Debug {}
 
@@ -17,8 +20,39 @@ pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 
 #[derive(Clone)]
 pub struct StrategyBuildContext {
-    pub fee_provider: Arc<dyn FeeProvider>,
-    pub reference_publish_topic: String,
+    fee_provider: Arc<dyn FeeProvider>,
+    reference_publish_topic: String,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+}
+
+impl StrategyBuildContext {
+    pub fn new(
+        fee_provider: Arc<dyn FeeProvider>,
+        reference_publish_topic: String,
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    ) -> Self {
+        Self {
+            fee_provider,
+            reference_publish_topic,
+            decision_evidence,
+        }
+    }
+
+    pub fn fee_provider(&self) -> &dyn FeeProvider {
+        self.fee_provider.as_ref()
+    }
+
+    pub fn fee_provider_arc(&self) -> Arc<dyn FeeProvider> {
+        self.fee_provider.clone()
+    }
+
+    pub fn reference_publish_topic(&self) -> &str {
+        &self.reference_publish_topic
+    }
+
+    pub fn decision_evidence(&self) -> &dyn BoltV3DecisionEvidenceWriter {
+        self.decision_evidence.as_ref()
+    }
 }
 
 pub trait StrategyBuilder: Send + Sync + 'static {
@@ -87,7 +121,7 @@ impl StrategyRegistry {
         };
 
         if self.registrations.contains_key(registration.kind()) {
-            return Err(anyhow!(
+            return Err(anyhow::anyhow!(
                 "strategy kind '{}' is already registered",
                 registration.kind()
             ));
@@ -162,6 +196,18 @@ mod tests {
 
         fn warm(&self, _token_id: &str) -> BoxFuture<'_, Result<()>> {
             async { Ok(()) }.boxed()
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopDecisionEvidenceWriter;
+
+    impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
+        fn record_order_intent(
+            &self,
+            _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+        ) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -267,9 +313,9 @@ mod tests {
                 .and_then(Value::as_str)
                 .context("context builder requires expected_reference_publish_topic")?;
             anyhow::ensure!(
-                context.reference_publish_topic == expected_topic,
+                context.reference_publish_topic() == expected_topic,
                 "expected reference publish topic {expected_topic}, got {}",
-                context.reference_publish_topic
+                context.reference_publish_topic()
             );
             Ok(Box::new(TestStrategy::new(strategy_id)))
         }
@@ -279,15 +325,18 @@ mod tests {
             _context: &StrategyBuildContext,
             _trader: &Rc<RefCell<Trader>>,
         ) -> Result<StrategyId> {
-            Err(anyhow!("context builder register is unused in this test"))
+            Err(anyhow::anyhow!(
+                "context builder register is unused in this test"
+            ))
         }
     }
 
     fn test_context() -> StrategyBuildContext {
-        StrategyBuildContext {
-            fee_provider: Arc::new(NoopFeeProvider),
-            reference_publish_topic: "platform.reference.test".to_string(),
-        }
+        StrategyBuildContext::new(
+            Arc::new(NoopFeeProvider),
+            "platform.reference.test".to_string(),
+            Arc::new(NoopDecisionEvidenceWriter),
+        )
     }
 
     #[test]

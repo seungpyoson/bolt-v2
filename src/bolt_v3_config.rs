@@ -180,7 +180,14 @@ impl LogLevel {
 #[serde(deny_unknown_fields)]
 pub struct PersistenceBlock {
     pub catalog_directory: String,
+    pub decision_evidence: DecisionEvidenceBlock,
     pub streaming: StreamingBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionEvidenceBlock {
+    pub order_intents_relative_path: String,
 }
 
 /// Operator approval and canary bounds required by the bolt-v3 live

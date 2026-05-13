@@ -7,6 +7,7 @@ use std::{
 };
 
 use bolt_v2::{
+    bolt_v3_decision_evidence::BoltV3OrderIntentKind,
     config::Config,
     live_node_setup::{
         DataClientRegistration, ExecClientRegistration, build_live_node, make_live_node_config,
@@ -497,11 +498,13 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
     let mut node = build_test_node();
     let trader = Rc::clone(node.kernel().trader());
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
+    let decision_evidence = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            decision_evidence.clone(),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -587,6 +590,18 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
         InstrumentId::from("condition-eth-MKT-ETH-1-UP.POLYMARKET")
     );
     assert!(submissions[0].client_order_id.to_string().starts_with('O'));
+    let records = decision_evidence.records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].intent_kind, BoltV3OrderIntentKind::Entry);
+    assert_eq!(records[0].strategy_id, strategy_id.to_string());
+    assert_eq!(
+        records[0].instrument_id,
+        "condition-eth-MKT-ETH-1-UP.POLYMARKET"
+    );
+    assert_eq!(
+        records[0].client_order_id,
+        submissions[0].client_order_id.to_string()
+    );
 }
 
 #[test]
@@ -602,6 +617,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -725,6 +741,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -841,6 +858,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -934,6 +952,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -1051,6 +1070,7 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -1146,6 +1166,7 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -1246,6 +1267,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -1378,6 +1400,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();
@@ -1556,6 +1579,7 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
         make_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
+            Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         ),
     );
     strategy_factory(&trader, "eth_chainlink_taker", &strategy_raw_config()).unwrap();

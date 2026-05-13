@@ -24,7 +24,9 @@ pub mod binary_oracle_edge_taker;
 
 use rust_decimal::Decimal;
 
-use crate::bolt_v3_config::BoltV3StrategyConfig;
+use crate::{
+    bolt_v3_config::BoltV3StrategyConfig, bolt_v3_strategy_registration::StrategyRuntimeBinding,
+};
 
 pub struct ArchetypeValidationBinding {
     pub key: &'static str,
@@ -36,8 +38,14 @@ const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidation
     validate_strategy: binary_oracle_edge_taker::validate_strategy,
 }];
 
+const RUNTIME_BINDINGS: &[StrategyRuntimeBinding] = &[binary_oracle_edge_taker::RUNTIME_BINDING];
+
 pub fn validation_bindings() -> &'static [ArchetypeValidationBinding] {
     VALIDATION_BINDINGS
+}
+
+pub fn runtime_bindings() -> &'static [StrategyRuntimeBinding] {
+    RUNTIME_BINDINGS
 }
 
 pub fn validate_strategy_archetype(

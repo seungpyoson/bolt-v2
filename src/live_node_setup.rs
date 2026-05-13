@@ -10,7 +10,10 @@ use nautilus_execution::engine::ExecutionEngine;
 use nautilus_live::{config::LiveNodeConfig, node::LiveNode};
 use nautilus_model::identifiers::TraderId;
 
-use crate::{clients::polymarket, config::Config, strategies::registry::StrategyBuildContext};
+use crate::{
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter, clients::polymarket, config::Config,
+    strategies::registry::StrategyBuildContext,
+};
 
 pub type DataClientRegistration = (
     Option<String>,
@@ -30,11 +33,9 @@ fn resolve_client_name(name: &Option<String>, factory_name: &str) -> String {
 pub fn make_strategy_build_context(
     fee_provider: Arc<dyn polymarket::FeeProvider>,
     reference_publish_topic: String,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> StrategyBuildContext {
-    StrategyBuildContext {
-        fee_provider,
-        reference_publish_topic,
-    }
+    StrategyBuildContext::new(fee_provider, reference_publish_topic, decision_evidence)
 }
 
 pub fn make_live_node_config(
@@ -205,16 +206,29 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FixedDecisionEvidenceWriter;
+
+    impl BoltV3DecisionEvidenceWriter for FixedDecisionEvidenceWriter {
+        fn record_order_intent(
+            &self,
+            _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn strategy_build_context_includes_reference_publish_topic() {
         let context = make_strategy_build_context(
             Arc::new(FixedFeeProvider),
             "platform.reference.test".to_string(),
+            Arc::new(FixedDecisionEvidenceWriter),
         );
 
-        assert_eq!(context.reference_publish_topic, "platform.reference.test");
+        assert_eq!(context.reference_publish_topic(), "platform.reference.test");
         assert_eq!(
-            context.fee_provider.fee_bps("TOKEN"),
+            context.fee_provider().fee_bps("TOKEN"),
             Some(rust_decimal::Decimal::new(7, 0))
         );
     }

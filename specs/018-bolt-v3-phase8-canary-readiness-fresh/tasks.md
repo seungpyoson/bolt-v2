@@ -13,7 +13,7 @@
 - [x] T004 Create Phase 8 spec/checklist/plan/data-model/contracts/quickstart/tasks artifacts.
 - [x] T005 Run placeholder/debt scan on Phase 8 spec artifacts.
 - [x] T006 Run `git diff --check`.
-- [ ] T007 Commit Phase 8 planning artifacts.
+- [x] T007 Commit Phase 8 planning artifacts.
 - [ ] T008 Push planning branch only after explicit approval for GitHub mutation.
 - [ ] T009 Request external plan review only after branch is pushed and review gate allows it.
 

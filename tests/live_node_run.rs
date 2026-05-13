@@ -303,6 +303,54 @@ fn builds_bolt_v3_livenode_without_running_event_loop() {
 }
 
 #[test]
+fn bolt_v3_livenode_runtime_carries_resolved_secret_redaction_values() {
+    use bolt_v2::{
+        bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+        bolt_v3_live_node::build_bolt_v3_live_node_with,
+    };
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded: LoadedBoltV3Config =
+        load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-live-node-redaction-values");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("v3 LiveNode should build without entering the event loop");
+
+    for secret in [
+        "0x4242424242424242424242424242424242424242424242424242424242424242",
+        "polymarket-api-key",
+        "YWJj",
+        "polymarket-passphrase",
+        "binance-api-key",
+        "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+    ] {
+        assert!(
+            node.redaction_values().iter().any(|value| value == secret),
+            "runtime redaction values should include resolved secret `{secret}`"
+        );
+        assert!(
+            !format!("{node:?}").contains(secret),
+            "runtime Debug output must not leak resolved secret `{secret}`"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_no_submit_anyhow_failures_remain_error_sources() {
+    use bolt_v2::bolt_v3_live_node::BoltV3LiveNodeError;
+    use std::error::Error;
+
+    let error = BoltV3LiveNodeError::NoSubmitStartFailed(anyhow::anyhow!("start context"));
+    let source = error
+        .source()
+        .expect("no-submit anyhow failure should remain in the error chain");
+
+    assert_eq!(source.to_string(), "start context");
+}
+
+#[test]
 fn wires_runtime_capture_from_bolt_v3_persistence_config() {
     use bolt_v2::{
         bolt_v3_config::{

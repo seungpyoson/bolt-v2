@@ -4,6 +4,11 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
+    bolt_v3_no_submit_readiness_schema::{
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
+        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
+        SECRET_RESOLUTION_STAGE,
+    },
 };
 use tokio::task::LocalSet;
 
@@ -669,7 +674,29 @@ fn write_no_submit_report_with_stage_field(
     stage_field: &str,
     stages: &[(&str, &str)],
 ) {
-    let stages: Vec<_> = stages
+    let mut complete_stages = [
+        OPERATOR_APPROVAL_STAGE,
+        SECRET_RESOLUTION_STAGE,
+        LIVE_NODE_BUILD_STAGE,
+        CONTROLLED_CONNECT_STAGE,
+        REFERENCE_READINESS_STAGE,
+        CONTROLLED_DISCONNECT_STAGE,
+        REPORT_WRITE_STAGE,
+    ]
+    .into_iter()
+    .map(|stage| (stage, "satisfied"))
+    .collect::<Vec<_>>();
+    for &(stage, status) in stages {
+        if let Some(existing) = complete_stages
+            .iter_mut()
+            .find(|(existing_stage, _)| *existing_stage == stage)
+        {
+            existing.1 = status;
+        } else {
+            complete_stages.push((stage, status));
+        }
+    }
+    let stages: Vec<_> = complete_stages
         .iter()
         .map(|(stage, status)| serde_json::json!({ stage_field: stage, "status": status }))
         .collect();

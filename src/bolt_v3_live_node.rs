@@ -72,17 +72,22 @@ use crate::{
     secrets::SsmResolverSession,
 };
 
-#[derive(Debug)]
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    redaction_values: Vec<String>,
 }
 
 impl BoltV3LiveNodeRuntime {
-    fn new(node: LiveNode, submit_admission: Arc<BoltV3SubmitAdmissionState>) -> Self {
+    fn new(
+        node: LiveNode,
+        submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        redaction_values: Vec<String>,
+    ) -> Self {
         Self {
             node,
             submit_admission,
+            redaction_values,
         }
     }
 
@@ -114,6 +119,20 @@ impl BoltV3LiveNodeRuntime {
             .into_iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    pub fn redaction_values(&self) -> &[String] {
+        &self.redaction_values
+    }
+}
+
+impl std::fmt::Debug for BoltV3LiveNodeRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoltV3LiveNodeRuntime")
+            .field("node", &"[redacted]")
+            .field("submit_admission", &self.submit_admission)
+            .field("redaction_values", &"[redacted]")
+            .finish()
     }
 }
 
@@ -356,7 +375,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::NoSubmitStopTimeout { .. } => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
             | BoltV3LiveNodeError::NoSubmitStartFailed(error)
-            | BoltV3LiveNodeError::NoSubmitStopFailed(error) => error.source(),
+            | BoltV3LiveNodeError::NoSubmitStopFailed(error) => Some(error.as_ref()),
         }
     }
 }
@@ -608,7 +627,10 @@ fn build_live_node_with_clients(
             strategy.registered_strategy_id
         );
     }
-    Ok((BoltV3LiveNodeRuntime::new(node, submit_admission), summary))
+    Ok((
+        BoltV3LiveNodeRuntime::new(node, submit_admission, resolved.redaction_values()),
+        summary,
+    ))
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

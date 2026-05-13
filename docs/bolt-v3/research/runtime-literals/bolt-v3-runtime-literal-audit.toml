@@ -617,6 +617,14 @@ reason = "This is the relative-path base fallback that matches the config loader
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
+literal = '''"bolt-v3.no-submit-readiness.v1"'''
+context = '''pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v1";'''
+classification = "schema_version_gate"
+reason = "The no-submit readiness schema version is a structural report compatibility gate, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
 literal = '''"stages"'''
 context = '''pub const STAGES_KEY: &str = "stages";'''
 classification = "no_submit_readiness_report_schema_field"
@@ -657,6 +665,30 @@ reason = "This is the readiness report status value that the fail-closed live-ca
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
+literal = '''"operator_approval"'''
+context = '''pub const OPERATOR_APPROVAL_STAGE: &str = "operator_approval";'''
+classification = "no_submit_readiness_report_stage_name"
+reason = "This names the operator approval stage in the Phase 7 no-submit readiness evidence schema."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"secret_resolution"'''
+context = '''pub const SECRET_RESOLUTION_STAGE: &str = "secret_resolution";'''
+classification = "no_submit_readiness_report_stage_name"
+reason = "This names the SSM-only secret resolution stage in the Phase 7 no-submit readiness evidence schema."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"live_node_build"'''
+context = '''pub const LIVE_NODE_BUILD_STAGE: &str = "live_node_build";'''
+classification = "no_submit_readiness_report_stage_name"
+reason = "This names the production LiveNode build stage in the Phase 7 no-submit readiness evidence schema."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
 literal = '''"controlled_connect"'''
 context = '''pub const CONTROLLED_CONNECT_STAGE: &str = "controlled_connect";'''
 classification = "no_submit_readiness_report_stage_name"
@@ -677,6 +709,14 @@ literal = '''"controlled_disconnect"'''
 context = '''pub const CONTROLLED_DISCONNECT_STAGE: &str = "controlled_disconnect";'''
 classification = "no_submit_readiness_report_stage_name"
 reason = "This names the controlled NT stop stage in the Phase 7 no-submit readiness evidence schema."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"report_write"'''
+context = '''pub const REPORT_WRITE_STAGE: &str = "report_write";'''
+classification = "no_submit_readiness_report_stage_name"
+reason = "This names the configured report-write stage in the Phase 7 no-submit readiness evidence schema."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"

@@ -4,13 +4,19 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_no_submit_readiness::{
-        BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessStatus,
-        reference_readiness_from_cached_instrument_ids, run_bolt_v3_no_submit_readiness,
-        run_bolt_v3_no_submit_readiness_from_stage_results,
+        BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessReportMetadata,
+        BoltV3NoSubmitReadinessStatus, reference_readiness_from_cached_instrument_ids,
+        run_bolt_v3_no_submit_readiness, run_bolt_v3_no_submit_readiness_from_stage_results,
         run_bolt_v3_no_submit_readiness_on_runtime,
     },
-    bolt_v3_no_submit_readiness_schema::{STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED},
+    bolt_v3_no_submit_readiness_schema::{
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY,
+        STATUS_SATISFIED,
+    },
 };
+use sha2::{Digest, Sha256};
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
@@ -20,9 +26,13 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     let report_path = tempdir.path().join("no-submit-readiness.json");
     let report = serde_json::json!({
         STAGES_KEY: [
+            { STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED },
+            { STAGE_KEY: SECRET_RESOLUTION_STAGE, STATUS_KEY: STATUS_SATISFIED },
+            { STAGE_KEY: LIVE_NODE_BUILD_STAGE, STATUS_KEY: STATUS_SATISFIED },
             { STAGE_KEY: "controlled_connect", STATUS_KEY: STATUS_SATISFIED },
             { STAGE_KEY: "reference_readiness", STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: "controlled_disconnect", STATUS_KEY: STATUS_SATISFIED }
+            { STAGE_KEY: "controlled_disconnect", STATUS_KEY: STATUS_SATISFIED },
+            { STAGE_KEY: REPORT_WRITE_STAGE, STATUS_KEY: STATUS_SATISFIED }
         ]
     });
     std::fs::write(
@@ -49,6 +59,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
 #[test]
 fn no_submit_readiness_local_runner_writes_satisfied_connect_reference_disconnect_report() {
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
         Ok(()),
         Ok(()),
         Ok(()),
@@ -70,9 +81,69 @@ fn no_submit_readiness_local_runner_writes_satisfied_connect_reference_disconnec
 }
 
 #[test]
+fn no_submit_readiness_report_records_authenticated_fields_and_required_stages() {
+    let loaded = loaded_with_test_live_canary();
+    let head_sha = "a526e1886f1877fcce0e5c7f667c45375c1709a4";
+    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(
+        &loaded,
+        "operator-approved-canary-001",
+        head_sha,
+    )
+    .expect("report metadata should be derived from loaded config");
+
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        metadata,
+        Ok(()),
+        Ok(()),
+        Ok(()),
+        &["secret-value".to_string()],
+    );
+    let value = serde_json::to_value(&report).expect("report should serialize");
+    let approval_id_hash = sha256_hex("operator-approved-canary-001");
+    let config_checksum = sha256_hex(
+        &std::fs::read_to_string(&loaded.root_path).expect("fixture root TOML should be readable"),
+    );
+    let expected_report_path = loaded
+        .root_path
+        .parent()
+        .expect("fixture root path should have parent")
+        .join("not-written-before-approval-check.json");
+
+    assert_eq!(value["schema_version"], NO_SUBMIT_READINESS_SCHEMA_VERSION);
+    assert_eq!(value["approval_id_hash"], approval_id_hash);
+    assert_ne!(value["approval_id_hash"], "operator-approved-canary-001");
+    assert_eq!(value["head_sha"], head_sha);
+    assert_eq!(value["config_checksum"], config_checksum);
+    assert_eq!(
+        value["report_path"],
+        expected_report_path.to_string_lossy().as_ref()
+    );
+    for required_stage in [
+        OPERATOR_APPROVAL_STAGE,
+        SECRET_RESOLUTION_STAGE,
+        LIVE_NODE_BUILD_STAGE,
+        CONTROLLED_CONNECT_STAGE,
+        REFERENCE_READINESS_STAGE,
+        CONTROLLED_DISCONNECT_STAGE,
+        REPORT_WRITE_STAGE,
+    ] {
+        assert_eq!(
+            report.stage_status(required_stage),
+            vec![BoltV3NoSubmitReadinessStatus::Satisfied],
+            "required readiness stage `{required_stage}` should be satisfied"
+        );
+    }
+    let debug = format!("{report:#?}");
+    let json = serde_json::to_string_pretty(&report).expect("report should serialize");
+    assert!(!debug.contains("operator-approved-canary-001"));
+    assert!(!json.contains("operator-approved-canary-001"));
+}
+
+#[test]
 fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
     let secret = "0x4242424242424242424242424242424242424242424242424242424242424242";
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
         Err(format!("connect rejected key {secret}")),
         Ok(()),
         Err(format!("disconnect rejected key {secret}")),
@@ -92,6 +163,7 @@ fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
 #[test]
 fn no_submit_readiness_records_failed_connect_reference_skip_and_disconnect_failure() {
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
         Err("simulated connect failure".to_string()),
         Ok(()),
         Err("simulated disconnect failure".to_string()),
@@ -118,6 +190,7 @@ fn no_submit_readiness_fails_when_required_reference_instrument_missing_from_cac
     let reference_readiness =
         reference_readiness_from_cached_instrument_ids(&loaded, std::iter::empty::<&str>());
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
         Ok(()),
         reference_readiness,
         Ok(()),
@@ -150,6 +223,7 @@ fn no_submit_readiness_satisfies_reference_when_required_instruments_are_cached(
     let reference_readiness =
         reference_readiness_from_cached_instrument_ids(&loaded, cached_instrument_ids);
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
         Ok(()),
         reference_readiness,
         Ok(()),
@@ -174,7 +248,13 @@ fn no_submit_readiness_satisfies_reference_when_required_instruments_are_cached(
 fn no_submit_readiness_writer_enforces_configured_byte_cap() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("readiness").join("report.json");
-    let report = run_bolt_v3_no_submit_readiness_from_stage_results(Ok(()), Ok(()), Ok(()), &[]);
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
+        Ok(()),
+        Ok(()),
+        Ok(()),
+        &[],
+    );
 
     let error = report
         .write_redacted_json_with_max_bytes(&report_path, 1)
@@ -194,9 +274,10 @@ fn no_submit_readiness_writer_enforces_configured_byte_cap() {
 async fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
     let loaded = loaded_with_test_live_canary();
 
-    let error = run_bolt_v3_no_submit_readiness(&loaded, "   ")
-        .await
-        .expect_err("missing approval must fail before runtime build");
+    let error =
+        run_bolt_v3_no_submit_readiness(&loaded, "   ", "a526e1886f1877fcce0e5c7f667c45375c1709a4")
+            .await
+            .expect_err("missing approval must fail before runtime build");
 
     assert!(
         matches!(
@@ -211,9 +292,13 @@ async fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
 async fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
     let loaded = loaded_with_test_live_canary();
 
-    let error = run_bolt_v3_no_submit_readiness(&loaded, "different-approval")
-        .await
-        .expect_err("approval mismatch must fail before runtime build");
+    let error = run_bolt_v3_no_submit_readiness(
+        &loaded,
+        "different-approval",
+        "a526e1886f1877fcce0e5c7f667c45375c1709a4",
+    )
+    .await
+    .expect_err("approval mismatch must fail before runtime build");
 
     assert!(
         matches!(
@@ -260,6 +345,36 @@ fn no_submit_readiness_runtime_source_does_not_treat_connect_as_reference_readin
 }
 
 #[test]
+fn no_submit_readiness_runtime_uses_resolved_secret_redaction_values() {
+    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
+        .expect("no-submit readiness source should exist");
+
+    assert!(
+        source.contains("runtime.redaction_values()"),
+        "runtime path must redact controlled readiness details using resolved secret values"
+    );
+    assert!(
+        !source.contains("run_bolt_v3_no_submit_readiness_on_runtime(&mut runtime, loaded, &[])"),
+        "runtime path must not disable redaction with an empty redaction list"
+    );
+}
+
+#[test]
+fn no_submit_readiness_operator_harness_uses_localset() {
+    let source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
+        .expect("operator harness source should exist");
+
+    assert!(
+        source.contains("tokio::task::LocalSet::new()"),
+        "operator no-submit harness must create a LocalSet for NT local tasks"
+    );
+    assert!(
+        source.contains(".run_until("),
+        "operator no-submit harness must enter the readiness future through LocalSet::run_until"
+    );
+}
+
+#[test]
 fn no_submit_readiness_docs_keep_phase8_live_action_blocked() {
     let quickstart = include_str!("../specs/002-phase7-no-submit-readiness/quickstart.md");
 
@@ -286,6 +401,20 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             max_no_submit_readiness_report_bytes: 4096,
         },
     )
+}
+
+fn test_report_metadata() -> BoltV3NoSubmitReadinessReportMetadata {
+    let loaded = loaded_with_test_live_canary();
+    BoltV3NoSubmitReadinessReportMetadata::from_loaded(
+        &loaded,
+        "operator-approved-canary-001",
+        "a526e1886f1877fcce0e5c7f667c45375c1709a4",
+    )
+    .expect("test report metadata should derive from fixture")
+}
+
+fn sha256_hex(value: &str) -> String {
+    hex::encode(Sha256::digest(value.as_bytes()))
 }
 
 #[test]

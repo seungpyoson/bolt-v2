@@ -22,7 +22,9 @@ use tokio::io::AsyncReadExt;
 use crate::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
     bolt_v3_no_submit_readiness_schema::{
-        NAME_KEY, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE, NAME_KEY,
+        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
+        SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
 };
 
@@ -359,6 +361,7 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
             None => reasons.push(format!("stages must be an array, got {stages_value}")),
             Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),
             Some(stages) => {
+                let mut satisfied_stage_names = std::collections::BTreeSet::new();
                 for stage in stages {
                     let name = stage
                         .get(STAGE_KEY)
@@ -370,6 +373,15 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
                         reasons.push(format!(
                             "stage `{name}` status is `{}`",
                             status.unwrap_or("<missing>")
+                        ));
+                    } else {
+                        satisfied_stage_names.insert(name.to_string());
+                    }
+                }
+                for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
+                    if !satisfied_stage_names.contains(*required_stage) {
+                        reasons.push(format!(
+                            "required stage `{required_stage}` is missing or unsatisfied"
                         ));
                     }
                 }
@@ -387,6 +399,16 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
 fn matches_satisfied_status(status: Option<&str>) -> bool {
     matches!(status, Some(value) if value.eq_ignore_ascii_case(STATUS_SATISFIED))
 }
+
+const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[
+    OPERATOR_APPROVAL_STAGE,
+    SECRET_RESOLUTION_STAGE,
+    LIVE_NODE_BUILD_STAGE,
+    CONTROLLED_CONNECT_STAGE,
+    REFERENCE_READINESS_STAGE,
+    CONTROLLED_DISCONNECT_STAGE,
+    REPORT_WRITE_STAGE,
+];
 
 #[cfg(test)]
 mod tests {

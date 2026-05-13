@@ -30,6 +30,9 @@ use crate::{
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
     fn provider_key(&self) -> &'static str;
     fn as_any(&self) -> &dyn Any;
+    fn redaction_values(&self) -> Vec<&str> {
+        Vec::new()
+    }
 }
 
 pub type ResolvedVenueSecrets = Arc<dyn ProviderResolvedSecrets>;

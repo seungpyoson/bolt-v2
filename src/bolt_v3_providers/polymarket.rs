@@ -166,6 +166,15 @@ impl ProviderResolvedSecrets for ResolvedBoltV3PolymarketSecrets {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn redaction_values(&self) -> Vec<&str> {
+        vec![
+            self.private_key.as_str(),
+            self.api_key.as_str(),
+            self.api_secret.as_str(),
+            self.passphrase.as_str(),
+        ]
+    }
 }
 
 pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {

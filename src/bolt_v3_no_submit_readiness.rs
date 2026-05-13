@@ -10,6 +10,7 @@ use std::{
 };
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
@@ -18,8 +19,9 @@ use crate::{
         controlled_no_submit_readiness,
     },
     bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, REDACTED_DETAIL_MARKER,
-        REFERENCE_READINESS_STAGE,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REDACTED_DETAIL_MARKER,
+        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SECRET_RESOLUTION_STAGE,
     },
 };
 
@@ -27,6 +29,7 @@ use crate::{
 pub enum BoltV3NoSubmitReadinessError {
     MissingLiveCanaryConfig,
     MissingOperatorApprovalId,
+    MissingHeadSha,
     OperatorApprovalIdMismatch,
     LiveNode {
         source: BoltV3LiveNodeError,
@@ -47,6 +50,10 @@ pub enum BoltV3NoSubmitReadinessError {
     ReportSerialize {
         source: serde_json::Error,
     },
+    RootConfigChecksumRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for BoltV3NoSubmitReadinessError {
@@ -61,6 +68,7 @@ impl std::fmt::Display for BoltV3NoSubmitReadinessError {
                     "bolt-v3 no-submit readiness operator approval id is empty"
                 )
             }
+            Self::MissingHeadSha => write!(f, "bolt-v3 no-submit readiness head SHA is empty"),
             Self::OperatorApprovalIdMismatch => write!(
                 f,
                 "bolt-v3 no-submit readiness operator approval id does not match `[live_canary]`"
@@ -94,6 +102,11 @@ impl std::fmt::Display for BoltV3NoSubmitReadinessError {
                     "failed to serialize bolt-v3 no-submit readiness report: {source}"
                 )
             }
+            Self::RootConfigChecksumRead { path, source } => write!(
+                f,
+                "failed to read bolt-v3 root TOML {} for no-submit checksum: {source}",
+                path.display()
+            ),
         }
     }
 }
@@ -106,8 +119,10 @@ impl std::error::Error for BoltV3NoSubmitReadinessError {
                 Some(source)
             }
             Self::ReportSerialize { source } => Some(source),
+            Self::RootConfigChecksumRead { source, .. } => Some(source),
             Self::MissingLiveCanaryConfig
             | Self::MissingOperatorApprovalId
+            | Self::MissingHeadSha
             | Self::OperatorApprovalIdMismatch
             | Self::ReportTooLarge { .. } => None,
         }
@@ -131,7 +146,47 @@ pub struct BoltV3NoSubmitReadinessStage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3NoSubmitReadinessReportMetadata {
+    pub approval_id_hash: String,
+    pub head_sha: String,
+    pub config_checksum: String,
+    pub report_path: String,
+}
+
+impl BoltV3NoSubmitReadinessReportMetadata {
+    pub fn from_loaded(
+        loaded: &LoadedBoltV3Config,
+        operator_approval_id: &str,
+        head_sha: &str,
+    ) -> Result<Self, BoltV3NoSubmitReadinessError> {
+        let trimmed_head = head_sha.trim();
+        if trimmed_head.is_empty() {
+            return Err(BoltV3NoSubmitReadinessError::MissingHeadSha);
+        }
+        let approval_id_hash = validate_operator_approval(loaded, operator_approval_id)?;
+        let block = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .ok_or(BoltV3NoSubmitReadinessError::MissingLiveCanaryConfig)?;
+        Ok(Self {
+            approval_id_hash,
+            head_sha: trimmed_head.to_string(),
+            config_checksum: root_config_checksum(loaded)?,
+            report_path: configured_report_path(loaded, &block.no_submit_readiness_report_path)
+                .to_string_lossy()
+                .to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3NoSubmitReadinessReport {
+    pub schema_version: &'static str,
+    pub approval_id_hash: String,
+    pub head_sha: String,
+    pub config_checksum: String,
+    pub report_path: String,
     pub stages: Vec<BoltV3NoSubmitReadinessStage>,
 }
 
@@ -189,12 +244,16 @@ impl BoltV3NoSubmitReadinessReport {
 }
 
 pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
+    metadata: BoltV3NoSubmitReadinessReportMetadata,
     controlled_connect: Result<(), String>,
     reference_readiness: Result<(), String>,
     controlled_disconnect: Result<(), String>,
     redacted_values: &[String],
 ) -> BoltV3NoSubmitReadinessReport {
     let mut stages = Vec::new();
+    push_satisfied_stage(&mut stages, OPERATOR_APPROVAL_STAGE);
+    push_satisfied_stage(&mut stages, SECRET_RESOLUTION_STAGE);
+    push_satisfied_stage(&mut stages, LIVE_NODE_BUILD_STAGE);
     let connected = push_result_stage(
         &mut stages,
         CONTROLLED_CONNECT_STAGE,
@@ -221,7 +280,15 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
         controlled_disconnect,
         redacted_values,
     );
-    BoltV3NoSubmitReadinessReport { stages }
+    push_satisfied_stage(&mut stages, REPORT_WRITE_STAGE);
+    BoltV3NoSubmitReadinessReport {
+        schema_version: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        approval_id_hash: metadata.approval_id_hash,
+        head_sha: metadata.head_sha,
+        config_checksum: metadata.config_checksum,
+        report_path: metadata.report_path,
+        stages,
+    }
 }
 
 pub fn reference_readiness_from_cached_instrument_ids<I, S>(
@@ -270,6 +337,7 @@ where
 pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
+    metadata: BoltV3NoSubmitReadinessReportMetadata,
     redacted_values: &[String],
 ) -> BoltV3NoSubmitReadinessReport {
     let (connect, reference, disconnect) =
@@ -278,6 +346,7 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
         })
         .await;
     run_bolt_v3_no_submit_readiness_from_stage_results(
+        metadata,
         connect.map_err(|error| error.to_string()),
         reference,
         disconnect.map_err(|error| error.to_string()),
@@ -288,17 +357,28 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
 pub async fn run_bolt_v3_no_submit_readiness(
     loaded: &LoadedBoltV3Config,
     operator_approval_id: &str,
+    head_sha: &str,
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
-    validate_operator_approval(loaded, operator_approval_id)?;
+    let metadata =
+        BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded, operator_approval_id, head_sha)?;
     let mut runtime = build_bolt_v3_live_node(loaded)
         .map_err(|source| BoltV3NoSubmitReadinessError::LiveNode { source })?;
-    Ok(run_bolt_v3_no_submit_readiness_on_runtime(&mut runtime, loaded, &[]).await)
+    let redacted_values = runtime.redaction_values().to_vec();
+    Ok(
+        run_bolt_v3_no_submit_readiness_on_runtime(
+            &mut runtime,
+            loaded,
+            metadata,
+            &redacted_values,
+        )
+        .await,
+    )
 }
 
 fn validate_operator_approval(
     loaded: &LoadedBoltV3Config,
     operator_approval_id: &str,
-) -> Result<(), BoltV3NoSubmitReadinessError> {
+) -> Result<String, BoltV3NoSubmitReadinessError> {
     let supplied = operator_approval_id.trim();
     if supplied.is_empty() {
         return Err(BoltV3NoSubmitReadinessError::MissingOperatorApprovalId);
@@ -310,10 +390,12 @@ fn validate_operator_approval(
         .ok_or(BoltV3NoSubmitReadinessError::MissingLiveCanaryConfig)?
         .approval_id
         .trim();
-    if supplied != configured {
+    let supplied_hash = sha256_hex(supplied.as_bytes());
+    let configured_hash = sha256_hex(configured.as_bytes());
+    if supplied_hash != configured_hash {
         return Err(BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch);
     }
-    Ok(())
+    Ok(supplied_hash)
 }
 
 fn configured_report_path(loaded: &LoadedBoltV3Config, configured: &str) -> PathBuf {
@@ -326,6 +408,30 @@ fn configured_report_path(loaded: &LoadedBoltV3Config, configured: &str) -> Path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(path)
+}
+
+fn root_config_checksum(
+    loaded: &LoadedBoltV3Config,
+) -> Result<String, BoltV3NoSubmitReadinessError> {
+    let bytes = std::fs::read(&loaded.root_path).map_err(|source| {
+        BoltV3NoSubmitReadinessError::RootConfigChecksumRead {
+            path: loaded.root_path.clone(),
+            source,
+        }
+    })?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn push_satisfied_stage(stages: &mut Vec<BoltV3NoSubmitReadinessStage>, stage: &'static str) {
+    stages.push(BoltV3NoSubmitReadinessStage {
+        stage,
+        status: BoltV3NoSubmitReadinessStatus::Satisfied,
+        detail: None,
+    });
 }
 
 fn push_result_stage(

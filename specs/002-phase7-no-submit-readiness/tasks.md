@@ -113,8 +113,8 @@
 - [x] T035 Run `git diff --check`.
 - [x] T036 Run runtime literal/hardcode checks relevant to new files.
 - [x] T037 Run no-mistakes status/checks if available.
-- [ ] T038 Run full `cargo test` and clippy only when branch is locally green enough for PR readiness.
-- [ ] T039 Keep worktree clean before requesting further external review or opening PR.
+- [x] T038 Run full `cargo test` and clippy only when branch is locally green enough for PR readiness.
+- [x] T039 Keep worktree clean before requesting further external review or opening PR.
 
 ## Dependencies & Execution Order
 

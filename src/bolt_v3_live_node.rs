@@ -34,13 +34,7 @@
 //! market-data subscription APIs, registers a strategy actor, constructs
 //! an order, or enables any submit path.
 
-use std::{
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
 use ahash::AHashMap;
 use anyhow::Result;
@@ -49,11 +43,11 @@ use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
-    node::{LiveNode, LiveNodeHandle},
+    node::{LiveNode, LiveNodeHandle, NodeState},
 };
 use nautilus_model::{
     enums::BarIntervalType,
-    identifiers::{ClientId, TraderId},
+    identifiers::{ClientId, StrategyId, TraderId},
 };
 use ustr::Ustr;
 
@@ -81,7 +75,7 @@ use crate::{
 #[derive(Debug)]
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
-    pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -91,19 +85,25 @@ impl BoltV3LiveNodeRuntime {
             submit_admission,
         }
     }
-}
 
-impl Deref for BoltV3LiveNodeRuntime {
-    type Target = LiveNode;
-
-    fn deref(&self) -> &Self::Target {
-        &self.node
+    pub fn registered_strategy_ids(&self) -> Vec<StrategyId> {
+        self.node.kernel().trader().borrow().strategy_ids()
     }
-}
 
-impl DerefMut for BoltV3LiveNodeRuntime {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.node
+    pub fn environment(&self) -> Environment {
+        self.node.environment()
+    }
+
+    pub fn state(&self) -> NodeState {
+        self.node.state()
+    }
+
+    pub fn registered_data_client_ids(&self) -> Vec<ClientId> {
+        self.node.kernel().data_engine.borrow().registered_clients()
+    }
+
+    pub fn registered_exec_client_ids(&self) -> Vec<ClientId> {
+        self.node.kernel().exec_engine.borrow().client_ids()
     }
 }
 

@@ -4677,14 +4677,10 @@ mod tests {
         max_live_order_count: u32,
         max_notional_per_order: Decimal,
     ) -> crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
-        crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
-            approval_id: "operator-approved-canary-001".to_string(),
-            no_submit_readiness_report_path: std::path::PathBuf::from("no-submit-readiness.json"),
-            max_no_submit_readiness_report_bytes: 4096,
+        crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport::for_test(
             max_live_order_count,
             max_notional_per_order,
-            root_max_notional_per_order: max_notional_per_order,
-        }
+        )
     }
 
     #[test]

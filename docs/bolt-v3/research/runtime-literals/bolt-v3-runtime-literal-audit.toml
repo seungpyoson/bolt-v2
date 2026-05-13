@@ -695,6 +695,22 @@ classification = "live_canary_readiness_report_status_value"
 reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
 
 [[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"operator-approved-canary-001"'''
+context = '''approval_id: "operator-approved-canary-001".to_string(),'''
+classification = "test_only_live_canary_gate_report_fixture"
+reason = "This literal exists only inside the cfg(test) BoltV3LiveCanaryGateReport fixture constructor used by unit tests; production approval IDs come from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "4096"
+context = "max_no_submit_readiness_report_bytes: 4096,"
+classification = "test_only_live_canary_gate_report_fixture"
+reason = "This byte cap exists only inside the cfg(test) BoltV3LiveCanaryGateReport fixture constructor used by unit tests; production byte caps come from TOML."
+
+[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''

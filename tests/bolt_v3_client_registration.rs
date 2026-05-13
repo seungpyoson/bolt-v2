@@ -63,7 +63,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     // so the NT engines expose ClientIds matching those keys. This
     // proves the wiring goes all the way through `factory.create` and
     // `engine.register_client` without a parallel NT mock.
-    let registered_data: Vec<ClientId> = node.kernel().data_engine.borrow().registered_clients();
+    let registered_data: Vec<ClientId> = node.registered_data_client_ids();
     assert!(
         registered_data.contains(&ClientId::from("polymarket_main")),
         "data engine should expose polymarket_main; got {registered_data:?}"
@@ -73,7 +73,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         "data engine should expose binance_reference; got {registered_data:?}"
     );
 
-    let registered_exec: Vec<ClientId> = node.kernel().exec_engine.borrow().client_ids();
+    let registered_exec: Vec<ClientId> = node.registered_exec_client_ids();
     assert!(
         registered_exec.contains(&ClientId::from("polymarket_main")),
         "exec engine should expose polymarket_main; got {registered_exec:?}"
@@ -189,12 +189,6 @@ fn empty_venues_root_config_registers_zero_clients() {
     let (node, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
         .expect("empty venue set should still build a clean LiveNode");
     assert!(summary.venues.is_empty());
-    assert!(
-        node.kernel()
-            .data_engine
-            .borrow()
-            .registered_clients()
-            .is_empty()
-    );
-    assert!(node.kernel().exec_engine.borrow().client_ids().is_empty());
+    assert!(node.registered_data_client_ids().is_empty());
+    assert!(node.registered_exec_client_ids().is_empty());
 }

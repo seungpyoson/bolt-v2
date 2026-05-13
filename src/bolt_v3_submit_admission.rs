@@ -54,10 +54,10 @@ impl BoltV3SubmitAdmissionState {
         if request.notional <= Decimal::ZERO {
             return Err(BoltV3SubmitAdmissionError::NonPositiveNotional);
         }
-        if request.notional > report.max_notional_per_order {
+        if request.notional > report.max_notional_per_order() {
             return Err(BoltV3SubmitAdmissionError::NotionalCapExceeded);
         }
-        if inner.admitted_order_count >= report.max_live_order_count {
+        if inner.admitted_order_count >= report.max_live_order_count() {
             return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
         }
 

@@ -89,7 +89,7 @@ Rules:
 - current source is `check_bolt_v3_live_canary_gate`; submit admission must not reparse `[live_canary]`
 - readiness report read is bounded by `max_no_submit_readiness_report_bytes` before JSON parse
 - canary-local notional must be less than or equal to the root risk ceiling
-- prose field names map one-to-one to the existing `BoltV3LiveCanaryGateReport` struct fields
+- prose field names map one-to-one to the existing `BoltV3LiveCanaryGateReport` values exposed by read-only accessors
 - `max notional per order` is the canary-specific cap; `root max notional per order` is the global `[risk]` cap that bounds every canary cap
 
 ## SubmitAdmissionState

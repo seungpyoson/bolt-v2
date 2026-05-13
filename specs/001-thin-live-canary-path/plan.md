@@ -141,8 +141,8 @@ Public interface proposed:
 use std::sync::{Arc, Mutex};
 
 pub struct BoltV3LiveNodeRuntime {
-    pub node: LiveNode,
-    pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    node: LiveNode,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
 
 pub struct BoltV3SubmitAdmissionState;
@@ -179,7 +179,8 @@ Integration sketch:
 
 - `build_bolt_v3_live_node` and its test-only siblings return `BoltV3LiveNodeRuntime`, not a bare `LiveNode`.
 - `build_live_node_with_clients` creates one `Arc<BoltV3SubmitAdmissionState>` before strategy registration and injects the same handle into `StrategyRegistrationContext` and `StrategyBuildContext`.
-- `run_bolt_v3_live_node` accepts `&mut BoltV3LiveNodeRuntime`, calls `check_bolt_v3_live_canary_gate`, arms `runtime.submit_admission` with that exact report, then preserves the existing runtime-capture and shutdown sequence around `runtime.node.run()`.
+- `BoltV3LiveNodeRuntime` stays opaque: it does not expose the shared admission state and does not deref into raw `LiveNode`.
+- `run_bolt_v3_live_node` accepts `&mut BoltV3LiveNodeRuntime`, calls `check_bolt_v3_live_canary_gate`, arms the runtime's internal admission state with that exact report, then preserves the existing runtime-capture and shutdown sequence around the internal `LiveNode::run()`.
 - The admission `Arc` outlives `run_bolt_v3_live_node` so later Phase 8 evidence can inspect `admitted_order_count()` without adding lifecycle machinery.
 - Admission state uses one internal mutex for gate report, armed flag, and count mutation. No mixed atomic/mutex state.
 - Submit ordering remains strategy-enforced and source-fence-verified, not a new Bolt framework submit wrapper. The strategy-internal submit helper must require `BoltV3SubmitAdmissionPermit` before it calls NT `submit_order`.

@@ -9,7 +9,6 @@ use std::{
 use bolt_v2::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     bolt_v3_decision_evidence::BoltV3OrderIntentKind,
-    bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     clients::polymarket::FeeProvider,
     config::Config,
@@ -80,14 +79,10 @@ fn runtime_strategy_build_context(
 ) -> StrategyBuildContext {
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
     submit_admission
-        .arm(BoltV3LiveCanaryGateReport {
-            approval_id: "runtime-test-canary".to_string(),
-            no_submit_readiness_report_path: std::path::PathBuf::from("runtime-test.json"),
-            max_no_submit_readiness_report_bytes: 4096,
-            max_live_order_count: 100,
-            max_notional_per_order: rust_decimal::Decimal::new(1_000_000, 0),
-            root_max_notional_per_order: rust_decimal::Decimal::new(1_000_000, 0),
-        })
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            100,
+            rust_decimal::Decimal::new(1_000_000, 0),
+        ))
         .expect("runtime test admission should arm");
     StrategyBuildContext::new(
         fee_provider,

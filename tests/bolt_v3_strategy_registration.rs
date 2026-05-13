@@ -3,8 +3,7 @@ mod support;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
     bolt_v3_config::load_bolt_v3_config,
-    bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport,
-    bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState},
     strategies::{eth_chainlink_taker::EthChainlinkTakerBuilder, registry::StrategyBuilder},
@@ -13,7 +12,7 @@ use bolt_v2::{
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
 use rust_decimal::Decimal;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 #[test]
 fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
@@ -24,7 +23,10 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     {
         context
             .submit_admission
-            .arm(gate_report(1, Decimal::new(1, 0)))
+            .arm(support::validated_bolt_v3_live_canary_gate_report(
+                1,
+                Decimal::new(1, 0),
+            ))
             .map_err(|error| {
                 bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
                     strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
@@ -87,12 +89,10 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
         .expect("fixture secrets should resolve");
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
-    let (mut node, _summary) = build_bolt_v3_live_node_with_summary(
-        &empty_loaded,
-        |_| false,
-        support::fake_bolt_v3_resolver,
-    )
-    .expect("v3 LiveNode should build before strategy registration");
+    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration")
+        .build()
+        .expect("v3 LiveNode should build before strategy registration");
 
     let summary =
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
@@ -118,20 +118,6 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
         notional,
-    }
-}
-
-fn gate_report(
-    max_live_order_count: u32,
-    max_notional_per_order: Decimal,
-) -> BoltV3LiveCanaryGateReport {
-    BoltV3LiveCanaryGateReport {
-        approval_id: "operator-approved-canary-001".to_string(),
-        no_submit_readiness_report_path: PathBuf::from("no-submit-readiness.json"),
-        max_no_submit_readiness_report_bytes: 4096,
-        max_live_order_count,
-        max_notional_per_order,
-        root_max_notional_per_order: max_notional_per_order,
     }
 }
 
@@ -196,7 +182,7 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
             .expect("v3 LiveNode build should register configured bolt-v3 strategies");
 
     assert_eq!(
-        node.kernel().trader().borrow().strategy_ids(),
+        node.registered_strategy_ids(),
         vec![StrategyId::from("binary_oracle_edge_taker-001")]
     );
 }

@@ -26,6 +26,13 @@ Reviewed plan artifacts and current main code surfaces for Phase 6 submit admiss
 | DeepSeek | `job_a7e36397-2c73-45e1-b0c0-7ab9a1604339` | `APPROVE` | Plan ready for TDD. Direct API packet excluded `src/strategies/eth_chainlink_taker.rs` due provider file-size cap. |
 | GLM | `job_bff84adf-a9a9-4058-a83e-e98bc3cac5c4` | `APPROVE` | Plan ready for TDD. Direct API packet excluded `src/strategies/eth_chainlink_taker.rs` due provider file-size cap. |
 
+## PR #324 Implementation Review
+
+| Provider | Head | Result | Disposition |
+| --- | --- | --- | --- |
+| Claude | `96acf2eca164d20e29317a6d584a250f2dc865e0` | `APPROVE` | No blocking findings. |
+| GPT | `96acf2eca164d20e29317a6d584a250f2dc865e0` | `REQUEST_CHANGES` | Partially accepted. Hardened runtime/gate public API so submit admission cannot be manually pre-armed from a constructed report or reached through a raw `LiveNode` deref bypass. Research-doc scope finding explicitly user-waived because the doc is non-runtime evidence and avoiding a separate docs PR is preferred. |
+
 ## Accepted Fixes
 
 - Specified one shared admission-state carrier across build, strategy registration, and runner arming.

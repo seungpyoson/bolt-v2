@@ -161,6 +161,30 @@ fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
 }
 
 #[test]
+fn no_submit_readiness_redacts_longest_overlapping_secret_values_first() {
+    let short_secret = "phase7-secret";
+    let long_secret = "phase7-secret-only-long-part";
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
+        Err(format!("connect rejected key {long_secret}")),
+        Ok(()),
+        Ok(()),
+        &[short_secret.to_string(), long_secret.to_string()],
+    );
+    let json = serde_json::to_string_pretty(&report).expect("report should serialize");
+
+    assert!(
+        !json.contains(short_secret),
+        "json leaked short secret value"
+    );
+    assert!(!json.contains(long_secret), "json leaked long secret value");
+    assert!(
+        !json.contains("only-long-part"),
+        "json leaked the long-only suffix of an overlapping secret value"
+    );
+}
+
+#[test]
 fn no_submit_readiness_records_failed_connect_reference_skip_and_disconnect_failure() {
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
         test_report_metadata(),
@@ -220,6 +244,10 @@ fn no_submit_readiness_satisfies_reference_when_required_instruments_are_cached(
         .flat_map(|strategy| strategy.config.reference_data.values())
         .map(|reference| reference.instrument_id.as_str())
         .collect::<Vec<_>>();
+    assert!(
+        !cached_instrument_ids.is_empty(),
+        "fixture must carry required reference instruments for the success case"
+    );
     let reference_readiness =
         reference_readiness_from_cached_instrument_ids(&loaded, cached_instrument_ids);
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(

@@ -461,10 +461,14 @@ fn push_result_stage(
 }
 
 fn redact_detail(detail: &str, redacted_values: &[String]) -> String {
-    redacted_values
+    let mut values = redacted_values
         .iter()
+        .map(String::as_str)
         .filter(|value| !value.is_empty())
-        .fold(detail.to_string(), |acc, value| {
-            acc.replace(value, REDACTED_DETAIL_MARKER)
-        })
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    values.dedup();
+    values.into_iter().fold(detail.to_string(), |acc, value| {
+        acc.replace(value, REDACTED_DETAIL_MARKER)
+    })
 }

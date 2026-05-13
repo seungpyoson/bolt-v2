@@ -389,6 +389,18 @@ pub async fn run_bolt_v3_live_node(
     classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
 }
 
+pub async fn controlled_no_submit_readiness(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let connect = connect_bolt_v3_clients(&mut runtime.node, loaded).await;
+    let disconnect = disconnect_bolt_v3_clients(&mut runtime.node, loaded).await;
+    (connect, disconnect)
+}
+
 fn classify_live_node_run_and_capture_shutdown(
     run_result: Result<(), anyhow::Error>,
     shutdown_result: Result<(), anyhow::Error>,

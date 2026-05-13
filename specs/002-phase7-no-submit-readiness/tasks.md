@@ -44,15 +44,15 @@
 
 **Independent Test**: `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`.
 
-- [ ] T012 [P] [US1] Write failing local runner test in `tests/bolt_v3_no_submit_readiness.rs` for satisfied controlled-connect and controlled-disconnect stages.
-- [ ] T013 [P] [US1] Write failing redaction test in `tests/bolt_v3_no_submit_readiness.rs` proving resolved secret values do not appear in debug or JSON output.
-- [ ] T014 [P] [US1] Write failing connect-failure, reference-readiness failure, byte-cap, and double-failure cleanup tests in `tests/bolt_v3_no_submit_readiness.rs`.
-- [ ] T015 [US1] Add `src/bolt_v3_no_submit_readiness.rs` report model, redaction model, and local sequencing API.
-- [ ] T016 [US1] Add current-main-safe controlled-connect/disconnect runner support in `src/bolt_v3_live_node.rs` without exposing broad `node_mut`.
+- [x] T012 [P] [US1] Write failing local runner test in `tests/bolt_v3_no_submit_readiness.rs` for satisfied controlled-connect and controlled-disconnect stages.
+- [x] T013 [P] [US1] Write failing redaction test in `tests/bolt_v3_no_submit_readiness.rs` proving resolved secret values do not appear in debug or JSON output.
+- [x] T014 [P] [US1] Write failing connect-failure, reference-readiness failure, byte-cap, and double-failure cleanup tests in `tests/bolt_v3_no_submit_readiness.rs`.
+- [x] T015 [US1] Add `src/bolt_v3_no_submit_readiness.rs` report model, redaction model, and local sequencing API.
+- [x] T016 [US1] Add current-main-safe controlled-connect/disconnect runner support in `src/bolt_v3_live_node.rs` without exposing broad `node_mut`.
 - [ ] T017 [US1] Export `bolt_v3_no_submit_readiness` from `src/lib.rs`.
-- [ ] T018 [US1] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and capture green output.
-- [ ] T019 [US1] Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and capture green output.
-- [ ] T020 [US1] Run focused clippy on new Phase 7 files when the local test slice is green.
+- [x] T018 [US1] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and capture green output.
+- [x] T019 [US1] Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and capture green output.
+- [x] T020 [US1] Run focused clippy on new Phase 7 files when the local test slice is green.
 
 ---
 
@@ -62,12 +62,12 @@
 
 **Independent Test**: `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture` shows ignored by default.
 
-- [ ] T021 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving missing approval id fails before secret resolution.
-- [ ] T022 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving approval mismatch fails before secret resolution.
-- [ ] T023 [US2] Implement real-run approval validation in `src/bolt_v3_no_submit_readiness.rs`.
-- [ ] T024 [US2] Add ignored operator harness in `tests/bolt_v3_no_submit_readiness_operator.rs`.
-- [ ] T025 [US2] Run default operator-harness test and capture ignored-by-default output.
-- [ ] T026 [US2] Do not run ignored real SSM/venue command without explicit user approval in current thread.
+- [x] T021 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving missing approval id fails before secret resolution.
+- [x] T022 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving approval mismatch fails before secret resolution.
+- [x] T023 [US2] Implement real-run approval validation in `src/bolt_v3_no_submit_readiness.rs`.
+- [x] T024 [US2] Add ignored operator harness in `tests/bolt_v3_no_submit_readiness_operator.rs`.
+- [x] T025 [US2] Run default operator-harness test and capture ignored-by-default output.
+- [x] T026 [US2] Do not run ignored real SSM/venue command without explicit user approval in current thread.
 
 ---
 
@@ -77,9 +77,9 @@
 
 **Independent Test**: Source/docs checks show Phase 8 remains blocked pending real report and strategy-input safety audit.
 
-- [ ] T027 [P] [US3] Add Phase 8 boundary assertions to `tests/bolt_v3_no_submit_readiness.rs`.
-- [ ] T028 [US3] Update `specs/002-phase7-no-submit-readiness/quickstart.md` only with explicit blocked-live wording and no executable live-capital command.
-- [ ] T029 [US3] Record Phase 8 blocked state in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
+- [x] T027 [P] [US3] Add Phase 8 boundary assertions to `tests/bolt_v3_no_submit_readiness.rs`.
+- [x] T028 [US3] Update `specs/002-phase7-no-submit-readiness/quickstart.md` only with explicit blocked-live wording and no executable live-capital command.
+- [x] T029 [US3] Record Phase 8 blocked state in `specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md`.
 
 ---
 
@@ -87,14 +87,14 @@
 
 **Purpose**: Verify Phase 7 branch before PR or implementation-complete claim.
 
-- [ ] T030 Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`.
-- [ ] T031 Run `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture`.
-- [ ] T032 Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
-- [ ] T033 Run relevant integration tests for live-node controlled connect if touched.
-- [ ] T034 Run `cargo fmt --check`.
-- [ ] T035 Run `git diff --check`.
-- [ ] T036 Run runtime literal/hardcode checks relevant to new files.
-- [ ] T037 Run no-mistakes status/checks if available.
+- [x] T030 Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`.
+- [x] T031 Run `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture`.
+- [x] T032 Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
+- [x] T033 Run relevant integration tests for live-node controlled connect if touched.
+- [x] T034 Run `cargo fmt --check`.
+- [x] T035 Run `git diff --check`.
+- [x] T036 Run runtime literal/hardcode checks relevant to new files.
+- [x] T037 Run no-mistakes status/checks if available.
 - [ ] T038 Run full `cargo test` and clippy only when branch is locally green enough for PR readiness.
 - [ ] T039 Keep worktree clean before requesting further external review or opening PR.
 

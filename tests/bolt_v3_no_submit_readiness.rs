@@ -3,9 +3,12 @@ mod support;
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
-    bolt_v3_no_submit_readiness_schema::{
-        STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
+    bolt_v3_no_submit_readiness::{
+        BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessStatus,
+        run_bolt_v3_no_submit_readiness, run_bolt_v3_no_submit_readiness_from_stage_results,
+        run_bolt_v3_no_submit_readiness_on_runtime,
     },
+    bolt_v3_no_submit_readiness_schema::{STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED},
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -40,6 +43,190 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect("producer schema should satisfy live canary gate");
+}
+
+#[test]
+fn no_submit_readiness_local_runner_writes_satisfied_connect_reference_disconnect_report() {
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        Ok(()),
+        Ok(()),
+        Ok(()),
+        &["secret-value".to_string()],
+    );
+
+    assert_eq!(
+        report.stage_status("controlled_connect"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+    assert_eq!(
+        report.stage_status("reference_readiness"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+    assert_eq!(
+        report.stage_status("controlled_disconnect"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+}
+
+#[test]
+fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
+    let secret = "0x4242424242424242424242424242424242424242424242424242424242424242";
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        Err(format!("connect rejected key {secret}")),
+        Ok(()),
+        Err(format!("disconnect rejected key {secret}")),
+        &[secret.to_string()],
+    );
+    let debug = format!("{report:#?}");
+    let json = serde_json::to_string_pretty(&report).expect("report should serialize");
+
+    assert!(!debug.contains(secret), "debug report leaked secret value");
+    assert!(!json.contains(secret), "json report leaked secret value");
+    assert!(
+        json.contains("[redacted]"),
+        "json should show redaction marker"
+    );
+}
+
+#[test]
+fn no_submit_readiness_records_failed_connect_reference_skip_and_disconnect_failure() {
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        Err("simulated connect failure".to_string()),
+        Ok(()),
+        Err("simulated disconnect failure".to_string()),
+        &[],
+    );
+
+    assert_eq!(
+        report.stage_status("controlled_connect"),
+        vec![BoltV3NoSubmitReadinessStatus::Failed]
+    );
+    assert_eq!(
+        report.stage_status("reference_readiness"),
+        vec![BoltV3NoSubmitReadinessStatus::Skipped]
+    );
+    assert_eq!(
+        report.stage_status("controlled_disconnect"),
+        vec![BoltV3NoSubmitReadinessStatus::Failed]
+    );
+}
+
+#[test]
+fn no_submit_readiness_writer_enforces_configured_byte_cap() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("readiness").join("report.json");
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(Ok(()), Ok(()), Ok(()), &[]);
+
+    let error = report
+        .write_redacted_json_with_max_bytes(&report_path, 1)
+        .expect_err("oversized report must fail closed");
+
+    assert!(
+        matches!(error, BoltV3NoSubmitReadinessError::ReportTooLarge { .. }),
+        "expected report byte-cap error, got {error:?}"
+    );
+    assert!(
+        !report_path.exists(),
+        "oversized report must not be written to disk"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
+    let loaded = loaded_with_test_live_canary();
+
+    let error = run_bolt_v3_no_submit_readiness(&loaded, "   ")
+        .await
+        .expect_err("missing approval must fail before runtime build");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3NoSubmitReadinessError::MissingOperatorApprovalId
+        ),
+        "expected missing approval error, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
+    let loaded = loaded_with_test_live_canary();
+
+    let error = run_bolt_v3_no_submit_readiness(&loaded, "different-approval")
+        .await
+        .expect_err("approval mismatch must fail before runtime build");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch
+        ),
+        "expected approval mismatch error, got {error:?}"
+    );
+}
+
+#[test]
+fn no_submit_readiness_exposes_current_runtime_wrapper_without_node_mut() {
+    let _wrapper = run_bolt_v3_no_submit_readiness_on_runtime;
+    let live_node_source =
+        std::fs::read_to_string("src/bolt_v3_live_node.rs").expect("live node source should exist");
+
+    assert!(
+        live_node_source.contains("controlled_no_submit_readiness"),
+        "live node should expose a narrow no-submit readiness boundary"
+    );
+    assert!(
+        !live_node_source.contains("pub fn node_mut"),
+        "Phase 7 must not expose a broad mutable LiveNode escape hatch"
+    );
+}
+
+#[test]
+fn no_submit_readiness_runtime_source_does_not_treat_connect_as_reference_readiness() {
+    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
+        .expect("no-submit readiness source should exist");
+
+    assert!(
+        source.contains("current_main_reference_readiness"),
+        "runtime path must use an explicit reference-readiness decision point"
+    );
+    assert!(
+        source.contains("reference readiness cannot be satisfied"),
+        "current-main missing read proof must fail closed"
+    );
+    assert!(
+        !source.contains("let reference = if connect.is_ok() {\n        Ok(())"),
+        "connect success alone must not satisfy reference readiness"
+    );
+}
+
+#[test]
+fn no_submit_readiness_docs_keep_phase8_live_action_blocked() {
+    let quickstart = include_str!("../specs/002-phase7-no-submit-readiness/quickstart.md");
+
+    assert!(quickstart.contains("Phase 8 live action remains blocked"));
+    assert!(quickstart.contains("Real no-submit report exists"));
+    assert!(quickstart.contains("strategy-input safety audit approves"));
+    assert!(quickstart.contains("User explicitly approves exact head and live command"));
+    assert!(
+        !quickstart.contains("--ignored --nocapture --live"),
+        "Phase 7 docs must not publish a live-capital command"
+    );
+}
+
+fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-written-before-approval-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    )
 }
 
 #[test]

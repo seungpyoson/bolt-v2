@@ -27,6 +27,14 @@
 - Full cargo test and full clippy remain PR-readiness gates because Phase 7 code is not written yet. They remain tracked by T037.
 - Real SSM/venue no-submit readiness remains approval-gated and will not run during default implementation. It remains tracked by T025 and the quickstart approval command.
 
+## Phase 8 Blocked State
+
+Phase 8 live action remains blocked until a real no-submit report exists, live-canary gate accepts that report, the `eth_chainlink_taker` strategy-input safety audit approves the actual feed/venue/market/math/economics inputs, and the user explicitly approves the exact head SHA plus live command.
+
+## Implementation Discovery
+
+Current main exposes controlled bolt-v3 NT connect/disconnect without entering the runner loop, but it does not expose a no-run reference data read proof that can satisfy `reference_readiness`. Phase 7 implementation therefore fails that stage closed instead of treating connect success as reference readiness. A gate-accepted real readiness report remains blocked until an existing NT/client-owned read proof surface is added or identified without introducing a dual readiness path.
+
 ## Decision
 
 Implementation may begin after this disposition because Claude, DeepSeek, and GLM all approved the Phase 7 plan with no blocking findings, and all actionable non-blocking plan findings above are accepted into the plan before runtime code.

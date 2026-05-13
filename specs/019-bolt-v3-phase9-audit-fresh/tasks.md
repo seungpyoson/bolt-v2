@@ -24,7 +24,7 @@
 - [x] T008 Run debt-marker scan over Phase 9 artifacts.
 - [x] T009 Run `git diff --check`.
 - [x] T010 Record no-mistakes runtime proof.
-- [ ] T011 Commit Phase 9 artifacts.
+- [x] T011 Commit Phase 9 artifacts.
 
 ## Phase 3: User-Gated Push And External Review
 

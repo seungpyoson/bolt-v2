@@ -9,4 +9,9 @@ var/logs/
 .claude/agents/
 .claude/settings.json
 .claude/findings/
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v4/
+.factory/
+.githooks/
 .DS_Store

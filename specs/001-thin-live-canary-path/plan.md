@@ -84,7 +84,7 @@ tests/
 ├── bolt_v3_strategy_registration.rs
 ├── bolt_v3_provider_binding.rs
 ├── bolt_v3_live_canary_gate.rs
-└── operator_ignored_live_canary.rs
+└── operator_ignored_*.rs or an equivalent command harness
 ```
 
 **Structure Decision**: Keep core generic modules small and registry-driven. Concrete provider/market/strategy behavior stays in provider, market-family, archetype, or strategy modules. `src/main.rs` becomes a thin production entrypoint and stops owning legacy runtime assembly.

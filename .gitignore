@@ -5,5 +5,8 @@ config/live.local.toml
 var/logs/
 /tmp_tests/*.log
 .omx/
+.agents/
+.claude/agents/
+.claude/settings.json
 .claude/findings/
 .DS_Store

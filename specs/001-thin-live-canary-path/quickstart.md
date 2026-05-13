@@ -42,6 +42,12 @@ Preconditions:
 - `[live_canary]` approval id and caps configured
 - operator approves zero-order readiness run
 
+Root TOML preflight:
+- use an approved bolt-v3 root TOML, not the legacy `config/live.local.toml` shape
+- require bolt-v3 root sections such as `[runtime]`, `[nautilus]`, `[risk]`, `[aws]`, `[venues.*]`, `[persistence.*]`, and `[live_canary]`
+- reject legacy operator config shapes with `[node]`, `[polymarket]`, `[reference.*]`, `[[rulesets]]`, or `[[strategies]]` as T037 inputs
+- do not derive the approval id or report path from example or fixture files
+
 Command shape:
 
 ```bash

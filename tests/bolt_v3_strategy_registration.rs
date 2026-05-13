@@ -5,74 +5,11 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
-    bolt_v3_strategy_registration::register_bolt_v3_strategies_with,
     strategies::{eth_chainlink_taker::EthChainlinkTakerBuilder, registry::StrategyBuilder},
     validate::ValidationError,
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
-
-#[test]
-fn bolt_v3_registers_configured_strategy_through_generic_boundary() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-
-    let summary = register_bolt_v3_strategies_with(&loaded, |strategy| {
-        Ok(format!(
-            "{}:{}",
-            strategy.config.strategy_archetype.as_str(),
-            strategy.config.strategy_instance_id
-        ))
-    })
-    .expect("configured strategy should register through injected binding");
-
-    assert_eq!(summary.registered.len(), loaded.strategies.len());
-    assert_eq!(
-        summary.registered[0].strategy_instance_id,
-        loaded.strategies[0].config.strategy_instance_id
-    );
-    assert_eq!(
-        summary.registered[0].strategy_archetype.as_str(),
-        loaded.strategies[0].config.strategy_archetype.as_str()
-    );
-}
-
-#[test]
-fn bolt_v3_registers_configured_strategy_on_nt_trader_through_generic_boundary() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let mut empty_loaded = loaded.clone();
-    empty_loaded.strategies.clear();
-    let (mut node, _summary) = build_bolt_v3_live_node_with_summary(
-        &empty_loaded,
-        |_| false,
-        support::fake_bolt_v3_resolver,
-    )
-    .expect("v3 LiveNode should build before strategy registration");
-
-    let expected_strategy_id = StrategyId::from("BOLT-V3-PHASE3-STUB");
-    bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with(
-        &mut node,
-        &loaded,
-        |node, _strategy| {
-            node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
-                expected_strategy_id.as_str(),
-            ))
-            .map_err(|source| {
-                bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
-                    strategy_instance_id: "BOLT-V3-PHASE3-STUB".to_string(),
-                    strategy_archetype: "test_binding".to_string(),
-                    message: source.to_string(),
-                }
-            })?;
-            Ok(expected_strategy_id)
-        },
-    )
-    .expect("injected strategy binding should register on NT trader");
-
-    let strategy_ids = node.kernel().trader().borrow().strategy_ids();
-    assert_eq!(strategy_ids, vec![expected_strategy_id]);
-}
 
 #[test]
 fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {

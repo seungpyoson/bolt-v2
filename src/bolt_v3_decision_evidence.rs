@@ -70,7 +70,8 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
             .map_err(|_| anyhow!("decision evidence writer lock is poisoned"))?;
         file.write_all(&line)
             .context("failed to write decision evidence record")?;
-        file.flush().context("failed to flush decision evidence")?;
+        file.sync_data()
+            .context("failed to sync decision evidence to disk")?;
         Ok(())
     }
 }

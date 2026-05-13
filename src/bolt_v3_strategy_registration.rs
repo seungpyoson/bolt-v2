@@ -83,49 +83,6 @@ impl std::fmt::Display for BoltV3StrategyRegistrationError {
 
 impl std::error::Error for BoltV3StrategyRegistrationError {}
 
-pub fn register_bolt_v3_strategies_with<F>(
-    loaded: &LoadedBoltV3Config,
-    mut register: F,
-) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError>
-where
-    F: FnMut(&LoadedStrategy) -> Result<String, BoltV3StrategyRegistrationError>,
-{
-    let mut summary = BoltV3StrategyRegistrationSummary::default();
-
-    for strategy in &loaded.strategies {
-        let registered_strategy_id = register(strategy)?;
-        summary.registered.push(BoltV3RegisteredStrategy {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            strategy_archetype: strategy.config.strategy_archetype.clone(),
-            registered_strategy_id,
-        });
-    }
-
-    Ok(summary)
-}
-
-pub fn register_bolt_v3_strategies_on_node_with<F>(
-    node: &mut LiveNode,
-    loaded: &LoadedBoltV3Config,
-    mut register: F,
-) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError>
-where
-    F: FnMut(&mut LiveNode, &LoadedStrategy) -> Result<StrategyId, BoltV3StrategyRegistrationError>,
-{
-    let mut summary = BoltV3StrategyRegistrationSummary::default();
-
-    for strategy in &loaded.strategies {
-        let registered_strategy_id = register(node, strategy)?;
-        summary.registered.push(BoltV3RegisteredStrategy {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            strategy_archetype: strategy.config.strategy_archetype.clone(),
-            registered_strategy_id: registered_strategy_id.to_string(),
-        });
-    }
-
-    Ok(summary)
-}
-
 pub fn register_bolt_v3_strategies_on_node_with_bindings(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,

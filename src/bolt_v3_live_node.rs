@@ -120,6 +120,13 @@ pub enum BoltV3LiveNodeError {
     /// NT runtime capture failed during shutdown after the runner loop
     /// exited or after the capture worker asked the LiveNode to stop.
     RuntimeCaptureShutdown(anyhow::Error),
+    /// NT's runner loop and runtime-capture shutdown both failed. This
+    /// preserves both failure categories instead of reporting the
+    /// compound case as only a capture-shutdown error.
+    RunAndRuntimeCaptureShutdown {
+        run_error: anyhow::Error,
+        shutdown_error: anyhow::Error,
+    },
     /// The bolt-v3 controlled-connect boundary
     /// ([`connect_bolt_v3_clients`]) bounds the dispatched
     /// `NautilusKernel::connect_data_clients` and
@@ -203,6 +210,14 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => {
                 write!(f, "NT runtime capture shutdown failed: {error}")
             }
+            BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown {
+                run_error,
+                shutdown_error,
+            } => write!(
+                f,
+                "LiveNode run failed and NT runtime capture shutdown failed: \
+                 run error: {run_error}; shutdown error: {shutdown_error}"
+            ),
             BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => write!(
                 f,
                 "bolt-v3 controlled-connect exceeded the configured \
@@ -243,6 +258,9 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
             | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
+            BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown { run_error, .. } => {
+                Some(run_error.as_ref())
+            }
             BoltV3LiveNodeError::ConnectTimeout { .. }
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. } => None,
@@ -310,6 +328,13 @@ pub async fn run_bolt_v3_live_node(
     };
     let shutdown_result = capture_guards.shutdown().await;
 
+    classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+}
+
+fn classify_live_node_run_and_capture_shutdown(
+    run_result: Result<(), anyhow::Error>,
+    shutdown_result: Result<(), anyhow::Error>,
+) -> Result<(), BoltV3LiveNodeError> {
     match (run_result, shutdown_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(run_error), Ok(())) => Err(BoltV3LiveNodeError::Run(run_error)),
@@ -318,11 +343,10 @@ pub async fn run_bolt_v3_live_node(
         }
         (Err(run_error), Err(shutdown_error)) => {
             log::error!("Live node run error during NT runtime capture shutdown: {run_error}");
-            Err(BoltV3LiveNodeError::RuntimeCaptureShutdown(
-                anyhow::anyhow!(
-                    "NT runtime capture shutdown error: {shutdown_error}; node run error: {run_error}"
-                ),
-            ))
+            Err(BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown {
+                run_error,
+                shutdown_error,
+            })
         }
     }
 }
@@ -765,6 +789,33 @@ mod tests {
             source.to_string().contains("Backtest environment"),
             "builder-construction failure should identify the invalid environment: {source}"
         );
+    }
+
+    #[test]
+    fn combined_run_and_runtime_capture_shutdown_failure_preserves_both_error_types() {
+        let error = classify_live_node_run_and_capture_shutdown(
+            Err(anyhow::anyhow!("runner failed")),
+            Err(anyhow::anyhow!("capture shutdown failed")),
+        )
+        .expect_err("combined failure must surface a bolt-v3 live-node error");
+
+        let source = std::error::Error::source(&error)
+            .expect("compound failure should expose the runner error as its source");
+        assert_eq!(source.to_string(), "runner failed");
+
+        match error {
+            BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown {
+                run_error,
+                shutdown_error,
+            } => {
+                assert_eq!(run_error.to_string(), "runner failed");
+                assert_eq!(shutdown_error.to_string(), "capture shutdown failed");
+            }
+            other => panic!(
+                "combined runner/capture-shutdown failure must preserve both \
+                 error categories, got {other:?}"
+            ),
+        }
     }
 
     #[test]

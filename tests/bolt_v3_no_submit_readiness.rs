@@ -5,7 +5,8 @@ use bolt_v2::{
     bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_no_submit_readiness::{
         BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessStatus,
-        run_bolt_v3_no_submit_readiness, run_bolt_v3_no_submit_readiness_from_stage_results,
+        reference_readiness_from_cached_instrument_ids, run_bolt_v3_no_submit_readiness,
+        run_bolt_v3_no_submit_readiness_from_stage_results,
         run_bolt_v3_no_submit_readiness_on_runtime,
     },
     bolt_v3_no_submit_readiness_schema::{STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED},
@@ -112,6 +113,64 @@ fn no_submit_readiness_records_failed_connect_reference_skip_and_disconnect_fail
 }
 
 #[test]
+fn no_submit_readiness_fails_when_required_reference_instrument_missing_from_cache() {
+    let loaded = loaded_with_test_live_canary();
+    let reference_readiness =
+        reference_readiness_from_cached_instrument_ids(&loaded, std::iter::empty::<&str>());
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        Ok(()),
+        reference_readiness,
+        Ok(()),
+        &[],
+    );
+
+    assert_eq!(
+        report.stage_status("controlled_connect"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+    assert_eq!(
+        report.stage_status("reference_readiness"),
+        vec![BoltV3NoSubmitReadinessStatus::Failed]
+    );
+    assert_eq!(
+        report.stage_status("controlled_disconnect"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+}
+
+#[test]
+fn no_submit_readiness_satisfies_reference_when_required_instruments_are_cached() {
+    let loaded = loaded_with_test_live_canary();
+    let cached_instrument_ids = loaded
+        .strategies
+        .iter()
+        .flat_map(|strategy| strategy.config.reference_data.values())
+        .map(|reference| reference.instrument_id.as_str())
+        .collect::<Vec<_>>();
+    let reference_readiness =
+        reference_readiness_from_cached_instrument_ids(&loaded, cached_instrument_ids);
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        Ok(()),
+        reference_readiness,
+        Ok(()),
+        &[],
+    );
+
+    assert_eq!(
+        report.stage_status("controlled_connect"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+    assert_eq!(
+        report.stage_status("reference_readiness"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+    assert_eq!(
+        report.stage_status("controlled_disconnect"),
+        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+}
+
+#[test]
 fn no_submit_readiness_writer_enforces_configured_byte_cap() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("readiness").join("report.json");
@@ -187,12 +246,12 @@ fn no_submit_readiness_runtime_source_does_not_treat_connect_as_reference_readin
         .expect("no-submit readiness source should exist");
 
     assert!(
-        source.contains("current_main_reference_readiness"),
-        "runtime path must use an explicit reference-readiness decision point"
+        source.contains("reference_readiness_from_cached_instrument_ids"),
+        "runtime path must use required reference instruments from NT cache"
     );
     assert!(
-        source.contains("reference readiness cannot be satisfied"),
-        "current-main missing read proof must fail closed"
+        !source.contains("current_main_reference_readiness"),
+        "runtime path must not keep the current-main fail-closed placeholder"
     );
     assert!(
         !source.contains("let reference = if connect.is_ok() {\n        Ok(())"),

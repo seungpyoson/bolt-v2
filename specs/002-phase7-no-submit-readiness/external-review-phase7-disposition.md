@@ -34,7 +34,7 @@
 ## Revised Plan Accepted Non-blocking Findings
 
 - Chainlink/freshness scope was over-broad for a no-run cache-presence check. Accepted: contract and quickstart now distinguish configured reference-instrument reachability from Phase 8 feed/source freshness.
-- Cache population may be asynchronous after `LiveNode::start()`. Accepted: plan, research, and T046 now require bounded polling using existing live-node timeout config.
+- Cache population may be asynchronous after `LiveNode::start()`. Accepted: plan, research, and T046 now require bounded cache recheck using existing live-node timeout config with no new hardcoded poll interval.
 - Strategy `on_start()` side effects must be explicit. Accepted: plan, research, and T048 now require a strategy `on_start`/submit-admission audit; source fences are not claimed as runtime-subscription fences.
 - Stop must run even if reference-cache inspection fails or startup partially fails. Accepted: plan, research, T043, T044, and T045 now require stop recording across those paths.
 - Real operator path can read existing account state through startup reconciliation. Accepted: quickstart now requires an empty or segregated approved account before any ignored real harness run.

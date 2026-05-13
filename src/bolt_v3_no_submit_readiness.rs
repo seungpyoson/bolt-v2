@@ -4,7 +4,10 @@
 //! owns adapter behavior, connection dispatch, cache, lifecycle, order state,
 //! reconciliation, and venue wire behavior.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use serde::Serialize;
 
@@ -217,17 +220,59 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
     BoltV3NoSubmitReadinessReport { stages }
 }
 
+pub fn reference_readiness_from_cached_instrument_ids<I, S>(
+    loaded: &LoadedBoltV3Config,
+    cached_instrument_ids: I,
+) -> Result<(), String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let cached = cached_instrument_ids
+        .into_iter()
+        .map(|instrument_id| instrument_id.as_ref().trim().to_string())
+        .filter(|instrument_id| !instrument_id.is_empty())
+        .collect::<BTreeSet<_>>();
+    let missing = loaded
+        .strategies
+        .iter()
+        .flat_map(|strategy| {
+            strategy
+                .config
+                .reference_data
+                .iter()
+                .filter_map(|(role, reference)| {
+                    let instrument_id = reference.instrument_id.trim();
+                    (!cached.contains(instrument_id)).then(|| {
+                        format!(
+                            "{} reference_data.{role} instrument_id `{instrument_id}`",
+                            strategy.relative_path
+                        )
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "missing required reference instruments in NT cache: {}",
+            missing.join(", ")
+        ))
+    }
+}
+
 pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
     redacted_values: &[String],
 ) -> BoltV3NoSubmitReadinessReport {
-    let (connect, disconnect) = controlled_no_submit_readiness(runtime, loaded).await;
-    let reference = if connect.is_ok() {
-        current_main_reference_readiness()
-    } else {
-        Err("controlled connect failed".to_string())
-    };
+    let (connect, reference, disconnect) =
+        controlled_no_submit_readiness(runtime, loaded, |runtime| {
+            reference_readiness_from_cached_instrument_ids(loaded, runtime.cached_instrument_ids())
+        })
+        .await;
     run_bolt_v3_no_submit_readiness_from_stage_results(
         connect.map_err(|error| error.to_string()),
         reference,
@@ -265,13 +310,6 @@ fn validate_operator_approval(
         return Err(BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch);
     }
     Ok(())
-}
-
-fn current_main_reference_readiness() -> Result<(), String> {
-    Err(
-        "reference readiness cannot be satisfied through the current no-run bolt-v3 NT boundary"
-            .to_string(),
-    )
 }
 
 fn configured_report_path(loaded: &LoadedBoltV3Config, configured: &str) -> PathBuf {

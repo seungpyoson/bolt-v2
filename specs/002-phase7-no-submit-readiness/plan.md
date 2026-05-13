@@ -55,7 +55,7 @@ Detailed decisions are in [research.md](research.md).
 
 Initial Phase 7 implementation proved controlled connect/disconnect can produce redacted reports, but it also proved that connect success cannot honestly satisfy `reference_readiness`: bolt-v3 currently has no no-run reference snapshot/read proof, and the strategy consumes `ReferenceSnapshot` from msgbus only after strategy shell subscription. The revised path must therefore use NT `LiveNode::start()`/`stop()` without `run()` so NT owns data-client connection, data-event flush into cache, execution-client connection, and cleanup. The readiness stage passes only when every `[reference_data.*]` instrument required by every loaded strategy is present in NT cache after controlled start.
 
-The implementation must bound cache inspection with the existing configured live-node timeout instead of a one-shot check. It must always call and record `LiveNode::stop()` after any start attempt, including reference-cache failure or partial startup failure. Strategy `on_start()` behavior is allowed only as an NT-owned startup side effect; Phase 7 source fences must not be misread as runtime-subscription fences, and submit admission remains unarmed during the readiness window.
+The implementation must bound cache inspection with the existing configured live-node timeout and avoid adding a new hardcoded poll interval. It must always call and record `LiveNode::stop()` after any start attempt, including reference-cache failure or partial startup failure. Strategy `on_start()` behavior is allowed only as an NT-owned startup side effect; Phase 7 source fences must not be misread as runtime-subscription fences, and submit admission remains unarmed during the readiness window.
 
 ## Phase 1 Design Summary
 

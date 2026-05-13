@@ -6,7 +6,7 @@ use bolt_v2::{
 };
 
 #[test]
-#[ignore = "requires explicit operator approval, real SSM, and real venue connectivity"]
+#[ignore = "requires explicit operator approval, real SSM, real venue connectivity, and NT cache reference proof"]
 fn operator_approved_real_no_submit_readiness_writes_redacted_report() {
     let root_path = PathBuf::from(
         env::var("BOLT_V3_ROOT_TOML").expect("BOLT_V3_ROOT_TOML must be set by operator"),

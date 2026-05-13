@@ -74,18 +74,21 @@ fn decision_evidence_path_rejects_absolute_or_parent_traversal() {
 }
 
 #[test]
-fn eth_chainlink_taker_records_decision_evidence_before_only_direct_submit_call() {
+fn eth_chainlink_taker_records_evidence_then_admission_before_only_direct_submit_call() {
     let source = include_str!("../src/strategies/eth_chainlink_taker.rs");
     let evidence_index = source
         .find(".record_order_intent(&intent)")
         .expect("strategy must record decision evidence");
+    let admission_index = source
+        .find(".submit_admission().admit(&request)")
+        .expect("strategy wrapper must submit through admission");
     let submit_index = source
         .find("self.submit_order(order, None, Some(client_id))")
         .expect("strategy wrapper must own the only direct NT submit call");
 
     assert!(
-        evidence_index < submit_index,
-        "decision evidence must be recorded before NT submit"
+        evidence_index < admission_index && admission_index < submit_index,
+        "decision evidence must be recorded before submit admission before NT submit"
     );
     // This intentionally scans the whole strategy source, including in-file
     // tests, because no code path should bypass the evidence wrapper.
@@ -102,6 +105,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
         Arc::new(NoopFeeProvider),
         "platform.reference.test".to_string(),
         Arc::new(NoopDecisionEvidenceWriter),
+        Arc::new(bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed()),
     );
 
     assert_eq!(context.reference_publish_topic(), "platform.reference.test");

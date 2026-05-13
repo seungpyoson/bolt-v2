@@ -2,9 +2,14 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
-    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
+    bolt_v3_live_canary_gate::{
+        BoltV3LiveCanaryGateError, BoltV3LiveCanaryGateReport, check_bolt_v3_live_canary_gate,
+    },
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionError,
 };
+use rust_decimal::Decimal;
+use std::{path::PathBuf, time::Duration};
 use tokio::task::LocalSet;
 
 #[test]
@@ -35,6 +40,55 @@ fn run_bolt_v3_live_node_rejects_missing_live_canary_before_nt_run() {
             BoltV3LiveNodeError::LiveCanaryGate(BoltV3LiveCanaryGateError::MissingConfig)
         ),
         "expected missing live canary gate error, got {error:?}"
+    );
+}
+
+#[test]
+fn run_bolt_v3_live_node_rejects_prearmed_submit_admission_before_nt_run() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-live-canary-prearmed");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let report_path = temp.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[("connect", "satisfied")]);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    );
+    let mut node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    node.submit_admission
+        .arm(gate_report(1, Decimal::new(1, 0)))
+        .expect("manual pre-arm should succeed");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+    let local = LocalSet::new();
+
+    let error = runtime.block_on(local.run_until(async {
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            run_bolt_v3_live_node(&mut node, &loaded),
+        )
+        .await
+        .expect("pre-armed submit admission should reject before NT run timeout")
+        .expect_err("pre-armed submit admission must reject before NT run")
+    }));
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveNodeError::SubmitAdmission(BoltV3SubmitAdmissionError::AlreadyArmed)
+        ),
+        "expected pre-armed submit admission rejection, got {error:?}"
     );
 }
 
@@ -661,6 +715,20 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
 
 fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {
     write_no_submit_report_with_stage_field(path, "stage", stages);
+}
+
+fn gate_report(
+    max_live_order_count: u32,
+    max_notional_per_order: Decimal,
+) -> BoltV3LiveCanaryGateReport {
+    BoltV3LiveCanaryGateReport {
+        approval_id: "operator-approved-canary-001".to_string(),
+        no_submit_readiness_report_path: PathBuf::from("no-submit-readiness.json"),
+        max_no_submit_readiness_report_bytes: 4096,
+        max_live_order_count,
+        max_notional_per_order,
+        root_max_notional_per_order: max_notional_per_order,
+    }
 }
 
 fn write_no_submit_report_with_stage_field(

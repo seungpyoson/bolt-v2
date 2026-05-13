@@ -3,6 +3,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
+    str::FromStr,
 };
 
 use anyhow::{Context, Result};
@@ -22,12 +23,13 @@ use nautilus_model::{
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
 use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::{BoltV3OrderIntentEvidence, BoltV3OrderIntentKind},
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest,
     platform::{
         polymarket_catalog::polymarket_instrument_id,
         reference::ReferenceSnapshot,
@@ -2831,6 +2833,8 @@ impl EthChainlinkTaker {
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
+        let request = submit_admission_request_from_intent(&intent)?;
+        let _permit = self.context.submit_admission().admit(&request)?;
         self.submit_order(order, None, Some(client_id))
     }
 
@@ -4446,6 +4450,30 @@ fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatR
     reasons
 }
 
+fn submit_admission_request_from_intent(
+    intent: &BoltV3OrderIntentEvidence,
+) -> Result<BoltV3SubmitAdmissionRequest> {
+    let price = Decimal::from_str(intent.price.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission price is not a decimal for client_order_id={}",
+            intent.client_order_id
+        )
+    })?;
+    let quantity = Decimal::from_str(intent.quantity.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
+            intent.client_order_id
+        )
+    })?;
+
+    Ok(BoltV3SubmitAdmissionRequest {
+        strategy_id: intent.strategy_id.clone(),
+        client_order_id: intent.client_order_id.clone(),
+        instrument_id: intent.instrument_id.clone(),
+        notional: price * quantity,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -4590,15 +4618,28 @@ mod tests {
     fn test_strategy_with_fee_provider(
         fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
     ) -> EthChainlinkTaker {
-        test_strategy_with_fee_provider_and_decision_evidence(
+        test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
             fee_provider,
             Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed()),
         )
     }
 
     fn test_strategy_with_fee_provider_and_decision_evidence(
         fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
         decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    ) -> EthChainlinkTaker {
+        test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            fee_provider,
+            decision_evidence,
+            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed()),
+        )
+    }
+
+    fn test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+        fee_provider: Arc<dyn crate::clients::polymarket::FeeProvider>,
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+        submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
     ) -> EthChainlinkTaker {
         EthChainlinkTaker::new(
             EthChainlinkTakerConfig {
@@ -4627,8 +4668,23 @@ mod tests {
                 fee_provider,
                 "platform.reference.test.chainlink".to_string(),
                 decision_evidence,
+                submit_admission,
             ),
         )
+    }
+
+    fn live_canary_gate_report(
+        max_live_order_count: u32,
+        max_notional_per_order: Decimal,
+    ) -> crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+        crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: std::path::PathBuf::from("no-submit-readiness.json"),
+            max_no_submit_readiness_report_bytes: 4096,
+            max_live_order_count,
+            max_notional_per_order,
+            root_max_notional_per_order: max_notional_per_order,
+        }
     }
 
     #[test]
@@ -4689,6 +4745,285 @@ mod tests {
             error.to_string().contains("intent write failed"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn unarmed_submit_admission_rejects_after_evidence_before_nt_submit() {
+        let submit_admission =
+            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+            strategy_id: strategy.config.strategy_id.clone(),
+            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.to_string(),
+            client_order_id: client_order_id.to_string(),
+            order_side: "Buy".to_string(),
+            price: price.to_string(),
+            quantity: quantity.to_string(),
+        };
+
+        let error = strategy
+            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .expect_err("unarmed submit admission must reject before NT submit");
+
+        assert!(
+            error.to_string().contains("submit admission is not armed"),
+            "{error:#}"
+        );
+        assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn armed_submit_admission_allows_nt_submit_after_evidence() {
+        let submit_admission =
+            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
+            .expect("valid gate report should arm submit admission");
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+            strategy_id: strategy.config.strategy_id.clone(),
+            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.to_string(),
+            client_order_id: client_order_id.to_string(),
+            order_side: "Buy".to_string(),
+            price: price.to_string(),
+            quantity: quantity.to_string(),
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
+                intent,
+                order,
+                ClientId::from("POLYMARKET"),
+            )
+        }));
+
+        assert!(
+            result.is_err(),
+            "test strategy is intentionally not registered with NT; reaching NT submit should panic"
+        );
+        assert_eq!(submit_admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn over_notional_submit_admission_rejects_before_nt_submit() {
+        let submit_admission =
+            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(25, 2)))
+            .expect("valid gate report should arm submit admission");
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+            strategy_id: strategy.config.strategy_id.clone(),
+            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.to_string(),
+            client_order_id: client_order_id.to_string(),
+            order_side: "Buy".to_string(),
+            price: price.to_string(),
+            quantity: quantity.to_string(),
+        };
+
+        let error = strategy
+            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .expect_err("over-cap notional must reject before NT submit");
+
+        assert!(
+            error.to_string().contains("notional cap is exceeded"),
+            "{error:#}"
+        );
+        assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn exhausted_count_submit_admission_rejects_before_nt_submit() {
+        let submit_admission =
+            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
+            .expect("valid gate report should arm submit admission");
+        submit_admission
+            .admit(
+                &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
+                    strategy_id: "strategy-a".to_string(),
+                    client_order_id: "client-order-0".to_string(),
+                    instrument_id: "instrument-0".to_string(),
+                    notional: Decimal::new(50, 2),
+                },
+            )
+            .expect("first admission should consume the only slot");
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+            strategy_id: strategy.config.strategy_id.clone(),
+            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.to_string(),
+            client_order_id: client_order_id.to_string(),
+            order_side: "Buy".to_string(),
+            price: price.to_string(),
+            quantity: quantity.to_string(),
+        };
+
+        let error = strategy
+            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .expect_err("exhausted count cap must reject before NT submit");
+
+        assert!(
+            error.to_string().contains("order count cap is exhausted"),
+            "{error:#}"
+        );
+        assert_eq!(submit_admission.admitted_order_count(), 1);
     }
 
     fn ready_to_trade_strategy() -> EthChainlinkTaker {

@@ -36,6 +36,8 @@ As the operator, I can trust that every live order candidate passes through one 
 1. **Given** `max_live_order_count = 1`, **When** one order has already been admitted, **Then** the second live order candidate is rejected before calling NT submit.
 2. **Given** `max_notional_per_order = "1.00"`, **When** a strategy proposes a larger live order, **Then** submit admission rejects it before calling NT submit.
 3. **Given** missing decision evidence, **When** a strategy is constructed or tries to submit, **Then** construction or admission fails closed; no fallback submit path exists.
+4. **Given** an entry, exit, or replace-submit candidate, **When** submit admission runs, **Then** all submit candidates consume the same global live canary budget.
+5. **Given** a plain cancel request, **When** the strategy asks NT to cancel an open order, **Then** submit admission is not consumed because no new submit is attempted.
 
 ---
 
@@ -106,7 +108,7 @@ As the operator, I can approve one tiny live order with configured caps and get 
 - **FR-006**: Concrete providers, market families, and strategies MUST be selected through registries or binding tables, not core matches that require core edits per new concrete type.
 - **FR-007**: The first registered strategy binding MUST be a taker strategy archetype for binary oracle markets, configured through execution venue, primary oracle reference, and optional exchange reference roles selected by TOML and registries; core architecture MUST NOT require Polymarket, Chainlink, Binance, or any specific market family.
 - **FR-008**: The strategy binding MUST accept multiple configured exchange reference venues through roles/config; it MUST NOT be hardcoded to one exchange.
-- **FR-009**: Submit admission MUST consume `BoltV3LiveCanaryGateReport.max_live_order_count` and `max_notional_per_order` before every live submit.
+- **FR-009**: Submit admission MUST consume `BoltV3LiveCanaryGateReport.max_live_order_count` and `max_notional_per_order` before every live order submit candidate, including entry, exit, and replace-submit paths. Plain cancel requests are not live submit candidates.
 - **FR-010**: Strategy construction or submit admission MUST fail closed when mandatory bolt-v3 decision evidence is absent or cannot be persisted.
 - **FR-011**: Bolt-v3 MUST NOT own order lifecycle, reconciliation, adapter behavior, NT cache semantics, or local mock venue worlds as live-readiness proof.
 - **FR-012**: Authenticated no-submit readiness MUST require explicit operator approval and produce a redacted report from real SSM and venue connectivity before any tiny-capital submit.

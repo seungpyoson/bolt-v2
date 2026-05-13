@@ -4,15 +4,33 @@ This quickstart is for the completed feature path. It is not approval to run liv
 
 ## Local Verification
 
-For Phase 1, only docs/spec artifacts exist. The `cargo test --test ...` commands below require their later implementation phases to exist.
+For Phase 6, run only after the Phase 6 implementation branch exists and the first red test has been captured. Do not run live capital from this quickstart.
 
 ```bash
 cargo fmt --check
-cargo test --test bolt_v3_production_entrypoint
-cargo test --test bolt_v3_strategy_registration
 cargo test --test bolt_v3_submit_admission
+cargo test --test bolt_v3_decision_evidence
+cargo test --test bolt_v3_strategy_registration
 cargo test --test bolt_v3_live_canary_gate
+git diff --check
+python3 scripts/verify_bolt_v3_runtime_literals.py
+python3 scripts/verify_bolt_v3_provider_leaks.py
+python3 scripts/verify_bolt_v3_naming.py
+python3 scripts/verify_bolt_v3_core_boundary.py
 ```
+
+Phase 6 green criteria:
+- missing or unarmed gate report rejects before NT submit with a distinct diagnostic
+- exhausted count cap rejects before NT submit
+- over notional cap rejects before NT submit, while notional equal to the cap admits
+- decision evidence failure rejects before admission budget consumption
+- valid submit path orders as decision evidence write, submit admission, NT submit
+- entry, exit, and replace-submit candidates consume one global budget
+- plain cancel requests do not consume submit admission budget
+- double-arm and stale-arm behavior are defined and covered
+- runtime capture around `run_bolt_v3_live_node` is preserved
+- decision evidence alone is not NT submit proof; live proof must use NT order events
+- restart resets Phase 6 in-memory admission budget, so Phase 8 operator procedure must not treat restart as budget preservation
 
 ## no-mistakes Triage During Issue #780 Soak
 

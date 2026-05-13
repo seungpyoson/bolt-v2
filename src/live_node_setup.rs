@@ -11,7 +11,8 @@ use nautilus_live::{config::LiveNodeConfig, node::LiveNode};
 use nautilus_model::identifiers::TraderId;
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter, clients::polymarket, config::Config,
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState, clients::polymarket, config::Config,
     strategies::registry::StrategyBuildContext,
 };
 
@@ -35,7 +36,12 @@ pub fn make_strategy_build_context(
     reference_publish_topic: String,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> StrategyBuildContext {
-    StrategyBuildContext::new(fee_provider, reference_publish_topic, decision_evidence)
+    StrategyBuildContext::new(
+        fee_provider,
+        reference_publish_topic,
+        decision_evidence,
+        Arc::new(BoltV3SubmitAdmissionState::new_unarmed()),
+    )
 }
 
 pub fn make_live_node_config(

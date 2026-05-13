@@ -8,7 +8,8 @@ use nautilus_trading::Strategy;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter, clients::polymarket::FeeProvider,
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState, clients::polymarket::FeeProvider,
     validate::ValidationError,
 };
 
@@ -23,6 +24,7 @@ pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
     reference_publish_topic: String,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
 
 impl StrategyBuildContext {
@@ -30,11 +32,13 @@ impl StrategyBuildContext {
         fee_provider: Arc<dyn FeeProvider>,
         reference_publish_topic: String,
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        submit_admission: Arc<BoltV3SubmitAdmissionState>,
     ) -> Self {
         Self {
             fee_provider,
             reference_publish_topic,
             decision_evidence,
+            submit_admission,
         }
     }
 
@@ -52,6 +56,14 @@ impl StrategyBuildContext {
 
     pub fn decision_evidence(&self) -> &dyn BoltV3DecisionEvidenceWriter {
         self.decision_evidence.as_ref()
+    }
+
+    pub fn submit_admission(&self) -> &BoltV3SubmitAdmissionState {
+        self.submit_admission.as_ref()
+    }
+
+    pub fn submit_admission_arc(&self) -> Arc<BoltV3SubmitAdmissionState> {
+        self.submit_admission.clone()
     }
 }
 
@@ -336,6 +348,7 @@ mod tests {
             Arc::new(NoopFeeProvider),
             "platform.reference.test".to_string(),
             Arc::new(NoopDecisionEvidenceWriter),
+            Arc::new(BoltV3SubmitAdmissionState::new_unarmed()),
         )
     }
 

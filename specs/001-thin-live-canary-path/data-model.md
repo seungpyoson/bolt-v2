@@ -72,7 +72,7 @@ Rules:
 
 ## BoltV3LiveCanaryGateReport
 
-Validated result from PR #305 gate.
+Validated result from the bolt-v3 live canary gate.
 
 Fields:
 - approval id
@@ -86,6 +86,7 @@ Rules:
 - produced before NT runner entry
 - consumed by submit admission before every live order
 - not a substitute for submit-time counters
+- current source is `check_bolt_v3_live_canary_gate`; submit admission must not reparse `[live_canary]`
 - readiness report read is bounded by `max_no_submit_readiness_report_bytes` before JSON parse
 - canary-local notional must be less than or equal to the root risk ceiling
 - prose field names map one-to-one to the existing `BoltV3LiveCanaryGateReport` struct fields
@@ -98,15 +99,30 @@ Runtime state for the tiny-capital canary submit gate.
 Fields:
 - gate report
 - admitted order count
+- internal mutex protecting gate report, armed flag, and count mutation
 - per-order cap copied from `BoltV3LiveCanaryGateReport.max_notional_per_order`
-- strategy/evidence availability state
+- strategy/order/instrument labels for diagnostics
+- strategy-supplied positive order notional
 
 Rules:
 - initialized only from a valid `BoltV3LiveCanaryGateReport`
+- begins unarmed during build and arms only after live canary gate returns a valid report
+- rejects admission while unarmed with a distinct `NotArmed` error
+- rejects a second arm attempt so validated bounds cannot change under a running canary
+- stale-arm means any arm attempt after one successful arm, including a different report; it rejects and does not mutate caps or count
 - rejects when order count is exhausted
-- rejects when proposed order notional exceeds cap
-- rejects when decision evidence persistence is unavailable
+- rejects when proposed order notional exceeds cap; notional equal to cap admits
+- rejects non-positive proposed notional
+- decision evidence persistence must succeed before admission consumes order budget
 - must execute before NT submit
+- admitted order count means submit attempts accepted by admission, not venue accepts or fills
+- the budget is global across all registered strategies, with no per-strategy partition
+- entry submits, exit submits, and replace-submit paths consume the same count and notional budget
+- plain cancel requests are not submits and do not consume admission budget
+- admission budget is consumed before NT submit and is not refunded on NT submit error unless a later reviewed requirement changes this fail-closed rule
+- decision evidence captures strategy intent before admission; an admission rejection can leave an intent record with no NT submit evidence
+- a fresh process or fresh bolt-v3 live-node build creates a fresh unarmed state; restart reconciliation remains NT-owned and is not Phase 6 scope
+- restart resets the in-memory admission budget; Phase 6 does not reconstruct prior admission count from NT cache or venue state
 
 ## NoSubmitReadinessReport
 

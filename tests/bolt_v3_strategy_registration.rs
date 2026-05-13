@@ -3,13 +3,16 @@ mod support;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
     bolt_v3_config::load_bolt_v3_config,
-    bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
+    bolt_v3_submit_admission::{BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState},
     strategies::{eth_chainlink_taker::EthChainlinkTakerBuilder, registry::StrategyBuilder},
     validate::ValidationError,
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
+use rust_decimal::Decimal;
+use std::sync::Arc;
 
 #[test]
 fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
@@ -18,6 +21,39 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
     ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
     {
+        context
+            .submit_admission
+            .arm(support::validated_bolt_v3_live_canary_gate_report(
+                1,
+                Decimal::new(1, 0),
+            ))
+            .map_err(|error| {
+                bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
+                    strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
+                    strategy_archetype: context
+                        .strategy
+                        .config
+                        .strategy_archetype
+                        .as_str()
+                        .to_string(),
+                    message: format!("submit admission arm failed: {error:?}"),
+                }
+            })?;
+        context
+            .submit_admission
+            .admit(&submit_request(Decimal::new(1, 0)))
+            .map_err(|error| {
+                bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
+                    strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
+                    strategy_archetype: context
+                        .strategy
+                        .config
+                        .strategy_archetype
+                        .as_str()
+                        .to_string(),
+                    message: format!("submit admission admit failed: {error:?}"),
+                }
+            })?;
         let strategy_id = StrategyId::from("BOLT-V3-PHASE3-BINDING");
         node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
             strategy_id.as_str(),
@@ -52,12 +88,11 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     empty_loaded.strategies.clear();
     let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
         .expect("fixture secrets should resolve");
-    let (mut node, _summary) = build_bolt_v3_live_node_with_summary(
-        &empty_loaded,
-        |_| false,
-        support::fake_bolt_v3_resolver,
-    )
-    .expect("v3 LiveNode should build before strategy registration");
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration")
+        .build()
+        .expect("v3 LiveNode should build before strategy registration");
 
     let summary =
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
@@ -65,14 +100,25 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             &loaded,
             &resolved,
             TEST_BINDINGS,
+            admission.clone(),
         )
         .expect("configured strategy should register through matching runtime binding");
 
     assert_eq!(summary.registered.len(), loaded.strategies.len());
+    assert_eq!(admission.admitted_order_count(), 1);
     assert_eq!(
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-PHASE3-BINDING")]
     );
+}
+
+fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
+    BoltV3SubmitAdmissionRequest {
+        strategy_id: "strategy-a".to_string(),
+        client_order_id: "client-order-1".to_string(),
+        instrument_id: "instrument-1".to_string(),
+        notional,
+    }
 }
 
 #[test]
@@ -136,7 +182,7 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
             .expect("v3 LiveNode build should register configured bolt-v3 strategies");
 
     assert_eq!(
-        node.kernel().trader().borrow().strategy_ids(),
+        node.registered_strategy_ids(),
         vec![StrategyId::from("binary_oracle_edge_taker-001")]
     );
 }

@@ -9,6 +9,7 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3DecisionEvidenceWriter, JsonlBoltV3DecisionEvidenceWriter,
 };
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
+use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub strategy: &'a LoadedStrategy,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -88,6 +90,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::default();
     if loaded.strategies.is_empty() {
@@ -116,6 +119,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
                 strategy,
                 resolved,
                 decision_evidence: decision_evidence.clone(),
+                submit_admission: submit_admission.clone(),
             },
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {

@@ -34,7 +34,7 @@
 //! market-data subscription APIs, registers a strategy actor, constructs
 //! an order, or enables any submit path.
 
-use std::{collections::HashMap, str::FromStr, time::Duration};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
 use ahash::AHashMap;
 use anyhow::Result;
@@ -43,11 +43,11 @@ use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
-    node::{LiveNode, LiveNodeHandle},
+    node::{LiveNode, LiveNodeHandle, NodeState},
 };
 use nautilus_model::{
     enums::BarIntervalType,
-    identifiers::{ClientId, TraderId},
+    identifiers::{ClientId, StrategyId, TraderId},
 };
 use ustr::Ustr;
 
@@ -67,9 +67,45 @@ use crate::{
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
+    bolt_v3_submit_admission::{BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState},
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
 };
+
+#[derive(Debug)]
+pub struct BoltV3LiveNodeRuntime {
+    node: LiveNode,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+}
+
+impl BoltV3LiveNodeRuntime {
+    fn new(node: LiveNode, submit_admission: Arc<BoltV3SubmitAdmissionState>) -> Self {
+        Self {
+            node,
+            submit_admission,
+        }
+    }
+
+    pub fn registered_strategy_ids(&self) -> Vec<StrategyId> {
+        self.node.kernel().trader().borrow().strategy_ids()
+    }
+
+    pub fn environment(&self) -> Environment {
+        self.node.environment()
+    }
+
+    pub fn state(&self) -> NodeState {
+        self.node.state()
+    }
+
+    pub fn registered_data_client_ids(&self) -> Vec<ClientId> {
+        self.node.kernel().data_engine.borrow().registered_clients()
+    }
+
+    pub fn registered_exec_client_ids(&self) -> Vec<ClientId> {
+        self.node.kernel().exec_engine.borrow().client_ids()
+    }
+}
 
 #[derive(Debug)]
 pub enum BoltV3LiveNodeBuilderError {
@@ -115,6 +151,9 @@ pub enum BoltV3LiveNodeError {
     /// `LiveNode::run` was invoked. This variant wraps the specific
     /// fail-closed reason from [`BoltV3LiveCanaryGateError`].
     LiveCanaryGate(BoltV3LiveCanaryGateError),
+    /// The validated live canary gate report could not arm the shared
+    /// submit-admission state before `LiveNode::run` was invoked.
+    SubmitAdmission(BoltV3SubmitAdmissionError),
     /// NT returned an error from `LiveNode::run` after the live canary
     /// gate accepted the loaded config and readiness report.
     Run(anyhow::Error),
@@ -210,6 +249,12 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                     "bolt-v3 live canary gate rejected runtime start: {error}"
                 )
             }
+            BoltV3LiveNodeError::SubmitAdmission(error) => {
+                write!(
+                    f,
+                    "bolt-v3 submit admission rejected runtime start: {error}"
+                )
+            }
             BoltV3LiveNodeError::Run(error) => write!(f, "LiveNode run failed: {error}"),
             BoltV3LiveNodeError::RuntimeCaptureWire(error) => {
                 write!(f, "NT runtime capture wiring failed: {error}")
@@ -263,6 +308,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
+            BoltV3LiveNodeError::SubmitAdmission(error) => Some(error),
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
             | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
@@ -279,7 +325,7 @@ impl std::error::Error for BoltV3LiveNodeError {
 
 pub fn build_bolt_v3_live_node(
     loaded: &LoadedBoltV3Config,
-) -> Result<LiveNode, BoltV3LiveNodeError> {
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     check_no_forbidden_credential_env_vars(&loaded.root)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     // Per #252 design review: own the resolver session at the bolt-v3
@@ -294,8 +340,8 @@ pub fn build_bolt_v3_live_node(
         resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (node, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
-    Ok(node)
+    let (runtime, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
+    Ok(runtime)
 }
 
 /// Single bolt-v3 entrypoint for entering NT's runner loop.
@@ -306,15 +352,19 @@ pub fn build_bolt_v3_live_node(
 /// must use this wrapper rather than invoking the NT runner method directly.
 /// If the gate rejects, NT's runner loop is never entered.
 pub async fn run_bolt_v3_live_node(
-    node: &mut LiveNode,
+    runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let _gate_report = check_bolt_v3_live_canary_gate(loaded)
+    let gate_report = check_bolt_v3_live_canary_gate(loaded)
         .await
         .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
-    // This F1 slice validates the approved canary bounds before the runner loop.
-    // Submit admission must consume these bounds in the later live-order slice.
-    let mut capture_guards = wire_bolt_v3_runtime_capture(node, node.handle(), loaded)
+    runtime
+        .submit_admission
+        .arm(gate_report)
+        .map_err(BoltV3LiveNodeError::SubmitAdmission)?;
+    let node = &mut runtime.node;
+    let node_handle = node.handle();
+    let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)
         .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
 
@@ -367,14 +417,14 @@ pub fn build_bolt_v3_live_node_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
     resolver: R,
-) -> Result<LiveNode, BoltV3LiveNodeError>
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError>
 where
     F: FnMut(&str) -> bool,
     R: FnMut(&str, &str) -> Result<String, E>,
     E: std::fmt::Display,
 {
-    let (node, _summary) = build_bolt_v3_live_node_with_summary(loaded, env_is_set, resolver)?;
-    Ok(node)
+    let (runtime, _summary) = build_bolt_v3_live_node_with_summary(loaded, env_is_set, resolver)?;
+    Ok(runtime)
 }
 
 /// Same as [`build_bolt_v3_live_node_with`] but also returns the
@@ -386,7 +436,7 @@ pub fn build_bolt_v3_live_node_with_summary<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
     resolver: R,
-) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError>
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError>
 where
     F: FnMut(&str) -> bool,
     R: FnMut(&str, &str) -> Result<String, E>,
@@ -405,7 +455,8 @@ fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
-) -> Result<(LiveNode, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -416,6 +467,7 @@ fn build_live_node_with_clients(
         loaded,
         resolved,
         crate::bolt_v3_archetypes::runtime_bindings(),
+        submit_admission.clone(),
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     for strategy in &strategy_summary.registered {
@@ -426,7 +478,7 @@ fn build_live_node_with_clients(
             strategy.registered_strategy_id
         );
     }
-    Ok((node, summary))
+    Ok((BoltV3LiveNodeRuntime::new(node, submit_admission), summary))
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

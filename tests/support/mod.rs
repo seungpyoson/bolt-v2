@@ -122,6 +122,48 @@ pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+pub fn validated_bolt_v3_live_canary_gate_report(
+    max_live_order_count: u32,
+    max_notional_per_order: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+    let root_path = repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded =
+        bolt_v2::bolt_v3_config::load_bolt_v3_config(&root_path).expect("fixture should load");
+    let temp = TempCaseDir::new("bolt-v3-validated-gate-report");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    loaded.root.risk.default_max_notional_per_order = max_notional_per_order.to_string();
+    let report_path = temp.path().join("no-submit-readiness.json");
+    write_satisfied_no_submit_readiness_report(&report_path);
+    loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
+        approval_id: "operator-approved-canary-001".to_string(),
+        no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+        max_live_order_count,
+        max_notional_per_order: max_notional_per_order.to_string(),
+        max_no_submit_readiness_report_bytes: 4096,
+    });
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime should build");
+    runtime
+        .block_on(bolt_v2::bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate(&loaded))
+        .expect("valid live canary fixture should pass gate")
+}
+
+fn write_satisfied_no_submit_readiness_report(path: &Path) {
+    let report = serde_json::json!({
+        "stages": [
+            { "stage": "connect", "status": "satisfied" }
+        ]
+    });
+    fs::write(
+        path,
+        serde_json::to_vec(&report).expect("report JSON should encode"),
+    )
+    .expect("readiness report should be written");
+}
+
 pub fn runtime_toml_with_reference_venue(
     reference_chainlink_block: &str,
     reference_venue_block: &str,

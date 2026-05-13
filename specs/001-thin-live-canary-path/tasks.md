@@ -69,13 +69,14 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Goal**: `BoltV3LiveCanaryGateReport` bounds are enforced before every live submit.
 
-**Independent Test**: `cargo test --test bolt_v3_submit_admission` proves order count, notional cap, missing report, and missing evidence all reject before NT submit.
+**Independent Test**: `cargo test --test bolt_v3_submit_admission` proves order count, notional cap, cap equality, missing/unarmed report, double-arm/stale-arm, global submit budget, cancel exclusion, and evidence failure all reject before NT submit without consuming admission budget before evidence persists.
 
-- [ ] T028 [US2] Write failing tests in `tests/bolt_v3_submit_admission.rs` for one-order cap, over-notional rejection, missing gate report, and missing evidence.
-- [ ] T029 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture`; expected failures show missing submit admission module.
-- [ ] T030 [US2] Add `src/bolt_v3_submit_admission.rs` with config-derived admission state initialized from `BoltV3LiveCanaryGateReport`.
-- [ ] T031 [US2] Wire strategy submit calls through submit admission before NT submit.
-- [ ] T032 [US2] Run `cargo test --test bolt_v3_submit_admission`, targeted strategy submit tests, and source-fence checks for direct `submit_order` bypasses.
+- [x] T028 [US2] Write one failing public behavior test in `tests/bolt_v3_submit_admission.rs` for unarmed admission rejecting before NT submit with `NotArmed`.
+- [x] T029 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture`; expected failures show missing submit admission module.
+- [x] T030 [US2] Add `src/bolt_v3_submit_admission.rs` with shared admission state armed only from `BoltV3LiveCanaryGateReport`.
+- [x] T031 [US2] Continue vertical TDD, one behavior at a time, for count cap, notional cap, cap equality, evidence-failure-before-admission, success ordering, global entry/exit/replace-submit budget, cancel exclusion, and double-arm/stale-arm behavior.
+- [x] T032 [US2] Wire one shared admission handle from live-node build through strategy contexts into `run_bolt_v3_live_node`, then wire strategy submit calls through decision evidence, submit admission, admission permit, and NT submit.
+- [x] T033 [US2] Run `cargo test --test bolt_v3_submit_admission`, targeted strategy submit tests, and source-fence checks across `src/strategies/**/*.rs` and `src/bolt_v3_archetypes/**/*.rs` for direct `submit_order` bypasses.
 
 ## Phase 7: Authenticated No-submit Readiness (US4)
 
@@ -83,12 +84,12 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Local tests cover report schema and zero-order guard. Ignored operator test produces real artifact only with explicit approval.
 
-- [ ] T033 [US4] Write failing schema tests for no-submit readiness report producer and gate consumer compatibility.
-- [ ] T034 [US4] Write zero-order source/behavior fence proving readiness code cannot call submit, cancel, replace, or amend order APIs.
-- [ ] T035 [US4] Implement minimal no-submit readiness runner using existing bolt-v3 build and controlled-connect/disconnect boundaries.
-- [ ] T036 [US4] Run local readiness tests with mock SSM resolver and no network.
-- [ ] T037 [US4] With explicit operator approval, run ignored real SSM/venue no-submit readiness and store redacted report path outside tracked secrets.
-- [ ] T038 [US4] Run `cargo test --test bolt_v3_live_canary_gate` against the redacted report fixture shape.
+- [ ] T034 [US4] Write failing schema tests for no-submit readiness report producer and gate consumer compatibility.
+- [ ] T035 [US4] Write zero-order source/behavior fence proving readiness code cannot call submit, cancel, replace, or amend order APIs.
+- [ ] T036 [US4] Implement minimal no-submit readiness runner using existing bolt-v3 build and controlled-connect/disconnect boundaries.
+- [ ] T037 [US4] Run local readiness tests with mock SSM resolver and no network.
+- [ ] T038 [US4] With explicit operator approval, run ignored real SSM/venue no-submit readiness and store redacted report path outside tracked secrets.
+- [ ] T039 [US4] Run `cargo test --test bolt_v3_live_canary_gate` against the redacted report fixture shape.
 
 ## Phase 8: Tiny-capital Live Canary (US5)
 
@@ -96,13 +97,13 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Local tests prove all preconditions and fail-closed paths. Operator artifact proves real submit/venue result/cancel/reconciliation.
 
-- [ ] T039 [US5] Write failing canary precondition tests requiring exact config checksum, approval id, gate report, submit admission state, and decision evidence.
-- [ ] T040 [US5] Write ignored operator test or command harness that submits at most one configured canary order after explicit approval.
-- [ ] T041 [US5] Implement canary operator harness using the production bolt-v3 path and NT adapter submit only.
-- [ ] T042 [US5] Add strategy-driven cancel path evidence capture for open canary orders.
-- [ ] T043 [US5] Add restart reconciliation evidence capture through NT adapter state.
-- [ ] T044 [US5] Run local fail-closed tests, exact-head CI, no-mistakes triage, and external review after branch is clean and pushed.
-- [ ] T045 [US5] With explicit operator approval, run tiny-capital canary and store redacted artifact with exact SHA and config checksum.
+- [ ] T040 [US5] Write failing canary precondition tests requiring exact config checksum, approval id, gate report, submit admission state, and decision evidence.
+- [ ] T041 [US5] Write ignored operator test or command harness that submits at most one configured canary order after explicit approval.
+- [ ] T042 [US5] Implement canary operator harness using the production bolt-v3 path and NT adapter submit only.
+- [ ] T043 [US5] Add strategy-driven cancel path evidence capture for open canary orders.
+- [ ] T044 [US5] Add restart reconciliation evidence capture through NT adapter state.
+- [ ] T045 [US5] Run local fail-closed tests, exact-head CI, no-mistakes triage, and external review after branch is clean and pushed.
+- [ ] T046 [US5] With explicit operator approval, run tiny-capital canary and store redacted artifact with exact SHA and config checksum.
 
 ## Out Of Scope For MVP
 

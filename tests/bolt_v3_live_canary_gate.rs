@@ -235,10 +235,11 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
         .await
         .expect("satisfied no-submit report and capped notional should pass");
 
-    assert_eq!(report.approval_id, "operator-approved-canary-001");
-    assert_eq!(report.max_live_order_count, 1);
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+    assert_eq!(report.max_live_order_count(), 1);
     assert_eq!(
-        report.no_submit_readiness_report_path, report_path,
+        report.no_submit_readiness_report_path(),
+        report_path.as_path(),
         "absolute report path should be preserved"
     );
 }
@@ -641,7 +642,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
         .await
         .expect("uppercase satisfied status should pass");
 
-    assert_eq!(report.approval_id, "operator-approved-canary-001");
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
 }
 
 fn loaded_with_live_canary(

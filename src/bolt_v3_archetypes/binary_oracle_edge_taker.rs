@@ -254,6 +254,7 @@ pub fn register_runtime_strategy(
         fee_provider,
         parameters.runtime.reference_publish_topic,
         context.decision_evidence.clone(),
+        context.submit_admission.clone(),
     );
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;

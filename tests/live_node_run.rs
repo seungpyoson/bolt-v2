@@ -309,7 +309,7 @@ fn wires_runtime_capture_from_bolt_v3_persistence_config() {
             BoltV3RootConfig, LoadedBoltV3Config, PersistenceBlock, StreamingBlock,
             load_bolt_v3_config,
         },
-        bolt_v3_live_node::{build_bolt_v3_live_node_with, wire_bolt_v3_runtime_capture},
+        bolt_v3_live_node::{make_bolt_v3_live_node_builder, wire_bolt_v3_runtime_capture},
     };
     use std::time::Duration;
     use tempfile::tempdir;
@@ -354,9 +354,10 @@ fn wires_runtime_capture_from_bolt_v3_persistence_config() {
             strategies: loaded.strategies.clone(),
         };
 
-        let node =
-            build_bolt_v3_live_node_with(&routed_loaded, |_| false, support::fake_bolt_v3_resolver)
-                .expect("v3 LiveNode should build for runtime-capture wiring");
+        let node = make_bolt_v3_live_node_builder(&routed_loaded)
+            .expect("v3 LiveNodeBuilder should build for runtime-capture wiring")
+            .build()
+            .expect("v3 LiveNode should build for runtime-capture wiring");
         let handle = node.handle();
         let guards = wire_bolt_v3_runtime_capture(&node, handle.clone(), &routed_loaded)
             .expect("runtime capture should wire from v3 persistence config");

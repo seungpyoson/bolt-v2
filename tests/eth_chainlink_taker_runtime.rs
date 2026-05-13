@@ -7,17 +7,20 @@ use std::{
 };
 
 use bolt_v2::{
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     bolt_v3_decision_evidence::BoltV3OrderIntentKind,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    clients::polymarket::FeeProvider,
     config::Config,
     live_node_setup::{
         DataClientRegistration, ExecClientRegistration, build_live_node, make_live_node_config,
-        make_strategy_build_context,
     },
     platform::{
         reference::{EffectiveVenueState, ReferenceSnapshot, VenueHealth, VenueKind},
         ruleset::{CandidateMarket, RuntimeSelectionSnapshot, SelectionDecision, SelectionState},
         runtime::{registry_runtime_strategy_factory, runtime_selection_topic},
     },
+    strategies::registry::StrategyBuildContext,
     strategies::{eth_chainlink_taker::EthChainlinkTaker, production_strategy_registry},
 };
 use nautilus_common::{
@@ -48,6 +51,7 @@ use support::{
 };
 use tokio::time::sleep;
 use toml::Value;
+
 #[derive(Debug, Default)]
 struct StaticFeeProvider;
 
@@ -66,6 +70,26 @@ impl bolt_v2::clients::polymarket::FeeProvider for StaticFeeProvider {
         use futures_util::FutureExt;
         async { Ok(()) }.boxed()
     }
+}
+
+fn runtime_strategy_build_context(
+    fee_provider: Arc<dyn FeeProvider>,
+    reference_publish_topic: String,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+) -> StrategyBuildContext {
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    submit_admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            100,
+            rust_decimal::Decimal::new(1_000_000, 0),
+        ))
+        .expect("runtime test admission should arm");
+    StrategyBuildContext::new(
+        fee_provider,
+        reference_publish_topic,
+        decision_evidence,
+        submit_admission,
+    )
 }
 
 fn build_test_node() -> LiveNode {
@@ -501,7 +525,7 @@ fn eth_chainlink_taker_runtime_submits_real_entry_order() {
     let decision_evidence = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             decision_evidence.clone(),
@@ -614,7 +638,7 @@ fn eth_chainlink_taker_actor_materializes_same_session_entry_fill_by_client_orde
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -738,7 +762,7 @@ fn eth_chainlink_taker_runtime_attributes_same_session_entry_fill_to_strategy() 
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -855,7 +879,7 @@ fn eth_chainlink_taker_runtime_submits_down_entry_as_buy_on_down_ask() {
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -949,7 +973,7 @@ fn eth_chainlink_taker_runtime_submits_exit_order_when_open_position_enters_free
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -1067,7 +1091,7 @@ fn eth_chainlink_taker_runtime_bootstraps_cached_open_position_for_freeze_exit()
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -1163,7 +1187,7 @@ fn eth_chainlink_taker_runtime_stays_fail_closed_with_multiple_cached_positions(
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -1264,7 +1288,7 @@ fn eth_chainlink_taker_runtime_keeps_exit_path_for_market_a_position_after_rotat
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -1397,7 +1421,7 @@ fn eth_chainlink_taker_runtime_exits_recovered_numeric_down_position_by_selling_
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -1576,7 +1600,7 @@ fn eth_chainlink_taker_runtime_does_not_trade_cached_legacy_short_position() {
     let strategy_id = StrategyId::from("ETHCHAINLINKTAKER-RT-001");
     let strategy_factory = registry_runtime_strategy_factory(
         production_strategy_registry().unwrap(),
-        make_strategy_build_context(
+        runtime_strategy_build_context(
             Arc::new(StaticFeeProvider),
             "platform.reference.test.chainlink".to_string(),
             Arc::new(support::RecordingDecisionEvidenceWriter::default()),

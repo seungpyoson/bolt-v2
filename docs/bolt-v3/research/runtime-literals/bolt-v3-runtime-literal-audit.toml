@@ -102,6 +102,30 @@ classification = "strategy_registration_diagnostic_template"
 reason = "This diagnostic reports the config strategy instance, archetype binding, and resulting NT StrategyId after registration; all values come from validated TOML or NT registration."
 
 [[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "admitted_order_count: 0,"
+classification = "submit_admission_counter_identity"
+reason = "The submit admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from the validated live canary gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "inner.admitted_order_count = 0;"
+classification = "submit_admission_counter_identity"
+reason = "Arming a fresh admission state resets the in-memory count to empty while preserving operator-provided caps from the validated gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "inner.admitted_order_count += 1;"
+classification = "submit_admission_counter_increment"
+reason = "Each admitted live submit consumes exactly one order-count slot from the operator-provided gate cap."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"POLYMARKET_PK\""
@@ -669,6 +693,22 @@ literal = '''"satisfied"'''
 context = '''matches!(status, Some(value) if value.eq_ignore_ascii_case("satisfied"))'''
 classification = "live_canary_readiness_report_status_value"
 reason = "This is the readiness report status value that the fail-closed live-canary gate requires before allowing the NT runner loop."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"operator-approved-canary-001"'''
+context = '''approval_id: "operator-approved-canary-001".to_string(),'''
+classification = "test_only_live_canary_gate_report_fixture"
+reason = "This literal exists only inside the cfg(test) BoltV3LiveCanaryGateReport fixture constructor used by unit tests; production approval IDs come from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "4096"
+context = "max_no_submit_readiness_report_bytes: 4096,"
+classification = "test_only_live_canary_gate_report_fixture"
+reason = "This byte cap exists only inside the cfg(test) BoltV3LiveCanaryGateReport fixture constructor used by unit tests; production byte caps come from TOML."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"

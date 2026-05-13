@@ -30,12 +30,50 @@ use crate::bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config};
 /// any live canary order is allowed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3LiveCanaryGateReport {
-    pub approval_id: String,
-    pub no_submit_readiness_report_path: PathBuf,
-    pub max_no_submit_readiness_report_bytes: u64,
-    pub max_live_order_count: u32,
-    pub max_notional_per_order: Decimal,
-    pub root_max_notional_per_order: Decimal,
+    approval_id: String,
+    no_submit_readiness_report_path: PathBuf,
+    max_no_submit_readiness_report_bytes: u64,
+    max_live_order_count: u32,
+    max_notional_per_order: Decimal,
+    root_max_notional_per_order: Decimal,
+}
+
+impl BoltV3LiveCanaryGateReport {
+    pub fn approval_id(&self) -> &str {
+        &self.approval_id
+    }
+
+    pub fn no_submit_readiness_report_path(&self) -> &Path {
+        &self.no_submit_readiness_report_path
+    }
+
+    pub fn max_no_submit_readiness_report_bytes(&self) -> u64 {
+        self.max_no_submit_readiness_report_bytes
+    }
+
+    pub fn max_live_order_count(&self) -> u32 {
+        self.max_live_order_count
+    }
+
+    pub fn max_notional_per_order(&self) -> Decimal {
+        self.max_notional_per_order
+    }
+
+    pub fn root_max_notional_per_order(&self) -> Decimal {
+        self.root_max_notional_per_order
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(max_live_order_count: u32, max_notional_per_order: Decimal) -> Self {
+        Self {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: PathBuf::from("no-submit-readiness.json"),
+            max_no_submit_readiness_report_bytes: 4096,
+            max_live_order_count,
+            max_notional_per_order,
+            root_max_notional_per_order: max_notional_per_order,
+        }
+    }
 }
 
 /// Fail-closed reasons returned by the bolt-v3 live canary gate before

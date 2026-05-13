@@ -584,11 +584,18 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         .find("check_bolt_v3_live_canary_gate(loaded)")
         .expect("run wrapper must call the live canary gate");
     let run_index = source
-        .find("node.run().await")
+        .find("let run_future = node.run();")
         .expect("run wrapper must own the single NT runner call");
+    let capture_index = source
+        .find("wire_bolt_v3_runtime_capture(node, node.handle(), loaded)")
+        .expect("run wrapper must wire NT runtime capture from bolt-v3 persistence config");
     assert!(
         gate_index < run_index,
         "live canary gate must execute before NT LiveNode::run"
+    );
+    assert!(
+        gate_index < capture_index && capture_index < run_index,
+        "NT runtime capture must be wired after the live canary gate and before NT LiveNode::run"
     );
     assert_eq!(
         source.matches(".run(").count(),

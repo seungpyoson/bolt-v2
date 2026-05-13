@@ -86,6 +86,14 @@ classification = "toml_zero_as_none_encoding"
 reason = "Schema documents zero as the TOML encoding for NT None on selected optional second-based fields."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"NT runtime capture failure detected, awaiting LiveNode shutdown"'''
+context = '''log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");'''
+classification = "runtime_capture_diagnostic_template"
+reason = "This diagnostic reports that the capture sidecar failed before the NT runner returned; it is not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"POLYMARKET_PK\""

@@ -55,6 +55,7 @@ pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecre
     block: ProviderCredentialedBlock::Data,
     consumer: "Binance reference-data venue",
 }];
+pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_path", "api_secret_ssm_path"];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "BINANCE_ED25519_API_KEY",

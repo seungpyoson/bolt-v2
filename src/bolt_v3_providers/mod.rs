@@ -96,6 +96,7 @@ pub struct ProviderBinding {
     pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
+    pub secret_field_names: &'static [&'static str],
     pub credential_log_modules: &'static [&'static str],
     pub forbidden_env_vars: &'static [&'static str],
     pub resolve_secrets: for<'a> fn(
@@ -114,6 +115,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_venue: polymarket::validate_venue,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: polymarket::SECRET_FIELD_NAMES,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
@@ -124,6 +126,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         validate_venue: binance::validate_venue,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: binance::SECRET_FIELD_NAMES,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,

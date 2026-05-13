@@ -4,7 +4,7 @@
 
 - Spec and plan exist.
 - Current-state evidence names exact files and line references.
-- no-mistakes status and recent runs are captured with `/private/tmp/no-mistakes-soak-bin`.
+- no-mistakes status and recent runs are captured with the active environment binary.
 - Implementation task has an explicit failing test command.
 
 ## Before Each Code Commit
@@ -26,5 +26,6 @@
 
 - User explicitly approves merge.
 - Final head SHA recorded.
+- Source-fence check confirms concrete provider, market-family, and strategy names are absent from core admission, entrypoint, gate, and config modules outside approved binding/archetype modules.
 - Residual blockers are named in PR body.
 - No claim says the PR proves broader live readiness unless the artifact proves it.

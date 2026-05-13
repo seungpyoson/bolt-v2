@@ -13,7 +13,7 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 - [x] T002 Replace `.specify/memory/constitution.md` with bolt-v3 constitution.
 - [x] T003 Create feature spec, implementation plan, data model, contracts, quickstart, and tasks under `specs/001-thin-live-canary-path/`.
 - [x] T004 Update `AGENTS.md` SPECKIT block to point to `specs/001-thin-live-canary-path/plan.md`.
-- [x] T005 Run `/private/tmp/no-mistakes-soak-bin status` and `/private/tmp/no-mistakes-soak-bin runs --limit 5`; record triage result in final handoff and shared soak log if a run exists.
+- [x] T005 Run the active no-mistakes binary's `status` and `runs --limit 5`; when an issue-specific soak binary is active, use the operator-provided override path and record triage result in final handoff and shared soak log if a run exists.
 - [x] T006 Verify planning artifacts with `rg -n "(?i:TB[D]|TO[D]O|fix[[:space:]]+later|NE[E]DS[[:space:]]+CLARIFICATION)|\\[[A-Z][A-Z0-9]*(_[A-Z0-9]+)+\\]" .specify/memory/constitution.md specs/001-thin-live-canary-path` and `git diff --check`.
 
 ## Phase 2: Production Entrypoint Adoption (US1)
@@ -27,7 +27,7 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 - [ ] T009 [US1] Refactor `src/main.rs` to load bolt-v3 TOML, validate, build via `build_bolt_v3_live_node`, and run via `run_bolt_v3_live_node`.
 - [ ] T010 [US1] Remove or isolate legacy production config/ruleset runtime so it cannot be selected in production.
 - [ ] T011 [US1] Run `cargo test --test bolt_v3_production_entrypoint`, `cargo test --test bolt_v3_live_canary_gate`, and `cargo test --test config_parsing`.
-- [ ] T012 [US1] Run `/private/tmp/no-mistakes-soak-bin status` and capture whether an active run or prior error code is shown.
+- [ ] T012 [US1] Run the active no-mistakes binary's `status`; if unavailable, record that fact instead of blocking the code slice.
 
 ## Phase 3: Generic Strategy And Runtime Registration (US3)
 
@@ -51,7 +51,7 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 - [ ] T019 [US3] Run targeted strategy/config tests; expected failure shows current config cannot express all required reference roles.
 - [ ] T020 [US3] Extend strategy-archetype validation in `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` to validate reference roles generically.
 - [ ] T021 [US3] Extend fixtures under `tests/fixtures/bolt_v3/` only for operator-visible runtime values, not test-local timing scaffolding.
-- [ ] T022 [US3] Run `cargo test --test config_parsing` and targeted `eth_chainlink_taker` strategy tests.
+- [ ] T022 [US3] Run `cargo test --test config_parsing` and targeted tests for the initial registered taker strategy.
 
 ## Phase 5: Mandatory Decision Evidence (US2)
 
@@ -61,13 +61,13 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 - [ ] T023 [US2] Write failing tests that construct the strategy without decision evidence and expect construction rejection.
 - [ ] T024 [US2] Write failing tests that simulate evidence persistence failure and expect submit rejection before NT submit.
-- [ ] T025 [US2] Remove optional/fallback evidence submit path from `src/strategies/eth_chainlink_taker.rs`.
+- [ ] T025 [US2] Remove optional/fallback evidence submit path from the registered strategy implementation.
 - [ ] T026 [US2] Make bolt-v3 strategy registration provide mandatory decision evidence.
 - [ ] T027 [US2] Run targeted strategy tests and source-fence search for fallback direct submit branches.
 
 ## Phase 6: Submit Admission Consumes Gate Report (US2)
 
-**Goal**: `LiveCanaryGateReport` bounds are enforced before every live submit.
+**Goal**: `BoltV3LiveCanaryGateReport` bounds are enforced before every live submit.
 
 **Independent Test**: `cargo test --test bolt_v3_submit_admission` proves order count, notional cap, missing report, and missing evidence all reject before NT submit.
 

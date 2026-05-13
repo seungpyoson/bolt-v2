@@ -10,7 +10,7 @@
 6. Register configured strategies.
 7. Validate no-submit readiness via `[live_canary]`.
 8. Enter NT runner through `run_bolt_v3_live_node`.
-9. Before every live submit, consume `LiveCanaryGateReport` through submit admission.
+9. Before every live submit, consume `BoltV3LiveCanaryGateReport` through submit admission.
 10. Submit through NT only if admission accepts.
 
 ## Fail-closed Conditions
@@ -29,6 +29,6 @@
 
 ## Live Proof Requirements
 
-No-submit readiness proof requires real SSM resolution and real NT venue connect/disconnect with zero orders.
+No-submit readiness proof requires explicit operator approval, real SSM resolution, and real NT venue connect/disconnect with zero orders.
 
 Tiny-capital proof requires exact commit SHA, config checksum, approval id, cap values, NT submit evidence, venue accept/fill/reject evidence, strategy-driven cancel evidence if order remains open, and restart reconciliation evidence.

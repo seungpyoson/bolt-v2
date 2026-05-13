@@ -76,7 +76,7 @@ src/
 ├── bolt_v3_providers/
 ├── bolt_v3_market_families/
 ├── bolt_v3_archetypes/
-└── strategies/eth_chainlink_taker.rs
+└── strategies/<registered_strategy_module>.rs
 
 tests/
 ├── bolt_v3_production_entrypoint.rs

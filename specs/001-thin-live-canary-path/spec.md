@@ -2,7 +2,7 @@
 
 **Feature Branch**: `001-thin-live-canary-path`
 **Created**: 2026-05-12
-**Status**: Draft
+**Status**: Locked for Phase 1
 **Input**: User description: define the problem with hard evidence, plan before runtime code, then TDD the 1-8 path into a production-shaped bolt-v3 spine proven with tiny capital. Initial strategy is a taker strategy comparing Polymarket option price against Chainlink and configurable exchange references using option-pricing edge. Core must not be hardcoded to Binance, Chainlink, Polymarket, one market family, or one strategy.
 
 ## User Scenarios & Testing
@@ -104,23 +104,24 @@ As the operator, I can approve one tiny live order with configured caps and get 
 - **FR-004**: Every runtime parameter MUST come from TOML and every secret MUST resolve from AWS SSM through Rust SDK code.
 - **FR-005**: Core build, secret, adapter, market-family, strategy, and admission logic MUST remain venue-, market-, and strategy-agnostic.
 - **FR-006**: Concrete providers, market families, and strategies MUST be selected through registries or binding tables, not core matches that require core edits per new concrete type.
-- **FR-007**: Initial MVP strategy MUST be a taker strategy for binary oracle markets that compares Polymarket option price with fair probability from Chainlink and configured exchange references.
-- **FR-008**: The strategy MUST accept multiple configured exchange reference venues through roles/config; it MUST NOT be hardcoded to one exchange.
+- **FR-007**: The first registered strategy binding MUST be a taker strategy archetype for binary oracle markets, configured through execution venue, primary oracle reference, and optional exchange reference roles selected by TOML and registries; core architecture MUST NOT require Polymarket, Chainlink, Binance, or any specific market family.
+- **FR-008**: The strategy binding MUST accept multiple configured exchange reference venues through roles/config; it MUST NOT be hardcoded to one exchange.
 - **FR-009**: Submit admission MUST consume `BoltV3LiveCanaryGateReport.max_live_order_count` and `max_notional_per_order` before every live submit.
 - **FR-010**: Strategy construction or submit admission MUST fail closed when mandatory bolt-v3 decision evidence is absent or cannot be persisted.
 - **FR-011**: Bolt-v3 MUST NOT own order lifecycle, reconciliation, adapter behavior, NT cache semantics, or local mock venue worlds as live-readiness proof.
-- **FR-012**: Authenticated no-submit readiness MUST produce a redacted report from real SSM and venue connectivity before any tiny-capital submit.
+- **FR-012**: Authenticated no-submit readiness MUST require explicit operator approval and produce a redacted report from real SSM and venue connectivity before any tiny-capital submit.
 - **FR-013**: Tiny-capital canary MUST be explicitly approved, cap-enforced, single-path, and proven through NT adapter submit, accept/fill/reject, strategy-driven cancel if needed, and restart reconciliation.
 - **FR-014**: Every implementation slice MUST use TDD red-green-refactor and `superpowers:verification-before-completion` before phase completion.
-- **FR-015**: no-mistakes MUST be used for task triage or branch gating with `/private/tmp/no-mistakes-soak-bin` while issue #780 soak testing is active.
+- **FR-015**: no-mistakes status MUST be captured for task triage or branch gating when the tool is available; any issue-specific binary override belongs in quickstart/operator notes, not this durable system requirement.
 - **FR-016**: Backtesting and research analytics MUST remain out of this MVP unless required to prove canary safety; they require a separate spec.
 
 ### Key Entities
 
 - **BoltV3RuntimeConfig**: TOML-backed loaded root config plus strategy files, venue blocks, risk settings, live canary block, persistence settings, and NT config mapping.
 - **ProviderBinding**: Provider-owned validation, secret resolution, adapter mapping, credential log filters, and supported market-family declaration.
+- **MarketFamilyBinding**: Market-family-owned validation, instrument trait requirements, and supported-provider compatibility declaration.
 - **StrategyBinding**: Strategy-owned validation, build, decision policy, reference-role declaration, and evidence requirement.
-- **LiveCanaryGateReport**: Validated operator approval, readiness report path, order count cap, notional cap, and root cap.
+- **BoltV3LiveCanaryGateReport**: Validated operator approval, readiness report path, readiness report byte cap, order count cap, notional cap, and root cap.
 - **SubmitAdmissionState**: Runtime counter and cap state consumed before each live submit.
 - **NoSubmitReadinessReport**: Redacted real-connectivity report consumed by the live canary gate.
 - **CanaryRunEvidence**: Redacted artifact proving config checksum, approval, NT submit, venue result, cancel if needed, and reconciliation.

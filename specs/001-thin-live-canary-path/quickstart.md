@@ -4,6 +4,8 @@ This quickstart is for the completed feature path. It is not approval to run liv
 
 ## Local Verification
 
+For Phase 1, only docs/spec artifacts exist. The `cargo test --test ...` commands below require their later implementation phases to exist.
+
 ```bash
 cargo fmt --check
 cargo test --test bolt_v3_production_entrypoint
@@ -14,9 +16,11 @@ cargo test --test bolt_v3_live_canary_gate
 
 ## no-mistakes Triage During Issue #780 Soak
 
+Use the active no-mistakes binary for the environment. If an issue-specific soak binary is active, set `NO_MISTAKES_BIN` to the operator-provided path outside this repo.
+
 ```bash
-/private/tmp/no-mistakes-soak-bin status
-/private/tmp/no-mistakes-soak-bin runs --limit 5
+"${NO_MISTAKES_BIN:-no-mistakes}" status
+"${NO_MISTAKES_BIN:-no-mistakes}" runs --limit 5
 ```
 
 Capture:

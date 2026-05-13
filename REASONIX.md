@@ -14,7 +14,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 
 ## Layout
 
-- `src/` — library crate (`lib.rs`) + three binaries (`bolt-v2`, `render_live_config`, `stream_to_lake`, `raw_capture`).
+- `src/` — library crate (`lib.rs`) + four binaries (`bolt-v2`, `render_live_config`, `stream_to_lake`, `raw_capture`).
 - `tests/` — integration tests (`.rs` files in root, not `*_test.rs`); unit tests live in-source under `#[cfg(test)]`.
 - `config/` — live TOML runtime config (secrets excluded per `.gitignore`).
 - `scripts/` — Python verification scripts for runtime literals, provider leaks, naming conventions.

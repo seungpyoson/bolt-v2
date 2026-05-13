@@ -11,7 +11,6 @@ var/logs/
 .claude/findings/
 .aider.chat.history.md
 .aider.input.history
-.aider.tags.cache.v4/
+.aider.tags.cache.v*/
 .factory/
-.githooks/
 .DS_Store

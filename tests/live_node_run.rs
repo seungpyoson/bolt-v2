@@ -287,8 +287,10 @@ fn builds_bolt_v3_livenode_without_running_event_loop() {
     use nautilus_live::node::NodeState;
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded: LoadedBoltV3Config =
+    let mut loaded: LoadedBoltV3Config =
         load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-live-node-build");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
 
     // No forbidden env vars are set in the test predicate, and the fake
     // resolver supplies all configured SSM paths, so the build proceeds.

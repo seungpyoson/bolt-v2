@@ -2908,7 +2908,7 @@ impl EthChainlinkTaker {
             intent_kind: BoltV3OrderIntentKind::Exit,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: format!("{order_side:?}"),
+            order_side: order_side.to_string(),
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
@@ -3121,7 +3121,7 @@ impl EthChainlinkTaker {
             intent_kind: BoltV3OrderIntentKind::Entry,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: format!("{order_side:?}"),
+            order_side: order_side.to_string(),
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
@@ -4623,12 +4623,11 @@ mod tests {
                 lead_agreement_min_corr: 0.8,
                 lead_jitter_max_ms: 250,
             },
-            StrategyBuildContext::try_new(
+            StrategyBuildContext::new(
                 fee_provider,
                 "platform.reference.test.chainlink".to_string(),
-                Some(decision_evidence),
-            )
-            .expect("test strategy context should include decision evidence"),
+                decision_evidence,
+            ),
         )
     }
 

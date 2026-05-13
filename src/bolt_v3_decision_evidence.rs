@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::{BufWriter, Write},
+    io::Write,
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
@@ -34,7 +34,7 @@ pub struct BoltV3OrderIntentEvidence {
 
 #[derive(Debug)]
 pub struct JsonlBoltV3DecisionEvidenceWriter {
-    writer: Mutex<BufWriter<std::fs::File>>,
+    file: Mutex<std::fs::File>,
 }
 
 impl JsonlBoltV3DecisionEvidenceWriter {
@@ -56,25 +56,21 @@ impl JsonlBoltV3DecisionEvidenceWriter {
                 format!("failed to open decision evidence file `{}`", path.display())
             })?;
         Ok(Self {
-            writer: Mutex::new(BufWriter::new(file)),
+            file: Mutex::new(file),
         })
     }
 }
 
 impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
     fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-        let mut writer = self
-            .writer
+        let line = encode_order_intent_line(intent)?;
+        let mut file = self
+            .file
             .lock()
             .map_err(|_| anyhow!("decision evidence writer lock is poisoned"))?;
-        serde_json::to_writer(&mut *writer, intent)
-            .context("failed to serialize decision evidence")?;
-        writer
-            .write_all(b"\n")
-            .context("failed to terminate decision evidence record")?;
-        writer
-            .flush()
-            .context("failed to flush decision evidence")?;
+        file.write_all(&line)
+            .context("failed to write decision evidence record")?;
+        file.flush().context("failed to flush decision evidence")?;
         Ok(())
     }
 }
@@ -99,4 +95,37 @@ pub fn decision_evidence_path(loaded: &LoadedBoltV3Config) -> Result<PathBuf> {
         ));
     }
     Ok(Path::new(&loaded.root.persistence.catalog_directory).join(relative))
+}
+
+fn encode_order_intent_line(intent: &BoltV3OrderIntentEvidence) -> Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(intent).context("failed to serialize decision evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_order_intent_line_serializes_before_appending_newline() {
+        let intent = BoltV3OrderIntentEvidence {
+            strategy_id: "strategy-one".to_string(),
+            intent_kind: BoltV3OrderIntentKind::Entry,
+            instrument_id: "instrument-one".to_string(),
+            client_order_id: "client-order-one".to_string(),
+            order_side: "Buy".to_string(),
+            price: "0.42".to_string(),
+            quantity: "1".to_string(),
+        };
+
+        let line = encode_order_intent_line(&intent).expect("intent should encode");
+
+        assert!(line.ends_with(b"\n"));
+        let json = std::str::from_utf8(&line[..line.len() - 1]).expect("line is utf8");
+        let decoded: serde_json::Value = serde_json::from_str(json).expect("line is json");
+        assert_eq!(decoded["strategy_id"], "strategy-one");
+        assert_eq!(decoded["intent_kind"], "entry");
+        assert_eq!(decoded["order_side"], "Buy");
+    }
 }

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::identifiers::StrategyId;
 use nautilus_system::trader::Trader;
@@ -26,18 +26,16 @@ pub struct StrategyBuildContext {
 }
 
 impl StrategyBuildContext {
-    pub fn try_new(
+    pub fn new(
         fee_provider: Arc<dyn FeeProvider>,
         reference_publish_topic: String,
-        decision_evidence: Option<Arc<dyn BoltV3DecisionEvidenceWriter>>,
-    ) -> Result<Self> {
-        let decision_evidence =
-            decision_evidence.ok_or_else(|| anyhow!("decision evidence writer is required"))?;
-        Ok(Self {
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    ) -> Self {
+        Self {
             fee_provider,
             reference_publish_topic,
             decision_evidence,
-        })
+        }
     }
 
     pub fn fee_provider(&self) -> &dyn FeeProvider {
@@ -123,7 +121,7 @@ impl StrategyRegistry {
         };
 
         if self.registrations.contains_key(registration.kind()) {
-            return Err(anyhow!(
+            return Err(anyhow::anyhow!(
                 "strategy kind '{}' is already registered",
                 registration.kind()
             ));
@@ -327,17 +325,18 @@ mod tests {
             _context: &StrategyBuildContext,
             _trader: &Rc<RefCell<Trader>>,
         ) -> Result<StrategyId> {
-            Err(anyhow!("context builder register is unused in this test"))
+            Err(anyhow::anyhow!(
+                "context builder register is unused in this test"
+            ))
         }
     }
 
     fn test_context() -> StrategyBuildContext {
-        StrategyBuildContext::try_new(
+        StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
             "platform.reference.test".to_string(),
-            Some(Arc::new(NoopDecisionEvidenceWriter)),
+            Arc::new(NoopDecisionEvidenceWriter),
         )
-        .expect("test strategy context should include decision evidence")
     }
 
     #[test]

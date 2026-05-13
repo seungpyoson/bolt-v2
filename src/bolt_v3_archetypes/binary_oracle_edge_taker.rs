@@ -250,12 +250,11 @@ pub fn register_runtime_strategy(
     let fee_provider =
         polymarket::build_fee_provider(&context.strategy.config.venue, venue, context.resolved)
             .map_err(|error| binding_message(&context, error.to_string()))?;
-    let build_context = StrategyBuildContext::try_new(
+    let build_context = StrategyBuildContext::new(
         fee_provider,
         parameters.runtime.reference_publish_topic,
-        Some(context.decision_evidence.clone()),
-    )
-    .map_err(|error| binding_message(&context, error.to_string()))?;
+        context.decision_evidence.clone(),
+    );
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry

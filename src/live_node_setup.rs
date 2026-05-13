@@ -35,12 +35,7 @@ pub fn make_strategy_build_context(
     reference_publish_topic: String,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> StrategyBuildContext {
-    StrategyBuildContext::try_new(
-        fee_provider,
-        reference_publish_topic,
-        Some(decision_evidence),
-    )
-    .expect("strategy build context requires decision evidence")
+    StrategyBuildContext::new(fee_provider, reference_publish_topic, decision_evidence)
 }
 
 pub fn make_live_node_config(

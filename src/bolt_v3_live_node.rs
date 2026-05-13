@@ -411,13 +411,21 @@ fn build_live_node_with_clients(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
-    let _strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
+    let strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
         &mut node,
         loaded,
         resolved,
         crate::bolt_v3_archetypes::runtime_bindings(),
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
+    for strategy in &strategy_summary.registered {
+        log::info!(
+            "bolt-v3 registered strategy: strategy_instance_id={} strategy_archetype={} nt_strategy_id={}",
+            strategy.strategy_instance_id,
+            strategy.strategy_archetype.as_str(),
+            strategy.registered_strategy_id
+        );
+    }
     Ok((node, summary))
 }
 

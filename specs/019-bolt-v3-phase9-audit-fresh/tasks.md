@@ -30,13 +30,13 @@
 
 **Purpose**: Request external review only after branch is clean, pushed, and exact-head checks are available.
 
-- [ ] T012 Ask user approval to push `019-bolt-v3-phase9-audit-fresh`.
-- [ ] T013 Push branch after approval.
-- [ ] T014 Run exact-head checks available for the pushed branch.
-- [ ] T015 Run Claude custom review against Phase 9 artifacts.
-- [ ] T016 Run DeepSeek custom review after approval-token evidence.
-- [ ] T017 Run GLM custom review after approval-token evidence.
-- [ ] T018 Record findings and dispositions in `external-review-phase9-disposition.md`.
+- [x] T012 Ask user approval to push `019-bolt-v3-phase9-audit-fresh`.
+- [x] T013 Push branch after approval.
+- [x] T014 Run exact-head checks available for the pushed branch.
+- [x] T015 Run Claude custom review against Phase 9 artifacts.
+- [ ] T016 Run DeepSeek custom review after approval-token evidence. Approval request generated; source remains `not_sent` pending explicit user approval.
+- [ ] T017 Run GLM custom review after approval-token evidence. Approval request generated; source remains `not_sent` pending explicit user approval.
+- [x] T018 Record findings and dispositions in `external-review-phase9-disposition.md`.
 
 ## Phase 4: Cleanup Implementation Gate
 

@@ -297,6 +297,7 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        ssm_manifest_path: "phase8-ssm-manifest.json".to_string(),
         ssm_manifest_sha256: "expected-ssm-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
@@ -314,6 +315,50 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         error
             .to_string()
             .contains("phase8 operator approval head_sha does not match current head")
+    );
+}
+
+#[test]
+fn operator_approval_envelope_verifies_ssm_manifest_hash() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
+    )
+    .expect("manifest should write");
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+        .expect("manifest hash should compute");
+    let mut envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: "expected-head".to_string(),
+        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_sha256: "expected-config-hash".to_string(),
+        ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256: manifest_hash,
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+    };
+
+    envelope
+        .validate_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+        )
+        .expect("matching manifest hash should pass");
+
+    envelope.ssm_manifest_sha256 = "wrong-ssm-hash".to_string();
+    let error = envelope
+        .validate_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+        )
+        .expect_err("mismatched manifest hash should fail");
+
+    assert!(
+        error.to_string().contains("ssm_manifest_sha256"),
+        "error should mention SSM manifest hash mismatch: {error}"
     );
 }
 

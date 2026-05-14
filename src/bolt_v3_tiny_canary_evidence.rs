@@ -385,6 +385,7 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub head_sha: String,
     pub root_toml_path: String,
     pub root_toml_sha256: String,
+    pub ssm_manifest_path: String,
     pub ssm_manifest_sha256: String,
     pub operator_approval_id: String,
     pub canary_evidence_path: String,
@@ -396,6 +397,7 @@ impl Phase8OperatorApprovalEnvelope {
             head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,
             root_toml_path: required_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,
             root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,
+            ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,
             ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
             canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
@@ -416,6 +418,12 @@ impl Phase8OperatorApprovalEnvelope {
         if self.root_toml_sha256 != current_root_toml_sha256 {
             return Err(anyhow!(
                 "phase8 operator approval root_toml_sha256 does not match current root TOML"
+            ));
+        }
+        let current_ssm_manifest_sha256 = Self::sha256_file(&self.ssm_manifest_path)?;
+        if self.ssm_manifest_sha256 != current_ssm_manifest_sha256 {
+            return Err(anyhow!(
+                "phase8 operator approval ssm_manifest_sha256 does not match current SSM manifest"
             ));
         }
         if self.operator_approval_id != live_canary_approval_id {

@@ -24,11 +24,11 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 
 | Shape | Run | Event | SHA | Created UTC | Conclusion | Wall | Critical path | Raw runner min | Rounded estimate | Cache state |
 |---|---:|---|---|---|---|---:|---|---:|---:|---|
-| PR, build skipped, #332 bottleneck | [25855655415](https://github.com/seungpyoson/bolt-v2/actions/runs/25855655415) | pull_request | `1cf7baae739fc8f288511cc9055d4b76adc82537` | 2026-05-14T10:41:42Z | success | 11m11s | `clippy` 10m41s | 18.4 | 21 | warm cache hit |
-| PR, build-affecting current shape | [25866930064](https://github.com/seungpyoson/bolt-v2/actions/runs/25866930064) | pull_request | `2300c78bbfd7a1e4551ab1ef5d794625b26dcd15` | 2026-05-14T14:51:21Z | success | 20m27s | `build` 20m05s | 28.8 | 34 | `test` warm cache hit; `build` cache state unknown |
+| PR, build skipped, #332 bottleneck | [25855655415](https://github.com/seungpyoson/bolt-v2/actions/runs/25855655415) | pull_request | `1cf7baae739fc8f288511cc9055d4b76adc82537` | 2026-05-14T10:41:42Z | success | 11m11s | `clippy` 10m41s | 17.6 | 21 | warm cache hit |
+| PR, build-affecting current shape | [25866930064](https://github.com/seungpyoson/bolt-v2/actions/runs/25866930064) | pull_request | `2300c78bbfd7a1e4551ab1ef5d794625b26dcd15` | 2026-05-14T14:51:21Z | success | 20m27s | `build` 20m05s | 28.6 | 34 | `test` warm cache hit; `build` cache state unknown |
 | Main push current completed | [25862551803](https://github.com/seungpyoson/bolt-v2/actions/runs/25862551803) | push/main | `fde50d3452859a51f7f27b807913b1f12697b273` | 2026-05-14T13:25:18Z | success | 19m36s | `build` 19m11s | 27.7 | 33 | warm cache hit |
 | Smoke tag duplicate path | [24623274722](https://github.com/seungpyoson/bolt-v2/actions/runs/24623274722) | push/tag | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:56:12Z | success | 10m45s | `build` 10m15s, then `deploy` 12s | 18.5 | 25 | warm cache hit |
-| Late source-fence failure | [25859831755](https://github.com/seungpyoson/bolt-v2/actions/runs/25859831755) | pull_request | `81e9d85f6c242cf6c73e13732da4c6f7c9d99f4d` | 2026-05-14T12:24:40Z | failure | 5m20s | `test` failed at source fence | 8.4 | 13 | warm cache hit |
+| Late source-fence failure | [25859831755](https://github.com/seungpyoson/bolt-v2/actions/runs/25859831755) | pull_request | `81e9d85f6c242cf6c73e13732da4c6f7c9d99f4d` | 2026-05-14T12:24:40Z | failure | 5m20s | `test` failed at source fence | 5.7 | 10 | warm cache hit |
 
 Notes:
 
@@ -114,6 +114,8 @@ Critical path: `build`, then `gate`, then `deploy`.
 Cache evidence for `test`: cache hit for `v0-rust-nextest-test-Linux-x64-b567c2b7-e9df6845`; restored archive size `7479253178 B` (about 7133 MB); restored full match.
 
 Cache evidence for `build`: cache hit for `v0-rust-cross-aarch64-build-Linux-x64-b567c2b7-e9df6845`; restored archive size `1437492588 B` (about 1371 MB); restored full match.
+
+The April smoke-tag nextest cache key uses the older `v0-rust-nextest-test-...` shape and a much larger archive than the May `v0-rust-nextest-v2-test-...` cache entries. This baseline records the difference for #195; it does not infer the cause.
 
 Observed inside `build`: `cargo zigbuild --release --target aarch64-unknown-linux-gnu --locked` at 06:57:07; build step completed at 07:06:31. `deploy` completed from 07:06:44 to 07:06:56.
 

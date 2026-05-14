@@ -35,3 +35,26 @@
 - `status`: `approve`, `approve-with-findings`, `request-changes`, `failed`, or `blocked`
 - `findings`: list of findings with accept/disprove/defer decision
 - `blocking`: whether implementation may proceed
+
+## Example Instances
+
+These examples map the schema to current Phase 9 artifacts; they are not new
+findings.
+
+```text
+AuditFinding {
+  id: "P9-BLOCKER-001",
+  severity: "blocker",
+  category: "Phase readiness",
+  evidence: ["specs/001-thin-live-canary-path/tasks.md:87-106"],
+  status: "open"
+}
+
+ExternalReviewDisposition {
+  provider: "DeepSeek",
+  job_id: "job_55d503cf-104a-40d1-a5e0-37ac9a68966b",
+  source_transmission: "sent_after_user_approval",
+  status: "approve-with-findings",
+  blocking: false
+}
+```

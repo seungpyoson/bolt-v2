@@ -35,8 +35,29 @@ Blockers:
 
 - Live runner wrapper validates canary gate and arms submit admission before `LiveNode::run`: `src/bolt_v3_live_node.rs:350-364`.
 - Gate contract requires `[live_canary]`, approval id, report path, byte cap, order count cap, and notional cap before runner entry: `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:1410-1414`.
-- Baseline `cargo test --lib` passed: 446 passed, 0 failed, 1 ignored.
+- Baseline `cargo test --lib` passed: 446 passed, 0 failed, 1 ignored. The ignored test is `clients::chainlink::tests::live_chainlink_stream_smoke_works_with_generated_runtime_config`, explicitly ignored because it requires `config/live.toml` with resolvable Chainlink testnet credentials.
 - no-mistakes runtime is installed and daemon is running in this session.
+
+## FR-003 Coverage Map
+
+| Category | Disposition |
+| --- | --- |
+| Hardcoded runtime values | Covered by P9-MED-002; current verifier is partial and remains a named release gap. |
+| Dual paths | Covered by P9-HIGH-001 and the no-submit submit-ordering evidence; final live proof remains blocked. |
+| Debt markers | Covered by T008 and quickstart artifact scans; no cleanup debt is accepted in this planning slice. |
+| Brittle architecture | Covered by P9-HIGH-002 and P9-HIGH-003 as provider-boundary and production-readiness gaps. |
+| AI slop | Covered by `ai-slop-cleanup-report.md`; all cleanup candidates remain blocked pending tests and review. |
+| NT boundary violations | Covered by P9-HIGH-001 and P9-HIGH-002; NT remains the required lifecycle/order boundary. |
+| SSM-only secret source | Requirements and checklist require SSM-only secrets; dedicated positive source-scan certification remains a named evidence gap before release certification. |
+| Pure Rust runtime | Covered by P9-MED-001; Python is verifier tooling only, while runtime verifier coverage remains partial. |
+| Runtime config grouping | Covered by live-canary gate contract evidence and grouped config prerequisites. |
+| Stale docs/specs/tasks | Covered by P9-MED-003. |
+| Source fences | Cleanup status requires a behavior test or source fence before any cleanup target. |
+| Test quality | Covered by baseline `cargo test --lib` evidence plus the ignored-test identity above. |
+| External review disposition | Covered by `external-review-phase9-disposition.md`. |
+| Production readiness gaps | Covered by P9-HIGH-003. |
+| Strategy math/feed assumptions | Covered by P9-BLOCKER-003. |
+| Live ops readiness | Covered by P9-BLOCKER-004. |
 
 ## Cleanup Status
 

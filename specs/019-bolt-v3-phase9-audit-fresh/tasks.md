@@ -34,8 +34,8 @@
 - [x] T013 Push branch after approval.
 - [x] T014 Run exact-head checks available for the pushed branch.
 - [x] T015 Run Claude custom review against Phase 9 artifacts.
-- [ ] T016 Run DeepSeek custom review after exact-head approval-token evidence. Source remains `not_sent` pending explicit user approval.
-- [ ] T017 Run GLM custom review after exact-head approval-token evidence. Source remains `not_sent` pending explicit user approval.
+- [x] T016 Run DeepSeek custom review after exact-head approval-token evidence. Source sent after explicit user approval; job `job_55d503cf-104a-40d1-a5e0-37ac9a68966b`.
+- [x] T017 Run GLM custom review after exact-head approval-token evidence. Source sent after explicit user approval; job `job_1ea0bee4-4c36-4009-89b5-a2b49a799269`.
 - [x] T018 Record findings and dispositions in `external-review-phase9-disposition.md`.
 - [x] T018a Add source-free DeepSeek/GLM relay prompts for manual handoff; these do not satisfy `FR-008` without returned reviewer findings or explicit waiver.
 

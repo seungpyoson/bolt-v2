@@ -27,7 +27,7 @@ Expected: installed binary, version printed, daemon running or exact blocker rec
 cargo test --lib
 ```
 
-Expected for baseline captured in this session: 446 passed, 0 failed, 1 ignored.
+Expected for baseline captured in this session: 446 passed, 0 failed, 1 ignored. The ignored test is `clients::chainlink::tests::live_chainlink_stream_smoke_works_with_generated_runtime_config`; it is explicitly marked ignored because it requires `config/live.toml` with resolvable Chainlink testnet credentials.
 
 ## Artifact Checks
 

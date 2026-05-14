@@ -36,7 +36,7 @@ Spec-kit note: runtime-listed `speckit-*` skill paths were absent on disk in thi
 
 - Anchor: before these planning artifact edits, Phase 9 worktree `HEAD`, `main`, and `origin/main` all equal `d6f55774c32b71a242dcf78b8292a7f9e537afab`; PR commits after that anchor are docs-only Phase 9 artifacts.
 - no-mistakes: `/Users/spson/.local/bin/no-mistakes`; version `v1.17.0-6-gc0008cf`; daemon running pid `53732`.
-- Baseline test: `cargo test --lib` passed with 446 passed, 0 failed, 1 ignored.
+- Baseline test: `cargo test --lib` passed with 446 passed, 0 failed, 1 ignored. The ignored entry is `clients::chainlink::tests::live_chainlink_stream_smoke_works_with_generated_runtime_config`, which is explicitly ignored because it requires `config/live.toml` with resolvable Chainlink testnet credentials.
 - Phase 7/8 on main: current main still has stale unchecked Phase 7/8 tasks in `specs/001-thin-live-canary-path/tasks.md:87-106`; fresh local Phase 7/8 branches are not accepted main scope.
 - Live config: `ls -l config/live.local.toml` returned no such file in this fresh worktree.
 - Live canary gate: `src/bolt_v3_live_node.rs:350-364` gates `LiveNode::run` on `[live_canary]` and arms submit admission.

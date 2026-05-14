@@ -1,10 +1,12 @@
 # Phase 9 External Review Relay Prompts
 
-Status: source-free handoff only. This file is not external-review evidence.
+Status: retained source-free fallback only. Direct DeepSeek and GLM reviews are
+recorded in `external-review-phase9-disposition.md`; this file is not
+external-review evidence.
 
-Purpose: provide relay text for DeepSeek and GLM if direct API source
-transmission is not approved. The operator must supply the selected files to the
-reviewer through an approved channel and record the returned findings in
+Purpose: provide relay text for DeepSeek and GLM only if future direct API
+source transmission is unavailable. The operator must supply the selected files
+to the reviewer through an approved channel and record the returned findings in
 `external-review-phase9-disposition.md`.
 
 Before use:

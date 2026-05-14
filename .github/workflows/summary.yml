@@ -38,6 +38,10 @@ jobs:
             echo "ISSUE_NUMBER is empty" >&2
             exit 1
           fi
+          if [ -z "$(printf '%s' "$RESPONSE" | tr -d '[:space:]')" ]; then
+            echo "AI inference returned whitespace-only response. Skipping comment." >&2
+            exit 0
+          fi
           body_file="$(mktemp)"
           trap 'rm -f "$body_file"' EXIT
 

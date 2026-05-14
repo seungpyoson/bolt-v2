@@ -1,5 +1,5 @@
 # Warns on inactive issues and pull requests using explicit project policy.
-# Pull requests are never closed automatically; maintainers close stale PRs manually.
+# Neither issues nor pull requests are closed automatically; maintainers close them manually.
 name: Mark stale issues and pull requests
 
 on:
@@ -20,22 +20,19 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           days-before-issue-stale: 180
-          days-before-issue-close: 30
-          days-before-pr-stale: 45
+          days-before-issue-close: -1
+          days-before-pr-stale: 60
           days-before-pr-close: -1
           stale-issue-label: no-issue-activity
           stale-pr-label: no-pr-activity
           stale-issue-message: >
             This issue has had no activity for 180 days. Comment with current evidence,
-            a remaining decision, or an owner to keep it active; otherwise it may be
-            closed after 30 more days of inactivity.
+            a remaining decision, or an owner to keep it active. This workflow will
+            not close issues automatically.
           stale-pr-message: >
-            This pull request has had no activity for 45 days. Comment, push a new
+            This pull request has had no activity for 60 days. Comment, push a new
             commit, or add an exempt label if it is still an active or reference-only
             work item. This workflow will not close pull requests automatically.
-          close-issue-message: >
-            Closing after 30 additional days with the stale label and no activity.
-            Comment with renewed evidence or scope if this should be reopened.
           exempt-issue-labels: blocked,security,pinned,tracking,reference-only
           exempt-pr-labels: blocked,security,do-not-merge,reference-only,dependencies
           exempt-draft-pr: true

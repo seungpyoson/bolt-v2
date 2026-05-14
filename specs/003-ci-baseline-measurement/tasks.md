@@ -32,7 +32,7 @@
 - [x] T015 Run `rg -n "25855655415|25866930064|25859831755|25862551803|24623274722|#343|#342|#332|#195|#205|#203|#335|#344|#340|#333|drift-detection" docs/ci/ci-baseline-2026-05-15.md specs/003-ci-baseline-measurement`
 - [x] T016 Run `git diff --check`
 - [x] T017 Run `just ci-lint-workflow`
-- [ ] T018 Post a #343 or #333 comment linking `docs/ci/ci-baseline-2026-05-15.md` after commit/push
+- [x] T018 Post #333 and #343 comments linking `docs/ci/ci-baseline-2026-05-15.md` after commit/push
 
 ## Dependencies
 

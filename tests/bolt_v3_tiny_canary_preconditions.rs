@@ -118,6 +118,43 @@ fn strategy_audit_blocks_zero_time_to_expiry() {
 }
 
 #[test]
+fn strategy_audit_verifies_input_evidence_hash_before_approving() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("strategy-input-evidence.json");
+    std::fs::write(
+        &evidence_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
+    )
+    .expect("strategy input evidence should write");
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("strategy input evidence hash should compute");
+
+    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, &evidence_hash)
+        .expect("matching strategy input evidence should parse");
+
+    assert!(audit.is_approved());
+}
+
+#[test]
+fn strategy_audit_rejects_input_evidence_hash_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("strategy-input-evidence.json");
+    std::fs::write(
+        &evidence_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
+    )
+    .expect("strategy input evidence should write");
+
+    let error = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, "wrong-hash")
+        .expect_err("mismatched strategy input evidence should fail");
+
+    assert!(
+        error.to_string().contains("strategy input evidence sha256"),
+        "error should mention strategy input evidence hash mismatch: {error}"
+    );
+}
+
+#[test]
 fn dry_canary_evidence_serializes_join_keys_without_raw_approval_id() {
     let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
@@ -148,6 +185,7 @@ fn dry_canary_evidence_serializes_join_keys_without_raw_approval_id() {
     assert!(!rendered.contains("operator-approved-canary-001"));
     assert!(rendered.contains("decision_evidence_ref"));
     assert!(rendered.contains("ssm_manifest_ref"));
+    assert!(rendered.contains("strategy_input_evidence_ref"));
     assert!(rendered.contains("submit_admission_ref"));
     assert!(rendered.contains("runtime_capture_ref"));
 }
@@ -300,6 +338,8 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         root_toml_sha256: "expected-config-hash".to_string(),
         ssm_manifest_path: "phase8-ssm-manifest.json".to_string(),
         ssm_manifest_sha256: "expected-ssm-hash".to_string(),
+        strategy_input_evidence_path: "phase8-strategy-input-evidence.json".to_string(),
+        strategy_input_evidence_sha256: "expected-strategy-input-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
@@ -330,12 +370,22 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
     .expect("manifest should write");
     let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
     let mut envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
+        strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256: strategy_input_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
@@ -360,6 +410,60 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
     assert!(
         error.to_string().contains("ssm_manifest_sha256"),
         "error should mention SSM manifest hash mismatch: {error}"
+    );
+}
+
+#[test]
+fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
+    )
+    .expect("manifest should write");
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+        .expect("manifest hash should compute");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+    let mut envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: "expected-head".to_string(),
+        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_sha256: "expected-config-hash".to_string(),
+        ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256: manifest_hash,
+        strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256: strategy_input_hash,
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+    };
+
+    envelope
+        .validate_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+        )
+        .expect("matching strategy input evidence hash should pass");
+
+    envelope.strategy_input_evidence_sha256 = "wrong-strategy-input-hash".to_string();
+    let error = envelope
+        .validate_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+        )
+        .expect_err("mismatched strategy input evidence hash should fail");
+
+    assert!(
+        error.to_string().contains("strategy_input_evidence_sha256"),
+        "error should mention strategy input evidence hash mismatch: {error}"
     );
 }
 
@@ -422,6 +526,12 @@ fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEviden
             path_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
             record_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+        },
+        strategy_input_evidence_ref: Phase8EvidenceRef {
+            path_hash: "9999999999999999999999999999999999999999999999999999999999999999"
+                .to_string(),
+            record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         },
         approval_id: "operator-approved-canary-001".to_string(),

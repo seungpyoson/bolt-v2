@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -45,7 +45,6 @@ pub enum Phase8CanaryBlockReason {
     LiveCanaryGateRejected,
     StrategyInputSafetyAuditBlocked,
     LiveOrderCountCapNotOne,
-    LiveProofCaptureUnavailable,
     NonPositiveRealizedVolatility,
     NonPositiveTimeToExpiry,
     DecisionEvidenceUnavailable,
@@ -89,6 +88,46 @@ impl Phase8StrategyInputSafetyAudit {
         }
     }
 
+    pub fn from_evidence_file(
+        path: impl AsRef<Path>,
+        expected_sha256: impl AsRef<str>,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let expected_sha256 = expected_sha256.as_ref().trim();
+        if expected_sha256.is_empty() {
+            return Err(anyhow!(
+                "required phase8 strategy input evidence sha256 is empty"
+            ));
+        }
+        let current_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(path)?;
+        if current_sha256 != expected_sha256 {
+            return Err(anyhow!(
+                "phase8 strategy input evidence sha256 does not match current evidence"
+            ));
+        }
+        let file = fs::File::open(path).map_err(|source| {
+            anyhow!(
+                "failed to open phase8 strategy input evidence `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let raw: Phase8StrategyInputEvidenceFile = serde_json::from_reader(BufReader::new(file))
+            .map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 strategy input evidence `{}`: {source}",
+                    path.display()
+                )
+            })?;
+        let realized_volatility =
+            Decimal::from_str_exact(raw.realized_volatility.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input realized_volatility: {source}")
+            })?;
+        Ok(Self::from_strategy_inputs(
+            realized_volatility,
+            raw.seconds_to_expiry,
+        ))
+    }
+
     pub fn is_approved(&self) -> bool {
         self.status == Phase8StrategyInputAuditStatus::Approved
     }
@@ -96,6 +135,12 @@ impl Phase8StrategyInputSafetyAudit {
     pub fn block_reasons(&self) -> &[Phase8CanaryBlockReason] {
         &self.block_reasons
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct Phase8StrategyInputEvidenceFile {
+    realized_volatility: String,
+    seconds_to_expiry: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -214,6 +259,7 @@ pub struct Phase8CanaryEvidence {
     pub root_config_sha256: String,
     pub ssm_manifest_sha256: String,
     pub ssm_manifest_ref: Phase8EvidenceRef,
+    pub strategy_input_evidence_ref: Phase8EvidenceRef,
     pub approval_id_hash: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
@@ -236,6 +282,7 @@ pub struct Phase8CanaryEvidenceInput {
     pub root_config_sha256: String,
     pub ssm_manifest_sha256: String,
     pub ssm_manifest_ref: Phase8EvidenceRef,
+    pub strategy_input_evidence_ref: Phase8EvidenceRef,
     pub approval_id: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: Decimal,
@@ -253,6 +300,7 @@ impl Phase8CanaryEvidence {
             root_config_sha256: input.root_config_sha256,
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
+            strategy_input_evidence_ref: input.strategy_input_evidence_ref,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -284,6 +332,7 @@ impl Phase8CanaryEvidence {
             root_config_sha256: input.root_config_sha256,
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
+            strategy_input_evidence_ref: input.strategy_input_evidence_ref,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -317,6 +366,7 @@ impl Phase8CanaryEvidence {
             root_config_sha256: input.root_config_sha256,
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
+            strategy_input_evidence_ref: input.strategy_input_evidence_ref,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -392,6 +442,8 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub root_toml_sha256: String,
     pub ssm_manifest_path: String,
     pub ssm_manifest_sha256: String,
+    pub strategy_input_evidence_path: String,
+    pub strategy_input_evidence_sha256: String,
     pub operator_approval_id: String,
     pub canary_evidence_path: String,
 }
@@ -404,6 +456,12 @@ impl Phase8OperatorApprovalEnvelope {
             root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,
             ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,
             ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,
+            strategy_input_evidence_path: required_env(
+                "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
+            )?,
+            strategy_input_evidence_sha256: required_env(
+                "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
+            )?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
             canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
         })
@@ -429,6 +487,13 @@ impl Phase8OperatorApprovalEnvelope {
         if self.ssm_manifest_sha256 != current_ssm_manifest_sha256 {
             return Err(anyhow!(
                 "phase8 operator approval ssm_manifest_sha256 does not match current SSM manifest"
+            ));
+        }
+        let current_strategy_input_evidence_sha256 =
+            Self::sha256_file(&self.strategy_input_evidence_path)?;
+        if self.strategy_input_evidence_sha256 != current_strategy_input_evidence_sha256 {
+            return Err(anyhow!(
+                "phase8 operator approval strategy_input_evidence_sha256 does not match current strategy input evidence"
             ));
         }
         if self.operator_approval_id != live_canary_approval_id {

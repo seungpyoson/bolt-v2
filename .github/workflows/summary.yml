@@ -40,9 +40,15 @@ jobs:
             echo "AI summary response is empty" >&2
             exit 1
           fi
-          gh issue comment "$ISSUE_NUMBER" --body "### AI issue summary
+          body_file="$(mktemp)"
+          trap 'rm -f "$body_file"' EXIT
 
-$RESPONSE"
+          {
+            printf '%s\n\n' "### AI issue summary"
+            printf '%s\n' "$RESPONSE"
+          } > "$body_file"
+
+          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}

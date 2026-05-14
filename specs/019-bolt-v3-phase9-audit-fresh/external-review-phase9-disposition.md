@@ -2,7 +2,11 @@
 
 Status: incomplete pending explicit approval for remaining direct API reviews.
 
-Head reviewed: `dc11b633626eea21e4f71076606c31b26dfe8a86`.
+Claude-reviewed head: `dc11b633626eea21e4f71076606c31b26dfe8a86`.
+
+Direct API approval scope: regenerate the approval request at the exact current
+PR head before any DeepSeek or GLM run. Approval requests are not durable across
+artifact changes.
 
 Base: `origin/main` at `d6f55774c32b71a242dcf78b8292a7f9e537afab`.
 
@@ -12,8 +16,8 @@ Base: `origin/main` at `d6f55774c32b71a242dcf78b8292a7f9e537afab`.
 | --- | --- | --- | --- | --- |
 | Gemini Code Assist | complete | GitHub PR review | PR #327 review threads resolved and outdated | Original portability and wording findings addressed. |
 | Claude Code | complete | sent | Job `d127dd94-8c3f-4123-930f-dc366ae23bb6`; CI #535 green | Approved with no blocking findings and no test gaps. |
-| DeepSeek direct API | blocked pending approval | not_sent | Doctor ready; approval request generated for 11 files, 37,467 bytes, 622 lines | Not run until user explicitly approves source transmission or waives `FR-008`. |
-| GLM direct API | blocked pending approval | not_sent | Doctor ready; approval request generated for 11 files, 37,467 bytes, 622 lines | Not run until user explicitly approves source transmission or waives `FR-008`. |
+| DeepSeek direct API | blocked pending approval | not_sent | Doctor ready; exact-head approval request must be regenerated before run | Not run until user explicitly approves source transmission or waives `FR-008`. |
+| GLM direct API | blocked pending approval | not_sent | Doctor ready; exact-head approval request must be regenerated before run | Not run until user explicitly approves source transmission or waives `FR-008`. |
 
 ## Blocking Disposition
 

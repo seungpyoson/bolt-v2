@@ -34,8 +34,8 @@
 - [x] T013 Push branch after approval.
 - [x] T014 Run exact-head checks available for the pushed branch.
 - [x] T015 Run Claude custom review against Phase 9 artifacts.
-- [ ] T016 Run DeepSeek custom review after approval-token evidence. Approval request generated; source remains `not_sent` pending explicit user approval.
-- [ ] T017 Run GLM custom review after approval-token evidence. Approval request generated; source remains `not_sent` pending explicit user approval.
+- [ ] T016 Run DeepSeek custom review after exact-head approval-token evidence. Source remains `not_sent` pending explicit user approval.
+- [ ] T017 Run GLM custom review after exact-head approval-token evidence. Source remains `not_sent` pending explicit user approval.
 - [x] T018 Record findings and dispositions in `external-review-phase9-disposition.md`.
 
 ## Phase 4: Cleanup Implementation Gate

@@ -22,6 +22,7 @@ const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";
 const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";
 const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
 const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
+pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -550,8 +551,16 @@ fn required_env(name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+pub fn phase8_required_env(name: &str) -> Result<String> {
+    required_env(name)
+}
+
 fn sha256_text(value: &str) -> String {
     sha256_bytes(value.as_bytes())
+}
+
+pub fn phase8_sha256_text(value: &str) -> String {
+    sha256_text(value)
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {

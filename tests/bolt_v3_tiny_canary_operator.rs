@@ -2,16 +2,16 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
-        Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
-        Phase8EvidenceRef, Phase8LiveCanaryResultRefs, Phase8LiveOrderRef,
-        Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
-        evaluate_phase8_canary_preflight,
+        PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryBlockReason, Phase8CanaryEvidence,
+        Phase8CanaryEvidenceInput, Phase8EvidenceRef, Phase8LiveCanaryResultRefs,
+        Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
+        Phase8StrategyInputSafetyAudit, evaluate_phase8_canary_preflight, phase8_required_env,
+        phase8_sha256_text,
     },
     nt_runtime_capture::spool_root_for_instance,
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -143,7 +143,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
     if !preflight.can_enter_live_runner() {
         let blocked_runtime_capture_ref = Phase8RuntimeCaptureRef {
             spool_root_hash: phase8_sha256_text(&loaded.root.persistence.catalog_directory),
-            run_id: "phase8-blocked-before-live-runner".to_string(),
+            run_id: PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID.to_string(),
         };
         let evidence = Phase8CanaryEvidence::blocked_before_submit(
             phase8_operator_evidence_input(
@@ -264,21 +264,6 @@ fn phase8_operator_runtime_capture(
         },
         spool_root,
     }
-}
-
-fn phase8_sha256_text(value: &str) -> String {
-    let digest = Sha256::digest(value.as_bytes());
-    format!("{digest:x}")
-}
-
-fn phase8_required_env(name: &str) -> anyhow::Result<String> {
-    let value =
-        env::var(name).map_err(|_| anyhow::anyhow!("missing required phase8 env `{name}`"))?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow::anyhow!("required phase8 env `{name}` is empty"));
-    }
-    Ok(trimmed.to_string())
 }
 
 fn phase8_optional_env(name: &str) -> anyhow::Result<Option<String>> {

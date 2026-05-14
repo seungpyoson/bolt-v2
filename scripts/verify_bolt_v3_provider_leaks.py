@@ -264,17 +264,6 @@ def excerpt_for(text: str, pos: int) -> str:
     return " ".join(text[line_start:line_end].strip().split())
 
 
-def is_cfg_test_attr(stripped: str) -> bool:
-    bounds = cfg_attr_bounds(stripped)
-    if bounds is None:
-        return False
-
-    expression_start, expression_end, _ = bounds
-    expression = stripped[expression_start:expression_end]
-    can_be_true_without_test, _ = cfg_truth_without_test(expression)
-    return not can_be_true_without_test
-
-
 def cfg_attr_is_inner(stripped: str) -> bool:
     if not stripped.startswith("#"):
         return False

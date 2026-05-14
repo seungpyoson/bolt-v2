@@ -12,6 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 PURE_RUST_VERIFIER = "scripts/verify_bolt_v3_pure_rust_runtime.py"
+PURE_RUST_AREA_TERMS = ("python", "runtime")
 SCRIPT_REF_RE = re.compile(r"(?<![A-Za-z0-9_./-])(scripts/[A-Za-z0-9_./-]+\.py)(?![A-Za-z0-9_./-])")
 MISSING_EVIDENCE_VALUES = {"", "missing", "n/a", "none", "tbd", "todo"}
 MISSING_EVIDENCE_PHRASES = (
@@ -76,7 +77,7 @@ def main() -> int:
     if pure_rust is None:
         findings.append("status row 3 for no Python runtime layer is missing")
     else:
-        if pure_rust.area != "No Python runtime layer":
+        if not all(term in pure_rust.area.lower() for term in PURE_RUST_AREA_TERMS):
             findings.append(f"row 3 area changed unexpectedly: {pure_rust.area!r}")
         if "missing verifier" in pure_rust.status.lower():
             findings.append("row 3 still says the pure Rust runtime verifier is missing")

@@ -70,11 +70,18 @@ def test_parse_rows_selects_status_rows_only() -> None:
         raise AssertionError(f"unexpected parsed rows: {rows!r}")
 
 
+def test_pure_rust_area_terms_accept_copyedits() -> None:
+    area = "No Python runtime bridge"
+    if not all(term in area.lower() for term in VERIFIER.PURE_RUST_AREA_TERMS):
+        raise AssertionError("pure-Rust row area terms should tolerate copyedits")
+
+
 def main() -> int:
     tests = [
         test_script_reference_regex_matches_backticked_and_plain_script_paths,
         test_missing_evidence_flags_absence_without_rejecting_negative_proof,
         test_parse_rows_selects_status_rows_only,
+        test_pure_rust_area_terms_accept_copyedits,
     ]
     for test in tests:
         test()

@@ -91,11 +91,36 @@ def test_forbidden_rust_patterns_detect_python_bridge_shapes() -> None:
         raise AssertionError(f"forbidden Rust scanner missed {sorted(missing)} from {sorted(labels)}")
 
 
+def test_forbidden_rust_scan_ignores_comments_and_literals() -> None:
+    source = r'''
+    // pyo3::prepare_freethreaded_python();
+    /* #[pyclass] struct NotCode; */
+    const TEXT: &str = "PyResult and Python::with_gil are docs";
+    const RAW: &[u8] = br#"cpython::Object"#;
+    const CHAR: char = 'P';
+    let lifetime: &'static str = "also ignored";
+
+    fn bridge() {
+        pyo3::prepare_freethreaded_python();
+    }
+    '''
+
+    scan_text = VERIFIER.strip_rust_comments_and_literals(source)
+    labels = [
+        label
+        for pattern, label in VERIFIER.FORBIDDEN_RUST_PATTERNS
+        for _ in pattern.finditer(scan_text)
+    ]
+    if labels != ["PyO3 Rust API usage"]:
+        raise AssertionError(f"unexpected labels after stripping comments/literals: {labels!r}")
+
+
 def main() -> int:
     tests = [
         test_collect_dependency_names_covers_workspace_and_target_tables,
         test_cargo_manifest_paths_scan_nested_manifests_and_skip_managed_dirs,
         test_forbidden_rust_patterns_detect_python_bridge_shapes,
+        test_forbidden_rust_scan_ignores_comments_and_literals,
     ]
     for test in tests:
         test()

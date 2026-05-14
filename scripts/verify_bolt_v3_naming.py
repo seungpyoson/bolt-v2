@@ -8,14 +8,6 @@ import re
 import sys
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    sys.stderr.write(
-        "ERROR: PyYAML is required. Install with `python3 -m pip install pyyaml`.\n"
-    )
-    sys.exit(2)
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDIT_PATH = REPO_ROOT / "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml"
@@ -46,8 +38,99 @@ def word_re(term: str) -> re.Pattern[str]:
     return re.compile(WORD_RE_TEMPLATE.format(re.escape(term)))
 
 
+LIST_SECTIONS = {
+    "rules",
+    "renamed_in_current_audit",
+    "defensive_forbidden",
+    "path_scoped_forbidden",
+    "accepted_non_nt_names",
+}
+
+
+def parse_scalar(value: str) -> object:
+    stripped = value.strip()
+    if stripped.startswith('"') and stripped.endswith('"'):
+        return stripped[1:-1]
+    if stripped.isdigit():
+        return int(stripped)
+    return stripped
+
+
 def load_audit() -> dict:
-    return yaml.safe_load(AUDIT_PATH.read_text(encoding="utf-8")) or {}
+    """Parse the repo-local audit YAML without depending on ambient PyYAML.
+
+    The audit file intentionally uses a small YAML subset: top-level scalars
+    and top-level lists of mappings, with one nested scalar list for
+    `include_globs`. Keeping this parser local avoids an unpinned CI package.
+    """
+
+    audit: dict[str, object] = {}
+    current_section = ""
+    current_item: dict[str, object] | None = None
+    current_list_key = ""
+
+    for raw_line in AUDIT_PATH.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        line = raw_line.strip()
+
+        if indent == 0:
+            current_item = None
+            current_list_key = ""
+            if line.endswith(":"):
+                current_section = line[:-1]
+                audit[current_section] = [] if current_section in LIST_SECTIONS else {}
+                continue
+            key, value = line.split(":", 1)
+            audit[key] = parse_scalar(value)
+            current_section = key
+            continue
+
+        if current_section not in LIST_SECTIONS:
+            continue
+
+        section_rows = audit.setdefault(current_section, [])
+        if not isinstance(section_rows, list):
+            raise ValueError(f"{AUDIT_PATH}: section {current_section!r} is not a list")
+
+        if indent == 2 and line.startswith("- "):
+            current_item = {}
+            section_rows.append(current_item)
+            current_list_key = ""
+            rest = line[2:]
+            if rest:
+                key, value = rest.split(":", 1)
+                if value.strip():
+                    current_item[key] = parse_scalar(value)
+                else:
+                    current_item[key] = []
+                    current_list_key = key
+            continue
+
+        if current_item is None:
+            raise ValueError(f"{AUDIT_PATH}: nested row without list item: {raw_line}")
+
+        if indent == 4 and not line.startswith("- "):
+            key, value = line.split(":", 1)
+            if value.strip():
+                current_item[key] = parse_scalar(value)
+                current_list_key = ""
+            else:
+                current_item[key] = []
+                current_list_key = key
+            continue
+
+        if indent >= 4 and line.startswith("- "):
+            if not current_list_key:
+                raise ValueError(f"{AUDIT_PATH}: list item without key: {raw_line}")
+            nested = current_item.setdefault(current_list_key, [])
+            if not isinstance(nested, list):
+                raise ValueError(f"{AUDIT_PATH}: key {current_list_key!r} is not a list")
+            nested.append(parse_scalar(line[2:]))
+
+    return audit
 
 
 def scan_paths() -> list[Path]:

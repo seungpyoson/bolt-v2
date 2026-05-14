@@ -174,9 +174,38 @@ jobs:
       - name: clippy
         run: just clippy
 
+  source-fence:
+    name: source-fence
+    needs: detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-targets: false
+          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
+          key: source-fence-v1
+
+      - name: source-fence
+        env:
+          # Keep targeted source-fence test binaries small enough for ubuntu-latest link/disk limits.
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: just source-fence
+
+  # #342 owns these canonical source-fence filters. Until #332 changes full
+  # nextest ownership, `test` intentionally still duplicates them under `gate`.
   test:
     name: test
-    needs: detector
+    needs: [detector, source-fence]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -271,7 +300,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, test, build]
+    needs: [detector, fmt-check, deny, clippy, source-fence, test, build]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -292,6 +321,10 @@ jobs:
           fi
           if [[ "${{ needs.clippy.result }}" != "success" ]]; then
             echo "clippy did not succeed"
+            exit 1
+          fi
+          if [[ "${{ needs.source-fence.result }}" != "success" ]]; then
+            echo "source-fence did not succeed"
             exit 1
           fi
           if [[ "${{ needs.test.result }}" != "success" ]]; then

@@ -37,6 +37,7 @@
 - [ ] T016 Run DeepSeek custom review after exact-head approval-token evidence. Source remains `not_sent` pending explicit user approval.
 - [ ] T017 Run GLM custom review after exact-head approval-token evidence. Source remains `not_sent` pending explicit user approval.
 - [x] T018 Record findings and dispositions in `external-review-phase9-disposition.md`.
+- [x] T018a Add source-free DeepSeek/GLM relay prompts for manual handoff; these do not satisfy `FR-008` without returned reviewer findings or explicit waiver.
 
 ## Phase 4: Cleanup Implementation Gate
 

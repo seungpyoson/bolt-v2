@@ -8,6 +8,10 @@ Direct API approval scope: regenerate the approval request at the exact current
 PR head before any DeepSeek or GLM run. Approval requests are not durable across
 artifact changes.
 
+Source-free relay prompts are available in
+`external-review-phase9-relay-prompts.md` for manual review handoff. Relay
+prompts are not review evidence and do not satisfy `FR-008` by themselves.
+
 Base: `origin/main` at `d6f55774c32b71a242dcf78b8292a7f9e537afab`.
 
 ## Review Matrix
@@ -25,6 +29,9 @@ Base: `origin/main` at `d6f55774c32b71a242dcf78b8292a7f9e537afab`.
 - Claude review is complete.
 - DeepSeek and GLM are not complete because direct API review would send selected source content to external providers and the user has not approved that transmission.
 - Phase 9 implementation must not proceed until DeepSeek and GLM reviews run successfully or the user explicitly waives `FR-008`.
+- Source-free relay prompts may be used for manual handoff, but the returned
+  reviewer findings must still be recorded before the gate is considered
+  satisfied.
 
 ## Non-scope
 

@@ -62,6 +62,8 @@ specs/019-bolt-v3-phase9-audit-fresh/
 ├── audit-report.md
 ├── ai-slop-cleanup-report.md
 ├── external-review-phase9-prompt.md
+├── external-review-phase9-disposition.md
+├── external-review-phase9-relay-prompts.md
 └── tasks.md
 ```
 

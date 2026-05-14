@@ -211,6 +211,7 @@ ci-lint-workflow:
         "inputs.include-nextest-version"
         "inputs.include-build-values"
         "inputs.lint-workflow-contract"
+        "inputs.include-managed-target-dir"
         "CLAUDE_CONFIG_READ_TOKEN:"
         "inputs.claude-config-read-token"
         "just ci-lint-workflow"
@@ -239,6 +240,13 @@ ci-lint-workflow:
         "rust_verification_ci_install_script"
         "managed_target_dir"
     )
+
+    if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
+        failed=1
+    fi
+    if ! python3 scripts/verify_ci_workflow_hygiene.py; then
+        failed=1
+    fi
 
     for f in "${github_automation_files[@]}"; do
         if grep -En "$pattern" "$f"; then

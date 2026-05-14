@@ -52,7 +52,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           RESPONSE: ${{ steps.inference.outputs.response }}
 
-      - name: Note inference skipped
-        if: steps.inference.outcome != 'success'
+      - name: Note inference failed
+        if: steps.inference.outcome == 'failure'
         run: |
-          echo "AI inference step did not succeed (likely GitHub Models budget or quota). Skipping comment." >&2
+          echo "AI inference step failed (likely GitHub Models budget or quota). Skipping comment." >&2

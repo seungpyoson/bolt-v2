@@ -147,6 +147,7 @@ fn dry_canary_evidence_serializes_join_keys_without_raw_approval_id() {
     let rendered = serde_json::to_string(&evidence).expect("evidence should render");
     assert!(!rendered.contains("operator-approved-canary-001"));
     assert!(rendered.contains("decision_evidence_ref"));
+    assert!(rendered.contains("ssm_manifest_ref"));
     assert!(rendered.contains("submit_admission_ref"));
     assert!(rendered.contains("runtime_capture_ref"));
 }
@@ -417,6 +418,12 @@ fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEviden
             .to_string(),
         ssm_manifest_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             .to_string(),
+        ssm_manifest_ref: Phase8EvidenceRef {
+            path_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_string(),
+            record_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+        },
         approval_id: "operator-approved-canary-001".to_string(),
         max_live_order_count: 1,
         max_notional_per_order: Decimal::new(25, 2),

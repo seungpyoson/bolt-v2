@@ -3,8 +3,8 @@ use bolt_v2::{
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
-        Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
-        evaluate_phase8_canary_preflight,
+        Phase8EvidenceRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
+        Phase8StrategyInputSafetyAudit, evaluate_phase8_canary_preflight,
     },
 };
 use rust_decimal::Decimal;
@@ -129,6 +129,10 @@ fn phase8_operator_evidence_input(
         head_sha: envelope.head_sha.clone(),
         root_config_sha256: root_hash.to_string(),
         ssm_manifest_sha256: envelope.ssm_manifest_sha256.clone(),
+        ssm_manifest_ref: Phase8EvidenceRef {
+            path_hash: phase8_sha256_text(&envelope.ssm_manifest_path),
+            record_hash: envelope.ssm_manifest_sha256.clone(),
+        },
         approval_id: envelope.operator_approval_id.clone(),
         max_live_order_count: block.max_live_order_count,
         max_notional_per_order: Decimal::from_str_exact(&block.max_notional_per_order)?,

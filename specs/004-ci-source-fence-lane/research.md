@@ -24,6 +24,12 @@
 
 **Alternatives considered**: Exclude tests from current full `just test`. Rejected as #332 scope because it changes the full test lane selector before sharding work.
 
+## Decision: Keep source-fence cache ownership separate from full nextest
+
+**Rationale**: The new lane uses `key: source-fence-v1` so its warm runtime is measurable independently from the broader `nextest-v2` lane. Sharing target cache keys now would mix #342 lane proof with #195 cache-retention ownership and #332 sharding ownership.
+
+**Alternatives considered**: Share restore keys between `source-fence` and `test`. Rejected for this slice because it changes cache strategy outside the source-fence contract and makes the lane's own warm-cache evidence less direct.
+
 ## Decision: Avoid new Python package installation
 
 **Rationale**: #342 requires deterministic verifiers. Depending on ambient runner image packages or unpinned `pip install` behavior is not deterministic and violates the repo's dependency discipline.

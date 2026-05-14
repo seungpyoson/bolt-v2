@@ -40,7 +40,7 @@
 - [x] T021 [US1] Run `just source-fence`
 - [x] T022 [US1] Prove a deliberate stale source-fence assertion fails through `just source-fence`, then revert the temporary mutation
 - [x] T023 Run `git diff --check`
-- [ ] T024 Push branch, open stacked PR, and collect exact-head CI evidence
+- [x] T024 Push branch, open stacked PR, and collect exact-head CI evidence
 
 ## Dependencies
 

@@ -12,7 +12,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 PURE_RUST_VERIFIER = "scripts/verify_bolt_v3_pure_rust_runtime.py"
-SCRIPT_REF_RE = re.compile(r"`(scripts/[^`]+\.py)`")
+SCRIPT_REF_RE = re.compile(r"(?<![A-Za-z0-9_./-])(scripts/[A-Za-z0-9_./-]+\.py)(?![A-Za-z0-9_./-])")
+MISSING_EVIDENCE_VALUES = {"", "missing", "n/a", "none", "tbd", "todo"}
+MISSING_EVIDENCE_PHRASES = (
+    "missing evidence",
+    "no source",
+    "no test",
+    "no verifier",
+    "not found",
+    "not implemented",
+)
 
 
 @dataclass(frozen=True)
@@ -51,7 +60,7 @@ def parse_rows(text: str) -> list[StatusRow]:
 
 def missing_evidence(value: str) -> bool:
     normalized = value.strip().lower()
-    return normalized in {"", "missing"} or normalized.startswith("no ")
+    return normalized in MISSING_EVIDENCE_VALUES or any(phrase in normalized for phrase in MISSING_EVIDENCE_PHRASES)
 
 
 def main() -> int:

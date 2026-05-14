@@ -45,6 +45,7 @@ FORBIDDEN_RUST_PATTERNS = (
 )
 
 DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+IGNORED_MANIFEST_DIRS = {".git", ".worktrees", "target"}
 
 
 def collect_dependency_names(data: dict[str, object]) -> set[str]:
@@ -80,6 +81,16 @@ def cargo_dependency_names(path: Path) -> set[str]:
     return collect_dependency_names(data)
 
 
+def cargo_manifest_paths() -> list[Path]:
+    paths: list[Path] = []
+    for path in REPO_ROOT.rglob("Cargo.toml"):
+        rel_parts = path.relative_to(REPO_ROOT).parts
+        if any(part in IGNORED_MANIFEST_DIRS for part in rel_parts):
+            continue
+        paths.append(path)
+    return sorted(paths)
+
+
 def cargo_lock_package_names(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -105,10 +116,15 @@ def main() -> int:
         if path.exists():
             findings.append(f"{rel}: Python package/build metadata is not allowed for the Rust runtime")
 
-    dependency_names = cargo_dependency_names(REPO_ROOT / "Cargo.toml")
+    for manifest in cargo_manifest_paths():
+        dependency_names = cargo_dependency_names(manifest)
+        rel = manifest.relative_to(REPO_ROOT).as_posix()
+        for name in sorted(dependency_names & FORBIDDEN_PACKAGE_NAMES):
+            findings.append(f"{rel}: Cargo manifest references forbidden Python bridge package {name!r}")
+
     lock_names = cargo_lock_package_names(REPO_ROOT / "Cargo.lock")
-    for name in sorted((dependency_names | lock_names) & FORBIDDEN_PACKAGE_NAMES):
-        findings.append(f"Cargo metadata references forbidden Python bridge package {name!r}")
+    for name in sorted(lock_names & FORBIDDEN_PACKAGE_NAMES):
+        findings.append(f"Cargo.lock references forbidden Python bridge package {name!r}")
 
     for path in sorted((REPO_ROOT / "src").glob("**/*.rs")):
         text = path.read_text(encoding="utf-8")

@@ -179,6 +179,42 @@ fn dry_canary_evidence_writer_creates_redacted_json_file() {
 }
 
 #[test]
+fn dry_canary_evidence_writer_rejects_existing_json_file() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        Phase8EvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .to_string(),
+        },
+    );
+
+    evidence
+        .write_json_file(&evidence_path)
+        .expect("evidence should write");
+    let original = std::fs::read_to_string(&evidence_path).expect("evidence should read");
+
+    let replacement = Phase8CanaryEvidence::blocked_before_submit(
+        evidence_input(),
+        Phase8CanaryBlockReason::RootConfigHashUnavailable,
+    );
+    let error = replacement
+        .write_json_file(&evidence_path)
+        .expect_err("existing evidence must not be overwritten");
+
+    assert!(
+        error.to_string().contains("already exists"),
+        "error should explain existing evidence: {error}"
+    );
+    let rendered = std::fs::read_to_string(&evidence_path).expect("evidence should read");
+    assert_eq!(rendered, original);
+    assert!(!rendered.contains("blocked_before_submit"));
+}
+
+#[test]
 fn decision_evidence_unavailable_blocks_before_submit_admission() {
     let evidence = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),

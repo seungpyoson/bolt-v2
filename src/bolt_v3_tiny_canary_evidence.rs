@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::{BufReader, Read},
+    io::{BufReader, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -335,7 +335,10 @@ impl Phase8CanaryEvidence {
 
     pub fn write_json_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             fs::create_dir_all(parent).map_err(|source| {
                 anyhow!(
                     "failed to create phase8 canary evidence directory `{}`: {source}",
@@ -345,12 +348,34 @@ impl Phase8CanaryEvidence {
         }
         let bytes = serde_json::to_vec_pretty(self)
             .map_err(|source| anyhow!("failed to serialize phase8 canary evidence: {source}"))?;
-        fs::write(path, bytes).map_err(|source| {
-            anyhow!(
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|source| match source.kind() {
+                std::io::ErrorKind::AlreadyExists => anyhow!(
+                    "phase8 canary evidence `{}` already exists; refusing to overwrite",
+                    path.display()
+                ),
+                _ => anyhow!(
+                    "failed to create phase8 canary evidence `{}`: {source}",
+                    path.display()
+                ),
+            })?;
+        if let Err(source) = file.write_all(&bytes) {
+            let _ = fs::remove_file(path);
+            return Err(anyhow!(
                 "failed to write phase8 canary evidence `{}`: {source}",
                 path.display()
-            )
-        })?;
+            ));
+        }
+        if let Err(source) = file.sync_all() {
+            let _ = fs::remove_file(path);
+            return Err(anyhow!(
+                "failed to sync phase8 canary evidence `{}`: {source}",
+                path.display()
+            ));
+        }
         Ok(())
     }
 }

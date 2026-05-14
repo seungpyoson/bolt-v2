@@ -26,10 +26,10 @@ REQUIRED_JOBS = (
 GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "source-fence", "test", "build")
 DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test")
 TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
-BUILD_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
-GATE_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
-DEPLOY_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
-EXIT_ONE_RE = re.compile(r"^\s*exit\s+1\s*$", re.MULTILINE)
+BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
+GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
+DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+EXIT_RE = re.compile(r"^\s*exit(?:\s+([0-9]+))?\s*$", re.MULTILINE)
 
 
 def strip_comment(line: str) -> str:
@@ -186,7 +186,10 @@ def branch_exists(gate_text: str, keyword: str, condition: str) -> bool:
 
 def branch_exits(gate_text: str, keyword: str, condition: str) -> bool:
     body = branch_body(gate_text, keyword, condition)
-    return body is not None and EXIT_ONE_RE.search(body) is not None
+    if body is None:
+        return False
+    exit_codes = [match.group(1) for match in EXIT_RE.finditer(body)]
+    return exit_codes == ["1"]
 
 
 def extract_action_input_block(action_text: str, input_name: str) -> list[str]:

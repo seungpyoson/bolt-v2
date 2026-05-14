@@ -295,8 +295,24 @@ def main() -> int:
         ),
     )
     assert_error(
+        "build must gate on needs.detector.outputs.build_required",
+        replace_once(
+            replace_once(BASE_WORKFLOW, "    if: needs.detector.outputs.build_required == 'true'\n", ""),
+            "      - uses: ./.github/actions/setup-environment",
+            "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error(
         "gate must use always()",
         replace_once(BASE_WORKFLOW, "if: ${{ always() }}", "if: ${{ always() && false }}"),
+    )
+    assert_error(
+        "gate must use always()",
+        replace_once(
+            replace_once(BASE_WORKFLOW, "    if: ${{ always() }}\n", ""),
+            "      - run: |",
+            "      - if: ${{ always() }}\n        run: |",
+        ),
     )
     assert_error(
         "gate must check needs.detector.result",
@@ -308,6 +324,21 @@ def main() -> int:
 """,
             """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
             echo "detector failed"
+          fi
+""",
+        ),
+    )
+    assert_error(
+        "gate must check needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            exit 1
+          fi
+""",
+            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            exit 0
+            exit 1
           fi
 """,
         ),
@@ -330,6 +361,21 @@ def main() -> int:
         "gate must check needs.build.result",
         replace_once(
             BASE_WORKFLOW,
+            """            if [[ "$build_result" != "success" ]]; then
+              exit 1
+            fi
+""",
+            """            if [[ "$build_result" != "success" ]]; then
+              exit 0
+              exit 1
+            fi
+""",
+        ),
+    )
+    assert_error(
+        "gate must check needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
             """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
             exit 1
 """,
@@ -339,8 +385,29 @@ def main() -> int:
         ),
     )
     assert_error(
+        "gate must check needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            exit 1
+""",
+            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            exit 0
+            exit 1
+""",
+        ),
+    )
+    assert_error(
         "deploy must be tag-gated",
         replace_once(BASE_WORKFLOW, "if: startsWith(github.ref, 'refs/tags/v')", "if: ${{ always() }}"),
+    )
+    assert_error(
+        "deploy must be tag-gated",
+        replace_once(
+            replace_once(BASE_WORKFLOW, "    if: startsWith(github.ref, 'refs/tags/v')\n", ""),
+            "      - run: echo deploy",
+            "      - if: startsWith(github.ref, 'refs/tags/v')\n        run: echo deploy",
+        ),
     )
     assert_error(
         "clippy uses managed target dir but setup does not opt in",

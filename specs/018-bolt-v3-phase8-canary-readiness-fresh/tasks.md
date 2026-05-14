@@ -71,7 +71,7 @@
 
 - [ ] T027 [US3] Add `tests/bolt_v3_tiny_canary_operator.rs` ignored harness skeleton.
 - [ ] T028 [US3] Require exact head SHA, root TOML path, root TOML checksum, SSM manifest hash, approval id, and evidence path before build.
-- [ ] T029 [US3] Assert `max_live_order_count == 1` before runner.
+- [ ] T029 [US3] Assert the configured Phase 8 tiny-canary cap before runner; for this slice that means `max_live_order_count == 1`.
 - [ ] T030 [US3] Keep live order execution blocked unless user approval is supplied at runtime.
 - [ ] T031 [US3] Run harness default test and source fences, then commit this vertical slice.
 

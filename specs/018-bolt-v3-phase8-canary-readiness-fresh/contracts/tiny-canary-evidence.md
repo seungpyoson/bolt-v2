@@ -50,6 +50,9 @@ Define the redacted evidence shape Phase 8 must write before and during any appr
 - `submit_admission_ref` must exist before any `nt_order_*` outcome.
 - `nt_lifecycle_refs` must cite NT event/report/capture evidence for every live outcome.
 - `block_reasons` must be non-empty for blocked outcomes.
+- `blocked_before_live_order`, `decision_evidence_unavailable`, and
+  `strategy_input_safety_audit_blocked` are `block_reasons`, not `outcome`
+  values.
 - No raw API key, private key, secret value, passphrase, or raw SSM value may appear.
 
 ## Forbidden Evidence Sources

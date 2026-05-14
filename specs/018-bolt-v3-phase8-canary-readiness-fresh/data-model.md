@@ -52,6 +52,10 @@ Allowed `outcome` values:
 - `nt_strategy_cancel_observed`
 - `nt_restart_reconciliation_observed`
 
+Known `block_reasons` include `blocked_before_live_order`,
+`decision_evidence_unavailable`, and `strategy_input_safety_audit_blocked`.
+These are diagnostic reasons, not `outcome` values.
+
 Validation:
 
 - `outcome` values beginning with `nt_` require references to NT event/report/capture artifacts.

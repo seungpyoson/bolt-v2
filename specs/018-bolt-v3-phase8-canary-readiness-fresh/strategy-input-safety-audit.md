@@ -42,6 +42,9 @@ Blocked for live action. Requirements exist in runtime validation for reference 
 
 Blocked for live action. Tests cover many realized-vol behaviors in `eth_chainlink_taker`, but a strategy-math approval requires tracing exact operator config values (`vol_window_secs`, `vol_gap_reset_secs`, `vol_min_observations`, `vol_bridge_valid_secs`) against live feed cadence and market duration.
 
+The implementation slice must fail closed when realized volatility is zero or
+negative; fair probability must be unavailable and entry evaluation skipped.
+
 ### `pricing_kurtosis`
 
 Blocked for live action. The tracked fixture uses `pricing_kurtosis = 3.0`; the live example comment uses `pricing_kurtosis = 0.0`. The correct production value for ETH 5m up/down is not evidenced.
@@ -61,6 +64,9 @@ Blocked for live action. Current runtime contract has updown slug rules and curr
 ### Option Pricing Assumptions
 
 Blocked for live action. Runtime contract documents Black-Scholes-like binary probability inputs, but live approval requires exact input trace: Chainlink boundary price, realized volatility, time to expiry, fee adjustment, edge threshold, and side selection.
+
+The implementation slice must fail closed when time to expiry is zero or
+negative; fair probability must be unavailable and entry evaluation skipped.
 
 ### Edge Threshold And Tiny-order Economics
 

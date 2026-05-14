@@ -33,8 +33,8 @@ As the operator, I can produce a redacted dry/no-submit canary proof that joins 
 
 **Acceptance Scenarios**:
 
-1. **Given** an approved no-submit readiness report fixture and tiny caps, **When** dry canary evidence is written, **Then** it records the report path hash, root config checksum, approval id hash, cap values, and `blocked_before_live_order`.
-2. **Given** decision evidence writing fails, **When** dry proof runs, **Then** it records `decision_evidence_unavailable` and blocks before submit admission.
+1. **Given** an approved no-submit readiness report fixture and tiny caps, **When** dry canary evidence is written, **Then** it records the report path hash, root config checksum, approval id hash, cap values, `outcome = dry_no_submit_proof`, and `block_reasons` containing `blocked_before_live_order`.
+2. **Given** decision evidence writing fails, **When** dry proof runs, **Then** it records `outcome = blocked_before_submit` with `block_reasons` containing `decision_evidence_unavailable` and blocks before submit admission.
 
 ---
 

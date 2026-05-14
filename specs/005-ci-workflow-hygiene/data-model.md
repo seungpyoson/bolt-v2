@@ -54,7 +54,7 @@ Validation rules:
 ## DetectorSerializationDecision
 
 - **removed_edge**: `fmt-check -> detector`.
-- **kept_edges**: `build -> detector`, `source-fence -> detector`, `test -> source-fence`.
+- **kept_edges**: `build -> detector`, `source-fence -> detector`, `test -> detector`, `test -> source-fence`.
 
 Validation rules:
 

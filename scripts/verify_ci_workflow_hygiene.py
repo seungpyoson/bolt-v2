@@ -26,6 +26,8 @@ REQUIRED_JOBS = (
 GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "source-fence", "test", "build")
 DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test")
 TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
+BUILD_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
+GATE_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 
 
 def strip_comment(line: str) -> str:
@@ -142,6 +144,55 @@ def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
     return any(block_has_target_dir_opt_in(block) for block in setup_action_blocks(job_lines))
 
 
+def uncommented_text(lines: list[str]) -> str:
+    return "\n".join(strip_comment(line) for line in lines)
+
+
+def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
+    return any(pattern.match(strip_comment(line)) for line in lines)
+
+
+def gate_checks_lane_success(gate_text: str, job: str) -> bool:
+    return f'[[ "${{{{ needs.{job}.result }}}}" != "success" ]]' in gate_text
+
+
+def gate_checks_build_result(gate_text: str) -> bool:
+    return all(
+        fragment in gate_text
+        for fragment in (
+            'build_required="${{ needs.detector.outputs.build_required }}"',
+            'build_result="${{ needs.build.result }}"',
+            'if [[ "$build_required" == "true" ]]; then',
+            'if [[ "$build_result" != "success" ]]; then',
+            'elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then',
+        )
+    )
+
+
+def extract_action_input_block(action_text: str, input_name: str) -> list[str]:
+    lines = action_text.splitlines()
+    input_re = re.compile(rf"^  {re.escape(input_name)}:\s*$")
+    next_input_re = re.compile(r"^  [A-Za-z0-9_.-]+:\s*$")
+    for start, line in enumerate(lines):
+        if not input_re.match(strip_comment(line)):
+            continue
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            clean = strip_comment(lines[index])
+            if clean and not clean.startswith((" ", "\t")):
+                end = index
+                break
+            if next_input_re.match(clean):
+                end = index
+                break
+        return lines[start:end]
+    return []
+
+
+def input_block_has_default_false(input_block: list[str]) -> bool:
+    return any(re.match(r"^\s+default:\s*(['\"]?)false\1\s*$", strip_comment(line)) for line in input_block)
+
+
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = []
     jobs = parse_jobs(workflow_text)
@@ -154,27 +205,31 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.append("fmt-check must not need detector")
 
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
+        # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
 
     if "test" in jobs and "source-fence" not in extract_needs(jobs["test"]):
         errors.append("test needs source-fence")
 
     if "build" in jobs:
-        build_text = "\n".join(jobs["build"])
         if "detector" not in extract_needs(jobs["build"]):
             errors.append("build needs detector")
-        if "needs.detector.outputs.build_required" not in build_text:
+        if not has_line_matching(jobs["build"], BUILD_IF_RE):
             errors.append("build must gate on needs.detector.outputs.build_required")
 
     if "gate" in jobs:
         gate_needs = extract_needs(jobs["gate"])
-        gate_text = "\n".join(jobs["gate"])
+        gate_text = uncommented_text(jobs["gate"])
         for job in GATE_REQUIRED:
             if job not in gate_needs:
                 errors.append(f"gate needs {job}")
-            if f"needs.{job}.result" not in gate_text:
+            if job == "build":
+                checks_result = gate_checks_build_result(gate_text)
+            else:
+                checks_result = gate_checks_lane_success(gate_text, job)
+            if not checks_result:
                 errors.append(f"gate must check needs.{job}.result")
-        if "always()" not in gate_text:
+        if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
 
     if "deploy" in jobs:
@@ -200,9 +255,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
-    if "include-managed-target-dir:" not in action_text:
+    target_dir_input = extract_action_input_block(action_text, "include-managed-target-dir")
+    if not target_dir_input:
         errors.append("setup action missing include-managed-target-dir input")
-    if 'default: "false"' not in action_text and "default: 'false'" not in action_text:
+    elif not input_block_has_default_false(target_dir_input):
         errors.append("setup action include-managed-target-dir default must be false")
     if "steps.target_dir.outputs.managed_target_dir" not in action_text:
         errors.append("setup action must export managed_target_dir from target_dir step")

@@ -10,6 +10,8 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
+GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, source-fence, test, build]"
+DEPLOY_NEEDS = "needs: [gate, build, detector, fmt-check, deny, clippy, source-fence, test]"
 
 
 def load_verifier():
@@ -136,14 +138,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "${{ needs.detector.result }}"
-          echo "${{ needs.fmt-check.result }}"
-          echo "${{ needs.deny.result }}"
-          echo "${{ needs.clippy.result }}"
-          echo "${{ needs.source-fence.result }}"
-          echo "${{ needs.test.result }}"
-          echo "${{ needs.build.result }}"
-          echo "${{ needs.detector.outputs.build_required }}"
+          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.deny.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.source-fence.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.test.result }}" != "success" ]]; then
+            exit 1
+          fi
+          build_required="${{ needs.detector.outputs.build_required }}"
+          build_result="${{ needs.build.result }}"
+          if [[ "$build_required" == "true" ]]; then
+            if [[ "$build_result" != "success" ]]; then
+              exit 1
+            fi
+          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            exit 1
+          fi
 
   deploy:
     name: deploy
@@ -158,6 +179,10 @@ jobs:
 BASE_ACTION = """
 name: Setup Environment
 inputs:
+  include-unrelated-flag:
+    description: Unrelated flag with the same default value.
+    required: false
+    default: "false"
   include-managed-target-dir:
     description: Whether to resolve the managed target dir.
     required: false
@@ -207,29 +232,32 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def without_inline_need(line: str, job: str) -> str:
+    return line.replace(f"{job}, ", "").replace(f", {job}", "")
+
+
 def main() -> int:
     assert_clean()
-    assert_error("missing required job source-fence", without_job(BASE_WORKFLOW, "source-fence"))
-    assert_error(
-        "gate needs source-fence",
-        replace_once(
-            BASE_WORKFLOW,
-            "needs: [detector, fmt-check, deny, clippy, source-fence, test, build]",
-            "needs: [detector, fmt-check, deny, clippy, test, build]",
-        ),
-    )
-    assert_error(
-        "gate must check needs.source-fence.result",
-        replace_once(BASE_WORKFLOW, 'echo "${{ needs.source-fence.result }}"', 'echo "source-fence omitted"'),
-    )
-    assert_error(
-        "deploy needs source-fence",
-        replace_once(
-            BASE_WORKFLOW,
-            "needs: [gate, build, detector, fmt-check, deny, clippy, source-fence, test]",
-            "needs: [gate, build, detector, fmt-check, deny, clippy, test]",
-        ),
-    )
+    for job in (
+        "detector",
+        "fmt-check",
+        "deny",
+        "clippy",
+        "source-fence",
+        "test",
+        "build",
+        "gate",
+        "deploy",
+    ):
+        assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
+    for job in ("detector", "fmt-check", "deny", "clippy", "source-fence", "test", "build"):
+        assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
+        assert_error(
+            f"gate must check needs.{job}.result",
+            replace_once(BASE_WORKFLOW, f"needs.{job}.result", f"omitted.{job}.result"),
+        )
+    for job in ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test"):
+        assert_error("deploy needs " + job, replace_once(BASE_WORKFLOW, DEPLOY_NEEDS, without_inline_need(DEPLOY_NEEDS, job)))
     assert_error(
         "fmt-check must not need detector",
         replace_once(
@@ -237,6 +265,38 @@ def main() -> int:
             "  fmt-check:\n    name: fmt-check",
             "  fmt-check:\n    name: fmt-check\n    needs: detector",
         ),
+    )
+    assert_error(
+        "source-fence needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  source-fence:\n    name: source-fence\n    needs: detector",
+            "  source-fence:\n    name: source-fence",
+        ),
+    )
+    assert_error(
+        "test needs source-fence",
+        replace_once(BASE_WORKFLOW, "needs: [detector, source-fence]", "needs: [detector]"),
+    )
+    assert_error(
+        "build needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  build:\n    name: build\n    needs: detector",
+            "  build:\n    name: build",
+        ),
+    )
+    assert_error(
+        "build must gate on needs.detector.outputs.build_required",
+        replace_once(
+            BASE_WORKFLOW,
+            "if: needs.detector.outputs.build_required == 'true'",
+            "if: needs.detector.outputs.build_required != 'true'",
+        ),
+    )
+    assert_error(
+        "gate must use always()",
+        replace_once(BASE_WORKFLOW, "if: ${{ always() }}", "if: ${{ always() && false }}"),
     )
     assert_error(
         "clippy uses managed target dir but setup does not opt in",
@@ -259,6 +319,49 @@ def main() -> int:
             BASE_WORKFLOW,
             "          toolchain-components: rustfmt",
             '          toolchain-components: rustfmt\n          include-managed-target-dir: "true"',
+        ),
+    )
+    assert_error(
+        "test must use setup.outputs.managed_target_dir",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: nextest",
+            "          key: nextest",
+        ),
+    )
+    assert_error(
+        "setup action missing include-managed-target-dir input",
+        action=BASE_ACTION.replace(
+            """  include-managed-target-dir:
+    description: Whether to resolve the managed target dir.
+    required: false
+    default: "false"
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "setup action include-managed-target-dir default must be false",
+        action=replace_once(
+            BASE_ACTION,
+            """  include-managed-target-dir:
+    description: Whether to resolve the managed target dir.
+    required: false
+    default: "false"
+""",
+            """  include-managed-target-dir:
+    description: Whether to resolve the managed target dir.
+    required: false
+    default: "true"
+""",
+        ),
+    )
+    assert_error(
+        "setup action must export managed_target_dir from target_dir step",
+        action=replace_once(
+            BASE_ACTION,
+            "    value: ${{ steps.target_dir.outputs.managed_target_dir }}",
+            '    value: ""',
         ),
     )
     assert_error(

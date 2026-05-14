@@ -51,7 +51,7 @@
 - [x] T017 Run `just ci-lint-workflow`
 - [x] T018 Run `just fmt-check`
 - [x] T019 Run `git diff --check`
-- [ ] T020 Update PR body with exact-head CI and residual #332/#195/#205/#344/#340 scope
+- [x] T020 Update PR body with exact-head CI and residual #332/#195/#205/#344/#340 scope
 
 ## Dependencies
 

@@ -361,6 +361,7 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
             None => reasons.push(format!("stages must be an array, got {stages_value}")),
             Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),
             Some(stages) => {
+                let mut present_stage_names = std::collections::BTreeSet::new();
                 let mut satisfied_stage_names = std::collections::BTreeSet::new();
                 for stage in stages {
                     let name = stage
@@ -368,6 +369,7 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
                         .or_else(|| stage.get(NAME_KEY))
                         .and_then(Value::as_str)
                         .unwrap_or("<unnamed>");
+                    present_stage_names.insert(name.to_string());
                     let status = stage.get(STATUS_KEY).and_then(Value::as_str);
                     if !matches_satisfied_status(status) {
                         reasons.push(format!(
@@ -379,7 +381,9 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
                     }
                 }
                 for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
-                    if !satisfied_stage_names.contains(*required_stage) {
+                    if !present_stage_names.contains(*required_stage)
+                        && !satisfied_stage_names.contains(*required_stage)
+                    {
                         reasons.push(format!(
                             "required stage `{required_stage}` is missing or unsatisfied"
                         ));

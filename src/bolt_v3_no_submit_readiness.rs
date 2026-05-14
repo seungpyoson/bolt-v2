@@ -154,7 +154,7 @@ pub struct BoltV3NoSubmitReadinessReportMetadata {
 }
 
 impl BoltV3NoSubmitReadinessReportMetadata {
-    pub fn from_loaded(
+    pub async fn from_loaded(
         loaded: &LoadedBoltV3Config,
         operator_approval_id: &str,
         head_sha: &str,
@@ -172,7 +172,7 @@ impl BoltV3NoSubmitReadinessReportMetadata {
         Ok(Self {
             approval_id_hash,
             head_sha: trimmed_head.to_string(),
-            config_checksum: root_config_checksum(loaded)?,
+            config_checksum: root_config_checksum(loaded).await?,
             report_path: configured_report_path(loaded, &block.no_submit_readiness_report_path)
                 .to_string_lossy()
                 .to_string(),
@@ -360,7 +360,8 @@ pub async fn run_bolt_v3_no_submit_readiness(
     head_sha: &str,
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
     let metadata =
-        BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded, operator_approval_id, head_sha)?;
+        BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded, operator_approval_id, head_sha)
+            .await?;
     let mut runtime = build_bolt_v3_live_node(loaded)
         .map_err(|source| BoltV3NoSubmitReadinessError::LiveNode { source })?;
     let redacted_values = runtime.redaction_values().to_vec();
@@ -410,10 +411,10 @@ fn configured_report_path(loaded: &LoadedBoltV3Config, configured: &str) -> Path
         .join(path)
 }
 
-fn root_config_checksum(
+async fn root_config_checksum(
     loaded: &LoadedBoltV3Config,
 ) -> Result<String, BoltV3NoSubmitReadinessError> {
-    let bytes = std::fs::read(&loaded.root_path).map_err(|source| {
+    let bytes = tokio::fs::read(&loaded.root_path).await.map_err(|source| {
         BoltV3NoSubmitReadinessError::RootConfigChecksumRead {
             path: loaded.root_path.clone(),
             source,
@@ -468,7 +469,34 @@ fn redact_detail(detail: &str, redacted_values: &[String]) -> String {
         .collect::<Vec<_>>();
     values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
     values.dedup();
-    values.into_iter().fold(detail.to_string(), |acc, value| {
-        acc.replace(value, REDACTED_DETAIL_MARKER)
-    })
+    if values.is_empty() {
+        return detail.to_string();
+    }
+
+    let mut occupied = vec![false; detail.len()];
+    let mut ranges = Vec::new();
+    for value in values {
+        for (start, _) in detail.match_indices(value) {
+            let end = start + value.len();
+            if occupied[start..end].iter().any(|taken| *taken) {
+                continue;
+            }
+            occupied[start..end].fill(true);
+            ranges.push((start, end));
+        }
+    }
+    if ranges.is_empty() {
+        return detail.to_string();
+    }
+
+    ranges.sort_unstable_by_key(|(start, _)| *start);
+    let mut redacted = String::with_capacity(detail.len());
+    let mut cursor = usize::default();
+    for (start, end) in ranges {
+        redacted.push_str(&detail[cursor..start]);
+        redacted.push_str(REDACTED_DETAIL_MARKER);
+        cursor = end;
+    }
+    redacted.push_str(&detail[cursor..]);
+    redacted
 }

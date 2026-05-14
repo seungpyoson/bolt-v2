@@ -407,6 +407,43 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[(REFERENCE_READINESS_STAGE, "skipped")]);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("unsatisfied required stage must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            let reference_readiness_reasons = reasons
+                .iter()
+                .filter(|reason| reason.contains(REFERENCE_READINESS_STAGE))
+                .count();
+            assert_eq!(
+                reference_readiness_reasons, 1,
+                "expected one reason for `{REFERENCE_READINESS_STAGE}`, got {reasons:?}"
+            );
+        }
+        other => panic!("expected unsatisfied report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_missing_no_submit_report() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

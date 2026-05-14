@@ -80,8 +80,8 @@ fn no_submit_readiness_local_runner_writes_satisfied_connect_reference_disconnec
     );
 }
 
-#[test]
-fn no_submit_readiness_report_records_authenticated_fields_and_required_stages() {
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_report_records_authenticated_fields_and_required_stages() {
     let loaded = loaded_with_test_live_canary();
     let head_sha = "a526e1886f1877fcce0e5c7f667c45375c1709a4";
     let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(
@@ -89,6 +89,7 @@ fn no_submit_readiness_report_records_authenticated_fields_and_required_stages()
         "operator-approved-canary-001",
         head_sha,
     )
+    .await
     .expect("report metadata should be derived from loaded config");
 
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
@@ -182,6 +183,25 @@ fn no_submit_readiness_redacts_longest_overlapping_secret_values_first() {
         !json.contains("only-long-part"),
         "json leaked the long-only suffix of an overlapping secret value"
     );
+}
+
+#[test]
+fn no_submit_readiness_redaction_marker_survives_secret_values_inside_marker() {
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        test_report_metadata(),
+        Err("connect rejected very-secret".to_string()),
+        Ok(()),
+        Ok(()),
+        &["very-secret".to_string(), "redact".to_string()],
+    );
+    let detail = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == CONTROLLED_CONNECT_STAGE)
+        .and_then(|stage| stage.detail.as_deref())
+        .expect("failed connect stage should record redacted detail");
+
+    assert_eq!(detail, "connect rejected [redacted]");
 }
 
 #[test]
@@ -388,6 +408,21 @@ fn no_submit_readiness_runtime_uses_resolved_secret_redaction_values() {
 }
 
 #[test]
+fn no_submit_readiness_metadata_checksum_uses_async_file_io() {
+    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
+        .expect("no-submit readiness source should exist");
+
+    assert!(
+        source.contains("tokio::fs::read(&loaded.root_path).await"),
+        "metadata checksum must not block the current-thread async readiness path"
+    );
+    assert!(
+        !source.contains("std::fs::read(&loaded.root_path)"),
+        "metadata checksum must not use blocking file I/O inside the async readiness path"
+    );
+}
+
+#[test]
 fn no_submit_readiness_operator_harness_uses_localset() {
     let source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
         .expect("operator harness source should exist");
@@ -432,13 +467,12 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
 }
 
 fn test_report_metadata() -> BoltV3NoSubmitReadinessReportMetadata {
-    let loaded = loaded_with_test_live_canary();
-    BoltV3NoSubmitReadinessReportMetadata::from_loaded(
-        &loaded,
-        "operator-approved-canary-001",
-        "a526e1886f1877fcce0e5c7f667c45375c1709a4",
-    )
-    .expect("test report metadata should derive from fixture")
+    BoltV3NoSubmitReadinessReportMetadata {
+        approval_id_hash: sha256_hex("operator-approved-canary-001"),
+        head_sha: "a526e1886f1877fcce0e5c7f667c45375c1709a4".to_string(),
+        config_checksum: "test-config-checksum".to_string(),
+        report_path: "not-written-before-approval-check.json".to_string(),
+    }
 }
 
 fn sha256_hex(value: &str) -> String {

@@ -94,6 +94,16 @@ build: check-workspace require-rust-verification-owner
 check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 
+source-fence: check-workspace require-rust-verification-owner
+    python3 scripts/verify_bolt_v3_runtime_literals.py
+    python3 scripts/verify_bolt_v3_provider_leaks.py
+    python3 scripts/verify_bolt_v3_core_boundary.py
+    python3 scripts/verify_bolt_v3_naming.py
+    python3 scripts/verify_bolt_v3_status_map_current.py
+    python3 scripts/verify_bolt_v3_pure_rust_runtime.py
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate -- --nocapture
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test bolt_v3_production_entrypoint -- --nocapture
+
 live-generate: check-workspace require-rust-verification-owner
     #!/usr/bin/env bash
     # Generate the runtime artifact from the human-edited local source of truth.
@@ -140,7 +150,7 @@ ci-lint-workflow:
     failed=0
     pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64)([^[:alnum:]_]|$)'
+    just_lane_pattern='(^|[^[:alnum:]_./-])just[[:space:]]+(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|source-fence)([^[:alnum:]_]|$)'
     setup_action_literal='uses: ./.github/actions/setup-environment'
     setup_lint_literal='lint-workflow-contract:'
     setup_lint_true_literal='lint-workflow-contract: "true"'
@@ -281,6 +291,18 @@ ci-lint-workflow:
                     ;;
                 gate-test-result)
                     echo "ERROR: Managed CI aggregate gate missing test result check in $f job '$job_name'"
+                    ;;
+                source-fence-job)
+                    echo "ERROR: Managed CI source-fence job missing in $f"
+                    ;;
+                test-source-fence-needs)
+                    echo "ERROR: Managed CI test job must depend on source-fence in $f"
+                    ;;
+                gate-source-fence-needs)
+                    echo "ERROR: Managed CI aggregate gate must need source-fence in $f"
+                    ;;
+                gate-source-fence-result)
+                    echo "ERROR: Managed CI aggregate gate missing source-fence result check in $f job '$job_name'"
                     ;;
                 gate-build-result)
                     echo "ERROR: Managed CI aggregate gate missing build result check in $f job '$job_name'"
@@ -679,6 +701,18 @@ ci-lint-workflow:
                 gate-test-result)
                     echo "ERROR: .github/workflows/ci.yml aggregate gate must validate test result"
                     ;;
+                source-fence-job)
+                    echo "ERROR: .github/workflows/ci.yml source-fence job missing"
+                    ;;
+                test-source-fence-needs)
+                    echo "ERROR: .github/workflows/ci.yml test job must depend on source-fence"
+                    ;;
+                gate-source-fence-needs)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must need source-fence"
+                    ;;
+                gate-source-fence-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate source-fence result"
+                    ;;
                 gate-build-result)
                     echo "ERROR: .github/workflows/ci.yml aggregate gate must validate build result"
                     ;;
@@ -697,33 +731,43 @@ ci-lint-workflow:
                 BEGIN {
                     in_jobs = 0
                     current = ""
+                    saw_source_fence = 0
                     has_managed_target_dir = 0
                     has_cache_key = 0
+                    has_test_source_fence_needs = 0
                     has_gate_always = 0
+                    has_gate_source_fence_needs = 0
                     has_gate_detector_result = 0
                     has_gate_fmt_result = 0
                     has_gate_deny_result = 0
                     has_gate_clippy_result = 0
                     has_gate_test_result = 0
+                    has_gate_source_fence_result = 0
                     has_gate_build_result = 0
                     has_gate_build_required = 0
                     has_build_required_output = 0
                 }
 
                 function flush_job() {
-                    if (current == "clippy" || current == "test" || current == "build") {
+                    if (current == "clippy" || current == "test" || current == "build" || current == "source-fence") {
                         if (!has_managed_target_dir) {
                             print current "|managed-target-dir"
                         }
                     }
-                    if (current == "deny" || current == "test" || current == "clippy" || current == "build") {
+                    if (current == "deny" || current == "test" || current == "clippy" || current == "build" || current == "source-fence") {
                         if (!has_cache_key) {
                             print current "|cache-key"
                         }
                     }
+                    if (current == "test" && !has_test_source_fence_needs) {
+                        print current "|test-source-fence-needs"
+                    }
                     if (current == "gate") {
                         if (!has_gate_always) {
                             print current "|gate-always"
+                        }
+                        if (!has_gate_source_fence_needs) {
+                            print current "|gate-source-fence-needs"
                         }
                         if (!has_gate_detector_result) {
                             print current "|gate-detector-result"
@@ -739,6 +783,9 @@ ci-lint-workflow:
                         }
                         if (!has_gate_test_result) {
                             print current "|gate-test-result"
+                        }
+                        if (!has_gate_source_fence_result) {
+                            print current "|gate-source-fence-result"
                         }
                         if (!has_gate_build_result) {
                             print current "|gate-build-result"
@@ -769,14 +816,20 @@ ci-lint-workflow:
                     current = $0
                     sub(/^  /, "", current)
                     sub(/:.*/, "", current)
+                    if (current == "source-fence") {
+                        saw_source_fence = 1
+                    }
                     has_managed_target_dir = 0
                     has_cache_key = 0
+                    has_test_source_fence_needs = 0
                     has_gate_always = 0
+                    has_gate_source_fence_needs = 0
                     has_gate_detector_result = 0
                     has_gate_fmt_result = 0
                     has_gate_deny_result = 0
                     has_gate_clippy_result = 0
                     has_gate_test_result = 0
+                    has_gate_source_fence_result = 0
                     has_gate_build_result = 0
                     has_gate_build_required = 0
                     has_build_required_output = 0
@@ -790,9 +843,15 @@ ci-lint-workflow:
                     if ($0 ~ /key:[[:space:]]*[[:graph:]]+/) {
                         has_cache_key = 1
                     }
+                    if (current == "test" && $0 ~ /needs:.*source-fence/) {
+                        has_test_source_fence_needs = 1
+                    }
                     if (current == "gate") {
                         if ($0 ~ gate_if_always_pattern) {
                             has_gate_always = 1
+                        }
+                        if ($0 ~ /needs:.*source-fence/) {
+                            has_gate_source_fence_needs = 1
                         }
                         if (index($0, "needs.detector.result") > 0) {
                             has_gate_detector_result = 1
@@ -809,6 +868,9 @@ ci-lint-workflow:
                         if (index($0, "needs.test.result") > 0) {
                             has_gate_test_result = 1
                         }
+                        if (index($0, "needs.source-fence.result") > 0) {
+                            has_gate_source_fence_result = 1
+                        }
                         if (index($0, "needs.build.result") > 0) {
                             has_gate_build_result = 1
                         }
@@ -823,6 +885,9 @@ ci-lint-workflow:
 
                 END {
                     flush_job()
+                    if (!saw_source_fence) {
+                        print "source-fence|source-fence-job"
+                    }
                 }
             ' .github/workflows/ci.yml
         )

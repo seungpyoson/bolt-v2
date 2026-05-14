@@ -873,6 +873,14 @@ reason = "This is the fixed submit-admission evidence status emitted after all p
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"rejected"'''
+context = '''const SUBMIT_ADMISSION_STATUS_REJECTED: &str = "rejected";'''
+classification = "phase8_canary_submit_admission_status"
+reason = "This is the fixed submit-admission evidence status emitted when Phase 8 blocks before or at submit admission."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"nt_adapter_submit_proven"'''
 context = '''const NT_ADAPTER_SUBMIT_PROVEN_REASON: &str = "nt_adapter_submit_proven";'''
 classification = "phase8_canary_evidence_reason"

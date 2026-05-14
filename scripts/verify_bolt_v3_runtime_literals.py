@@ -433,6 +433,8 @@ def is_ignored_by_rule(literal: Literal) -> bool:
         text = literal.literal.strip('"')
         if text.startswith(("nautilus.", "risk.")) or text.endswith("_ssm_path"):
             return True
+        if "SUBMIT_ADMISSION_STATUS_REJECTED" in context:
+            return False
         lowered = text.lower()
         words = set(re.findall(r"[a-z_]+", lowered))
         if words & set(DIAGNOSTIC_WORDS):

@@ -823,6 +823,174 @@ classification = "test_only_live_canary_gate_report_fixture"
 reason = "This byte cap exists only inside the cfg(test) BoltV3LiveCanaryGateReport fixture constructor used by unit tests; production byte caps come from TOML."
 
 [[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "1"
+context = "const PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION: u32 = 1;"
+classification = "phase8_canary_evidence_schema_version"
+reason = "This is the structural JSON evidence schema version for Phase 8 canary proof files, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "1"
+context = "const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;"
+classification = "phase8_required_single_live_order_cap"
+reason = "This enforces the Phase 8 tiny-canary invariant that the local/operator proof may admit exactly one live order; the configured cap still comes from TOML and must match this invariant."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "8"
+context = "const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
+classification = "phase8_sha256_stream_buffer_size"
+reason = "This is an internal fixed memory buffer size for streaming checksum calculation, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "1024"
+context = "const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
+classification = "phase8_sha256_stream_buffer_size"
+reason = "This is an internal fixed memory buffer size for streaming checksum calculation, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "0"
+context = "let mut buffer = [0; PHASE8_SHA256_BUFFER_BYTES];"
+classification = "phase8_sha256_stream_buffer_initialization"
+reason = "This zero-initializes the fixed checksum scratch buffer before each bounded-memory read and is not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"accepted"'''
+context = '''const SUBMIT_ADMISSION_STATUS_ACCEPTED: &str = "accepted";'''
+classification = "phase8_canary_submit_admission_status"
+reason = "This is the fixed submit-admission evidence status emitted after all pre-submit Phase 8 gates pass."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"rejected"'''
+context = '''const SUBMIT_ADMISSION_STATUS_REJECTED: &str = "rejected";'''
+classification = "phase8_canary_submit_admission_status"
+reason = "This is the fixed submit-admission evidence status emitted when Phase 8 blocks before or at submit admission."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"nt_adapter_submit_proven"'''
+context = '''const NT_ADAPTER_SUBMIT_PROVEN_REASON: &str = "nt_adapter_submit_proven";'''
+classification = "phase8_canary_evidence_reason"
+reason = "This labels the Phase 8 evidence outcome proving the NT adapter submit path was reached; it is not a runtime setting."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"blocked_before_live_order"'''
+context = '''const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";'''
+classification = "phase8_canary_evidence_reason"
+reason = "This labels the fail-closed Phase 8 evidence outcome when submit admission passes but no live order proof exists."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"blocked_before_submit"'''
+context = '''const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";'''
+classification = "phase8_canary_evidence_reason"
+reason = "This labels the fail-closed Phase 8 evidence outcome when pre-submit gates block before order admission."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "0"
+context = "admitted_order_count: 0,"
+classification = "phase8_canary_evidence_order_count"
+reason = "This evidence count records that no order was admitted in dry no-submit or blocked-before-submit Phase 8 outcomes."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8-blocked-before-live-runner"'''
+context = '''pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";'''
+classification = "phase8_blocked_run_id_label"
+reason = "This is a structural evidence label used only when Phase 8 blocks before a runtime capture instance exists; successful live-capital proof uses the NT runtime instance id."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_HEAD_SHA"'''
+context = '''head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field that binds a Phase 8 live run to the reviewed git head."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_ROOT_TOML_PATH"'''
+context = '''root_toml_path: required_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field that points to the reviewed root TOML for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_ROOT_TOML_SHA256"'''
+context = '''root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the reviewed root TOML checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_SSM_MANIFEST_PATH"'''
+context = '''ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field pointing to the redacted SSM manifest for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_SSM_MANIFEST_SHA256"'''
+context = '''ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the SSM manifest checksum, without exposing secrets."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH"'''
+context = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field pointing to strategy input evidence for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256"'''
+context = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the strategy input evidence checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID"'''
+context = '''operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator approval id field used only for exact approval matching and hashed evidence joins."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_EVIDENCE_PATH"'''
+context = '''canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field where the Phase 8 canary evidence JSON is written."
+
+[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''

@@ -746,6 +746,16 @@ ci-lint-workflow:
                     has_gate_build_result = 0
                     has_gate_build_required = 0
                     has_build_required_output = 0
+                    in_needs_block = 0
+                }
+
+                function mark_source_fence_need() {
+                    if (current == "test") {
+                        has_test_source_fence_needs = 1
+                    }
+                    if (current == "gate") {
+                        has_gate_source_fence_needs = 1
+                    }
                 }
 
                 function flush_job() {
@@ -833,6 +843,7 @@ ci-lint-workflow:
                     has_gate_build_result = 0
                     has_gate_build_required = 0
                     has_build_required_output = 0
+                    in_needs_block = 0
                     next
                 }
 
@@ -843,15 +854,20 @@ ci-lint-workflow:
                     if ($0 ~ /key:[[:space:]]*[[:graph:]]+/) {
                         has_cache_key = 1
                     }
-                    if (current == "test" && $0 ~ /needs:.*source-fence/) {
-                        has_test_source_fence_needs = 1
+                    if ($0 ~ /^    needs:[[:space:]]*.*source-fence/) {
+                        mark_source_fence_need()
+                    }
+                    if ($0 ~ /^    needs:[[:space:]]*$/) {
+                        in_needs_block = 1
+                    } else if (in_needs_block && $0 ~ /^    [A-Za-z0-9_-]+:/) {
+                        in_needs_block = 0
+                    }
+                    if (in_needs_block && $0 ~ /^      -[[:space:]]*source-fence[[:space:]]*$/) {
+                        mark_source_fence_need()
                     }
                     if (current == "gate") {
                         if ($0 ~ gate_if_always_pattern) {
                             has_gate_always = 1
-                        }
-                        if ($0 ~ /needs:.*source-fence/) {
-                            has_gate_source_fence_needs = 1
                         }
                         if (index($0, "needs.detector.result") > 0) {
                             has_gate_detector_result = 1

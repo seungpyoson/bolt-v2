@@ -39,8 +39,37 @@ FORBIDDEN_RUST_PATTERNS = (
     (re.compile(r"\bcpython::"), "cpython Rust API usage"),
     (re.compile(r"#\s*\[\s*py(?:class|function|method|module|methods)"), "Python export attribute"),
     (re.compile(r"\bPython::with_gil\b"), "Python GIL runtime usage"),
+    # Keep the runtime boundary strict: production `src/` should not define
+    # Python-shaped result/object types even outside direct PyO3 imports.
     (re.compile(r"\bPy(?:Any|Err|Module|Object|Result)\b"), "Python object/result type"),
 )
+
+DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+def collect_dependency_names(data: dict[str, object]) -> set[str]:
+    names: set[str] = set()
+
+    def add_dependency_table(table: object) -> None:
+        if isinstance(table, dict):
+            names.update(str(name).lower() for name in table)
+
+    for section in DEPENDENCY_SECTIONS:
+        add_dependency_table(data.get(section))
+
+    workspace = data.get("workspace", {})
+    if isinstance(workspace, dict):
+        for section in DEPENDENCY_SECTIONS:
+            add_dependency_table(workspace.get(section))
+
+    target_sections = data.get("target", {})
+    if isinstance(target_sections, dict):
+        for target_config in target_sections.values():
+            if isinstance(target_config, dict):
+                for section in DEPENDENCY_SECTIONS:
+                    add_dependency_table(target_config.get(section))
+
+    return names
 
 
 def cargo_dependency_names(path: Path) -> set[str]:
@@ -48,12 +77,7 @@ def cargo_dependency_names(path: Path) -> set[str]:
         return set()
 
     data = tomllib.loads(path.read_text(encoding="utf-8"))
-    names: set[str] = set()
-    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-        dependencies = data.get(section, {})
-        if isinstance(dependencies, dict):
-            names.update(str(name).lower() for name in dependencies)
-    return names
+    return collect_dependency_names(data)
 
 
 def cargo_lock_package_names(path: Path) -> set[str]:

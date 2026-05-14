@@ -345,11 +345,6 @@ def cfg_attr_bounds(stripped: str) -> tuple[int, int, int] | None:
     return None
 
 
-def cfg_attr_end_index(stripped: str) -> int | None:
-    bounds = cfg_attr_bounds(stripped)
-    return bounds[2] if bounds is not None else None
-
-
 def split_top_level_args(expression: str) -> list[str]:
     parts: list[str] = []
     start = 0

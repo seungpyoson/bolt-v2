@@ -607,9 +607,13 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         1,
         "bolt-v3 live node may only reference NT run through the gated wrapper"
     );
+    assert_eq!(
+        source.matches("let start = node.start();").count(),
+        1,
+        "bolt-v3 live node may only reference NT start through the Phase 7 no-submit helper"
+    );
 
     for forbidden in [
-        ".start(",
         "start_async",
         "kernel.start",
         "start_trader",

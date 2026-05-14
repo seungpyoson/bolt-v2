@@ -152,9 +152,21 @@ pub fn validated_bolt_v3_live_canary_gate_report(
 }
 
 fn write_satisfied_no_submit_readiness_report(path: &Path) {
+    use bolt_v2::bolt_v3_no_submit_readiness_schema::{
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
+        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
+        SECRET_RESOLUTION_STAGE,
+    };
+
     let report = serde_json::json!({
         "stages": [
-            { "stage": "connect", "status": "satisfied" }
+            { "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" },
+            { "stage": SECRET_RESOLUTION_STAGE, "status": "satisfied" },
+            { "stage": LIVE_NODE_BUILD_STAGE, "status": "satisfied" },
+            { "stage": CONTROLLED_CONNECT_STAGE, "status": "satisfied" },
+            { "stage": REFERENCE_READINESS_STAGE, "status": "satisfied" },
+            { "stage": CONTROLLED_DISCONNECT_STAGE, "status": "satisfied" },
+            { "stage": REPORT_WRITE_STAGE, "status": "satisfied" }
         ]
     });
     fs::write(

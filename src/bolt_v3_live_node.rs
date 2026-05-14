@@ -72,17 +72,22 @@ use crate::{
     secrets::SsmResolverSession,
 };
 
-#[derive(Debug)]
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    redaction_values: Vec<String>,
 }
 
 impl BoltV3LiveNodeRuntime {
-    fn new(node: LiveNode, submit_admission: Arc<BoltV3SubmitAdmissionState>) -> Self {
+    fn new(
+        node: LiveNode,
+        submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        redaction_values: Vec<String>,
+    ) -> Self {
         Self {
             node,
             submit_admission,
+            redaction_values,
         }
     }
 
@@ -104,6 +109,30 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn registered_exec_client_ids(&self) -> Vec<ClientId> {
         self.node.kernel().exec_engine.borrow().client_ids()
+    }
+
+    pub fn cached_instrument_ids(&self) -> Vec<String> {
+        let cache = self.node.kernel().cache();
+        let cache = cache.borrow();
+        cache
+            .instrument_ids(None)
+            .into_iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    pub fn redaction_values(&self) -> &[String] {
+        &self.redaction_values
+    }
+}
+
+impl std::fmt::Debug for BoltV3LiveNodeRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoltV3LiveNodeRuntime")
+            .field("node", &"[redacted]")
+            .field("submit_admission", &self.submit_admission)
+            .field("redaction_values", &"[redacted]")
+            .finish()
     }
 }
 
@@ -218,6 +247,14 @@ pub enum BoltV3LiveNodeError {
     /// call. The wrapped `anyhow::Error` is the value NT bubbled up
     /// from its engine-level disconnect aggregator.
     DisconnectFailed(anyhow::Error),
+    NoSubmitStartTimeout {
+        timeout_seconds: u64,
+    },
+    NoSubmitStartFailed(anyhow::Error),
+    NoSubmitStopTimeout {
+        timeout_seconds: u64,
+    },
+    NoSubmitStopFailed(anyhow::Error),
 }
 
 impl std::fmt::Display for BoltV3LiveNodeError {
@@ -292,6 +329,22 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "bolt-v3 controlled-disconnect surfaced an NT engine-level disconnect \
                  aggregator error: {error}"
             ),
+            BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_seconds } => write!(
+                f,
+                "bolt-v3 no-submit controlled-start exceeded configured \
+                 live-node timeout bounds ({timeout_seconds}s)"
+            ),
+            BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
+                write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
+            }
+            BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_seconds } => write!(
+                f,
+                "bolt-v3 no-submit controlled-stop exceeded configured \
+                 live-node timeout bounds ({timeout_seconds}s)"
+            ),
+            BoltV3LiveNodeError::NoSubmitStopFailed(error) => {
+                write!(f, "bolt-v3 no-submit controlled-stop failed: {error}")
+            }
         }
     }
 }
@@ -317,8 +370,12 @@ impl std::error::Error for BoltV3LiveNodeError {
             }
             BoltV3LiveNodeError::ConnectTimeout { .. }
             | BoltV3LiveNodeError::ConnectIncomplete
-            | BoltV3LiveNodeError::DisconnectTimeout { .. } => None,
-            BoltV3LiveNodeError::DisconnectFailed(error) => error.source(),
+            | BoltV3LiveNodeError::DisconnectTimeout { .. }
+            | BoltV3LiveNodeError::NoSubmitStartTimeout { .. }
+            | BoltV3LiveNodeError::NoSubmitStopTimeout { .. } => None,
+            BoltV3LiveNodeError::DisconnectFailed(error)
+            | BoltV3LiveNodeError::NoSubmitStartFailed(error)
+            | BoltV3LiveNodeError::NoSubmitStopFailed(error) => Some(error.as_ref()),
         }
     }
 }
@@ -387,6 +444,98 @@ pub async fn run_bolt_v3_live_node(
     let shutdown_result = capture_guards.shutdown().await;
 
     classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+}
+
+pub async fn controlled_no_submit_readiness<F>(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    mut reference_readiness: F,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+)
+where
+    F: FnMut(&BoltV3LiveNodeRuntime) -> Result<(), String>,
+{
+    let start = start_bolt_v3_no_submit_readiness(&mut runtime.node, loaded).await;
+    let reference = if start.is_ok() {
+        bounded_no_submit_reference_readiness(runtime, loaded, &mut reference_readiness).await
+    } else {
+        Err("controlled start failed".to_string())
+    };
+    let stop = stop_bolt_v3_no_submit_readiness(&mut runtime.node, loaded).await;
+    (start, reference, stop)
+}
+
+async fn bounded_no_submit_reference_readiness<F>(
+    runtime: &BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    reference_readiness: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&BoltV3LiveNodeRuntime) -> Result<(), String>,
+{
+    let first_error = match reference_readiness(runtime) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    let timeout_seconds = loaded.root.nautilus.timeout_connection_seconds;
+    if timeout_seconds == 0 {
+        return Err(first_error);
+    }
+    tokio::time::sleep(Duration::from_secs(timeout_seconds)).await;
+    reference_readiness(runtime).map_err(|final_error| {
+        if final_error == first_error {
+            final_error
+        } else {
+            format!("{final_error}; initial reference-readiness error: {first_error}")
+        }
+    })
+}
+
+async fn start_bolt_v3_no_submit_readiness(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let timeout_seconds = no_submit_start_timeout_seconds(loaded);
+    let start = node.start();
+    match tokio::time::timeout(Duration::from_secs(timeout_seconds), start).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStartFailed(error)),
+        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_seconds }),
+    }
+}
+
+async fn stop_bolt_v3_no_submit_readiness(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let timeout_seconds = no_submit_stop_timeout_seconds(loaded);
+    let stop = node.stop();
+    match tokio::time::timeout(Duration::from_secs(timeout_seconds), stop).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
+        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_seconds }),
+    }
+}
+
+fn no_submit_start_timeout_seconds(loaded: &LoadedBoltV3Config) -> u64 {
+    loaded
+        .root
+        .nautilus
+        .timeout_connection_seconds
+        .saturating_add(loaded.root.nautilus.timeout_reconciliation_seconds)
+        .saturating_add(loaded.root.nautilus.timeout_portfolio_seconds)
+}
+
+fn no_submit_stop_timeout_seconds(loaded: &LoadedBoltV3Config) -> u64 {
+    loaded
+        .root
+        .nautilus
+        .timeout_disconnection_seconds
+        .saturating_add(loaded.root.nautilus.delay_post_stop_seconds)
+        .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds)
 }
 
 fn classify_live_node_run_and_capture_shutdown(
@@ -478,7 +627,10 @@ fn build_live_node_with_clients(
             strategy.registered_strategy_id
         );
     }
-    Ok((BoltV3LiveNodeRuntime::new(node, submit_admission), summary))
+    Ok((
+        BoltV3LiveNodeRuntime::new(node, submit_admission, resolved.redaction_values()),
+        summary,
+    ))
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

@@ -120,6 +120,19 @@ impl ResolvedBoltV3Secrets {
             .get(venue_key)
             .and_then(|secrets| secrets.as_any().downcast_ref())
     }
+
+    pub fn redaction_values(&self) -> Vec<String> {
+        let mut values = self
+            .venues
+            .values()
+            .flat_map(|secrets| secrets.redaction_values())
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        values.sort();
+        values.dedup();
+        values
+    }
 }
 
 impl std::fmt::Debug for ResolvedBoltV3Secrets {

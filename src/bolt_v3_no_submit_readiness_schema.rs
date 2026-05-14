@@ -1,0 +1,14 @@
+pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v1";
+pub const STAGES_KEY: &str = "stages";
+pub const STAGE_KEY: &str = "stage";
+pub const NAME_KEY: &str = "name";
+pub const STATUS_KEY: &str = "status";
+pub const STATUS_SATISFIED: &str = "satisfied";
+pub const OPERATOR_APPROVAL_STAGE: &str = "operator_approval";
+pub const SECRET_RESOLUTION_STAGE: &str = "secret_resolution";
+pub const LIVE_NODE_BUILD_STAGE: &str = "live_node_build";
+pub const CONTROLLED_CONNECT_STAGE: &str = "controlled_connect";
+pub const REFERENCE_READINESS_STAGE: &str = "reference_readiness";
+pub const CONTROLLED_DISCONNECT_STAGE: &str = "controlled_disconnect";
+pub const REPORT_WRITE_STAGE: &str = "report_write";
+pub const REDACTED_DETAIL_MARKER: &str = "[redacted]";

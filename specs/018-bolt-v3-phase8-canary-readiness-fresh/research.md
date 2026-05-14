@@ -24,6 +24,8 @@
 - Live canary gate is present and runs before `LiveNode::run`.
 - Strategy submit path is fenced to decision evidence -> submit admission -> NT submit.
 - Runtime capture wiring exists around the runner.
+- `LiveNode` execution must stay inside `tokio::task::LocalSet` because NT
+  runtime components may be `!Send` and can use `tokio::task::spawn_local`.
 
 ## Current-main Phase 8 Gaps
 

@@ -3,6 +3,7 @@
 ## Safe Local Checks Only
 
 Current Phase 8 status: live action blocked. Use these commands only after Phase 8 implementation exists.
+Before T010 and T026 create these test targets, a missing-target error means the implementation phase has not started.
 
 ```bash
 cargo test --test bolt_v3_tiny_canary_preconditions -- --nocapture

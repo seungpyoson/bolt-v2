@@ -17,6 +17,10 @@ Fields:
 Validation:
 
 - `block_reasons` must be non-empty unless every status is approved or accepted.
+- `present_unverified` is allowed only after the Phase 7 report path, head SHA,
+  and config checksum are loaded but before the gate has accepted or rejected
+  that report; terminal preflight evidence must move to `accepted_by_gate` or
+  `rejected_by_gate`.
 - No raw secret values or raw SSM values are allowed.
 - Paths may be present only when operator-approved and non-secret; hashes are preferred.
 

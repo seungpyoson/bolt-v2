@@ -27,14 +27,16 @@
 
 - [ ] T010 [US1] Write failing test in `tests/bolt_v3_tiny_canary_preconditions.rs` for missing Phase 7 no-submit report blocking before build.
 - [ ] T011 [US1] Write failing test in `tests/bolt_v3_tiny_canary_preconditions.rs` for blocked strategy audit blocking before build.
-- [ ] T012 [US1] Write failing source fence proving Phase 8 harness contains no direct `LiveNode::run`, manual submit, manual cancel, or Bolt reconciliation tokens.
+- [ ] T012 [US1] Write failing test in `tests/bolt_v3_tiny_canary_preconditions.rs` proving non-positive realized volatility blocks before build.
+- [ ] T013 [US1] Write failing test in `tests/bolt_v3_tiny_canary_preconditions.rs` proving non-positive time to expiry blocks before build.
+- [ ] T014 [US1] Write failing source fence proving Phase 8 harness contains no direct `LiveNode::run`, manual submit, manual cancel, or Bolt reconciliation tokens.
 
 ### Minimal Implementation
 
-- [ ] T013 [US1] Add `src/bolt_v3_tiny_canary_evidence.rs` with `Phase8CanaryPreflight` and redacted block reasons.
-- [ ] T014 [US1] Export module from `src/lib.rs`.
-- [ ] T015 [US1] Make T010-T012 green with no live network, no SSM calls, and no NT runner entry.
-- [ ] T016 [US1] Run focused precondition tests and commit this vertical slice.
+- [ ] T015 [US1] Add `src/bolt_v3_tiny_canary_evidence.rs` with `Phase8CanaryPreflight` and redacted block reasons.
+- [ ] T016 [US1] Export module from `src/lib.rs`.
+- [ ] T017 [US1] Make T010-T014 green with no live network, no SSM calls, and no NT runner entry.
+- [ ] T018 [US1] Run focused precondition tests and commit this vertical slice.
 
 ## Phase 3: User Story 2 - Produce Dry Canary Evidence (P2)
 
@@ -44,16 +46,16 @@
 
 ### Tests First
 
-- [ ] T017 [US2] Write failing serialization test for `Phase8CanaryEvidence` required join keys and no raw secret fields.
-- [ ] T018 [US2] Write failing test for decision evidence unavailable -> blocked before submit admission.
-- [ ] T019 [US2] Write failing test for rejected live canary gate -> blocked before runner.
+- [ ] T019 [US2] Write failing serialization test for `Phase8CanaryEvidence` required join keys and no raw secret fields.
+- [ ] T020 [US2] Write failing test for decision evidence unavailable -> blocked before submit admission.
+- [ ] T021 [US2] Write failing test for rejected live canary gate -> blocked before runner.
 
 ### Minimal Implementation
 
-- [ ] T020 [US2] Add minimal `Phase8CanaryEvidence` data structures and writer.
-- [ ] T021 [US2] Hash approval id and config/SSM identities; do not print raw secrets.
-- [ ] T022 [US2] Make T017-T019 green with fixture-only data.
-- [ ] T023 [US2] Run focused dry evidence tests and commit this vertical slice.
+- [ ] T022 [US2] Add minimal `Phase8CanaryEvidence` data structures and writer.
+- [ ] T023 [US2] Hash approval id and config/SSM identities; do not print raw secrets.
+- [ ] T024 [US2] Make T019-T021 green with fixture-only data.
+- [ ] T025 [US2] Run focused dry evidence tests and commit this vertical slice.
 
 ## Phase 4: User Story 3 - Prepare One-order Operator Harness (P3)
 
@@ -63,43 +65,44 @@
 
 ### Tests First
 
-- [ ] T024 [US3] Write failing source test requiring `#[ignore]`, exact operator inputs, `build_bolt_v3_live_node`, and `run_bolt_v3_live_node` within a `tokio::task::LocalSet` context.
-- [ ] T025 [US3] Write failing source test requiring one-order cap and forbidding loops/manual submit.
-- [ ] T026 [US3] Write failing source test forbidding direct exec-engine cancel and Bolt-owned reconciliation.
+- [ ] T026 [US3] Write failing source test requiring `#[ignore]`, exact operator inputs, `build_bolt_v3_live_node`, and `run_bolt_v3_live_node` within a `tokio::task::LocalSet` context.
+- [ ] T027 [US3] Write failing source test requiring one-order cap and forbidding loops/manual submit.
+- [ ] T028 [US3] Write failing source test proving the one-order cap comes from the approved config fixture, not a harness literal.
+- [ ] T029 [US3] Write failing source test forbidding direct exec-engine cancel and Bolt-owned reconciliation.
 
 ### Minimal Implementation
 
-- [ ] T027 [US3] Add `tests/bolt_v3_tiny_canary_operator.rs` ignored harness skeleton.
-- [ ] T028 [US3] Require exact head SHA, root TOML path, root TOML checksum, SSM manifest hash, approval id, and evidence path before build.
-- [ ] T029 [US3] Assert the configured Phase 8 tiny-canary cap before runner; for this slice that means `max_live_order_count == 1`.
-- [ ] T030 [US3] Keep live order execution blocked unless user approval is supplied at runtime.
-- [ ] T031 [US3] Run harness default test and source fences, then commit this vertical slice.
+- [ ] T030 [US3] Add `tests/bolt_v3_tiny_canary_operator.rs` ignored harness skeleton.
+- [ ] T031 [US3] Require exact head SHA, root TOML path, root TOML checksum, SSM manifest hash, approval id, and evidence path before build.
+- [ ] T032 [US3] Assert the configured Phase 8 tiny-canary cap before runner; for this slice the approved config fixture value is `max_live_order_count == 1`.
+- [ ] T033 [US3] Keep live order execution blocked unless user approval is supplied at runtime.
+- [ ] T034 [US3] Run harness default test and source fences, then commit this vertical slice.
 
 ## Phase 5: Verification And Review Gate
 
 **Purpose**: Verify local readiness before PR/review.
 
-- [ ] T032 Run `cargo test --test bolt_v3_tiny_canary_preconditions -- --nocapture`.
-- [ ] T033 Run `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture`.
-- [ ] T034 Run relevant existing tests: `cargo test --test bolt_v3_submit_admission -- --nocapture`, `cargo test --test bolt_v3_decision_evidence -- --nocapture`, `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
-- [ ] T035 Run `cargo fmt --check`.
-- [ ] T036 Run `git diff --check`.
-- [ ] T037 Run runtime literal/hardcode/debt scans for changed files.
-- [ ] T038 Run no-mistakes runtime proof if available: `which no-mistakes`, `no-mistakes --version`, `no-mistakes daemon status`.
-- [ ] T039 Run full `cargo test` and `cargo clippy -- -D warnings` when branch is ready and runtime cost is acceptable.
-- [ ] T040 Commit verification updates.
-- [ ] T041 Present evidence and recommendation before any push.
-- [ ] T042 Push only with explicit approval or after user-approved GitHub mutation gate.
-- [ ] T043 Run `gh pr checks` after push.
-- [ ] T044 Request external implementation review only after exact-head checks are green.
+- [ ] T035 Run `cargo test --test bolt_v3_tiny_canary_preconditions -- --nocapture`.
+- [ ] T036 Run `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture`.
+- [ ] T037 Run relevant existing tests: `cargo test --test bolt_v3_submit_admission -- --nocapture`, `cargo test --test bolt_v3_decision_evidence -- --nocapture`, `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
+- [ ] T038 Run `cargo fmt --check`.
+- [ ] T039 Run `git diff --check`.
+- [ ] T040 Run runtime literal/hardcode/debt scans for changed files.
+- [ ] T041 Run no-mistakes runtime proof if available: `which no-mistakes`, `no-mistakes --version`, `no-mistakes daemon status`.
+- [ ] T042 Run full `cargo test` and `cargo clippy -- -D warnings` when branch is ready and runtime cost is acceptable.
+- [ ] T043 Commit verification updates.
+- [ ] T044 Present evidence and recommendation before any push.
+- [ ] T045 Push only with explicit approval or after user-approved GitHub mutation gate.
+- [ ] T046 Run `gh pr checks` after push.
+- [ ] T047 Request external implementation review only after exact-head checks are green.
 
 ## Phase 6: Stopped Live Action Gate
 
 **Purpose**: Make the stop explicit.
 
-- [ ] T045 Do not run ignored live operator harness without user approval naming exact head SHA and exact command.
-- [ ] T046 If user approves live action later, rerun strategy-input safety audit against the approved config first.
-- [ ] T047 If any safety audit item remains blocked, do not proceed to live order.
+- [ ] T048 Do not run ignored live operator harness without user approval naming exact head SHA and exact command.
+- [ ] T049 If user approves live action later, rerun strategy-input safety audit against the approved config first.
+- [ ] T050 If any safety audit item remains blocked, do not proceed to live order.
 
 ## Dependencies
 

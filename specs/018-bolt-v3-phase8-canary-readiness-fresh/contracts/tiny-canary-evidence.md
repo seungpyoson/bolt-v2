@@ -28,15 +28,10 @@ Define the redacted evidence shape Phase 8 must write before and during any appr
     "spool_root_hash": "64-hex-char sha256",
     "run_id": "redacted stable id"
   },
-  "nt_lifecycle_refs": [
-    {
-      "kind": "order_submitted_or_rejected_or_filled_or_cancelled_or_reconciled",
-      "event_hash": "64-hex-char sha256"
-    }
-  ],
+  "nt_lifecycle_refs": [],
   "outcome": "blocked_before_submit",
   "block_reasons": [
-    "strategy_input_safety_audit_blocked"
+    "decision_evidence_unavailable"
   ]
 }
 ```
@@ -49,6 +44,7 @@ Define the redacted evidence shape Phase 8 must write before and during any appr
 - `decision_evidence_ref` must exist before any `nt_order_*` outcome.
 - `submit_admission_ref` must exist before any `nt_order_*` outcome.
 - `nt_lifecycle_refs` must cite NT event/report/capture evidence for every live outcome.
+- Blocked outcomes must not require NT lifecycle references.
 - `block_reasons` must be non-empty for blocked outcomes.
 - `blocked_before_live_order`, `decision_evidence_unavailable`, and
   `strategy_input_safety_audit_blocked` are `block_reasons`, not `outcome`

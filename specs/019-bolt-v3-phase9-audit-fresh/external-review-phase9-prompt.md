@@ -15,6 +15,10 @@ Scope:
 - `specs/019-bolt-v3-phase9-audit-fresh/ai-slop-cleanup-report.md`
 - `specs/019-bolt-v3-phase9-audit-fresh/tasks.md`
 
+Disposition output, after review completes:
+
+- `specs/019-bolt-v3-phase9-audit-fresh/external-review-phase9-disposition.md`
+
 Hard constraints:
 
 - main is source of truth

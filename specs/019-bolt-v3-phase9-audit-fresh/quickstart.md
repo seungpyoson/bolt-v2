@@ -31,6 +31,8 @@ Expected for baseline captured in this session: 446 passed, 0 failed, 1 ignored.
 
 ## Artifact Checks
 
+The debt-marker regex intentionally splits template words inside adjacent shell strings so this command does not match itself.
+
 ```bash
 rg -n "TB""D|TO""DO|FIX""ME|fix[[:space:]]+later|NE""EDS[[:space:]]+CLARIFICATION|\\[""FEATURE|\\[""###|\\[""ARGUMENTS\\]" specs/019-bolt-v3-phase9-audit-fresh .specify/memory/constitution.md
 git diff --check

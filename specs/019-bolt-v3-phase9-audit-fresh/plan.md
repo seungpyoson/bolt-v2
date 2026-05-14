@@ -34,7 +34,7 @@ Spec-kit note: runtime-listed `speckit-*` skill paths were absent on disk in thi
 
 ## Current Evidence
 
-- Anchor: Phase 9 worktree `HEAD`, `main`, and `origin/main` all equal `d6f55774c32b71a242dcf78b8292a7f9e537afab`.
+- Anchor: before these planning artifact edits, Phase 9 worktree `HEAD`, `main`, and `origin/main` all equal `d6f55774c32b71a242dcf78b8292a7f9e537afab`; PR commits after that anchor are docs-only Phase 9 artifacts.
 - no-mistakes: `/Users/spson/.local/bin/no-mistakes`; version `v1.17.0-6-gc0008cf`; daemon running pid `53732`.
 - Baseline test: `cargo test --lib` passed with 446 passed, 0 failed, 1 ignored.
 - Phase 7/8 on main: current main still has stale unchecked Phase 7/8 tasks in `specs/001-thin-live-canary-path/tasks.md:87-106`; fresh local Phase 7/8 branches are not accepted main scope.

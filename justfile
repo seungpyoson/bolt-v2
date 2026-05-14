@@ -58,6 +58,14 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
+verify-bolt-v3-core-boundary: check-workspace
+    python3 scripts/test_verify_bolt_v3_core_boundary.py
+    python3 scripts/verify_bolt_v3_core_boundary.py
+
+verify-bolt-v3-naming: check-workspace
+    python3 scripts/test_verify_bolt_v3_naming.py
+    python3 scripts/verify_bolt_v3_naming.py
+
 verify-bolt-v3-status-map-current: check-workspace
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
@@ -66,7 +74,7 @@ verify-bolt-v3-pure-rust-runtime: check-workspace
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
 
-fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks verify-bolt-v3-status-map-current verify-bolt-v3-pure-rust-runtime
+fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks verify-bolt-v3-core-boundary verify-bolt-v3-naming verify-bolt-v3-status-map-current verify-bolt-v3-pure-rust-runtime
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
 fmt: check-workspace require-rust-verification-owner
@@ -107,7 +115,9 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_runtime_literals.py
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
+    python3 scripts/test_verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_core_boundary.py
+    python3 scripts/test_verify_bolt_v3_naming.py
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py

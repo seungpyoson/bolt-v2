@@ -3,7 +3,29 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # paths-ignore is intentionally narrow: only explicitly-listed root-level
+    # agent docs and pure-config dirs whose contents are NOT consumed by any
+    # build/test/lint script. Do NOT add '**.md' or 'docs/**' — both contain
+    # files that are build inputs (e.g. docs/bolt-v3/research/...audit.toml
+    # is read by scripts/verify_bolt_v3_runtime_literals.py; specs/**/*.md
+    # files are include_str!'d by Rust tests). Tracked in #335.
+    paths-ignore:
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - 'REASONIX.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.codex/**'
+      - '.gemini/**'
+      - '.opencode/**'
+      - '.pi/**'
+      - '.specify/**'
   push:
+    # No paths-ignore on push: tag pushes and main pushes always run CI.
+    # GitHub's paths-ignore behavior for tag pushes is ambiguous and could
+    # silently skip the deploy lane. main pushes are infrequent and we want
+    # defense-in-depth against direct-to-main commits.
     branches: [main]
     tags: ["v*"]
 

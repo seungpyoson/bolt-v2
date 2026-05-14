@@ -425,6 +425,14 @@ def main() -> int:
         ),
     )
     assert_error(
+        "clippy uses managed target dir but setup does not opt in",
+        replace_once(
+            BASE_WORKFLOW,
+            '          include-managed-target-dir: "true"',
+            '          # include-managed-target-dir: "true"',
+        ),
+    )
+    assert_error(
         "fmt-check opts into managed target dir but does not use it",
         replace_once(
             BASE_WORKFLOW,
@@ -438,6 +446,14 @@ def main() -> int:
             BASE_WORKFLOW,
             "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: nextest",
             "          key: nextest",
+        ),
+    )
+    assert_error(
+        "clippy must use setup.outputs.managed_target_dir",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
+            "          # cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
         ),
     )
     assert_error(
@@ -476,8 +492,24 @@ def main() -> int:
         ),
     )
     assert_error(
+        "setup action must export managed_target_dir from target_dir step",
+        action=replace_once(
+            BASE_ACTION,
+            "    value: ${{ steps.target_dir.outputs.managed_target_dir }}",
+            '    value: "" # ${{ steps.target_dir.outputs.managed_target_dir }}',
+        ),
+    )
+    assert_error(
         "setup action target dir step must be conditional",
         action=BASE_ACTION.replace("      if: ${{ inputs.include-managed-target-dir == 'true' }}\n", ""),
+    )
+    assert_error(
+        "setup action target dir step must be conditional",
+        action=replace_once(
+            BASE_ACTION,
+            "      if: ${{ inputs.include-managed-target-dir == 'true' }}",
+            "      # if: ${{ inputs.include-managed-target-dir == 'true' }}",
+        ),
     )
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0

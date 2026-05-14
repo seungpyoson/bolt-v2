@@ -30,6 +30,11 @@ BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.bu
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 EXIT_RE = re.compile(r"^\s*exit(?:\s+([0-9]+))?\s*$", re.MULTILINE)
+TARGET_DIR_OPT_IN_RE = re.compile(r"^\s+include-managed-target-dir:\s*(['\"])true\1\s*$")
+SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir\s*\}\}\s*$")
+SETUP_TARGET_DIR_IF_RE = re.compile(
+    r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
+)
 
 
 def strip_comment(line: str) -> str:
@@ -135,11 +140,11 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
 
 
 def block_has_target_dir_opt_in(block: list[str]) -> bool:
-    return any('include-managed-target-dir: "true"' in line or "include-managed-target-dir: 'true'" in line for line in block)
+    return any(TARGET_DIR_OPT_IN_RE.match(strip_comment(line)) for line in block)
 
 
 def job_uses_managed_target_dir(job_lines: list[str]) -> bool:
-    return any("steps.setup.outputs.managed_target_dir" in line for line in job_lines)
+    return any("steps.setup.outputs.managed_target_dir" in strip_comment(line) for line in job_lines)
 
 
 def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
@@ -160,6 +165,8 @@ def gate_checks_lane_success(gate_text: str, job: str) -> bool:
 
 
 def gate_checks_build_result(gate_text: str) -> bool:
+    # These literals intentionally lock the current gate shell contract.
+    # Any gate refactor must update this verifier and its self-tests together.
     return (
         'build_required="${{ needs.detector.outputs.build_required }}"' in gate_text
         and 'build_result="${{ needs.build.result }}"' in gate_text
@@ -280,14 +287,15 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
+    uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
     target_dir_input = extract_action_input_block(action_text, "include-managed-target-dir")
     if not target_dir_input:
         errors.append("setup action missing include-managed-target-dir input")
     elif not input_block_has_default_false(target_dir_input):
         errors.append("setup action include-managed-target-dir default must be false")
-    if "steps.target_dir.outputs.managed_target_dir" not in action_text:
+    if not any(SETUP_TARGET_DIR_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir from target_dir step")
-    if "inputs.include-managed-target-dir == 'true'" not in action_text:
+    if not any(SETUP_TARGET_DIR_IF_RE.match(line) for line in uncommented_lines):
         errors.append("setup action target dir step must be conditional")
     return errors
 

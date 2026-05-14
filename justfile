@@ -58,7 +58,15 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
-fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
+verify-bolt-v3-status-map-current: check-workspace
+    python3 scripts/test_verify_bolt_v3_status_map_current.py
+    python3 scripts/verify_bolt_v3_status_map_current.py
+
+verify-bolt-v3-pure-rust-runtime: check-workspace
+    python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
+    python3 scripts/verify_bolt_v3_pure_rust_runtime.py
+
+fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks verify-bolt-v3-status-map-current verify-bolt-v3-pure-rust-runtime
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
 fmt: check-workspace require-rust-verification-owner
@@ -95,11 +103,15 @@ check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 
 source-fence: check-workspace require-rust-verification-owner
+    python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
+    python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_naming.py
+    python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
+    python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate -- --nocapture
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test bolt_v3_production_entrypoint -- --nocapture
@@ -294,6 +306,9 @@ ci-lint-workflow:
                     ;;
                 source-fence-job)
                     echo "ERROR: Managed CI source-fence job missing in $f"
+                    ;;
+                source-fence-detector-needs)
+                    echo "ERROR: Managed CI source-fence job must depend on detector in $f"
                     ;;
                 test-source-fence-needs)
                     echo "ERROR: Managed CI test job must depend on source-fence in $f"
@@ -704,6 +719,9 @@ ci-lint-workflow:
                 source-fence-job)
                     echo "ERROR: .github/workflows/ci.yml source-fence job missing"
                     ;;
+                source-fence-detector-needs)
+                    echo "ERROR: .github/workflows/ci.yml source-fence job must depend on detector"
+                    ;;
                 test-source-fence-needs)
                     echo "ERROR: .github/workflows/ci.yml test job must depend on source-fence"
                     ;;
@@ -732,6 +750,7 @@ ci-lint-workflow:
                     in_jobs = 0
                     current = ""
                     saw_source_fence = 0
+                    has_source_fence_detector_needs = 0
                     has_managed_target_dir = 0
                     has_cache_key = 0
                     has_test_source_fence_needs = 0
@@ -749,12 +768,56 @@ ci-lint-workflow:
                     in_needs_block = 0
                 }
 
+                function clean_yaml_line(line) {
+                    sub(/[[:space:]]+#.*/, "", line)
+                    return line
+                }
+
                 function mark_source_fence_need() {
                     if (current == "test") {
                         has_test_source_fence_needs = 1
                     }
                     if (current == "gate") {
                         has_gate_source_fence_needs = 1
+                    }
+                }
+
+                function mark_detector_need() {
+                    if (current == "source-fence") {
+                        has_source_fence_detector_needs = 1
+                    }
+                }
+
+                function mark_need(name) {
+                    if (name == "detector") {
+                        mark_detector_need()
+                    }
+                    if (name == "source-fence") {
+                        mark_source_fence_need()
+                    }
+                }
+
+                function scan_needs(line, clean) {
+                    clean = clean_yaml_line(line)
+                    if (clean ~ /^    needs:/) {
+                        if (index(clean, "detector") > 0) {
+                            mark_need("detector")
+                        }
+                        if (index(clean, "source-fence") > 0) {
+                            mark_need("source-fence")
+                        }
+                        in_needs_block = (clean ~ /^    needs:[[:space:]]*$/)
+                        return
+                    }
+                    if (in_needs_block && clean ~ /^    [A-Za-z0-9_-]+:/) {
+                        in_needs_block = 0
+                        return
+                    }
+                    if (in_needs_block && clean ~ /^[[:space:]]*-[[:space:]]*detector[[:space:]]*$/) {
+                        mark_need("detector")
+                    }
+                    if (in_needs_block && clean ~ /^[[:space:]]*-[[:space:]]*source-fence[[:space:]]*$/) {
+                        mark_need("source-fence")
                     }
                 }
 
@@ -771,6 +834,9 @@ ci-lint-workflow:
                     }
                     if (current == "test" && !has_test_source_fence_needs) {
                         print current "|test-source-fence-needs"
+                    }
+                    if (current == "source-fence" && !has_source_fence_detector_needs) {
+                        print current "|source-fence-detector-needs"
                     }
                     if (current == "gate") {
                         if (!has_gate_always) {
@@ -829,6 +895,7 @@ ci-lint-workflow:
                     if (current == "source-fence") {
                         saw_source_fence = 1
                     }
+                    has_source_fence_detector_needs = 0
                     has_managed_target_dir = 0
                     has_cache_key = 0
                     has_test_source_fence_needs = 0
@@ -854,17 +921,7 @@ ci-lint-workflow:
                     if ($0 ~ /key:[[:space:]]*[[:graph:]]+/) {
                         has_cache_key = 1
                     }
-                    if ($0 ~ /^    needs:[[:space:]]*.*source-fence/) {
-                        mark_source_fence_need()
-                    }
-                    if ($0 ~ /^    needs:[[:space:]]*$/) {
-                        in_needs_block = 1
-                    } else if (in_needs_block && $0 ~ /^    [A-Za-z0-9_-]+:/) {
-                        in_needs_block = 0
-                    }
-                    if (in_needs_block && $0 ~ /^      -[[:space:]]*source-fence[[:space:]]*$/) {
-                        mark_source_fence_need()
-                    }
+                    scan_needs($0)
                     if (current == "gate") {
                         if ($0 ~ gate_if_always_pattern) {
                             has_gate_always = 1

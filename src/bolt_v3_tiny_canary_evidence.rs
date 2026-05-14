@@ -1,5 +1,6 @@
 use std::{
     env, fs,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +20,8 @@ const SUBMIT_ADMISSION_STATUS_REJECTED: &str = "rejected";
 const NT_ADAPTER_SUBMIT_PROVEN_REASON: &str = "nt_adapter_submit_proven";
 const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";
 const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";
+const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
+const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +44,8 @@ pub enum Phase8CanaryBlockReason {
     MissingNoSubmitReadinessReport,
     LiveCanaryGateRejected,
     StrategyInputSafetyAuditBlocked,
+    LiveOrderCountCapNotOne,
+    LiveProofCaptureUnavailable,
     NonPositiveRealizedVolatility,
     NonPositiveTimeToExpiry,
     DecisionEvidenceUnavailable,
@@ -109,6 +114,7 @@ impl Phase8CanaryPreflight {
         self.block_reasons.is_empty()
             && self.no_submit_report_status == Phase8CanaryPreflightStatus::AcceptedByGate
             && self.strategy_input_audit_status == Phase8StrategyInputAuditStatus::Approved
+            && self.max_live_order_count == Some(PHASE8_REQUIRED_LIVE_ORDER_CAP)
     }
 }
 
@@ -138,6 +144,10 @@ pub async fn evaluate_phase8_canary_preflight(
             Phase8CanaryPreflightStatus::RejectedByGate
         }
     };
+    if live_canary.is_some_and(|block| block.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP)
+    {
+        block_reasons.push(Phase8CanaryBlockReason::LiveOrderCountCapNotOne);
+    }
 
     Phase8CanaryPreflight {
         head_sha: head_sha.trim().to_string(),
@@ -392,13 +402,29 @@ impl Phase8OperatorApprovalEnvelope {
     }
 
     pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
-        let bytes = fs::read(path.as_ref()).map_err(|source| {
+        let path = path.as_ref();
+        let file = fs::File::open(path).map_err(|source| {
             anyhow!(
-                "failed to read phase8 sha256 input `{}`: {source}",
-                path.as_ref().display()
+                "failed to open phase8 sha256 input `{}`: {source}",
+                path.display()
             )
         })?;
-        Ok(sha256_bytes(&bytes))
+        let mut reader = BufReader::new(file);
+        let mut digest = Sha256::new();
+        let mut buffer = [0; PHASE8_SHA256_BUFFER_BYTES];
+        loop {
+            let length = reader.read(&mut buffer).map_err(|source| {
+                anyhow!(
+                    "failed to read phase8 sha256 input `{}`: {source}",
+                    path.display()
+                )
+            })?;
+            if length == 0 {
+                break;
+            }
+            digest.update(&buffer[..length]);
+        }
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     pub fn root_path(&self) -> PathBuf {

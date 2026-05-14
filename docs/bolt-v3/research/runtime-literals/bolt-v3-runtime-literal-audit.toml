@@ -832,6 +832,38 @@ reason = "This is the structural JSON evidence schema version for Phase 8 canary
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "1"
+context = "const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;"
+classification = "phase8_required_single_live_order_cap"
+reason = "This enforces the Phase 8 tiny-canary invariant that the local/operator proof may admit exactly one live order; the configured cap still comes from TOML and must match this invariant."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "8"
+context = "const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
+classification = "phase8_sha256_stream_buffer_size"
+reason = "This is an internal fixed memory buffer size for streaming checksum calculation, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "1024"
+context = "const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
+classification = "phase8_sha256_stream_buffer_size"
+reason = "This is an internal fixed memory buffer size for streaming checksum calculation, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "0"
+context = "let mut buffer = [0; PHASE8_SHA256_BUFFER_BYTES];"
+classification = "phase8_sha256_stream_buffer_initialization"
+reason = "This zero-initializes the fixed checksum scratch buffer before each bounded-memory read and is not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"accepted"'''
 context = '''const SUBMIT_ADMISSION_STATUS_ACCEPTED: &str = "accepted";'''

@@ -7,10 +7,12 @@ use bolt_v2::{
         Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
         evaluate_phase8_canary_preflight,
     },
+    nt_runtime_capture::spool_root_for_instance,
 };
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 use std::env;
+use std::path::Path;
 use std::process::Command;
 
 #[test]
@@ -60,6 +62,45 @@ fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
 }
 
 #[test]
+fn phase8_operator_harness_prevalidates_success_evidence_before_runner() {
+    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
+        .expect("operator harness source should be readable");
+    let start = source
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn phase8_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    let harness = &source[start..end];
+
+    let input_index = harness
+        .find("let evidence_input = phase8_operator_evidence_input")
+        .expect("success evidence input should be prepared before live runner");
+    let snapshot_index = harness
+        .find("snapshot_before_run")
+        .expect("post-run evidence paths should be snapshotted before live runner");
+    let runner_index = harness
+        .find("run_bolt_v3_live_node")
+        .expect("operator harness should use production live runner");
+
+    assert!(input_index < runner_index);
+    assert!(snapshot_index < runner_index);
+}
+
+#[test]
+fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
+    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
+        .expect("operator harness source should be readable");
+
+    assert!(source.contains("admitted_order_count()"));
+    assert!(source.contains("spool_root_for_instance"));
+    assert!(source.contains("assert_belongs_to_runtime_capture"));
+    assert!(source.contains("assert_changed_after_run"));
+    assert!(!source.contains(&format!("{}{}{}", "BOLT_V3_PHASE8_", "RUNTIME_RUN", "_ID")));
+}
+
+#[test]
 fn phase8_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
     let head = phase8_current_checkout_head_sha()?;
 
@@ -92,8 +133,17 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
     )?;
     let preflight = evaluate_phase8_canary_preflight(&loaded, &current_head, strategy_audit).await;
     if !preflight.can_enter_live_runner() {
+        let blocked_runtime_capture_ref = Phase8RuntimeCaptureRef {
+            spool_root_hash: phase8_sha256_text(&loaded.root.persistence.catalog_directory),
+            run_id: "phase8-blocked-before-live-runner".to_string(),
+        };
         let evidence = Phase8CanaryEvidence::blocked_before_submit(
-            phase8_operator_evidence_input(&envelope, &loaded, &root_hash)?,
+            phase8_operator_evidence_input(
+                &envelope,
+                &loaded,
+                &root_hash,
+                blocked_runtime_capture_ref,
+            )?,
             preflight
                 .block_reasons
                 .first()
@@ -109,17 +159,32 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
     local
         .run_until(async {
             let mut node = build_bolt_v3_live_node(&loaded)?;
-            run_bolt_v3_live_node(&mut node, &loaded).await
+            let runtime_capture = phase8_operator_runtime_capture(&loaded, &node.instance_id());
+            let evidence_input = phase8_operator_evidence_input(
+                &envelope,
+                &loaded,
+                &root_hash,
+                runtime_capture.reference.clone(),
+            )?;
+            result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
+            let pre_run_snapshot = result_paths.snapshot_before_run()?;
+            run_bolt_v3_live_node(&mut node, &loaded)
+                .await
+                .map_err(anyhow::Error::from)?;
+            let admitted_order_count = node.admitted_order_count();
+            let (decision_evidence_ref, live_order_ref, result_refs) =
+                result_paths.to_refs(&pre_run_snapshot)?;
+            let evidence = Phase8CanaryEvidence::live_canary_proof(
+                evidence_input,
+                decision_evidence_ref,
+                live_order_ref,
+                result_refs,
+                admitted_order_count,
+            )?;
+            evidence.write_json_file(&envelope.canary_evidence_path)?;
+            Ok::<(), anyhow::Error>(())
         })
         .await?;
-    let (decision_evidence_ref, live_order_ref, result_refs) = result_paths.to_refs()?;
-    let evidence = Phase8CanaryEvidence::live_canary_proof(
-        phase8_operator_evidence_input(&envelope, &loaded, &root_hash)?,
-        decision_evidence_ref,
-        live_order_ref,
-        result_refs,
-    );
-    evidence.write_json_file(&envelope.canary_evidence_path)?;
     Ok(())
 }
 
@@ -147,6 +212,7 @@ fn phase8_operator_evidence_input(
     envelope: &Phase8OperatorApprovalEnvelope,
     loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     root_hash: &str,
+    runtime_capture_ref: Phase8RuntimeCaptureRef,
 ) -> anyhow::Result<Phase8CanaryEvidenceInput> {
     let block = loaded
         .root
@@ -168,11 +234,28 @@ fn phase8_operator_evidence_input(
         approval_id: envelope.operator_approval_id.clone(),
         max_live_order_count: block.max_live_order_count,
         max_notional_per_order: Decimal::from_str_exact(&block.max_notional_per_order)?,
-        runtime_capture_ref: Phase8RuntimeCaptureRef {
-            spool_root_hash: phase8_sha256_text(&loaded.root.persistence.catalog_directory),
-            run_id: phase8_required_env("BOLT_V3_PHASE8_RUNTIME_RUN_ID")?,
-        },
+        runtime_capture_ref,
     })
+}
+
+struct Phase8OperatorRuntimeCapture {
+    reference: Phase8RuntimeCaptureRef,
+    spool_root: String,
+}
+
+fn phase8_operator_runtime_capture(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    instance_id: &str,
+) -> Phase8OperatorRuntimeCapture {
+    let spool_root =
+        spool_root_for_instance(&loaded.root.persistence.catalog_directory, instance_id);
+    Phase8OperatorRuntimeCapture {
+        reference: Phase8RuntimeCaptureRef {
+            spool_root_hash: phase8_sha256_text(&spool_root),
+            run_id: instance_id.to_string(),
+        },
+        spool_root,
+    }
 }
 
 fn phase8_sha256_text(value: &str) -> String {
@@ -200,12 +283,22 @@ struct Phase8OperatorLiveResultPaths {
     restart_reconciliation_path: String,
 }
 
+struct Phase8OperatorLiveResultSnapshot {
+    decision_evidence_sha256: Option<String>,
+    nt_submit_event_sha256: Option<String>,
+    venue_order_state_sha256: Option<String>,
+    strategy_cancel_sha256: Option<String>,
+    restart_reconciliation_sha256: Option<String>,
+}
+
 impl Phase8OperatorLiveResultPaths {
     fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             decision_evidence_path: phase8_required_env("BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH")?,
-            client_order_id_hash: phase8_required_env("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH")?,
-            venue_order_id_hash: phase8_required_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
+            client_order_id_hash: phase8_required_sha256_env(
+                "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
+            )?,
+            venue_order_id_hash: phase8_required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
             nt_submit_event_path: phase8_required_env("BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH")?,
             venue_order_state_path: phase8_required_env("BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH")?,
             strategy_cancel_path: phase8_required_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
@@ -215,13 +308,81 @@ impl Phase8OperatorLiveResultPaths {
         })
     }
 
+    fn assert_belongs_to_runtime_capture(&self, spool_root: &str) -> anyhow::Result<()> {
+        phase8_assert_path_starts_with(
+            &self.nt_submit_event_path,
+            spool_root,
+            "nt submit event evidence",
+        )?;
+        phase8_assert_path_starts_with(
+            &self.venue_order_state_path,
+            spool_root,
+            "venue order state evidence",
+        )?;
+        phase8_assert_path_starts_with(
+            &self.strategy_cancel_path,
+            spool_root,
+            "strategy cancel evidence",
+        )?;
+        phase8_assert_path_starts_with(
+            &self.restart_reconciliation_path,
+            spool_root,
+            "restart reconciliation evidence",
+        )
+    }
+
+    fn snapshot_before_run(&self) -> anyhow::Result<Phase8OperatorLiveResultSnapshot> {
+        Ok(Phase8OperatorLiveResultSnapshot {
+            decision_evidence_sha256: phase8_optional_sha256_file(&self.decision_evidence_path)?,
+            nt_submit_event_sha256: phase8_optional_sha256_file(&self.nt_submit_event_path)?,
+            venue_order_state_sha256: phase8_optional_sha256_file(&self.venue_order_state_path)?,
+            strategy_cancel_sha256: phase8_optional_sha256_file(&self.strategy_cancel_path)?,
+            restart_reconciliation_sha256: phase8_optional_sha256_file(
+                &self.restart_reconciliation_path,
+            )?,
+        })
+    }
+
+    fn assert_changed_after_run(
+        &self,
+        snapshot: &Phase8OperatorLiveResultSnapshot,
+    ) -> anyhow::Result<()> {
+        phase8_assert_changed_after_run(
+            &self.decision_evidence_path,
+            &snapshot.decision_evidence_sha256,
+            "decision evidence",
+        )?;
+        phase8_assert_changed_after_run(
+            &self.nt_submit_event_path,
+            &snapshot.nt_submit_event_sha256,
+            "nt submit event evidence",
+        )?;
+        phase8_assert_changed_after_run(
+            &self.venue_order_state_path,
+            &snapshot.venue_order_state_sha256,
+            "venue order state evidence",
+        )?;
+        phase8_assert_changed_after_run(
+            &self.strategy_cancel_path,
+            &snapshot.strategy_cancel_sha256,
+            "strategy cancel evidence",
+        )?;
+        phase8_assert_changed_after_run(
+            &self.restart_reconciliation_path,
+            &snapshot.restart_reconciliation_sha256,
+            "restart reconciliation evidence",
+        )
+    }
+
     fn to_refs(
         &self,
+        snapshot: &Phase8OperatorLiveResultSnapshot,
     ) -> anyhow::Result<(
         Phase8EvidenceRef,
         Phase8LiveOrderRef,
         Phase8LiveCanaryResultRefs,
     )> {
+        self.assert_changed_after_run(snapshot)?;
         Ok((
             phase8_operator_evidence_ref(&self.decision_evidence_path)?,
             Phase8LiveOrderRef {
@@ -247,4 +408,45 @@ fn phase8_operator_evidence_ref(path: &str) -> anyhow::Result<Phase8EvidenceRef>
         path_hash: phase8_sha256_text(path),
         record_hash: Phase8OperatorApprovalEnvelope::sha256_file(path)?,
     })
+}
+
+fn phase8_required_sha256_env(name: &str) -> anyhow::Result<String> {
+    let value = phase8_required_env(name)?;
+    if value.len() != 64 || !value.chars().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(anyhow::anyhow!(
+            "required phase8 env `{name}` must be a sha256 hex digest"
+        ));
+    }
+    Ok(value)
+}
+
+fn phase8_assert_path_starts_with(path: &str, base: &str, label: &str) -> anyhow::Result<()> {
+    if !Path::new(path).starts_with(Path::new(base)) {
+        return Err(anyhow::anyhow!(
+            "phase8 {label} path must be under runtime capture spool root"
+        ));
+    }
+    Ok(())
+}
+
+fn phase8_optional_sha256_file(path: &str) -> anyhow::Result<Option<String>> {
+    if Path::new(path).exists() {
+        Ok(Some(Phase8OperatorApprovalEnvelope::sha256_file(path)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn phase8_assert_changed_after_run(
+    path: &str,
+    before_sha256: &Option<String>,
+    label: &str,
+) -> anyhow::Result<()> {
+    let after_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(path)?;
+    if before_sha256.as_ref() == Some(&after_sha256) {
+        return Err(anyhow::anyhow!(
+            "phase8 {label} did not change during live canary run"
+        ));
+    }
+    Ok(())
 }

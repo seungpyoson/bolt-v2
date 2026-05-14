@@ -124,6 +124,14 @@ impl BoltV3LiveNodeRuntime {
     pub fn redaction_values(&self) -> &[String] {
         &self.redaction_values
     }
+
+    pub fn instance_id(&self) -> String {
+        self.node.instance_id().to_string()
+    }
+
+    pub fn admitted_order_count(&self) -> u32 {
+        self.submit_admission.admitted_order_count()
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {

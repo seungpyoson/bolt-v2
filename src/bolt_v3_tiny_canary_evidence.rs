@@ -359,8 +359,14 @@ impl Phase8CanaryEvidence {
         decision_evidence_ref: Phase8EvidenceRef,
         live_order_ref: Phase8LiveOrderRef,
         result_refs: Phase8LiveCanaryResultRefs,
-    ) -> Self {
-        Self {
+        admitted_order_count: u32,
+    ) -> Result<Self> {
+        if admitted_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
+            return Err(anyhow!(
+                "phase8 live canary proof admitted_order_count expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {admitted_order_count}"
+            ));
+        }
+        Ok(Self {
             schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
             head_sha: input.head_sha,
             root_config_sha256: input.root_config_sha256,
@@ -373,7 +379,7 @@ impl Phase8CanaryEvidence {
             decision_evidence_ref: Some(decision_evidence_ref),
             submit_admission_ref: Phase8SubmitAdmissionRef {
                 status: SUBMIT_ADMISSION_STATUS_ACCEPTED.to_string(),
-                admitted_order_count: 1,
+                admitted_order_count,
                 reason: NT_ADAPTER_SUBMIT_PROVEN_REASON.to_string(),
             },
             live_order_ref: Some(live_order_ref),
@@ -385,7 +391,7 @@ impl Phase8CanaryEvidence {
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::LiveCanaryProof,
             block_reasons: Vec::new(),
-        }
+        })
     }
 
     pub fn write_json_file(&self, path: impl AsRef<Path>) -> Result<()> {

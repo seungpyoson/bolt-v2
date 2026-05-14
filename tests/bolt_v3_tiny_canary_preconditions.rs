@@ -313,7 +313,9 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
                     .to_string(),
             },
         },
-    );
+        1,
+    )
+    .expect("one admitted order should produce live canary proof");
 
     assert_eq!(evidence.outcome, Phase8CanaryOutcome::LiveCanaryProof);
     assert_eq!(evidence.submit_admission_ref.admitted_order_count, 1);
@@ -328,6 +330,58 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
     assert!(!rendered.contains("operator-approved-canary-001"));
     assert!(!rendered.contains("client-order-001"));
     assert!(rendered.contains("restart_reconciliation_ref"));
+}
+
+#[test]
+fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        Phase8EvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .to_string(),
+        },
+        Phase8LiveOrderRef {
+            client_order_id_hash:
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+            venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_string(),
+        },
+        Phase8LiveCanaryResultRefs {
+            nt_submit_event_ref: Phase8EvidenceRef {
+                path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+            },
+            venue_order_state_ref: Phase8EvidenceRef {
+                path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+                    .to_string(),
+            },
+            strategy_cancel_ref: Some(Phase8EvidenceRef {
+                path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
+                    .to_string(),
+                record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
+                    .to_string(),
+            }),
+            restart_reconciliation_ref: Phase8EvidenceRef {
+                path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+                    .to_string(),
+                record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+                    .to_string(),
+            },
+        },
+        0,
+    )
+    .expect_err("zero admitted orders must not produce live canary proof");
+
+    assert!(
+        error.to_string().contains("admitted_order_count"),
+        "error should mention admitted order count: {error}"
+    );
 }
 
 #[test]

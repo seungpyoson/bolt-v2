@@ -904,14 +904,6 @@ reason = "This evidence count records that no order was admitted in dry no-submi
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "number"
-literal = "1"
-context = "admitted_order_count: 1,"
-classification = "phase8_canary_evidence_order_count"
-reason = "This evidence count records the single operator-approved tiny live canary order in the Phase 8 proof envelope."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_HEAD_SHA"'''
 context = '''head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,'''

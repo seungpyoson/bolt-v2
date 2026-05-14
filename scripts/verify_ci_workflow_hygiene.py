@@ -28,6 +28,8 @@ DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clip
 TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
 BUILD_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
 GATE_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
+DEPLOY_IF_RE = re.compile(r"^\s*if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+EXIT_ONE_RE = re.compile(r"^\s*exit\s+1\s*$", re.MULTILINE)
 
 
 def strip_comment(line: str) -> str:
@@ -153,20 +155,38 @@ def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
-    return f'[[ "${{{{ needs.{job}.result }}}}" != "success" ]]' in gate_text
+    condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
+    return branch_exits(gate_text, "if", condition)
 
 
 def gate_checks_build_result(gate_text: str) -> bool:
-    return all(
-        fragment in gate_text
-        for fragment in (
-            'build_required="${{ needs.detector.outputs.build_required }}"',
-            'build_result="${{ needs.build.result }}"',
-            'if [[ "$build_required" == "true" ]]; then',
-            'if [[ "$build_result" != "success" ]]; then',
-            'elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then',
-        )
+    return (
+        'build_required="${{ needs.detector.outputs.build_required }}"' in gate_text
+        and 'build_result="${{ needs.build.result }}"' in gate_text
+        and branch_exists(gate_text, "if", '"$build_required" == "true"')
+        and branch_exits(gate_text, "if", '"$build_result" != "success"')
+        and branch_exits(gate_text, "elif", '"$build_result" != "success" && "$build_result" != "skipped"')
     )
+
+
+def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
+    pattern = re.compile(
+        rf"^\s*{keyword}\s+\[\[\s*{re.escape(condition)}\s*\]\];\s*then\s*$\n(?P<body>.*?)(?=^\s*(?:elif|else|fi)\b)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(gate_text)
+    if match is None:
+        return None
+    return match.group("body")
+
+
+def branch_exists(gate_text: str, keyword: str, condition: str) -> bool:
+    return branch_body(gate_text, keyword, condition) is not None
+
+
+def branch_exits(gate_text: str, keyword: str, condition: str) -> bool:
+    body = branch_body(gate_text, keyword, condition)
+    return body is not None and EXIT_ONE_RE.search(body) is not None
 
 
 def extract_action_input_block(action_text: str, input_name: str) -> list[str]:
@@ -237,6 +257,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         for job in DEPLOY_REQUIRED_NEEDS:
             if job not in deploy_needs:
                 errors.append(f"deploy needs {job}")
+        if not has_line_matching(jobs["deploy"], DEPLOY_IF_RE):
+            errors.append("deploy must be tag-gated")
 
     for job, lines in jobs.items():
         uses_target_dir = job_uses_managed_target_dir(lines)

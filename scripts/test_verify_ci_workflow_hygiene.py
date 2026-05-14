@@ -299,6 +299,50 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "if: ${{ always() }}", "if: ${{ always() && false }}"),
     )
     assert_error(
+        "gate must check needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            exit 1
+          fi
+""",
+            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            echo "detector failed"
+          fi
+""",
+        ),
+    )
+    assert_error(
+        "gate must check needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            """            if [[ "$build_result" != "success" ]]; then
+              exit 1
+            fi
+""",
+            """            if [[ "$build_result" != "success" ]]; then
+              echo "build failed"
+            fi
+""",
+        ),
+    )
+    assert_error(
+        "gate must check needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            exit 1
+""",
+            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            echo "build failed"
+""",
+        ),
+    )
+    assert_error(
+        "deploy must be tag-gated",
+        replace_once(BASE_WORKFLOW, "if: startsWith(github.ref, 'refs/tags/v')", "if: ${{ always() }}"),
+    )
+    assert_error(
         "clippy uses managed target dir but setup does not opt in",
         replace_once(
             BASE_WORKFLOW,

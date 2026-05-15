@@ -125,9 +125,10 @@ The most accurate status is:
   config mapping, NT client registration, controlled connect, runtime capture,
   and pure market identity.
 - Architecture-clean provider neutrality is incomplete.
-- The next implementation work should be the provider-leak verifier and then the
-  provider-boundary refactor for adapter mapping, secret projection, and client
-  registration. It should not be a new trading feature.
+- The provider-leak verifier is implemented and wired through `just source-fence`;
+  the next implementation work should be the provider-boundary refactor for
+  adapter mapping, secret projection, and client registration. It should not be a
+  new trading feature.
 - Cost/fee facts, broad discovery/classification, and portfolio-allocation
   evidence are architecture work items, but they should follow the provider
   boundary because they need the same provider-owned binding surface.

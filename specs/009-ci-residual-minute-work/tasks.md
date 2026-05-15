@@ -24,12 +24,12 @@
 ## Stage 4 - Branch Hygiene
 
 - [x] T011 Generate branch inventory artifact in `docs/ci/branch-hygiene-2026-05-15.md`.
-- [ ] T012 Comment on #344 with every non-`main` branch classification and no deletion action.
+- [x] T012 Comment on #344 with every non-`main` branch classification and no deletion action.
 
 ## Stage 5 - Verification And Handoff
 
 - [x] T013 Run path-filter tests/verifier, workflow tests/verifier, YAML parse, `just ci-lint-workflow`, `just fmt-check`, and `git diff --check`.
 - [x] T014 Push draft PR stacked on #350.
-- [ ] T015 Comment on #333/#344 with completed work and blocked evidence.
+- [x] T015 Comment on #333/#344 with completed work and blocked evidence.
 - [ ] T016 After stack lands, open docs-only throwaway PR and post real run evidence.
 - [ ] T017 After #332/#195/#205 land, post monthly Actions minute rebaseline.

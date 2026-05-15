@@ -1,8 +1,8 @@
 # Feature Specification: #344 Residual Minute-Consumption Work
 
-**Feature Branch**: `codex/ci-344-residual-minute-work`  
-**Created**: 2026-05-15  
-**Status**: Draft  
+**Feature Branch**: `codex/ci-344-residual-minute-work`
+**Created**: 2026-05-15
+**Status**: Draft
 **Input**: GitHub issue #344 plus #333/#335 current live comments
 
 ## Scope

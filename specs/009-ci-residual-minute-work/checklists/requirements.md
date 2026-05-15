@@ -1,6 +1,6 @@
 # Requirements Checklist: #344 Residual Minute-Consumption Work
 
-**Feature**: `specs/009-ci-residual-minute-work`  
+**Feature**: `specs/009-ci-residual-minute-work`
 **Date**: 2026-05-15
 
 - [x] CHK001 Does the spec cover every unblocked #344 scope item? [FR-001..FR-010]

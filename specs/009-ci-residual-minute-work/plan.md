@@ -1,6 +1,6 @@
 # Implementation Plan: #344 Residual Minute-Consumption Work
 
-**Branch**: `codex/ci-344-residual-minute-work` | **Date**: 2026-05-15 | **Spec**: [spec.md](spec.md)  
+**Branch**: `codex/ci-344-residual-minute-work` | **Date**: 2026-05-15 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `specs/009-ci-residual-minute-work/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Implement the unblocked #344 slice: docs for current path-filter behavior, a fai
 
 ## Technical Context
 
-**Language/Version**: Python 3.12-compatible stdlib, GitHub Actions YAML  
-**Primary Dependencies**: existing CI workflow, GitHub pull_request metadata, git diff path listing  
-**Storage**: Markdown docs/specs and GitHub issue comments  
-**Testing**: Python verifier self-tests, workflow verifier, YAML parse, `just ci-lint-workflow`  
-**Target Platform**: GitHub Actions `ubuntu-latest`  
-**Project Type**: CI workflow/docs/tooling  
-**Performance Goals**: Avoid future pending required checks for ignored-safe PRs with only a tiny classifier workflow  
-**Constraints**: no destructive branch cleanup, no #340 relocation, no post-stack rebaseline claim, no weakening PR/main/tag CI  
+**Language/Version**: Python 3.12-compatible stdlib, GitHub Actions YAML
+**Primary Dependencies**: existing CI workflow, GitHub pull_request metadata, git diff path listing
+**Storage**: Markdown docs/specs and GitHub issue comments
+**Testing**: Python verifier self-tests, workflow verifier, YAML parse, `just ci-lint-workflow`
+**Target Platform**: GitHub Actions `ubuntu-latest`
+**Project Type**: CI workflow/docs/tooling
+**Performance Goals**: Avoid future pending required checks for ignored-safe PRs with only a tiny classifier workflow
+**Constraints**: no destructive branch cleanup, no #340 relocation, no post-stack rebaseline claim, no weakening PR/main/tag CI
 **Scale/Scope**: One #344 slice stacked on #205
 
 ## Constitution Check

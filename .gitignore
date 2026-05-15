@@ -4,6 +4,8 @@ config/live.local.toml
 /*_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.log
 var/logs/
 /tmp_tests/*.log
+__pycache__/
+*.pyc
 .omx/
 .agents/
 .claude/agents/

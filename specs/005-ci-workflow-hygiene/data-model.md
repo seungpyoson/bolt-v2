@@ -44,7 +44,7 @@ Validation rules:
 ## DeployDefenseNeeds
 
 - **deploy_job**: `deploy`.
-- **direct_needs**: `gate`, `build`, `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`.
+- **direct_needs**: `gate`, `build`, `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `test`.
 
 Validation rules:
 

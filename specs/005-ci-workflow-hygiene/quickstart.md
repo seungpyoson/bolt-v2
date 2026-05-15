@@ -15,7 +15,7 @@ Expected result after implementation: all commands pass.
 ## Workflow Sanity Checks
 
 ```bash
-rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
+rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|check-aarch64|source-fence|needs\\.(detector|fmt-check|deny|clippy|check-aarch64|source-fence|test|build)\\.result" .github/workflows/ci.yml
 ```
 
 Expected evidence:
@@ -40,6 +40,7 @@ Exact-head CI must pass before external review:
 - `fmt-check`
 - `deny`
 - `clippy`
+- `check-aarch64`
 - `source-fence`
 - `test`
 - `build`

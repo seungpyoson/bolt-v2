@@ -30,7 +30,7 @@ If the dry-run output does not route through `rust_verification.py run --repo ..
 
 ## Expected CI topology
 
-The PR workflow should include these required jobs:
+The workflow should include these required jobs:
 
 ```text
 detector
@@ -44,6 +44,8 @@ build
 gate
 deploy
 ```
+
+`deploy` is tag-gated and should exist with direct safety needs; it is not expected to run as a PR required status.
 
 The aggregate gate should require:
 

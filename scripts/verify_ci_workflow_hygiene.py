@@ -25,12 +25,14 @@ REQUIRED_JOBS = (
     "source-fence",
     "test",
     "build",
+    "same-sha-main-evidence",
     "gate",
     "deploy",
 )
 GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
+    "same-sha-main-evidence",
     "build",
     "detector",
     "fmt-check",
@@ -40,11 +42,21 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
+TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test", "build")
-BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
+TAG_SKIP_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+BUILD_IF_RE = re.compile(
+    r"^    if:\s*\$\{\{\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
+    r"needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*\}\}\s*$"
+)
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
-DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+DEPLOY_IF_RE = re.compile(
+    r"^    if:\s*\$\{\{\s*always\(\)\s*&&\s*startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
+    r"needs\.gate\.result\s*==\s*['\"]success['\"]\s*&&\s*"
+    r"needs\.same-sha-main-evidence\.result\s*==\s*['\"]success['\"]\s*\}\}\s*$"
+)
 EXIT_RE = re.compile(r"^\s*exit(?:\s+([0-9]+))?\s*$", re.MULTILINE)
 IF_OR_ELIF_RE = re.compile(r"^\s*(if|elif)\s+\[\[\s*(?P<condition>.*?)\s*\]\];\s*then\s*$")
 ELSE_RE = re.compile(r"^\s*else\s*$")
@@ -369,6 +381,26 @@ def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
     return False
 
 
+def job_skips_tag_reuse(job_lines: list[str]) -> bool:
+    return has_line_matching(job_lines, TAG_SKIP_IF_RE)
+
+
+def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "source_run_id: ${{ steps.evidence.outputs.source_run_id }}",
+        "check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}",
+        "artifact_id: ${{ steps.evidence.outputs.artifact_id }}",
+        "source_sha: ${{ steps.evidence.outputs.source_sha }}",
+    )
+    return all(item in text for item in required)
+
+
+def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
+
+
 def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "gcc-aarch64-linux-gnu" in text or "libc6-dev-arm64-cross" in text
@@ -442,6 +474,53 @@ def collect_if_chain_bodies(lines: list[str], start: int, condition: str) -> dic
             continue
         bodies[current].append(line)
     return None
+
+
+def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if 'tag_ref="${{ startsWith(github.ref, \'refs/tags/v\') }}"' not in gate_text and (
+        'tag_ref="${{ startsWith(github.ref, "refs/tags/v") }}"' not in gate_text
+    ):
+        errors.append("gate must compute tag_ref")
+    if not branch_exits(gate_text, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
+        errors.append("gate must check same-sha-main-evidence success")
+    if not branch_exits(gate_text, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
+        errors.append("gate must check same-sha-main-evidence skip on non-tag")
+    for job in TAG_SKIPPED_JOBS:
+        if not branch_exits(gate_text, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
+            errors.append(f"gate must require {job} skipped on tag reuse")
+    return errors
+
+
+def deploy_downloads_same_sha_artifact(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "actions/download-artifact",
+        "artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}",
+        "github-token: ${{ github.token }}",
+        "repository: ${{ github.repository }}",
+        "run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}",
+    )
+    return all(item in text for item in required)
+
+
+def deploy_logs_reused_evidence(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "needs.same-sha-main-evidence.outputs.source_run_id",
+        "needs.same-sha-main-evidence.outputs.check_suite_id",
+        "needs.same-sha-main-evidence.outputs.artifact_id",
+        "needs.same-sha-main-evidence.outputs.source_sha",
+    )
+    return all(item in text for item in required)
+
+
+def job_permission_has(job_lines: list[str], permission: str, value: str) -> bool:
+    return any(re.match(rf"^\s+{re.escape(permission)}:\s*{re.escape(value)}\s*$", strip_comment(line)) for line in job_lines)
+
+
+def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
+    return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
 
 
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
@@ -542,12 +621,19 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
 
+    if not workflow_permissions_have_actions_read(workflow_text):
+        errors.append("workflow permissions must include actions: read")
+
     for job in REQUIRED_JOBS:
         if job not in jobs:
             errors.append(f"missing required job {job}")
 
     if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
         errors.append("fmt-check must not need detector")
+
+    for job in ("fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
+        if job in jobs and not job_skips_tag_reuse(jobs[job]):
+            errors.append(f"{job} must skip on tag reuse")
 
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
@@ -605,7 +691,17 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if "detector" not in extract_needs(jobs["build"]):
             errors.append("build needs detector")
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
-            errors.append("build must gate on needs.detector.outputs.build_required")
+            errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
+
+    if "same-sha-main-evidence" in jobs:
+        if "detector" not in extract_needs(jobs["same-sha-main-evidence"]):
+            errors.append("same-sha-main-evidence needs detector")
+        if not has_line_matching(jobs["same-sha-main-evidence"], SAME_SHA_IF_RE):
+            errors.append("same-sha-main-evidence must be tag-gated")
+        if not same_sha_job_has_outputs(jobs["same-sha-main-evidence"]):
+            errors.append("same-sha-main-evidence must expose source run, check suite, artifact, and SHA outputs")
+        if not same_sha_job_runs_resolver(jobs["same-sha-main-evidence"]):
+            errors.append("same-sha-main-evidence must run resolver script")
 
     if "gate" in jobs:
         gate_needs = extract_needs(jobs["gate"])
@@ -619,6 +715,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 checks_result = gate_checks_lane_success(gate_text, job)
             if not checks_result:
                 errors.append(f"gate must check needs.{job}.result")
+        if "same-sha-main-evidence" not in gate_needs:
+            errors.append("gate needs same-sha-main-evidence")
+        errors.extend(gate_checks_same_sha_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
 
@@ -629,6 +728,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"deploy needs {job}")
         if not has_line_matching(jobs["deploy"], DEPLOY_IF_RE):
             errors.append("deploy must be tag-gated")
+        if not job_permission_has(jobs["deploy"], "actions", "read"):
+            errors.append("deploy permissions must include actions: read")
+        if not deploy_downloads_same_sha_artifact(jobs["deploy"]):
+            errors.append("deploy must download same-SHA main artifact by artifact ID")
+        if not deploy_logs_reused_evidence(jobs["deploy"]):
+            errors.append("deploy must log reused source run, check suite, artifact, and SHA")
 
     for job, lines in jobs.items():
         uses_target_dir = job_uses_managed_target_dir(lines)

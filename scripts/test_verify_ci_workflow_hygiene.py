@@ -10,8 +10,8 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]"
-DEPLOY_NEEDS = "needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
+GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
+DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 
 
 def load_verifier():
@@ -29,6 +29,13 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   detector:
@@ -39,6 +46,7 @@ jobs:
 
   fmt-check:
     name: fmt-check
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -52,6 +60,7 @@ jobs:
   deny:
     name: deny
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -70,6 +79,7 @@ jobs:
   clippy:
     name: clippy
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -88,6 +98,7 @@ jobs:
   check-aarch64:
     name: check-aarch64
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -108,6 +119,7 @@ jobs:
   source-fence:
     name: source-fence
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -124,6 +136,7 @@ jobs:
   test:
     name: test
     needs: [detector, source-fence]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -154,7 +167,7 @@ jobs:
   build:
     name: build
     needs: detector
-    if: needs.detector.outputs.build_required == 'true'
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -196,14 +209,60 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
 
+  same-sha-main-evidence:
+    name: same-sha-main-evidence
+    needs: detector
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      source_run_id: ${{ steps.evidence.outputs.source_run_id }}
+      check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}
+      artifact_id: ${{ steps.evidence.outputs.artifact_id }}
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+    steps:
+      - name: Resolve same-SHA main evidence
+        id: evidence
+        run: python3 scripts/find_same_sha_main_evidence.py
+
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - run: |
+          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "$tag_ref" == "true" ]]; then
+            if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            exit 0
+          fi
+          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -236,10 +295,26 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     steps:
+      - run: |
+          echo "source_run_id=${{ needs.same-sha-main-evidence.outputs.source_run_id }}"
+          echo "check_suite_id=${{ needs.same-sha-main-evidence.outputs.check_suite_id }}"
+          echo "artifact_id=${{ needs.same-sha-main-evidence.outputs.artifact_id }}"
+          echo "source_sha=${{ needs.same-sha-main-evidence.outputs.source_sha }}"
+      - uses: actions/download-artifact@example
+        with:
+          artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}
+          path: artifact/
       - run: echo deploy
 """
 
@@ -422,6 +497,18 @@ def without_inline_need(line: str, job: str) -> str:
     return line.replace(f"{job}, ", "").replace(f", {job}", "")
 
 
+def without_job_if(workflow: str, job: str) -> str:
+    lines = workflow.splitlines()
+    start = next(i for i, line in enumerate(lines) if line == f"  {job}:")
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith("  ") and not lines[i].startswith("    ") and lines[i].strip().endswith(":"):
+            end = i
+            break
+    filtered = [line for i, line in enumerate(lines) if not (start < i < end and line.startswith("    if: "))]
+    return "\n".join(filtered) + "\n"
+
+
 def assert_parse_jobs_strips_comments() -> None:
     verifier = load_verifier()
     jobs = verifier.parse_jobs(
@@ -486,17 +573,35 @@ def main() -> int:
         "source-fence",
         "test",
         "build",
+        "same-sha-main-evidence",
         "gate",
         "deploy",
     ):
         assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
     for job in ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
+        if job == "build":
+            continue
         assert_error(
             f"gate must check needs.{job}.result",
-            replace_once(BASE_WORKFLOW, f"needs.{job}.result", f"omitted.{job}.result"),
+            replace_once(
+                BASE_WORKFLOW,
+                f'"${{{{ needs.{job}.result }}}}" != "success"',
+                f'"${{{{ omitted.{job}.result }}}}" != "success"',
+            ),
         )
-    for job in ("gate", "build", "detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
+    for job in (
+        "gate",
+        "same-sha-main-evidence",
+        "build",
+        "detector",
+        "fmt-check",
+        "deny",
+        "clippy",
+        "check-aarch64",
+        "source-fence",
+        "test",
+    ):
         assert_error("deploy needs " + job, replace_once(BASE_WORKFLOW, DEPLOY_NEEDS, without_inline_need(DEPLOY_NEEDS, job)))
     assert_error(
         "check-aarch64 needs detector",
@@ -646,6 +751,8 @@ def main() -> int:
         "test needs source-fence",
         replace_once(BASE_WORKFLOW, "needs: [detector, source-fence]", "needs: [detector]"),
     )
+    for job in ("fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
+        assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
     assert_error(
         "build needs detector",
         replace_once(
@@ -658,16 +765,50 @@ def main() -> int:
         "build must gate on needs.detector.outputs.build_required",
         replace_once(
             BASE_WORKFLOW,
-            "if: needs.detector.outputs.build_required == 'true'",
-            "if: needs.detector.outputs.build_required != 'true'",
+            "if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}",
+            "if: ${{ needs.detector.outputs.build_required != 'true' }}",
         ),
     )
     assert_error(
         "build must gate on needs.detector.outputs.build_required",
         replace_once(
-            replace_once(BASE_WORKFLOW, "    if: needs.detector.outputs.build_required == 'true'\n", ""),
+            replace_once(
+                BASE_WORKFLOW,
+                "    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}\n",
+                "",
+            ),
             "      - uses: ./.github/actions/setup-environment",
             "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))
+    assert_error("same-sha-main-evidence must be tag-gated", without_job_if(BASE_WORKFLOW, "same-sha-main-evidence"))
+    assert_error(
+        "same-sha-main-evidence must expose source run",
+        replace_once(BASE_WORKFLOW, "      artifact_id: ${{ steps.evidence.outputs.artifact_id }}\n", ""),
+    )
+    assert_error(
+        "same-sha-main-evidence must run resolver script",
+        replace_once(BASE_WORKFLOW, "python3 scripts/find_same_sha_main_evidence.py", "python3 scripts/other.py"),
+    )
+    assert_error(
+        "gate needs same-sha-main-evidence",
+        replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, "same-sha-main-evidence")),
+    )
+    assert_error(
+        "gate must check same-sha-main-evidence success",
+        replace_once(
+            BASE_WORKFLOW,
+            '"${{ needs.same-sha-main-evidence.result }}" != "success"',
+            '"${{ needs.same-sha-main-evidence.result }}" != "skipped"',
+        ),
+    )
+    assert_error(
+        "gate must require build skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '"${{ needs.build.result }}" != "skipped"',
+            '"${{ needs.build.result }}" != "success"',
         ),
     )
     assert_error(
@@ -852,15 +993,39 @@ def main() -> int:
     )
     assert_error(
         "deploy must be tag-gated",
-        replace_once(BASE_WORKFLOW, "if: startsWith(github.ref, 'refs/tags/v')", "if: ${{ always() }}"),
+        replace_once(
+            BASE_WORKFLOW,
+            "if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}",
+            "if: ${{ always() }}",
+        ),
     )
     assert_error(
         "deploy must be tag-gated",
         replace_once(
-            replace_once(BASE_WORKFLOW, "    if: startsWith(github.ref, 'refs/tags/v')\n", ""),
+            replace_once(
+                BASE_WORKFLOW,
+                "    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}\n",
+                "",
+            ),
             "      - run: echo deploy",
             "      - if: startsWith(github.ref, 'refs/tags/v')\n        run: echo deploy",
         ),
+    )
+    assert_error(
+        "deploy permissions must include actions: read",
+        replace_once(BASE_WORKFLOW, "      actions: read\n      id-token: write", "      id-token: write"),
+    )
+    assert_error(
+        "deploy must download same-SHA main artifact by artifact ID",
+        replace_once(
+            BASE_WORKFLOW,
+            "          artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}",
+            "          name: bolt-v2-binary",
+        ),
+    )
+    assert_error(
+        "deploy must log reused source run",
+        replace_once(BASE_WORKFLOW, '          echo "check_suite_id=${{ needs.same-sha-main-evidence.outputs.check_suite_id }}"\n', ""),
     )
     assert_error(
         "clippy uses managed target dir but setup does not opt in",

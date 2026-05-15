@@ -44,6 +44,7 @@ env:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   detector:
@@ -94,6 +95,7 @@ jobs:
 
   fmt-check:
     name: fmt-check
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -117,6 +119,7 @@ jobs:
   deny:
     name: deny
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -145,6 +148,7 @@ jobs:
   clippy:
     name: clippy
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -171,6 +175,7 @@ jobs:
   check-aarch64:
     name: check-aarch64
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -203,6 +208,7 @@ jobs:
   source-fence:
     name: source-fence
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -238,6 +244,7 @@ jobs:
   test:
     name: test
     needs: [detector, source-fence]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -282,7 +289,7 @@ jobs:
   build:
     name: build
     needs: detector
-    if: needs.detector.outputs.build_required == 'true'
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -342,17 +349,80 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
           retention-days: 30
 
+  same-sha-main-evidence:
+    name: same-sha-main-evidence
+    needs: detector
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      source_run_id: ${{ steps.evidence.outputs.source_run_id }}
+      check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}
+      artifact_id: ${{ steps.evidence.outputs.artifact_id }}
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve same-SHA main evidence
+        id: evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/find_same_sha_main_evidence.py
+
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - name: Check required lanes
         shell: bash
         run: |
+          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             echo "detector did not succeed"
+            exit 1
+          fi
+          if [[ "$tag_ref" == "true" ]]; then
+            if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
+              echo "same-sha-main-evidence did not succeed"
+              exit 1
+            fi
+            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then
+              echo "fmt-check unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
+              echo "deny unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              echo "clippy unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+              echo "check-aarch64 unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              echo "source-fence unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              echo "test unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              echo "build unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            exit 0
+          fi
+          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
+            echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
             exit 1
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -394,11 +464,12 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -414,10 +485,20 @@ jobs:
             exit 1
           fi
 
+      - name: Log reused main-run evidence
+        run: |
+          echo "source_run_id=${{ needs.same-sha-main-evidence.outputs.source_run_id }}"
+          echo "check_suite_id=${{ needs.same-sha-main-evidence.outputs.check_suite_id }}"
+          echo "artifact_id=${{ needs.same-sha-main-evidence.outputs.artifact_id }}"
+          echo "source_sha=${{ needs.same-sha-main-evidence.outputs.source_sha }}"
+
       - name: Download artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: bolt-v2-binary
+          artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}
           path: artifact/
 
       - name: Configure AWS credentials

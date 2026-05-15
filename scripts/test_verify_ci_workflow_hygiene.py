@@ -10,8 +10,8 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, source-fence, test, build]"
-DEPLOY_NEEDS = "needs: [gate, build, detector, fmt-check, deny, clippy, source-fence, test]"
+GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]"
+DEPLOY_NEEDS = "needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 
 
 def load_verifier():
@@ -59,6 +59,9 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
+      - uses: Swatinem/rust-cache@example
+        with:
+          key: deny
       - run: just deny
 
   clippy:
@@ -78,6 +81,26 @@ jobs:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
           key: clippy
       - run: just clippy
+
+  check-aarch64:
+    name: check-aarch64
+    needs: detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          use-default-target: "true"
+          include-managed-target-dir: "true"
+      - name: Install aarch64 cross compiler
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: Swatinem/rust-cache@example
+        with:
+          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
+          key: check-aarch64
+      - run: just check-aarch64
 
   source-fence:
     name: source-fence
@@ -99,6 +122,10 @@ jobs:
     name: test
     needs: [detector, source-fence]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: ./.github/actions/setup-environment
         with:
@@ -109,8 +136,10 @@ jobs:
       - uses: Swatinem/rust-cache@example
         with:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: nextest
-      - run: just test
+          key: nextest-v3-shard-${{ matrix.shard }}-of-4
+      - name: Show shard reproduction command
+        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
+      - run: just test -- --partition count:${{ matrix.shard }}/4
 
   build:
     name: build
@@ -133,7 +162,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -148,6 +177,9 @@ jobs:
             exit 1
           fi
           if [[ "${{ needs.clippy.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
             exit 1
           fi
           if [[ "${{ needs.source-fence.result }}" != "success" ]]; then
@@ -168,7 +200,7 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, build, detector, fmt-check, deny, clippy, source-fence, test]
+    needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -295,6 +327,7 @@ def main() -> int:
         "fmt-check",
         "deny",
         "clippy",
+        "check-aarch64",
         "source-fence",
         "test",
         "build",
@@ -302,14 +335,58 @@ def main() -> int:
         "deploy",
     ):
         assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
-    for job in ("detector", "fmt-check", "deny", "clippy", "source-fence", "test", "build"):
+    for job in ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
         assert_error(
             f"gate must check needs.{job}.result",
             replace_once(BASE_WORKFLOW, f"needs.{job}.result", f"omitted.{job}.result"),
         )
-    for job in ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test"):
+    for job in ("gate", "build", "detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
         assert_error("deploy needs " + job, replace_once(BASE_WORKFLOW, DEPLOY_NEEDS, without_inline_need(DEPLOY_NEEDS, job)))
+    assert_error(
+        "check-aarch64 must use setup.outputs.managed_target_dir",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: check-aarch64",
+            "          key: check-aarch64",
+        ),
+    )
+    assert_error(
+        "test matrix must set fail-fast false",
+        replace_once(BASE_WORKFLOW, "      fail-fast: false", "      fail-fast: true"),
+    )
+    assert_error(
+        "test matrix shard must be [1, 2, 3, 4]",
+        replace_once(BASE_WORKFLOW, "        shard: [1, 2, 3, 4]", "        shard: [1, 2, 3]"),
+    )
+    assert_error(
+        "test must run partitioned nextest through just test",
+        replace_once(BASE_WORKFLOW, "      - run: just test -- --partition count:${{ matrix.shard }}/4", "      - run: just test"),
+    )
+    assert_error(
+        "test must log shard reproduction command",
+        replace_once(
+            BASE_WORKFLOW,
+            '      - name: Show shard reproduction command\n        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "test cache key must include matrix.shard",
+        replace_once(BASE_WORKFLOW, "          key: nextest-v3-shard-${{ matrix.shard }}-of-4", "          key: nextest-v3"),
+    )
+    assert_error(
+        "clippy must not run check-aarch64",
+        replace_once(BASE_WORKFLOW, "      - run: just clippy", "      - run: just check-aarch64\n      - run: just clippy"),
+    )
+    assert_error(
+        "clippy must not install aarch64 cross compiler",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just clippy",
+            "      - name: Install aarch64 cross compiler\n        run: sudo apt-get install -y gcc-aarch64-linux-gnu\n      - run: just clippy",
+        ),
+    )
     assert_error(
         "fmt-check must not need detector",
         replace_once(

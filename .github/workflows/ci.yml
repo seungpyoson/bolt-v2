@@ -156,6 +156,31 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
+          include-managed-target-dir: "true"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-targets: false
+          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
+          key: clippy-host-v1
+
+      - name: clippy
+        run: just clippy
+
+  check-aarch64:
+    name: check-aarch64
+    needs: detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
           include-managed-target-dir: "true"
@@ -170,13 +195,10 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: clippy-dual-target
+          key: check-aarch64-v1
 
       - name: check-aarch64
         run: just check-aarch64
-
-      - name: clippy
-        run: just clippy
 
   source-fence:
     name: source-fence
@@ -210,12 +232,17 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: just source-fence
 
-  # #342 owns these canonical source-fence filters. Until #332 changes full
-  # nextest ownership, `test` intentionally still duplicates them under `gate`.
+  # #342 owns these canonical source-fence filters. #332 intentionally keeps
+  # full nextest duplicate coverage under the same aggregate gate rather than
+  # adding brittle filter expressions that could hide neighboring tests.
   test:
     name: test
     needs: [detector, source-fence]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -233,18 +260,21 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: nextest-v2
+          key: nextest-v3-shard-${{ matrix.shard }}-of-4
 
       - name: Install cargo-nextest
         run: |
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
+
+      - name: Show shard reproduction command
+        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
 
       - name: test
         env:
           # Keep CI test binaries small enough for ubuntu-latest link/disk limits.
           # This disables test debuginfo only; assertions and test logic still run.
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: just test
+        run: just test -- --partition count:${{ matrix.shard }}/4
 
   build:
     name: build
@@ -311,7 +341,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -332,6 +362,10 @@ jobs:
           fi
           if [[ "${{ needs.clippy.result }}" != "success" ]]; then
             echo "clippy did not succeed"
+            exit 1
+          fi
+          if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
+            echo "check-aarch64 did not succeed"
             exit 1
           fi
           if [[ "${{ needs.source-fence.result }}" != "success" ]]; then
@@ -357,7 +391,7 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, build, detector, fmt-check, deny, clippy, source-fence, test]
+    needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

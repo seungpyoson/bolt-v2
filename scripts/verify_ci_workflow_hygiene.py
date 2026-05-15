@@ -17,15 +17,27 @@ REQUIRED_JOBS = (
     "fmt-check",
     "deny",
     "clippy",
+    "check-aarch64",
     "source-fence",
     "test",
     "build",
     "gate",
     "deploy",
 )
-GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "source-fence", "test", "build")
-DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test")
-TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
+GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+DEPLOY_REQUIRED_NEEDS = (
+    "gate",
+    "build",
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test",
+)
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test", "build")
+CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test", "build")
 BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
@@ -38,6 +50,12 @@ SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_di
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
+TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
+TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
+TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
+TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
+TEST_SHARD_CACHE_RE = re.compile(r"^\s+key:\s*.*matrix\.shard.*of-4\s*$")
+CACHE_KEY_RE = re.compile(r"^\s+key:\s*\S+.*$")
 
 
 def strip_comment(line: str) -> str:
@@ -213,6 +231,28 @@ def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
 
 
+def has_run_command(lines: list[str], command: str) -> bool:
+    expected = {f"run: {command}", f"- run: {command}"}
+    return any(strip_comment(line).strip() in expected for line in lines)
+
+
+def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
+    return any(CACHE_KEY_RE.match(strip_comment(line)) for line in job_lines)
+
+
+def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
+    for line in job_lines:
+        clean = strip_comment(line)
+        if "reproduce" in clean.lower() and TEST_REPRODUCTION_COMMAND in clean:
+            return True
+    return False
+
+
+def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "gcc-aarch64-linux-gnu" in text or "libc6-dev-arm64-cross" in text
+
+
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
     condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
     return branch_exits(gate_text, "if", condition)
@@ -364,6 +404,32 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test" in jobs and "source-fence" not in extract_needs(jobs["test"]):
         errors.append("test needs source-fence")
 
+    if "clippy" in jobs:
+        clippy_text = uncommented_text(jobs["clippy"])
+        if "just check-aarch64" in clippy_text:
+            errors.append("clippy must not run check-aarch64")
+        if clippy_installs_aarch64_toolchain(jobs["clippy"]):
+            errors.append("clippy must not install aarch64 cross compiler")
+
+    if "check-aarch64" in jobs:
+        if "detector" not in extract_needs(jobs["check-aarch64"]):
+            errors.append("check-aarch64 needs detector")
+        if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must run just check-aarch64")
+
+    if "test" in jobs:
+        test_lines = jobs["test"]
+        if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
+            errors.append("test matrix must set fail-fast false")
+        if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
+            errors.append("test matrix shard must be [1, 2, 3, 4]")
+        if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
+            errors.append("test must run partitioned nextest through just test")
+        if not test_has_shard_reproduction_command(test_lines):
+            errors.append("test must log shard reproduction command")
+        if not has_line_matching(test_lines, TEST_SHARD_CACHE_RE):
+            errors.append("test cache key must include matrix.shard")
+
     if "build" in jobs:
         if "detector" not in extract_needs(jobs["build"]):
             errors.append("build needs detector")
@@ -404,6 +470,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     for job in TARGET_DIR_JOBS:
         if job in jobs and not job_uses_managed_target_dir(jobs[job]):
             errors.append(f"{job} must use setup.outputs.managed_target_dir")
+
+    for job in CACHE_KEY_JOBS:
+        if job in jobs and not job_has_explicit_cache_key(jobs[job]):
+            errors.append(f"{job} must declare explicit rust-cache key")
 
     return errors
 

@@ -349,6 +349,36 @@ jobs:
 """
 
 
+BASE_ADVISORY_WORKFLOW = """
+name: Advisory Check
+
+on:
+  workflow_dispatch: {}
+
+env:
+  JUST_VERSION: "1.49.0"
+
+jobs:
+  advisories:
+    name: advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@example
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          include-deny-version: "true"
+      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+      - name: Check advisories
+        run: just deny-advisories
+"""
+
+
 BASE_ACTION = """
 name: Setup Environment
 inputs:
@@ -810,6 +840,52 @@ def main() -> int:
             '"${{ needs.build.result }}" != "skipped"',
             '"${{ needs.build.result }}" != "success"',
         ),
+    )
+    assert_error(
+        "ci.yml build must resolve artifact through rust_verification_owner binary-path",
+        replace_once(
+            BASE_WORKFLOW,
+            'binary_path="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"',
+            'binary_path="target/aarch64-unknown-linux-gnu/release/bolt-v2"',
+        ),
+    )
+    assert_error(
+        "ci.yml must not reference repo-local target release artifacts",
+        replace_once(
+            BASE_WORKFLOW,
+            "${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2",
+            "target/aarch64-unknown-linux-gnu/release/bolt-v2",
+        ),
+    )
+    assert_error(
+        "ci.yml build upload must use the staged artifact directory",
+        BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must include deny version",
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": replace_once(BASE_ADVISORY_WORKFLOW, '          include-deny-version: "true"\n', "")},
+    )
+    assert_workflows_error(
+        "advisory.yml advisories setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                "claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}",
+                "claude-config-read-token: ${{ secrets.OTHER_TOKEN }}",
+            ),
+        },
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must use setup.outputs.deny_version",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                'cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked',
+                'cargo install cargo-deny --version "0.18.3" --locked',
+            ),
+        },
     )
     assert_error(
         "ci.yml build must resolve artifact through rust_verification_owner binary-path",

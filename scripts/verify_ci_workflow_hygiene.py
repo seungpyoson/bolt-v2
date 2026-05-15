@@ -10,6 +10,10 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+DEFAULT_WORKFLOWS = (
+    DEFAULT_WORKFLOW,
+    REPO_ROOT / ".github" / "workflows" / "advisory.yml",
+)
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
 
 REQUIRED_JOBS = (
@@ -57,6 +61,13 @@ TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
 TEST_SHARD_CACHE_RE = re.compile(r"^\s+key:\s*.*matrix\.shard.*of-4\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+key:\s*\S+.*$")
+JUST_LANE_RE = re.compile(
+    r"(^|[^A-Za-z0-9_./-])just\s+"
+    r"(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|source-fence)"
+    r"([^A-Za-z0-9_]|$)"
+)
+REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
+BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
 
 
 def strip_comment(line: str) -> str:
@@ -216,6 +227,18 @@ def block_has_target_dir_opt_in(block: list[str]) -> bool:
     return any(TARGET_DIR_OPT_IN_RE.match(strip_comment(line)) for line in block)
 
 
+def block_has_input(block: list[str], name: str, value: str | None = None) -> bool:
+    if value is None:
+        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*\S+.*$")
+    else:
+        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*{re.escape(value)}\s*$")
+    return any(pattern.match(strip_comment(line)) for line in block)
+
+
+def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
+    return any(block_has_input(block, name, value) for block in setup_action_blocks(job_lines))
+
+
 def job_uses_managed_target_dir(job_lines: list[str]) -> bool:
     return any("steps.setup.outputs.managed_target_dir" in strip_comment(line) for line in job_lines)
 
@@ -239,6 +262,10 @@ def has_run_command(lines: list[str], command: str) -> bool:
 
 def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
     return any(CACHE_KEY_RE.match(strip_comment(line)) for line in job_lines)
+
+
+def job_just_lanes(job_lines: list[str]) -> set[str]:
+    return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
@@ -494,6 +521,71 @@ def verify_workflow(workflow_text: str) -> list[str]:
     return errors
 
 
+def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+    jobs = parse_jobs(workflow_text)
+
+    for job, lines in jobs.items():
+        lanes = job_just_lanes(lines)
+        if not lanes:
+            continue
+        if not setup_action_blocks(lines):
+            errors.append(f"{workflow_name} {job} must use setup-environment")
+            continue
+        if not job_has_setup_input(lines, "claude-config-read-token", "${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"):
+            errors.append(f"{workflow_name} {job} setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN")
+        if not job_has_setup_input(lines, "just-version", "${{ env.JUST_VERSION }}"):
+            errors.append(f"{workflow_name} {job} setup just-version must come from env.JUST_VERSION")
+        if "fmt-check" in lanes:
+            if not job_has_setup_input(lines, "lint-workflow-contract", '"true"'):
+                errors.append(f"{workflow_name} {job} must enable workflow contract lint")
+            if not job_has_setup_input(lines, "toolchain-components", "rustfmt"):
+                errors.append(f"{workflow_name} {job} must install rustfmt component")
+        if "clippy" in lanes and not job_has_setup_input(lines, "toolchain-components", "clippy"):
+            errors.append(f"{workflow_name} {job} must install clippy component")
+        if lanes.intersection({"deny", "deny-advisories"}):
+            if not job_has_setup_input(lines, "include-deny-version", '"true"'):
+                errors.append(f"{workflow_name} {job} must include deny version")
+            if "steps.setup.outputs.deny_version" not in uncommented_text(lines):
+                errors.append(f"{workflow_name} {job} must use setup.outputs.deny_version")
+        if "test" in lanes:
+            if not job_has_setup_input(lines, "include-nextest-version", '"true"'):
+                errors.append(f"{workflow_name} {job} must include nextest version")
+            if "steps.setup.outputs.nextest_version" not in uncommented_text(lines):
+                errors.append(f"{workflow_name} {job} must use setup.outputs.nextest_version")
+        if "build" in lanes:
+            if not job_has_setup_input(lines, "include-build-values", '"true"'):
+                errors.append(f"{workflow_name} {job} must include build values")
+            if not job_has_setup_input(lines, "use-default-target", '"true"'):
+                errors.append(f"{workflow_name} {job} must use default target")
+            text = uncommented_text(lines)
+            if "steps.setup.outputs.zig_version" not in text:
+                errors.append(f"{workflow_name} {job} must use setup.outputs.zig_version")
+            if "steps.setup.outputs.zigbuild_version" not in text:
+                errors.append(f"{workflow_name} {job} must use setup.outputs.zigbuild_version")
+
+    return errors
+
+
+def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+    if REPO_LOCAL_ARTIFACT_RE.search(uncommented_text(workflow_text.splitlines())):
+        errors.append(f"{workflow_name} must not reference repo-local target release artifacts")
+
+    jobs = parse_jobs(workflow_text)
+    build = jobs.get("build")
+    if build is None:
+        return errors
+    build_text = uncommented_text(build)
+    if BINARY_PATH_COMMAND not in build_text:
+        errors.append(f"{workflow_name} build must resolve artifact through rust_verification_owner binary-path")
+    if 'cp "$binary_path" "$stage_dir/bolt-v2"' not in build_text:
+        errors.append(f"{workflow_name} build must copy the managed binary into a staged artifact directory")
+    if "steps.managed_artifact.outputs.stage_dir" not in build_text:
+        errors.append(f"{workflow_name} build upload must use the staged artifact directory")
+    return errors
+
+
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
@@ -510,13 +602,24 @@ def verify_setup_action(action_text: str) -> list[str]:
 
 
 def verify_text(workflow_text: str, action_text: str) -> list[str]:
-    return verify_workflow(workflow_text) + verify_setup_action(action_text)
+    return verify_workflows({"ci.yml": workflow_text}, action_text)
+
+
+def verify_workflows(workflows: dict[str, str], action_text: str) -> list[str]:
+    errors: list[str] = []
+    for workflow_name, workflow_text in workflows.items():
+        if workflow_name == "ci.yml" or workflow_name.endswith("/ci.yml"):
+            errors.extend(verify_workflow(workflow_text))
+        errors.extend(verify_managed_workflow(workflow_text, workflow_name))
+        errors.extend(verify_build_artifacts(workflow_text, workflow_name))
+    errors.extend(verify_setup_action(action_text))
+    return errors
 
 
 def main() -> int:
-    workflow_text = DEFAULT_WORKFLOW.read_text()
+    workflow_texts = {workflow.relative_to(REPO_ROOT).as_posix(): workflow.read_text() for workflow in DEFAULT_WORKFLOWS if workflow.exists()}
     action_text = DEFAULT_SETUP_ACTION.read_text()
-    errors = verify_text(workflow_text, action_text)
+    errors = verify_workflows(workflow_texts, action_text)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

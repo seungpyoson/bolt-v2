@@ -53,7 +53,10 @@ def collect_dependency_names(data: dict[str, object]) -> set[str]:
 
     def add_dependency_table(table: object) -> None:
         if isinstance(table, dict):
-            names.update(str(name).lower() for name in table)
+            for name, spec in table.items():
+                names.add(str(name).lower())
+                if isinstance(spec, dict) and spec.get("package"):
+                    names.add(str(spec["package"]).lower())
 
     for section in DEPENDENCY_SECTIONS:
         add_dependency_table(data.get(section))

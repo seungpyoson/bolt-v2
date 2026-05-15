@@ -23,18 +23,18 @@ def test_collect_dependency_names_covers_workspace_and_target_tables() -> None:
         {
             "dependencies": {"serde": "1"},
             "workspace": {
-                "dependencies": {"pyo3": "0.22"},
+                "dependencies": {"python_bridge": {"package": "pyo3", "version": "0.22"}},
                 "dev-dependencies": {"cpython": "0.7"},
             },
             "target": {
                 "cfg(unix)": {
-                    "build-dependencies": {"maturin": "1"},
+                    "build-dependencies": {"maturin_runner": {"package": "maturin", "version": "1"}},
                 },
             },
         }
     )
 
-    expected = {"serde", "pyo3", "cpython", "maturin"}
+    expected = {"serde", "python_bridge", "pyo3", "cpython", "maturin_runner", "maturin"}
     missing = expected - names
     if missing:
         raise AssertionError(f"dependency scanner missed {sorted(missing)} from {sorted(names)}")

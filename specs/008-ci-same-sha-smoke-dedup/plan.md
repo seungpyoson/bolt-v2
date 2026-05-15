@@ -1,6 +1,6 @@
 # Implementation Plan: #205 Same-SHA Smoke-Tag Dedup
 
-**Branch**: `codex/ci-205-same-sha-smoke-dedup` | **Date**: 2026-05-15 | **Spec**: [spec.md](spec.md)  
+**Branch**: `codex/ci-205-same-sha-smoke-dedup` | **Date**: 2026-05-15 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `specs/008-ci-same-sha-smoke-dedup/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Implement a fail-closed same-SHA evidence resolver for tag workflows and wire th
 
 ## Technical Context
 
-**Language/Version**: Python 3.12-compatible stdlib for verifier/resolver; GitHub Actions YAML  
-**Primary Dependencies**: GitHub Actions REST API, `actions/download-artifact` cross-run artifact inputs, existing `just ci-lint-workflow` verifier path  
-**Storage**: GitHub Actions run/job/artifact metadata and workflow outputs only  
-**Testing**: Python self-tests, workflow verifier, YAML parse, `just ci-lint-workflow`  
-**Target Platform**: GitHub Actions `ubuntu-latest`  
-**Project Type**: CI workflow topology and repository scripts  
-**Performance Goals**: Remove duplicate tag-run `test` and `build` work when an exact green `main` run already exists  
-**Constraints**: fail closed, exact SHA, trusted `main` run only, no PR CI weakening, no fallback rebuild, no merge without approval  
+**Language/Version**: Python 3.12-compatible stdlib for verifier/resolver; GitHub Actions YAML
+**Primary Dependencies**: GitHub Actions REST API, `actions/download-artifact` cross-run artifact inputs, existing `just ci-lint-workflow` verifier path
+**Storage**: GitHub Actions run/job/artifact metadata and workflow outputs only
+**Testing**: Python self-tests, workflow verifier, YAML parse, `just ci-lint-workflow`
+**Target Platform**: GitHub Actions `ubuntu-latest`
+**Project Type**: CI workflow topology and repository scripts
+**Performance Goals**: Remove duplicate tag-run `test` and `build` work when an exact green `main` run already exists
+**Constraints**: fail closed, exact SHA, trusted `main` run only, no PR CI weakening, no fallback rebuild, no merge without approval
 **Scale/Scope**: One #205 slice stacked on #195/#332/#203/#342 workflow shape
 
 ## Constitution Check

@@ -1,8 +1,8 @@
 # Feature Specification: #205 Same-SHA Smoke-Tag Dedup
 
-**Feature Branch**: `codex/ci-205-same-sha-smoke-dedup`  
-**Created**: 2026-05-15  
-**Status**: Draft  
+**Feature Branch**: `codex/ci-205-same-sha-smoke-dedup`
+**Created**: 2026-05-15
+**Status**: Draft
 **Input**: GitHub issue #205 plus epic #333 comments as live acceptance source
 
 ## Scope

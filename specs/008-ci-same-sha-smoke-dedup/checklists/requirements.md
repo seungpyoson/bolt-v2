@@ -1,6 +1,6 @@
 # Requirements Checklist: #205 Same-SHA Smoke-Tag Dedup
 
-**Feature**: `specs/008-ci-same-sha-smoke-dedup`  
+**Feature**: `specs/008-ci-same-sha-smoke-dedup`
 **Date**: 2026-05-15
 
 - [x] CHK001 Does the spec preserve the full #205 issue intent instead of narrowing to only artifact download? [FR-001..FR-012]

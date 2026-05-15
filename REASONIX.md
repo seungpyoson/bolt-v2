@@ -18,7 +18,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 - `src/` — library crate (`lib.rs`) + four binaries (`bolt-v2`, `render_live_config`, `stream_to_lake`, `raw_capture`).
 - `tests/` — integration tests (`.rs` files in root, not `*_test.rs`); unit tests live in-source under `#[cfg(test)]`.
 - `config/` — live TOML runtime config (secrets excluded per `.gitignore`).
-- `scripts/` — Python verification scripts for Bolt-v3 source fences: runtime literals, provider leaks, core boundary, naming conventions, status-map currency, and pure Rust runtime.
+- `scripts/` — Python verification scripts for Bolt-v3 source fences (runtime literals, provider leaks, core boundary, naming conventions, status-map currency, pure Rust runtime) and CI workflow hygiene.
 - `deploy/` — systemd unit + install script for production deployment.
 - `contracts/` — Polymarket CLOB contract addresses / ABI.
 - `docs/` — postmortems, bolt-v3 specs, superpowers documentation.

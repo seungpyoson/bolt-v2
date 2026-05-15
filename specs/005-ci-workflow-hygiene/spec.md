@@ -41,7 +41,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 
 **Why this priority**: #203 asks to re-evaluate `fmt-check needs: detector` and deploy direct needs. The root solution is to remove unnecessary `fmt-check` serialization while adding direct deploy needs as defense-in-depth.
 
-**Independent Test**: `just ci-lint-workflow` passes only when `fmt-check` has no detector dependency, `build` remains detector-gated, and `deploy` directly needs gate, build, detector, fmt-check, deny, clippy, source-fence, and test.
+**Independent Test**: `just ci-lint-workflow` passes only when `fmt-check` has no detector dependency, `build` remains detector-gated, and `deploy` directly needs gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, and test.
 
 **Acceptance Scenarios**:
 
@@ -52,7 +52,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 ## Edge Cases
 
 - #342 has landed in the stacked base, so source-fence topology is an active #203 invariant.
-- #332 has not landed in this base. The verifier must not invent test shard or `check-aarch64` top-level requirements before that topology exists.
+- #332 extends this topology with the top-level `check-aarch64` lane and test shards; the verifier must enforce those invariants once that topology exists.
 - #205 has not landed in this base. Same-SHA deploy reuse lint is out of this slice until a reuse path exists.
 - #344 pass-stub behavior has not landed in this base. Required-check stub drift lint is out of this slice until a stub workflow exists.
 - `fmt-check` still needs the managed Rust owner for `just fmt-check`; only managed target-dir resolution is trimmed.
@@ -64,11 +64,11 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 
 - **FR-001**: The repository MUST have a deterministic CI workflow hygiene verifier that uses only standard-library tooling.
 - **FR-002**: `just ci-lint-workflow` MUST run the CI workflow hygiene verifier self-tests and the verifier.
-- **FR-003**: The verifier MUST require exact current CI job ids: `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`, `build`, `gate`, and `deploy`.
-- **FR-004**: The verifier MUST require `gate.needs` and gate result checks for detector, fmt-check, deny, clippy, source-fence, test, and build.
+- **FR-003**: The verifier MUST require exact current CI job ids: `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `test`, `build`, `gate`, and `deploy`.
+- **FR-004**: The verifier MUST require `gate.needs` and gate result checks for detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, and build.
 - **FR-005**: The verifier MUST require `source-fence` to depend on detector and `test` to depend on source-fence while #342 owns the early-fail lane.
 - **FR-006**: The verifier MUST require `build` to depend on detector and to gate on `needs.detector.outputs.build_required`.
-- **FR-007**: The verifier MUST require `deploy.needs` to include gate, build, detector, fmt-check, deny, clippy, source-fence, and test.
+- **FR-007**: The verifier MUST require `deploy.needs` to include gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, and test.
 - **FR-008**: The workflow MUST remove the unnecessary `fmt-check` dependency on detector.
 - **FR-009**: The shared setup action MUST make managed target-dir resolution opt-in.
 - **FR-010**: Jobs using `steps.setup.outputs.managed_target_dir` MUST opt into managed target-dir resolution; jobs not using that output MUST NOT opt in.
@@ -76,7 +76,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **FR-012**: The branch MUST not implement #332 sharding, #195 cache retention, #205 same-SHA deploy reuse, #335 path filters, #344 pass-stub/evidence work, or #340 config relocation.
 - **FR-013**: The branch MAY include verification-support co-scope required to keep #203 evidence stable only when explicitly named in the PR body and spec-kit artifacts.
 - **FR-014**: Accepted verification-support co-scope MUST be limited to LiveNode-heavy test-harness serialization for full `cargo test` / no-mistakes stability and pure-Rust source-fence verifier alias detection.
-- **FR-015**: Exact-head CI evidence MUST show `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`, `build`, and `gate` passing on the final PR head.
+- **FR-015**: Exact-head CI evidence MUST show `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `test`, `build`, and `gate` passing on the final PR head.
 
 ### Key Entities
 

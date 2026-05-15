@@ -27,7 +27,7 @@
 - [x] T010 [US1] Add top-level `check-aarch64` job in `.github/workflows/ci.yml`
 - [x] T011 [US1] Remove aarch64 compiler install and `just check-aarch64` from host `clippy` job in `.github/workflows/ci.yml`
 - [x] T012 [US1] Give host `clippy` and `check-aarch64` independent explicit rust-cache keys in `.github/workflows/ci.yml`
-- [x] T013 [US1] Extend `just ci-lint-workflow` awk checks for `check-aarch64` setup/cache/gate invariants in `justfile`
+- [x] T013 [US1] Extend the Python workflow verifier path for `check-aarch64` setup/cache/gate invariants
 
 ## User Story 2 - Shard Full Nextest Deterministically (Priority: P1)
 
@@ -41,7 +41,7 @@
 - [x] T017 [US2] Add shard reproduction log output to the workflow `test` job
 - [x] T018 [US2] Add bounded shard-aware nextest cache key to the workflow `test` job
 - [x] T019 [US2] Enforce matrix, partition, fail-fast, reproduction log, and shard cache invariants in `scripts/verify_ci_workflow_hygiene.py`
-- [x] T020 [US2] Extend `just ci-lint-workflow` awk checks for the test-shard invariants in `justfile`
+- [x] T020 [US2] Extend the Python workflow verifier path for the test-shard invariants
 
 ## User Story 3 - Preserve Source-Fence Ownership (Priority: P1)
 

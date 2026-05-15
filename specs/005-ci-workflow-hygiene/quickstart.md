@@ -15,7 +15,7 @@ Expected result after implementation: all commands pass.
 ## Workflow Sanity Checks
 
 ```bash
-rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
+rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|check-aarch64|source-fence|needs\\.(detector|fmt-check|deny|clippy|check-aarch64|source-fence|test|build)\\.result" .github/workflows/ci.yml
 rg -n "live-node|max-threads|bolt_v3_adapter_mapping|bolt_v3_client_registration|bolt_v3_controlled_connect|bolt_v3_credential_log_suppression|bolt_v3_live_canary_gate|bolt_v3_readiness|bolt_v3_strategy_registration|bolt_v3_submit_admission|bolt_v3_tiny_canary_operator|config_parsing|eth_chainlink_taker_runtime|lake_batch|live_node_run|nt_runtime_capture|platform_runtime|polymarket_bootstrap|venue_contract" .config/nextest.toml
 ```
 
@@ -43,6 +43,7 @@ Exact-head CI must pass before external review:
 - `fmt-check`
 - `deny`
 - `clippy`
+- `check-aarch64`
 - `source-fence`
 - `test`
 - `build`

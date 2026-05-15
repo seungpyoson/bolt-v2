@@ -28,7 +28,7 @@ REQUIRED_JOBS = (
     "gate",
     "deploy",
 )
-GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test")
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
     "build",
@@ -558,14 +558,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "gate" in jobs:
         gate_needs = extract_needs(jobs["gate"])
         gate_text = uncommented_text(jobs["gate"])
+        if "build" in gate_needs:
+            errors.append("gate must not need build")
         for job in GATE_REQUIRED:
             if job not in gate_needs:
                 errors.append(f"gate needs {job}")
-            if job == "build":
-                checks_result = gate_checks_build_result(gate_text)
-            else:
-                checks_result = gate_checks_lane_success(gate_text, job)
-            if not checks_result:
+            if not gate_checks_lane_success(gate_text, job):
                 errors.append(f"gate must check needs.{job}.result")
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")

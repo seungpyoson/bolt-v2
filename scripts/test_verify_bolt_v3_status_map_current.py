@@ -70,6 +70,38 @@ def test_parse_rows_selects_status_rows_only() -> None:
         raise AssertionError(f"unexpected parsed rows: {rows!r}")
 
 
+def test_parse_rows_handles_escaped_and_code_pipes() -> None:
+    rows = VERIFIER.parse_rows(
+        r"""
+        | # | Area | Status | Source evidence | Test/verifier evidence | Gap |
+        |---|---|---|---|---|---|
+        | 3 | No Python runtime layer | Implemented | `Cargo.toml` \| `Cargo.lock` | `scripts/verify.py` checks `a | b` | none |
+        """,
+    )
+
+    if len(rows) != 1:
+        raise AssertionError(f"expected one parsed row, got {rows!r}")
+    if "`Cargo.toml` | `Cargo.lock`" != rows[0].source_evidence:
+        raise AssertionError(f"escaped pipe parse failed: {rows[0]!r}")
+    if "`a | b`" not in rows[0].test_evidence:
+        raise AssertionError(f"code pipe parse failed: {rows[0]!r}")
+
+
+def test_stale_pure_rust_verifier_guard_checks_test_evidence_column() -> None:
+    row = VERIFIER.StatusRow(
+        number="3",
+        area="No Python runtime layer",
+        status="Implemented",
+        source_evidence="`Cargo.toml`",
+        test_evidence="No dedicated verifier found",
+        gap="none",
+    )
+
+    findings = VERIFIER.validate_pure_rust_row(row)
+    if "row 3 test evidence still says no dedicated verifier was found" not in findings:
+        raise AssertionError(f"expected stale test-evidence finding, got {findings!r}")
+
+
 def test_pure_rust_area_terms_accept_copyedits() -> None:
     area = "No Python runtime bridge"
     if not all(term in area.lower() for term in VERIFIER.PURE_RUST_AREA_TERMS):
@@ -81,6 +113,8 @@ def main() -> int:
         test_script_reference_regex_matches_backticked_and_plain_script_paths,
         test_missing_evidence_flags_absence_without_rejecting_negative_proof,
         test_parse_rows_selects_status_rows_only,
+        test_parse_rows_handles_escaped_and_code_pipes,
+        test_stale_pure_rust_verifier_guard_checks_test_evidence_column,
         test_pure_rust_area_terms_accept_copyedits,
     ]
     for test in tests:

@@ -52,6 +52,10 @@
 - [x] T018 Run `just fmt-check`
 - [x] T019 Run `git diff --check`
 - [x] T020 Update PR body with exact-head CI and residual #332/#195/#205/#344/#340 scope
+- [x] T021 [P] Document accepted verification-support co-scope in `specs/005-ci-workflow-hygiene/spec.md`
+- [x] T022 [P] Serialize LiveNode-heavy tests in `tests/lake_batch.rs`, `tests/nt_runtime_capture.rs`, and `tests/platform_runtime.rs`
+- [x] T023 [P] Extend pure-Rust verifier alias detection in `scripts/verify_bolt_v3_pure_rust_runtime.py` and `scripts/test_verify_bolt_v3_pure_rust_runtime.py`
+- [ ] T024 [P] Re-record exact-head verification for the spec-kit co-scope traceability fix after commit/push
 
 ## Dependencies
 
@@ -61,6 +65,7 @@
 - T009-T011 depend on T003-T004.
 - T012-T014 depend on T003-T004.
 - T015-T020 after implementation tasks.
+- T021-T024 after accepted co-scope is identified and before final review status.
 
 ## Parallel Opportunities
 

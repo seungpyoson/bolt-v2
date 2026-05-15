@@ -37,3 +37,10 @@
 
 - [x] CHK015 Is the stacked base dependency on #342 explicit? [Assumption, Spec Assumptions]
 - [x] CHK016 Is the no-new-dependency constraint explicit for the verifier? [Assumption, Spec FR-001]
+
+## Accepted Co-Scope Traceability
+
+- [x] CHK017 Is every accepted non-#203 verification-support change named in the spec instead of only in the PR body? [Completeness, Spec FR-013..FR-014]
+- [x] CHK018 Are LiveNode-heavy test serialization changes constrained to test-harness stability, not runtime behavior? [Boundary, Spec FR-014]
+- [x] CHK019 Is pure-Rust verifier alias detection documented as source-fence verifier correctness, not a separate runtime feature? [Boundary, Spec FR-014]
+- [x] CHK020 Does the task list map accepted co-scope files to concrete verification tasks? [Traceability, Tasks T021..T024]

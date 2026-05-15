@@ -74,7 +74,9 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **FR-010**: Jobs using `steps.setup.outputs.managed_target_dir` MUST opt into managed target-dir resolution; jobs not using that output MUST NOT opt in.
 - **FR-011**: The verifier MUST print actionable errors naming the missing or wrong job, dependency, gate check, or setup opt-in.
 - **FR-012**: The branch MUST not implement #332 sharding, #195 cache retention, #205 same-SHA deploy reuse, #335 path filters, #344 pass-stub/evidence work, or #340 config relocation.
-- **FR-013**: Exact-head CI evidence MUST show `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`, `build`, and `gate` passing on the final PR head.
+- **FR-013**: The branch MAY include verification-support co-scope required to keep #203 evidence stable only when explicitly named in the PR body and spec-kit artifacts.
+- **FR-014**: Accepted verification-support co-scope MUST be limited to LiveNode-heavy test-harness serialization for full `cargo test` / no-mistakes stability and pure-Rust source-fence verifier alias detection.
+- **FR-015**: Exact-head CI evidence MUST show `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`, `build`, and `gate` passing on the final PR head.
 
 ### Key Entities
 
@@ -83,6 +85,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **SetupTargetDirOptIn**: Shared setup action input controlling managed target-dir resolution.
 - **DeployDefenseNeeds**: Direct deploy dependencies on all required safety lanes, not only the aggregate gate.
 - **DetectorSerializationDecision**: Evidence-backed decision that only build remains detector-output-gated while fmt-check can run independently.
+- **VerificationSupportCoScope**: Explicit non-#203 support changes needed to keep the #333/#203 verification path deterministic without widening into #332/#195/#205/#335/#344/#340.
 
 ## Success Criteria
 
@@ -93,6 +96,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **SC-003**: `fmt-check` no longer has `needs: detector`; `build` still has detector output gating.
 - **SC-004**: Exact-head CI proves the final topology passes through the aggregate `gate`.
 - **SC-005**: The PR body names residual #332/#195/#205/#344/#340 scope instead of silently treating those future topologies as complete.
+- **SC-006**: Spec-kit tasks and checklist entries name every accepted verification-support co-scope file family changed by this PR.
 
 ## Assumptions
 

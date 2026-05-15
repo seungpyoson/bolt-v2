@@ -26,9 +26,9 @@ Implement #203 as a stacked follow-up to #342. Add a deterministic, standard-lib
 - **NT-First Thin Layer**: PASS. CI workflow hygiene does not alter runtime trading behavior or NT surfaces.
 - **Generic Core, Concrete Edges**: PASS. No provider, market, strategy, or adapter code changes.
 - **Single Path And Config-Controlled Runtime**: PASS. Runtime config and secret path remain unchanged; managed Rust owner remains the one CI Rust path.
-- **Test-First Safety Gates**: PASS. The verifier is introduced through failing self-tests before workflow changes are accepted.
+- **Test-First Safety Gates**: PASS. The verifier is introduced through failing self-tests before workflow changes are accepted; accepted verification-support co-scope carries focused tests or stabilizes existing no-mistakes/full-cargo test execution.
 - **Evidence Before Claims**: PASS. Exact current issue body, stacked base SHA, local lint output, and exact-head CI are required evidence.
-- **Minimal Slice Discipline**: PASS. The slice is #203 only and names residual #332/#195/#205/#344/#340 surfaces.
+- **Minimal Slice Discipline**: PASS. The primary slice is #203. The only accepted co-scope is verification support for LiveNode-heavy test serialization and pure-Rust source-fence verifier alias detection; residual #332/#195/#205/#344/#340 surfaces remain out of scope.
 
 ## Phase 0 Research Summary
 

@@ -342,7 +342,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -375,18 +375,6 @@ jobs:
           fi
           if [[ "${{ needs.test.result }}" != "success" ]]; then
             echo "test did not succeed"
-            exit 1
-          fi
-
-          build_required="${{ needs.detector.outputs.build_required }}"
-          build_result="${{ needs.build.result }}"
-          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              echo "build did not succeed when build_required=true"
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            echo "build produced unexpected result '$build_result' when build_required=false"
             exit 1
           fi
 

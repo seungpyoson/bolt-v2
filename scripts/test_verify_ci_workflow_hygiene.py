@@ -10,7 +10,7 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]"
+GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 DEPLOY_NEEDS = "needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 
 
@@ -195,7 +195,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -221,16 +221,6 @@ jobs:
           if [[ "${{ needs.test.result }}" != "success" ]]; then
             exit 1
           fi
-          build_required="${{ needs.detector.outputs.build_required }}"
-          build_result="${{ needs.build.result }}"
-          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
-
   deploy:
     name: deploy
     needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
@@ -562,12 +552,16 @@ def main() -> int:
         "deploy",
     ):
         assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
-    for job in ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
+    for job in ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
         assert_error(
             f"gate must check needs.{job}.result",
             replace_once(BASE_WORKFLOW, f"needs.{job}.result", f"omitted.{job}.result"),
         )
+    assert_error(
+        "gate must not need build",
+        replace_once(BASE_WORKFLOW, GATE_NEEDS, "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]"),
+    )
     for job in ("gate", "build", "detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
         assert_error("deploy needs " + job, replace_once(BASE_WORKFLOW, DEPLOY_NEEDS, without_inline_need(DEPLOY_NEEDS, job)))
     assert_error(
@@ -805,83 +799,6 @@ def main() -> int:
             if [[ "$inner_result" != "success" ]]; then
               exit 1
             fi
-          fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-""",
-            """            if [[ "$build_result" != "success" ]]; then
-              echo "build failed"
-            fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-""",
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 0
-              exit 1
-            fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-""",
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            echo "build failed"
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-""",
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 0
-            exit 1
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "$build_required" == "true" ]]; then
-            echo "build required"
-          fi
-          if [[ "$build_result" != "success" ]]; then
-            exit 1
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
           fi
 """,
         ),

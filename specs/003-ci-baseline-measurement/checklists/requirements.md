@@ -1,6 +1,6 @@
 # Requirements Quality Checklist: CI Baseline Measurement
 
-Review result: PASS. This checklist validates requirements quality and coverage. GitHub linkage is tracked as completed in T018.
+Self-check result: PASS. This checklist validates requirements quality and coverage. GitHub linkage is tracked as completed in T018.
 
 ## Requirement Completeness
 

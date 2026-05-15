@@ -22,6 +22,7 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 - Cache warmth: `warm` only when logs show cache hit/restored key; `cold miss` only when logs show `No cache found`; otherwise `unknown`.
 - Cache reporting excludes jobs that do not invoke the rust-cache action (`detector`, `fmt-check`). Cache-capable jobs without captured log evidence are labeled `unknown`.
 - Workflow wall time can exceed the named critical-path step because GitHub job duration includes setup, cache restore/save, artifact upload, post-job cleanup, and gate/deploy follow-on work.
+- The summary table's critical-path column names the longest blocking lane; per-run detail tables below carry the exact `gate` and `deploy` status for each run.
 - Evidence freshness: run `25866346320` for exact base `cece0f22` was rechecked after external review and is now completed success, so it is included below as the exact-base main-push row. Run `24623219988` is included as the #205 issue-cited same-SHA main-push pair for smoke tag run `24623274722`.
 
 ## Baseline Runs
@@ -201,9 +202,12 @@ Critical path: `build`, then `gate`, then `deploy`.
 
 Paired main push: run `24623219988` above, same SHA `a1a6be0d94e887538ebcd9afced6c94046a557d6`.
 
-Cache evidence for `test`: cache hit for `v0-rust-nextest-test-Linux-x64-b567c2b7-e9df6845`; restored archive size `7479253178 B` (about 7133 MB); restored full match.
+Cache evidence:
 
-Cache evidence for `build`: cache hit for `v0-rust-cross-aarch64-build-Linux-x64-b567c2b7-e9df6845`; restored archive size `1437492588 B` (about 1371 MB); restored full match.
+- `deny`: cache state unknown; log excerpt was not captured for this older run.
+- `clippy`: cache state unknown; log excerpt was not captured for this older run.
+- `test`: cache hit for `v0-rust-nextest-test-Linux-x64-b567c2b7-e9df6845`; restored archive size `7479253178 B` (about 7133 MB); restored full match.
+- `build`: cache hit for `v0-rust-cross-aarch64-build-Linux-x64-b567c2b7-e9df6845`; restored archive size `1437492588 B` (about 1371 MB); restored full match.
 
 The April same-SHA main/tag pair uses the older `v0-rust-nextest-test-...` shape and a much larger archive than the May `v0-rust-nextest-v2-test-...` cache entries. This baseline records the difference for #195; it does not infer the cause. Because these paired runs are from 2026-04-19, #205 before/after work must verify toolchain, lockfile, and test-count vintage before treating them as equivalent to the May rows.
 

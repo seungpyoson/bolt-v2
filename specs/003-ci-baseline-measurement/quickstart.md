@@ -4,6 +4,7 @@
 
 ```bash
 git status --short --branch
+git fetch origin
 git rev-parse HEAD
 gh issue view 333 --repo seungpyoson/bolt-v2 --json number,title,state,body,comments
 gh issue view 343 --repo seungpyoson/bolt-v2 --json number,title,state,body,comments

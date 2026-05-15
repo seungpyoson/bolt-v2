@@ -26,7 +26,7 @@
 - PR with build lane: current source/build-affecting PR shape.
 - Failing PR source-fence example: #342 late-failure evidence.
 - Main push: post-merge path.
-- Smoke tag: #205 duplicate deploy path evidence.
+- Same-SHA main/tag pair: #205 duplicate deploy path evidence.
 
 **Alternatives considered**: Only using the newest successful run was rejected because it would hide issue-specific bottlenecks and contradict the user's instruction not to narrow requirements.
 

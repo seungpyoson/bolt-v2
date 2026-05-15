@@ -49,7 +49,7 @@ As the maintainer, I can see how #343 relates to every #333 child without cuttin
 ### Functional Requirements
 
 - **FR-001**: The baseline MUST include exact GitHub Actions run IDs, commit SHAs, event types, timestamps, status, conclusion, and source URLs.
-- **FR-002**: The baseline MUST include at least one representative PR run and one representative main or tag path where available.
+- **FR-002**: The baseline MUST include at least one representative PR run and one representative main or tag path where available, including the same-SHA main/tag pair when a child issue names both.
 - **FR-003**: The baseline MUST distinguish PR wall time, main-push wall time, tag/smoke wall time, critical-path lane, and estimated billed runner minutes.
 - **FR-004**: The baseline MUST estimate billed runner minutes from job durations, not workflow elapsed time alone.
 - **FR-005**: The baseline MUST include cache warmth only where observable from log evidence; otherwise it MUST say unknown.
@@ -72,7 +72,7 @@ As the maintainer, I can see how #343 relates to every #333 child without cuttin
 ### Measurable Outcomes
 
 - **SC-001**: One baseline document exists in `docs/ci/` and is linked from #333 or #343.
-- **SC-002**: The baseline contains at least one current PR run, one current main-push run, and the known smoke-tag path from #205 when still available in GitHub Actions.
+- **SC-002**: The baseline contains at least one current PR run, one current main-push run, and the known same-SHA main/tag path from #205 when still available in GitHub Actions.
 - **SC-003**: Every run table row includes exact run ID, SHA, event, timestamp, wall time, critical path, raw runner minutes, and rounded runner-minute estimate.
 - **SC-004**: Cache warmth labels cite concrete log evidence such as cache key, hit/miss, restored size, or explicitly say unknown.
 - **SC-005**: A child issue map lists all nine #333 children with current live state and dependencies.

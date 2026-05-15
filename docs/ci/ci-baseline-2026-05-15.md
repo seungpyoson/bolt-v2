@@ -20,7 +20,7 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 - Raw runner minutes: sum of executed job durations.
 - Rounded runner-minute estimate: each executed job rounded up to the next whole minute. Skipped jobs are counted as zero.
 - Cache warmth: `warm` only when logs show cache hit/restored key. Otherwise `unknown`.
-- Evidence freshness: run `25866346320` for exact base `cece0f22` was rechecked after external review and is now completed success, so it is included below as the exact-base main-push row.
+- Evidence freshness: run `25866346320` for exact base `cece0f22` was rechecked after external review and is now completed success, so it is included below as the exact-base main-push row. Run `24623219988` is included as the #205 issue-cited same-SHA main-push pair for smoke tag run `24623274722`.
 
 ## Baseline Runs
 
@@ -30,6 +30,7 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 | PR, build-affecting current shape | [25866930064](https://github.com/seungpyoson/bolt-v2/actions/runs/25866930064) | pull_request | `2300c78bbfd7a1e4551ab1ef5d794625b26dcd15` | 2026-05-14T14:51:21Z | success | 20m27s | `build` 20m05s | 28.6 | 34 | `test` warm cache hit; `build` cache state unknown |
 | Main push exact base, cold build | [25866346320](https://github.com/seungpyoson/bolt-v2/actions/runs/25866346320) | push/main | `cece0f22c6b0e2a0c9141fd7325f720bff452911` | 2026-05-14T14:40:06Z | success | 51m06s | `build` 50m46s | 83.3 | 87 | `deny` warm cache hit; `clippy`/`test`/`build` cold misses |
 | Main push current completed, warm test | [25862551803](https://github.com/seungpyoson/bolt-v2/actions/runs/25862551803) | push/main | `fde50d3452859a51f7f27b807913b1f12697b273` | 2026-05-14T13:25:18Z | success | 19m36s | `build` 19m11s | 27.7 | 33 | `test` warm cache hit; `build` cache state unknown |
+| Same-SHA main path for #205 | [24623219988](https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988) | push/main | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:52:43Z | success | 10m28s | `build` 10m13s, then `gate` 3s | 18.3 | 24 | `deny`/`clippy`/`test`/`build` warm cache hits; older cache key shape |
 | Smoke tag duplicate path | [24623274722](https://github.com/seungpyoson/bolt-v2/actions/runs/24623274722) | push/tag | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:56:12Z | success | 10m45s | `build` 10m15s, then `gate` 3s, then `deploy` 12s | 18.5 | 25 | `test`/`build` warm cache hits; older cache key shape |
 | Late source-fence failure | [25859831755](https://github.com/seungpyoson/bolt-v2/actions/runs/25859831755) | pull_request | `81e9d85f6c242cf6c73e13732da4c6f7c9d99f4d` | 2026-05-14T12:24:40Z | failure | 5m20s | `test` failed at source fence | 5.7 | 10 | warm cache hit |
 
@@ -129,6 +130,36 @@ No targeted build cache-hit log excerpt was captured for this row. Treat the 19m
 
 Observed inside `test`: `cargo nextest run --locked` at 13:26:46; job completed at 13:31:49.
 
+### Same-SHA main push for #205: run 24623219988
+
+| Job | Result | Wall |
+|---|---|---:|
+| detector | success | 4s |
+| fmt-check | success | 15s |
+| deny | success | 22s |
+| clippy | success | 1m06s |
+| test | success | 6m13s |
+| build | success | 10m13s |
+| gate | success | 3s |
+| deploy | skipped | 0s |
+
+Critical path: `build`, then `gate`.
+
+This is the #205 issue-cited `main` push run on SHA `a1a6be0d94e887538ebcd9afced6c94046a557d6`, paired with smoke tag run `24623274722` on the same SHA.
+
+Cache evidence:
+
+- `deny`: cache hit for `v0-rust-cargo-deny-deny-Linux-x64-b567c2b7-e9df6845`; restored archive size `360224434 B` (about 344 MB); restored full match.
+- `clippy`: cache hit for `v0-rust-clippy-dual-target-clippy-Linux-x64-b567c2b7-e9df6845`; restored archive size `1136118775 B` (about 1083 MB); restored full match.
+- `test`: cache hit for `v0-rust-nextest-test-Linux-x64-b567c2b7-e9df6845`; restored archive size `7479253178 B` (about 7133 MB); restored full match.
+- `build`: cache hit for `v0-rust-cross-aarch64-build-Linux-x64-b567c2b7-e9df6845`; restored archive size `1437492588 B` (about 1371 MB); restored full match.
+
+Observed inside `test`: `test` step ran from 06:55:55 to 06:59:02.
+
+Observed inside `build`: `build` step ran from 06:53:38 to 07:03:00; artifact upload completed at 07:03:02.
+
+Interpretation for #205: this run proves the already-green `main` side of the same-SHA pair. The tag run below proves the duplicate tag side.
+
 ### Smoke tag path: run 24623274722
 
 | Job | Result | Wall |
@@ -144,11 +175,13 @@ Observed inside `test`: `cargo nextest run --locked` at 13:26:46; job completed 
 
 Critical path: `build`, then `gate`, then `deploy`.
 
+Paired main push: run `24623219988` above, same SHA `a1a6be0d94e887538ebcd9afced6c94046a557d6`.
+
 Cache evidence for `test`: cache hit for `v0-rust-nextest-test-Linux-x64-b567c2b7-e9df6845`; restored archive size `7479253178 B` (about 7133 MB); restored full match.
 
 Cache evidence for `build`: cache hit for `v0-rust-cross-aarch64-build-Linux-x64-b567c2b7-e9df6845`; restored archive size `1437492588 B` (about 1371 MB); restored full match.
 
-The April smoke-tag nextest cache key uses the older `v0-rust-nextest-test-...` shape and a much larger archive than the May `v0-rust-nextest-v2-test-...` cache entries. This baseline records the difference for #195; it does not infer the cause. Because this smoke-tag run is from 2026-04-19, #205 before/after work must verify toolchain, lockfile, and test-count vintage before treating it as equivalent to the May rows.
+The April same-SHA main/tag pair uses the older `v0-rust-nextest-test-...` shape and a much larger archive than the May `v0-rust-nextest-v2-test-...` cache entries. This baseline records the difference for #195; it does not infer the cause. Because these paired runs are from 2026-04-19, #205 before/after work must verify toolchain, lockfile, and test-count vintage before treating them as equivalent to the May rows.
 
 Observed inside `build`: `cargo zigbuild --release --target aarch64-unknown-linux-gnu --locked` at 06:57:07; build step completed at 07:06:31. `deploy` completed from 07:06:44 to 07:06:56.
 
@@ -183,8 +216,8 @@ Interpretation for #342: deterministic source-fence drift surfaced only inside t
 | #343 | open | Measurement only: current CI run baseline | None | This document |
 | #342 | open | Fast source-fence / verifier lane before full tests | Must coordinate ownership with #332 and lint with #203 | run `25859831755` late failure |
 | #332 | open | Split clippy/check-aarch64 and shard full tests | Needs #343 baseline; coordinate source-fence ownership with #342 and lint with #203 | run `25855655415` PR critical path |
-| #195 | open | Preserve nextest artifacts across warm reruns | Must adapt to #332 sharding if #332 lands first | warm cache evidence in `25855655415`, `25862551803`, `24623274722`; cold miss fallback evidence in `25866346320` |
-| #205 | open | Same-SHA main/tag heavy-work dedup | Needs exact green main evidence and artifact/check reuse design | smoke tag `24623274722` and same-SHA main run cited in #205 |
+| #195 | open | Preserve nextest artifacts across warm reruns | Must adapt to #332 sharding if #332 lands first | warm cache evidence in `25855655415`, `25862551803`, `24623219988`, `24623274722`; cold miss fallback evidence in `25866346320` |
+| #205 | open | Same-SHA main/tag heavy-work dedup | Needs exact green main evidence and artifact/check reuse design | same-SHA main run `24623219988` plus smoke tag `24623274722` |
 | #203 | open | Workflow hygiene and defense-in-depth lints | Must validate topology introduced by #342/#332/#205/#335 as they land | all topology rows |
 | #335 | closed | Narrow PR paths-ignore workflow change | Delivered by PR #339 at `cece0f22`; residual work moved to #344 | not active except residual map |
 | #344 | open | Residual #335 branch hygiene, dry-run docs, run evidence, pass-stub, post-epic re-baseline | Some items blocked by #332/#195/#205; branch hygiene/docs/pass-stub can proceed independently | post-#332/#195/#205 re-baseline |
@@ -246,7 +279,7 @@ Required future implementation:
 - Avoid unbounded cache growth, cache thrash, or weakened test gates. Missing or stale cache must fall back to a correct cold run.
 - If #332 lands first, adapt artifact preservation per nextest partition shard; if #195 lands first, document the adaptation point for #332.
 
-Baseline support: this document records current cache-hit runs and archive sizes for `25855655415`, `25862551803`, and `24623274722`, plus exact-base cold cache misses and saved cache sizes from `25866346320`.
+Baseline support: this document records current cache-hit runs and archive sizes for `25855655415`, `25862551803`, `24623219988`, and `24623274722`, plus exact-base cold cache misses and saved cache sizes from `25866346320`.
 
 ### #205 - Same-SHA main/tag dedup
 
@@ -260,7 +293,7 @@ Required future implementation:
 - If artifact reuse is implemented, bind the artifact to the exact SHA and trusted main run.
 - Include before/after real smoke-tag evidence proving reduced duplicate `test`/`build` work.
 
-Baseline support: smoke tag run `24623274722` and the issue-cited same-SHA main run `24623219988` define the duplicate-work path.
+Baseline support: main run `24623219988` and smoke tag run `24623274722` both ran on SHA `a1a6be0d94e887538ebcd9afced6c94046a557d6`. The paired rows define the duplicate-work path: `main` already ran `test` 6m13s and `build` 10m13s, then the tag reran `test` 6m13s and `build` 10m15s before a 12s deploy.
 
 ### #203 - Workflow hygiene and defense-in-depth lints
 
@@ -325,12 +358,12 @@ Current blocker: claude-config #677, unless an explicitly verified transition me
 - PR/main with build required: `build` dominates; observed current rows range from about 19-20 minutes with some cache evidence gaps to 50m46s on exact-base cold cache.
 - Warm `test`: cache hits still spend several minutes in restore/install/nextest execution. The April smoke-tag run restored a much larger about-7.1 GB nextest cache.
 - Source-fence drift: cheap deterministic structural failure currently appears in `test`, not an early structural lane.
-- Smoke tag deploy: deploy itself is short; heavy `test` and `build` work dominates before deploy.
+- Smoke tag deploy: deploy itself is short; heavy `test` and `build` work dominates before deploy, duplicating the same-SHA `main` run when the tag is pushed immediately after merge.
 
 ## Follow-On Use
 
 - #342 should compare early source-fence lane behavior against run `25859831755`.
 - #332 should compare PR critical path against run `25855655415` for build-skipped PRs and run `25866930064` if build remains required.
-- #195 should compare warm nextest/cache behavior against runs `25855655415`, `25862551803`, and `24623274722`, and cold-cache fallback behavior against exact-base main run `25866346320`.
-- #205 should compare same-SHA smoke tag behavior against run `24623274722` plus the same-SHA main run already cited in #205; the April smoke-tag row is older and must be revalidated for toolchain/test-count vintage before final #205 evidence.
+- #195 should compare warm nextest/cache behavior against runs `25855655415`, `25862551803`, `24623219988`, and `24623274722`, and cold-cache fallback behavior against exact-base main run `25866346320`.
+- #205 should compare same-SHA main/tag behavior against paired runs `24623219988` and `24623274722`; the April rows are older and must be revalidated for toolchain/test-count vintage before final #205 evidence.
 - #344 should re-baseline after #332/#195/#205 land using the same method and table shape.

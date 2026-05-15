@@ -17,6 +17,7 @@
 - [x] T007 [P] Fetch current main-push run metadata for run `25862551803`
 - [x] T007a [P] Refresh exact-base main-push run metadata and cache evidence for run `25866346320`
 - [x] T008 [P] Fetch smoke-tag run metadata for run `24623274722`
+- [x] T008a [P] Fetch same-SHA main-push metadata and cache evidence for run `24623219988`
 - [x] T009 [P] Fetch source-fence failure run metadata for run `25859831755`
 - [x] T010 [P] Fetch targeted cache and test/build log excerpts for `test`, `clippy`, and `build` jobs where relevant
 
@@ -30,7 +31,7 @@
 
 ## Phase 4: Checks And Linkage
 
-- [x] T015 Run `rg -n "25855655415|25866930064|25866346320|25859831755|25862551803|24623274722|#343|#342|#332|#195|#205|#203|#335|#344|#340|#333|drift-detection" docs/ci/ci-baseline-2026-05-15.md specs/003-ci-baseline-measurement`
+- [x] T015 Run `rg -n "25855655415|25866930064|25866346320|25859831755|25862551803|24623219988|24623274722|#343|#342|#332|#195|#205|#203|#335|#344|#340|#333|drift-detection" docs/ci/ci-baseline-2026-05-15.md specs/003-ci-baseline-measurement`
 - [x] T016 Run `git diff --check`
 - [x] T017 Run `just ci-lint-workflow`
 - [x] T018 Post #333 and #343 comments linking `docs/ci/ci-baseline-2026-05-15.md` after commit/push

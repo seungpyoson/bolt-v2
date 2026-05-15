@@ -53,6 +53,11 @@ Implementation surfaces:
 - `.github/actions/setup-environment/action.yml`: add target-dir opt-in.
 - `.github/workflows/ci.yml`: remove `fmt-check needs: detector`, set target-dir opt-ins, and add deploy direct needs.
 
+Accepted verification-support co-scope surfaces:
+
+- `tests/lake_batch.rs`, `tests/nt_runtime_capture.rs`, and `tests/platform_runtime.rs`: serialize LiveNode-heavy tests and recover from poisoned shared locks so full-suite verification remains stable.
+- `scripts/verify_bolt_v3_pure_rust_runtime.py` and `scripts/test_verify_bolt_v3_pure_rust_runtime.py`: preserve #342 source-fence coverage when aliases or parser edge cases would otherwise hide forbidden runtime usage.
+
 ## Project Structure
 
 ### Documentation

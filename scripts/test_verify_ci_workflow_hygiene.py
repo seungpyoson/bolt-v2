@@ -62,6 +62,9 @@ jobs:
       - uses: Swatinem/rust-cache@example
         with:
           key: deny
+      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
       - run: just deny
 
   clippy:
@@ -140,6 +143,9 @@ jobs:
       - name: Show shard reproduction command
         run: |
           echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
+      - name: Install cargo-nextest
+        run: |
+          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
       - run: just test -- --partition count:${{ matrix.shard }}/4
 
   build:
@@ -159,7 +165,33 @@ jobs:
         with:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
           key: build
+      - name: Install zig
+        run: |
+          python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
+      - name: Install cargo-zigbuild
+        run: |
+          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked
       - run: just build
+      - name: Stage managed build artifact
+        id: managed_artifact
+        run: |
+          binary_path="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"
+          stage_dir="$RUNNER_TEMP/bolt-v2-binary"
+          rm -rf "$stage_dir"
+          mkdir -p "$stage_dir"
+          cp "$binary_path" "$stage_dir/bolt-v2"
+          (
+            cd "$stage_dir"
+            sha256sum bolt-v2 > bolt-v2.sha256
+          )
+          echo "stage_dir=$stage_dir" >> "$GITHUB_OUTPUT"
+      - name: Upload artifact
+        uses: actions/upload-artifact@example
+        with:
+          name: bolt-v2-binary
+          path: |
+            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
+            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
 
   gate:
     name: gate
@@ -206,6 +238,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo deploy
+"""
+
+
+BASE_ADVISORY_WORKFLOW = """
+name: Advisory Check
+
+on:
+  workflow_dispatch: {}
+
+env:
+  JUST_VERSION: "1.49.0"
+
+jobs:
+  advisories:
+    name: advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@example
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          include-deny-version: "true"
+      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+      - name: Check advisories
+        run: just deny-advisories
 """
 
 
@@ -259,6 +321,17 @@ def assert_clean(
         raise AssertionError(f"expected no errors, got: {errors}")
 
 
+def assert_workflows_clean(
+    workflows: dict[str, str],
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_workflows(workflows, action, nextest_config)
+    if errors:
+        raise AssertionError(f"expected no errors, got: {errors}")
+
+
 def assert_error(
     fragment: str,
     workflow: str = BASE_WORKFLOW,
@@ -267,6 +340,18 @@ def assert_error(
 ) -> None:
     verifier = load_verifier()
     errors = verifier.verify_text(workflow, action, nextest_config)
+    if not any(fragment in error for error in errors):
+        raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
+
+
+def assert_workflows_error(
+    fragment: str,
+    workflows: dict[str, str],
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_workflows(workflows, action, nextest_config)
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
@@ -388,6 +473,7 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
 
 def main() -> int:
     assert_clean()
+    assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_required_job_indentation_is_actionable()
@@ -514,6 +600,52 @@ def main() -> int:
             "      - uses: ./.github/actions/setup-environment",
             "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
         ),
+    )
+    assert_error(
+        "ci.yml build must resolve artifact through rust_verification_owner binary-path",
+        replace_once(
+            BASE_WORKFLOW,
+            'binary_path="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"',
+            'binary_path="target/aarch64-unknown-linux-gnu/release/bolt-v2"',
+        ),
+    )
+    assert_error(
+        "ci.yml must not reference repo-local target release artifacts",
+        replace_once(
+            BASE_WORKFLOW,
+            "${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2",
+            "target/aarch64-unknown-linux-gnu/release/bolt-v2",
+        ),
+    )
+    assert_error(
+        "ci.yml build upload must use the staged artifact directory",
+        BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must include deny version",
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": replace_once(BASE_ADVISORY_WORKFLOW, '          include-deny-version: "true"\n', "")},
+    )
+    assert_workflows_error(
+        "advisory.yml advisories setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                "claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}",
+                "claude-config-read-token: ${{ secrets.OTHER_TOKEN }}",
+            ),
+        },
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must use setup.outputs.deny_version",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                'cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked',
+                'cargo install cargo-deny --version "0.18.3" --locked',
+            ),
+        },
     )
     assert_error(
         "gate must use always()",

@@ -123,8 +123,8 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate -- --nocapture
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --test bolt_v3_production_entrypoint -- --nocapture
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate -- --nocapture
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_production_entrypoint -- --nocapture
 
 live-generate: check-workspace require-rust-verification-owner
     #!/usr/bin/env bash

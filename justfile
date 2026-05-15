@@ -159,6 +159,7 @@ ci-lint-workflow:
     action_files=()
 
     [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
+    [ -f .github/workflows/ci-docs-pass-stub.yml ] && workflow_files+=(.github/workflows/ci-docs-pass-stub.yml)
     [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
 
@@ -180,6 +181,12 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_verify_ci_path_filters.py; then
+        failed=1
+    fi
+    if ! python3 scripts/verify_ci_path_filters.py; then
         failed=1
     fi
     if ! python3 scripts/verify_ci_workflow_hygiene.py; then

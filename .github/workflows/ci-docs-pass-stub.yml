@@ -1,0 +1,46 @@
+name: CI docs pass stub
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - 'REASONIX.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.codex/**'
+      - '.gemini/**'
+      - '.opencode/**'
+      - '.pi/**'
+      - '.specify/**'
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed files
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pass-stub-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pass-stub-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          git diff --name-only "${base_ref}...${head_ref}" > changed-files.txt
+          if [[ ! -s changed-files.txt ]]; then
+            echo "No changed files detected for pass-stub classification"
+            exit 1
+          fi
+
+      - name: Classify changed files
+        run: python3 scripts/verify_ci_path_filters.py --changed-files changed-files.txt --github-output "$GITHUB_OUTPUT" --require-docs-only

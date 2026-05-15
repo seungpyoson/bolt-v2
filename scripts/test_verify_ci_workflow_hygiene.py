@@ -138,7 +138,10 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
+          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
+          cache-targets: true
+          cache-workspace-crates: "true"
+          add-rust-environment-hash-key: "true"
           key: nextest-v3-shard-${{ matrix.shard }}-of-4
       - name: Show shard reproduction command
         run: |
@@ -317,6 +320,8 @@ outputs:
     value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
   managed_target_dir:
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
+  managed_target_dir_relative:
+    value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}
 runs:
   using: composite
   steps:
@@ -358,7 +363,10 @@ runs:
       id: target_dir
       shell: bash
       run: |
-        echo "managed_target_dir=$(python3 "${{ steps.shared.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")" >> "$GITHUB_OUTPUT"
+        managed_target_dir="$(python3 "${{ steps.shared.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")"
+        managed_target_dir_relative="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$managed_target_dir")"
+        echo "managed_target_dir=$managed_target_dir" >> "$GITHUB_OUTPUT"
+        echo "managed_target_dir_relative=$managed_target_dir_relative" >> "$GITHUB_OUTPUT"
     - name: Setup Rust toolchain
       shell: bash
       run: echo setup
@@ -565,6 +573,42 @@ def main() -> int:
     assert_error(
         "test cache key must include matrix.shard",
         replace_once(BASE_WORKFLOW, "          key: nextest-v3-shard-${{ matrix.shard }}-of-4", "          key: nextest-v3"),
+    )
+    assert_error(
+        "test cache must use rust-cache workspaces managed target mapping",
+        replace_once(
+            BASE_WORKFLOW,
+            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}",
+            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}",
+        ),
+    )
+    assert_error(
+        "test cache must not use opaque cache-directories for managed target dir",
+        replace_once(
+            BASE_WORKFLOW,
+            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}",
+            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}",
+        ),
+    )
+    assert_error(
+        "test cache must preserve workspace crates",
+        replace_once(BASE_WORKFLOW, '          cache-workspace-crates: "true"', '          cache-workspace-crates: "false"'),
+    )
+    assert_error(
+        "test cache must enable rust environment hash key",
+        replace_once(
+            BASE_WORKFLOW,
+            '          add-rust-environment-hash-key: "true"',
+            '          add-rust-environment-hash-key: "false"',
+        ),
+    )
+    assert_error(
+        "test cache key must not include github.sha",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
+            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4-${{ github.sha }}",
+        ),
     )
     assert_error(
         "clippy must not run check-aarch64",
@@ -850,15 +894,6 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test must use setup.outputs.managed_target_dir",
-        replace_once(
-            BASE_WORKFLOW,
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
-            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
-            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
-        ),
-    )
-    assert_error(
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
@@ -944,6 +979,22 @@ def main() -> int:
             BASE_ACTION,
             "    value: ${{ steps.target_dir.outputs.managed_target_dir }}",
             '    value: "" # ${{ steps.target_dir.outputs.managed_target_dir }}',
+        ),
+    )
+    assert_error(
+        "setup action must export managed_target_dir_relative from target_dir step",
+        action=replace_once(
+            BASE_ACTION,
+            "    value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}",
+            '    value: ""',
+        ),
+    )
+    assert_error(
+        "setup action must compute managed_target_dir_relative",
+        action=replace_once(
+            BASE_ACTION,
+            '        managed_target_dir_relative="$(python3 -c \'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))\' "$GITHUB_WORKSPACE" "$managed_target_dir")"\n',
+            '        python3 -c \'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))\' "$GITHUB_WORKSPACE" "$managed_target_dir" >/dev/null\n',
         ),
     )
     assert_error(

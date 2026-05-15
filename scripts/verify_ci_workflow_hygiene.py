@@ -51,6 +51,9 @@ ELSE_RE = re.compile(r"^\s*else\s*$")
 FI_RE = re.compile(r"^\s*fi\s*$")
 TARGET_DIR_OPT_IN_RE = re.compile(r"^\s+include-managed-target-dir:\s*(['\"])true\1\s*$")
 SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir\s*\}\}\s*$")
+SETUP_TARGET_DIR_RELATIVE_EXPORT_RE = re.compile(
+    r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
+)
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
@@ -60,9 +63,12 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
+    "inputs.include-managed-target-dir",
     "CLAUDE_CONFIG_READ_TOKEN:",
     "inputs.claude-config-read-token",
     "just ci-lint-workflow",
+    "managed_target_dir_relative",
+    "os.path.relpath",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
     "just --evaluate deny_version",
     "just --evaluate nextest_version",
@@ -87,6 +93,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
     "rust_verification_ci_install_script": "steps.shared.outputs.rust_verification_ci_install_script",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
+    "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
 }
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
@@ -109,6 +116,12 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+TEST_WORKSPACES_RE = re.compile(
+    r"^\s+workspaces:\s*\.\s*->\s*\$\{\{\s*steps\.setup\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
+)
+TEST_CACHE_TARGETS_TRUE_RE = re.compile(r"^\s+cache-targets:\s*(['\"]?)true\1\s*$")
+TEST_CACHE_WORKSPACE_CRATES_RE = re.compile(r"^\s+cache-workspace-crates:\s*(['\"]?)true\1\s*$")
+TEST_RUST_ENV_HASH_RE = re.compile(r"^\s+add-rust-environment-hash-key:\s*(['\"]?)true\1\s*$")
 
 
 def strip_comment(line: str) -> str:
@@ -307,6 +320,32 @@ def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
 
 def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
+
+
+def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
+    return [block for block in step_blocks(job_lines) if any("Swatinem/rust-cache" in line for line in block)]
+
+
+def test_cache_block(job_lines: list[str]) -> list[str]:
+    blocks = rust_cache_blocks(job_lines)
+    if not blocks:
+        return []
+    return blocks[0]
+
+
+def block_has_line_matching(block: list[str], pattern: re.Pattern[str]) -> bool:
+    return any(pattern.match(strip_comment(line)) for line in block)
+
+
+def block_has_managed_target_cache_directories(block: list[str]) -> bool:
+    return any(
+        "cache-directories:" in strip_comment(line) and "steps.setup.outputs.managed_target_dir" in strip_comment(line)
+        for line in block
+    )
+
+
+def block_cache_key_contains_github_sha(block: list[str]) -> bool:
+    return any("key:" in strip_comment(line) and "github.sha" in strip_comment(line) for line in block)
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
@@ -536,6 +575,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "test" in jobs:
         test_lines = jobs["test"]
+        cache_block = test_cache_block(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
             errors.append("test matrix must set fail-fast false")
         if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
@@ -548,6 +588,18 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test must log shard reproduction command")
         if not has_line_matching(test_lines, TEST_SHARD_CACHE_RE):
             errors.append("test cache key must include matrix.shard")
+        if not block_has_line_matching(cache_block, TEST_WORKSPACES_RE):
+            errors.append("test cache must use rust-cache workspaces managed target mapping")
+        if block_has_managed_target_cache_directories(cache_block):
+            errors.append("test cache must not use opaque cache-directories for managed target dir")
+        if not block_has_line_matching(cache_block, TEST_CACHE_TARGETS_TRUE_RE):
+            errors.append("test cache must enable target caching")
+        if not block_has_line_matching(cache_block, TEST_CACHE_WORKSPACE_CRATES_RE):
+            errors.append("test cache must preserve workspace crates")
+        if not block_has_line_matching(cache_block, TEST_RUST_ENV_HASH_RE):
+            errors.append("test cache must enable rust environment hash key")
+        if block_cache_key_contains_github_sha(cache_block):
+            errors.append("test cache key must not include github.sha")
 
     if "build" in jobs:
         if "detector" not in extract_needs(jobs["build"]):
@@ -692,6 +744,10 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action include-managed-target-dir default must be false")
     if not any(SETUP_TARGET_DIR_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir from target_dir step")
+    if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
+        errors.append("setup action must export managed_target_dir_relative from target_dir step")
+    if not any("managed_target_dir_relative=\"$(" in line and "os.path.relpath" in line for line in uncommented_lines):
+        errors.append("setup action must compute managed_target_dir_relative")
     if not any(SETUP_TARGET_DIR_IF_RE.match(line) for line in uncommented_lines):
         errors.append("setup action target dir step must be conditional")
     return errors

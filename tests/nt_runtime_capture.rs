@@ -1,7 +1,4 @@
-use std::{
-    io::Cursor,
-    sync::{Mutex, OnceLock},
-};
+use std::{io::Cursor, sync::OnceLock};
 
 use arrow::array::{
     Array, FixedSizeBinaryArray, RecordBatch, StringArray, UInt8Array, UInt32Array, UInt64Array,
@@ -47,7 +44,7 @@ use nautilus_model::{
 };
 use support::repo_path;
 use tempfile::tempdir;
-use tokio::task::LocalSet;
+use tokio::{sync::Mutex, task::LocalSet};
 
 static LIVE_NODE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -192,7 +189,7 @@ fn builds_live_instance_spool_path() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_non_local_catalog_paths() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -217,7 +214,7 @@ async fn rejects_non_local_catalog_paths() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn accepts_valid_contract_path_on_capture_startup() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -245,7 +242,7 @@ async fn accepts_valid_contract_path_on_capture_startup() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_missing_contract_path_on_capture_startup() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -275,7 +272,7 @@ async fn rejects_missing_contract_path_on_capture_startup() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_invalid_contract_path_on_capture_startup() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -309,7 +306,7 @@ async fn rejects_invalid_contract_path_on_capture_startup() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -423,7 +420,7 @@ async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -511,7 +508,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_execution_state_jsonl_records_for_order_and_position_events() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -671,7 +668,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -791,7 +788,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keeps_bars_on_flat_legacy_spool_contract() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -913,7 +910,7 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -981,7 +978,7 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_trading_state_changed_to_risk_jsonl_record() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -1044,7 +1041,7 @@ async fn captures_trading_state_changed_to_risk_jsonl_record() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_trade_tick_to_per_instrument_feather_spool() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -1121,7 +1118,7 @@ async fn captures_trade_tick_to_per_instrument_feather_spool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_order_book_deltas_to_per_instrument_feather_spool() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -1245,7 +1242,7 @@ async fn captures_order_book_deltas_to_per_instrument_feather_spool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -1387,7 +1384,7 @@ async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_mark_price_update_to_per_instrument_feather_spool() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -1454,7 +1451,7 @@ async fn captures_mark_price_update_to_per_instrument_feather_spool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_index_price_update_to_per_instrument_feather_spool() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -1521,7 +1518,7 @@ async fn captures_index_price_update_to_per_instrument_feather_spool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_instrument_any_to_per_instrument_feather_spool() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local
@@ -1622,7 +1619,7 @@ async fn captures_instrument_any_to_per_instrument_feather_spool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn captures_instrument_close_to_per_instrument_feather_spool() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
     local

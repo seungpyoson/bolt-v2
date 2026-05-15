@@ -43,4 +43,4 @@ just source-fence
 git diff --check
 ```
 
-After push, collect exact-head CI evidence for `source-fence`, `fmt-check`, `deny`, `clippy`, `test`, and `gate`.
+After push, collect exact-head CI evidence for `source-fence`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `test`, and `gate`.

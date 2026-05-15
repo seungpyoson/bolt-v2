@@ -19,7 +19,7 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 - Cache source: targeted `gh run view <run> --job <job> --log` excerpts.
 - Raw runner minutes: sum of executed job durations.
 - Rounded runner-minute estimate: each executed job rounded up to the next whole minute. Skipped jobs are counted as zero.
-- Cache warmth: `warm` only when logs show cache hit/restored key. Otherwise `unknown`.
+- Cache warmth: `warm` only when logs show cache hit/restored key; `cold miss` only when logs show `No cache found`; otherwise `unknown`.
 - Evidence freshness: run `25866346320` for exact base `cece0f22` was rechecked after external review and is now completed success, so it is included below as the exact-base main-push row. Run `24623219988` is included as the #205 issue-cited same-SHA main-push pair for smoke tag run `24623274722`.
 
 ## Baseline Runs
@@ -32,7 +32,7 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 | Main push current completed, warm test | [25862551803](https://github.com/seungpyoson/bolt-v2/actions/runs/25862551803) | push/main | `fde50d3452859a51f7f27b807913b1f12697b273` | 2026-05-14T13:25:18Z | success | 19m36s | `build` 19m11s | 27.7 | 33 | `test` warm cache hit; `build` cache state unknown |
 | Same-SHA main path for #205 | [24623219988](https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988) | push/main | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:52:43Z | success | 10m28s | `build` 10m13s, then `gate` 3s | 18.3 | 24 | `deny`/`clippy`/`test`/`build` warm cache hits; older cache key shape |
 | Smoke tag duplicate path | [24623274722](https://github.com/seungpyoson/bolt-v2/actions/runs/24623274722) | push/tag | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:56:12Z | success | 10m45s | `build` 10m15s, then `gate` 3s, then `deploy` 12s | 18.5 | 25 | `test`/`build` warm cache hits; older cache key shape |
-| Late source-fence failure | [25859831755](https://github.com/seungpyoson/bolt-v2/actions/runs/25859831755) | pull_request | `81e9d85f6c242cf6c73e13732da4c6f7c9d99f4d` | 2026-05-14T12:24:40Z | failure | 5m20s | `test` failed at source fence | 5.7 | 10 | warm cache hit |
+| Late source-fence failure | [25859831755](https://github.com/seungpyoson/bolt-v2/actions/runs/25859831755) | pull_request | `81e9d85f6c242cf6c73e13732da4c6f7c9d99f4d` | 2026-05-14T12:24:40Z | failure | 5m20s | `test` failed at source fence | 5.7 | 10 | `test` warm cache hit |
 
 Notes:
 
@@ -233,7 +233,7 @@ Required output:
 
 - Exact GitHub Actions run IDs, commit SHAs, event types, timestamps, source URLs, job durations, critical path, and estimated billed runner minutes.
 - Representative PR behavior and representative main/tag behavior where available.
-- Cache warmth only when logs prove cache hit/restored key/size; otherwise mark unknown.
+- Cache state: mark warm only when logs prove cache hit/restored key/size; mark cold miss only when logs prove `No cache found`; otherwise mark unknown.
 - Neutral findings that child issues can cite for before/after comparison.
 - A linked baseline comment or document from #333 or #343.
 

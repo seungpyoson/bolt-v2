@@ -44,5 +44,5 @@ These repo-level rules are in addition to any higher-level agent instructions.
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/001-thin-live-canary-path/plan.md`
+`specs/006-ci-parallel-heavy-lanes/plan.md`
 <!-- SPECKIT END -->

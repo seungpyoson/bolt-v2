@@ -82,5 +82,6 @@ As the maintainer, I can see how #343 relates to every #333 child without cuttin
 ## Assumptions
 
 - GitHub Actions metadata and logs available through `gh` are authoritative for the baseline.
+- This spec snapshots live issue bodies, comments, and run metadata as of 2026-05-15. GitHub issue state remains authoritative for later changes.
 - Rounded billed minutes are estimates because GitHub billing may apply account-specific rules; raw active job minutes are still reported.
 - #343 is complete with a linked baseline artifact and does not require workflow topology changes.

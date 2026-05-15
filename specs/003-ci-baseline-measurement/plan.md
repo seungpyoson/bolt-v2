@@ -74,7 +74,7 @@ docs/ci/
 
 ### Source Code (repository root)
 
-No source code changes.
+No source code changes. Verified by excluding the scoped docs/spec-kit paths from `git diff --name-only origin/main...HEAD`.
 
 ### Workflow Files
 

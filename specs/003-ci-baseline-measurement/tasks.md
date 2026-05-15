@@ -35,7 +35,8 @@
 - [x] T016 Run `git diff --check`
 - [x] T017 Run `just ci-lint-workflow`
 - [x] T017a Run `test -z "$(git diff --name-only origin/main...HEAD -- .github/workflows)"` to prove #343 did not change workflow files
-- [x] T018 Post #333 and #343 comments linking `docs/ci/ci-baseline-2026-05-15.md` after commit/push: #333 comment `4452104657`, #343 comment `4452106073`
+- [x] T017b Run `test -z "$(git diff --name-only origin/main...HEAD -- ':!docs/ci/ci-baseline-2026-05-15.md' ':!specs/003-ci-baseline-measurement/**')"` to prove #343 did not change source code or non-scope files
+- [x] T018 Post and verify #333/#343 comments linking `docs/ci/ci-baseline-2026-05-15.md` after commit/push: #333 comment `4452104657`, #343 comment `4452106073`
 
 ## Dependencies
 

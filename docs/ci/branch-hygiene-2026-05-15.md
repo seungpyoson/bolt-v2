@@ -2,6 +2,8 @@
 
 Source commands: `gh api repos/seungpyoson/bolt-v2/branches --paginate`, `gh pr list --state all --limit 500`, `git branch -r --merged origin/main`.
 
+Inventory rows were validated against live `origin` branch heads before this artifact commit. The row for `codex/ci-344-residual-minute-work` necessarily names the pre-commit head because committing this file advances that same branch; the linked issue comment carries the final pushed PR head.
+
 No deletion was performed. Any branch deletion requires explicit approval.
 
 | Branch | Head SHA | Classification | Rationale | Proposed action |
@@ -98,13 +100,13 @@ No deletion was performed. Any branch deletion requires explicit approval.
 | `codex/bolt-v3-strategy-idle` | `936978bd479690d6219c0b43df763b1767e05bd3` | reference-only | no open PR and not merged into origin/main | keep as reference unless owner approves deletion |
 | `codex/bolt-v3-strategy-order-intent-wiring` | `8b403eb920a8e094f2c83dcf4dfda4e2de47ab44` | reference-only | no open PR and not merged into origin/main | keep as reference unless owner approves deletion |
 | `codex/bolt-v3-trading-state-evidence` | `ac6cbf8d95148a21905d79ac2d0a6080bc707c71` | reference-only | no open PR and not merged into origin/main | keep as reference unless owner approves deletion |
-| `codex/ci-195-nextest-artifact-cache` | `ef20f4fc453e5c907b840dc6a58997e77fac932f` | active | open PR #349 (draft) | keep |
-| `codex/ci-203-workflow-hygiene` | `85e6fb722adddaf28e6cda122154b60be973ba09` | active | open PR #347 (ready) | keep |
-| `codex/ci-205-same-sha-smoke-dedup` | `7ebd8574126c6b8af4c5e5a1b8d19ae97caba4cf` | active | open PR #350 (draft) | keep |
-| `codex/ci-332-parallel-heavy-lanes` | `e9028e2e150d88a324a7311f8237d9c7ea6ce01e` | active | open PR #348 (draft) | keep |
-| `codex/ci-333-baseline` | `f961303ef0ff995064b1536cf2593dd6ce6f21fd` | active | open PR #345 (ready) | keep |
-| `codex/ci-342-source-fence` | `3d1c49ecbc5ea32c54a0dfb1fb8f1055e0b3ab15` | active | open PR #346 (ready) | keep |
-| `codex/ci-344-residual-minute-work` | `c6a2b23973898ffc12a6bd45147c755e97384f41` | active | open PR #351 (draft) | keep |
+| `codex/ci-195-nextest-artifact-cache` | `6140b6437e1839541ab104505742e9c132f2ce6d` | active | open PR #349 (draft) | keep |
+| `codex/ci-203-workflow-hygiene` | `4c3e889ce6ffc8443c180bdaa5055f6dc2a90e17` | active | open PR #347 (ready) | keep |
+| `codex/ci-205-same-sha-smoke-dedup` | `0fb4c1ea55350e39be588ec67f7922aef340f780` | active | open PR #350 (draft) | keep |
+| `codex/ci-332-parallel-heavy-lanes` | `cefc40f9375c777a9b1ba6ea71a69ae13e8345fc` | active | open PR #348 (draft) | keep |
+| `codex/ci-333-baseline` | `5d52437adfdf466e46432d246fb131f1a850ad58` | active | open PR #345 (ready) | keep |
+| `codex/ci-342-source-fence` | `25e7cc11c0ebb67f7c28f9dbfa7604cfdf6635af` | active | open PR #346 (ready) | keep |
+| `codex/ci-344-residual-minute-work` | `afb44090a3675291fc1e13b55da044db1418cbb7` | active | open PR #351 (draft) | keep |
 | `codex/governance-proof-tooling-lane` | `115b5aeadae0577f82045d163348859f3172a213` | active | open PR #279 (draft) | keep |
 | `codex/phase6-submit-admission-recovery` | `9dcde75c03e9f30a02a3aa59d416623a90c8f2eb` | reference-only | no open PR and not merged into origin/main | keep as reference unless owner approves deletion |
 

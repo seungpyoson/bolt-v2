@@ -35,6 +35,42 @@ class StatusRow:
     gap: str
 
 
+def split_markdown_table_row(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+
+    cells: list[str] = []
+    current: list[str] = []
+    in_code = False
+    escaped = False
+
+    for char in stripped:
+        if escaped:
+            current.append(char if char == "|" else f"\\{char}")
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "`":
+            in_code = not in_code
+            current.append(char)
+            continue
+        if char == "|" and not in_code:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+
+    if escaped:
+        current.append("\\")
+    cells.append("".join(current).strip())
+    return cells
+
+
 def parse_rows(text: str) -> list[StatusRow]:
     rows: list[StatusRow] = []
     for line in text.splitlines():
@@ -42,7 +78,7 @@ def parse_rows(text: str) -> list[StatusRow]:
         if not stripped.startswith("|") or stripped.startswith("|---"):
             continue
 
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        cells = split_markdown_table_row(stripped)
         if len(cells) != 6 or not cells[0].isdigit():
             continue
 
@@ -64,6 +100,19 @@ def missing_evidence(value: str) -> bool:
     return normalized in MISSING_EVIDENCE_VALUES or any(phrase in normalized for phrase in MISSING_EVIDENCE_PHRASES)
 
 
+def validate_pure_rust_row(row: StatusRow) -> list[str]:
+    findings: list[str] = []
+    if not all(term in row.area.lower() for term in PURE_RUST_AREA_TERMS):
+        findings.append(f"row 3 area changed unexpectedly: {row.area!r}")
+    if "missing verifier" in row.status.lower():
+        findings.append("row 3 still says the pure Rust runtime verifier is missing")
+    if PURE_RUST_VERIFIER not in row.test_evidence:
+        findings.append(f"row 3 test/verifier evidence must cite `{PURE_RUST_VERIFIER}`")
+    if "No dedicated verifier found" in row.test_evidence:
+        findings.append("row 3 test evidence still says no dedicated verifier was found")
+    return findings
+
+
 def main() -> int:
     text = STATUS_MAP.read_text(encoding="utf-8")
     rows = parse_rows(text)
@@ -77,14 +126,7 @@ def main() -> int:
     if pure_rust is None:
         findings.append("status row 3 for no Python runtime layer is missing")
     else:
-        if not all(term in pure_rust.area.lower() for term in PURE_RUST_AREA_TERMS):
-            findings.append(f"row 3 area changed unexpectedly: {pure_rust.area!r}")
-        if "missing verifier" in pure_rust.status.lower():
-            findings.append("row 3 still says the pure Rust runtime verifier is missing")
-        if PURE_RUST_VERIFIER not in pure_rust.test_evidence:
-            findings.append(f"row 3 test/verifier evidence must cite `{PURE_RUST_VERIFIER}`")
-        if "No dedicated verifier found" in pure_rust.gap:
-            findings.append("row 3 gap still says no dedicated verifier was found")
+        findings.extend(validate_pure_rust_row(pure_rust))
 
     for row in rows:
         status = row.status.lower()

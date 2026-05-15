@@ -59,6 +59,57 @@ def test_load_audit_parses_repo_local_yaml_subset() -> None:
         raise AssertionError(f"nested list parse failed: {scoped!r}")
 
 
+def test_load_audit_handles_inline_comments_and_single_quotes() -> None:
+    original_audit_path = VERIFIER.AUDIT_PATH
+    audit_text = """
+audit_id: 'probe' # inline comment
+version: 1
+rules:
+  - name: 'fixture' # rule comment
+    include_globs:
+      - 'src/**/*.rs' # glob comment
+renamed_in_current_audit: []
+defensive_forbidden: []
+path_scoped_forbidden: []
+accepted_non_nt_names: []
+""".lstrip()
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_path = Path(tmp) / "audit.yaml"
+        audit_path.write_text(audit_text, encoding="utf-8")
+        try:
+            VERIFIER.AUDIT_PATH = audit_path
+            audit = VERIFIER.load_audit()
+        finally:
+            VERIFIER.AUDIT_PATH = original_audit_path
+
+    if audit["audit_id"] != "probe":
+        raise AssertionError(f"single-quoted scalar parse failed: {audit!r}")
+    rule = audit["rules"][0]
+    if rule["name"] != "fixture" or rule["include_globs"] != ["src/**/*.rs"]:
+        raise AssertionError(f"inline comment parse failed: {rule!r}")
+
+
+def test_load_audit_rejects_unsupported_yaml_subset() -> None:
+    original_audit_path = VERIFIER.AUDIT_PATH
+    cases = {
+        "missing-colon": "audit_id \"probe\"\n",
+        "block-scalar": "audit_id: |\n  probe\n",
+    }
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, audit_text in cases.items():
+                audit_path = Path(tmp) / f"{name}.yaml"
+                audit_path.write_text(audit_text, encoding="utf-8")
+                VERIFIER.AUDIT_PATH = audit_path
+                try:
+                    VERIFIER.load_audit()
+                except ValueError:
+                    continue
+                raise AssertionError(f"expected ValueError for {name}")
+    finally:
+        VERIFIER.AUDIT_PATH = original_audit_path
+
+
 def test_word_regex_is_bounded_to_identifier_words() -> None:
     regex = VERIFIER.word_re("VenueKind")
     if not regex.search("VenueKind::Polymarket"):
@@ -139,6 +190,8 @@ def test_main_reports_forbidden_and_required_names() -> None:
 def main() -> int:
     tests = [
         test_load_audit_parses_repo_local_yaml_subset,
+        test_load_audit_handles_inline_comments_and_single_quotes,
+        test_load_audit_rejects_unsupported_yaml_subset,
         test_word_regex_is_bounded_to_identifier_words,
         test_scan_paths_excludes_audit_target_git_and_reviews,
         test_main_reports_forbidden_and_required_names,

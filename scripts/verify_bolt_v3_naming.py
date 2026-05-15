@@ -49,11 +49,38 @@ LIST_SECTIONS = {
 
 def parse_scalar(value: str) -> object:
     stripped = value.strip()
-    if stripped.startswith('"') and stripped.endswith('"'):
-        return stripped[1:-1]
+    if stripped in {"|", ">"}:
+        raise ValueError(f"{AUDIT_PATH}: unsupported YAML block scalar")
+    if stripped == "[]":
+        return []
+    if stripped.startswith(("'", '"')):
+        quote = stripped[0]
+        end = stripped.find(quote, 1)
+        if end == -1:
+            raise ValueError(f"{AUDIT_PATH}: unterminated quoted scalar: {value!r}")
+        tail = stripped[end + 1 :].strip()
+        if tail and not tail.startswith("#"):
+            raise ValueError(f"{AUDIT_PATH}: unsupported quoted scalar suffix: {value!r}")
+        return stripped[1:end]
+    if " #" in stripped:
+        stripped = stripped.split(" #", 1)[0].strip()
+    if stripped in {"|", ">"}:
+        raise ValueError(f"{AUDIT_PATH}: unsupported YAML block scalar")
+    if stripped == "[]":
+        return []
     if stripped.isdigit():
         return int(stripped)
     return stripped
+
+
+def split_key_value(line: str, raw_line: str) -> tuple[str, str]:
+    if ":" not in line:
+        raise ValueError(f"{AUDIT_PATH}: missing colon in line: {raw_line}")
+    key, value = line.split(":", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError(f"{AUDIT_PATH}: missing key in line: {raw_line}")
+    return key, value
 
 
 def load_audit() -> dict:
@@ -83,7 +110,7 @@ def load_audit() -> dict:
                 current_section = line[:-1]
                 audit[current_section] = [] if current_section in LIST_SECTIONS else {}
                 continue
-            key, value = line.split(":", 1)
+            key, value = split_key_value(line, raw_line)
             audit[key] = parse_scalar(value)
             current_section = key
             continue
@@ -101,7 +128,7 @@ def load_audit() -> dict:
             current_list_key = ""
             rest = line[2:]
             if rest:
-                key, value = rest.split(":", 1)
+                key, value = split_key_value(rest, raw_line)
                 if value.strip():
                     current_item[key] = parse_scalar(value)
                 else:
@@ -113,7 +140,7 @@ def load_audit() -> dict:
             raise ValueError(f"{AUDIT_PATH}: nested row without list item: {raw_line}")
 
         if indent == 4 and not line.startswith("- "):
-            key, value = line.split(":", 1)
+            key, value = split_key_value(line, raw_line)
             if value.strip():
                 current_item[key] = parse_scalar(value)
                 current_list_key = ""

@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -196,8 +197,11 @@ def github_api_json(repo: str, token: str, path: str, query: dict[str, str] | No
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+        raise EvidenceError(f"GitHub API request failed for {path}: {exc}") from exc
 
 
 def fetch_same_sha_payloads(repo: str, token: str, sha: str) -> tuple[dict[str, object], dict[str, dict[str, object]], dict[str, dict[str, object]]]:

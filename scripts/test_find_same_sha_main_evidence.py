@@ -154,12 +154,42 @@ def assert_writes_github_output() -> None:
             raise AssertionError(output)
 
 
+def assert_api_failures_are_bounded() -> None:
+    module = load_script()
+    original_urlopen = module.urllib.request.urlopen
+
+    def raises_url_error(request, timeout):  # noqa: ANN001 - local fake matches urllib call shape.
+        raise module.urllib.error.URLError("offline")
+
+    class InvalidJsonResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001 - context manager protocol.
+            return False
+
+        def read(self) -> bytes:
+            return b"not-json"
+
+    def invalid_json(request, timeout):  # noqa: ANN001 - local fake matches urllib call shape.
+        return InvalidJsonResponse()
+
+    try:
+        module.urllib.request.urlopen = raises_url_error
+        assert_raises("GitHub API request failed", lambda: module.github_api_json("owner/repo", "token", "actions/runs"))
+        module.urllib.request.urlopen = invalid_json
+        assert_raises("GitHub API request failed", lambda: module.github_api_json("owner/repo", "token", "actions/runs"))
+    finally:
+        module.urllib.request.urlopen = original_urlopen
+
+
 def main() -> int:
     assert_selects_exact_main_run()
     assert_rejects_non_main_or_wrong_sha_runs()
     assert_rejects_incomplete_required_jobs()
     assert_rejects_untrusted_artifacts()
     assert_writes_github_output()
+    assert_api_failures_are_bounded()
     print("OK: same-SHA main evidence self-tests passed.")
     return 0
 

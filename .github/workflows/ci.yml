@@ -267,7 +267,8 @@ jobs:
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
 
       - name: Show shard reproduction command
-        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
+        run: |
+          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
 
       - name: test
         env:

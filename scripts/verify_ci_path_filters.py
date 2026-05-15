@@ -36,10 +36,21 @@ REQUIRED_DOC_SCENARIOS = (
     "mixed docs and source",
     "ignored config dir",
 )
+MAX_TEXT_BYTES = 1_000_000
 
 
 class PathFilterError(RuntimeError):
     """Raised when CI path-filter evidence is missing or unsafe."""
+
+
+def read_text_bounded(path: pathlib.Path, label: str, limit: int = MAX_TEXT_BYTES) -> str:
+    if limit <= 0:
+        raise PathFilterError(f"{label} size limit must be positive")
+    if not path.exists():
+        raise PathFilterError(f"{label} path does not exist: {path}")
+    if path.stat().st_size > limit:
+        raise PathFilterError(f"{label} file exceeds size limit ({limit} bytes): {path}")
+    return path.read_text(encoding="utf-8")
 
 
 def strip_comment(line: str) -> str:
@@ -113,10 +124,9 @@ def docs_only_safe(changed_files: tuple[str, ...] | list[str], safe_paths: tuple
     return True
 
 
-def read_changed_files(path: pathlib.Path) -> tuple[str, ...]:
-    if not path.exists():
-        raise PathFilterError(f"changed-files path does not exist: {path}")
-    files = tuple(line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+def read_changed_files(path: pathlib.Path, limit: int = MAX_TEXT_BYTES) -> tuple[str, ...]:
+    text = read_text_bounded(path, "changed-files", limit=limit)
+    files = tuple(stripped for line in text.splitlines() if (stripped := line.strip()))
     if not files:
         raise PathFilterError("changed file list is empty")
     return files
@@ -134,7 +144,7 @@ def classify_changed_file_path(
     require_docs_only: bool = False,
     verbose: bool = True,
 ) -> bool:
-    safe_paths = extract_ci_paths_ignore(DEFAULT_CI_WORKFLOW.read_text(encoding="utf-8"))
+    safe_paths = extract_ci_paths_ignore(read_text_bounded(DEFAULT_CI_WORKFLOW, "CI workflow"))
     verify_safe_path_contract(safe_paths)
     changed_files = read_changed_files(changed_files_path)
     docs_only = docs_only_safe(changed_files, safe_paths)
@@ -161,7 +171,7 @@ def verify_pass_stub_workflow(workflow_text: str) -> None:
         raise PathFilterError(f"pass-stub paths drift: expected {EXPECTED_SAFE_PATHS}, got {tuple(paths)}")
     if "needs:" in text:
         raise PathFilterError("pass-stub gate job must fail directly without dependent skipped jobs")
-    if re.search(r"^\s+if:\s+", text, flags=re.MULTILINE):
+    if re.search(r"^\s{4}if:\s+", text, flags=re.MULTILINE):
         raise PathFilterError("pass-stub gate job must not use job-level if")
     required_literals = (
         "name: CI docs pass stub",
@@ -195,16 +205,16 @@ def verify_repository(
 ) -> list[str]:
     errors: list[str] = []
     try:
-        paths = extract_ci_paths_ignore(ci_workflow.read_text(encoding="utf-8"))
+        paths = extract_ci_paths_ignore(read_text_bounded(ci_workflow, "CI workflow"))
         verify_safe_path_contract(paths)
     except Exception as exc:  # noqa: BLE001 - collect verifier failures.
         errors.append(str(exc))
     try:
-        verify_pass_stub_workflow(pass_stub_workflow.read_text(encoding="utf-8"))
+        verify_pass_stub_workflow(read_text_bounded(pass_stub_workflow, "pass-stub workflow"))
     except Exception as exc:  # noqa: BLE001
         errors.append(str(exc))
     try:
-        verify_docs_table(docs.read_text(encoding="utf-8"))
+        verify_docs_table(read_text_bounded(docs, "docs"))
     except Exception as exc:  # noqa: BLE001
         errors.append(str(exc))
     return errors

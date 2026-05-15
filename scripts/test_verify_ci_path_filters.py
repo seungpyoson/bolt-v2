@@ -145,10 +145,17 @@ def assert_classifies_changed_paths() -> None:
 def assert_verifies_pass_stub_workflow() -> None:
     module = load_script()
     module.verify_pass_stub_workflow(PASS_STUB_FIXTURE)
+    step_if_fixture = PASS_STUB_FIXTURE.replace(
+        "      - name: Classify changed files",
+        "      - name: Optional diagnostic\n        if: always()\n        run: echo ok\n      - name: Classify changed files",
+    )
+    module.verify_pass_stub_workflow(step_if_fixture)
     assert_raises("pass-stub gate job must be named gate", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("name: gate", "name: docs-gate")))
     assert_raises("pass-stub must run changed-file classifier", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("python3 scripts/verify_ci_path_filters.py", "echo ok")))
     assert_raises("pass-stub workflow missing --require-docs-only", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace(" --require-docs-only", "")))
     assert_raises("pass-stub gate job must fail directly", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("runs-on: ubuntu-latest", "needs: classify-docs-only\n    runs-on: ubuntu-latest", 1)))
+    job_if_fixture = PASS_STUB_FIXTURE.replace("    runs-on: ubuntu-latest", "    if: always()\n    runs-on: ubuntu-latest", 1)
+    assert_raises("pass-stub gate job must not use job-level if", lambda: module.verify_pass_stub_workflow(job_if_fixture))
 
 
 def assert_verifies_docs_rows() -> None:
@@ -167,6 +174,15 @@ def assert_writes_github_output() -> None:
         text = output.read_text(encoding="utf-8")
     if "docs_only=true" not in text:
         raise AssertionError(text)
+
+
+def assert_input_reads_are_bounded() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        oversized = pathlib.Path(tmpdir) / "changed.txt"
+        oversized.write_text("AGENTS.md\n", encoding="utf-8")
+        assert_raises("exceeds size limit", lambda: module.read_changed_files(oversized, limit=1))
+        assert_raises("exceeds size limit", lambda: module.read_text_bounded(oversized, "fixture", limit=1))
 
 
 def assert_require_docs_only_fails_closed() -> None:
@@ -190,6 +206,7 @@ def main() -> int:
     assert_verifies_pass_stub_workflow()
     assert_verifies_docs_rows()
     assert_writes_github_output()
+    assert_input_reads_are_bounded()
     assert_require_docs_only_fails_closed()
     print("OK: CI path-filter verifier self-tests passed.")
     return 0

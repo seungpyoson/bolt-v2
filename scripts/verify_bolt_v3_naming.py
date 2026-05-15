@@ -99,8 +99,12 @@ def load_audit() -> dict:
     for raw_line in AUDIT_PATH.read_text(encoding="utf-8").splitlines():
         if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
+        if "\t" in raw_line:
+            raise ValueError(f"{AUDIT_PATH}: tabs are not supported in audit YAML: {raw_line}")
 
         indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if indent not in {0, 2, 4, 6}:
+            raise ValueError(f"{AUDIT_PATH}: unsupported indentation in line: {raw_line}")
         line = raw_line.strip()
 
         if indent == 0:
@@ -149,13 +153,16 @@ def load_audit() -> dict:
                 current_list_key = key
             continue
 
-        if indent >= 4 and line.startswith("- "):
+        if indent == 6 and line.startswith("- "):
             if not current_list_key:
                 raise ValueError(f"{AUDIT_PATH}: list item without key: {raw_line}")
             nested = current_item.setdefault(current_list_key, [])
             if not isinstance(nested, list):
                 raise ValueError(f"{AUDIT_PATH}: key {current_list_key!r} is not a list")
             nested.append(parse_scalar(line[2:]))
+            continue
+
+        raise ValueError(f"{AUDIT_PATH}: unsupported YAML subset line: {raw_line}")
 
     return audit
 

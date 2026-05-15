@@ -263,10 +263,18 @@ def assert_strip_comment_handles_single_quoted_backslash() -> None:
         raise AssertionError(f"single-quoted backslash comment stripping failed: {actual!r}")
 
 
+def assert_required_job_indentation_is_actionable() -> None:
+    assert_error(
+        "job clippy must use two-space top-level indentation",
+        replace_once(BASE_WORKFLOW, "  clippy:\n    name: clippy", "    clippy:\n    name: clippy"),
+    )
+
+
 def main() -> int:
     assert_clean()
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
+    assert_required_job_indentation_is_actionable()
     for job in (
         "detector",
         "fmt-check",

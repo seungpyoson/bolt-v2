@@ -61,6 +61,12 @@ def strip_comment(line: str) -> str:
 
 
 def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
+    """Parse this repo's strict GitHub Actions job subset.
+
+    Top-level job ids must be indented by exactly two spaces under `jobs:`.
+    The verifier reports required job ids that drift to another indentation.
+    """
+
     lines = workflow_text.splitlines()
     jobs: dict[str, list[str]] = {}
     in_jobs = False
@@ -85,6 +91,28 @@ def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
             jobs[current].append(clean)
 
     return jobs
+
+
+def job_header_indent_errors(workflow_text: str) -> list[str]:
+    errors: list[str] = []
+    required_job_re = re.compile(rf"^(?P<indent>\s+)({'|'.join(re.escape(job) for job in REQUIRED_JOBS)}):\s*$")
+    in_jobs = False
+
+    for line in workflow_text.splitlines():
+        clean = strip_comment(line)
+        if clean == "jobs:":
+            in_jobs = True
+            continue
+        if not in_jobs:
+            continue
+        if clean and not clean.startswith((" ", "\t")):
+            break
+        match = required_job_re.match(clean)
+        if match and match.group("indent") != "  ":
+            job = clean.strip()[:-1]
+            errors.append(f"job {job} must use two-space top-level indentation")
+
+    return errors
 
 
 def parse_inline_needs(value: str) -> set[str]:
@@ -302,7 +330,7 @@ def input_block_has_default_false(input_block: list[str]) -> bool:
 
 
 def verify_workflow(workflow_text: str) -> list[str]:
-    errors: list[str] = []
+    errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
 
     for job in REQUIRED_JOBS:

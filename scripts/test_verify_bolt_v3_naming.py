@@ -94,6 +94,12 @@ def test_load_audit_rejects_unsupported_yaml_subset() -> None:
     cases = {
         "missing-colon": "audit_id \"probe\"\n",
         "block-scalar": "audit_id: |\n  probe\n",
+        "nested-list-wrong-indent": """
+rules:
+  - name: "fixture"
+    include_globs:
+     - "src/**/*.rs"
+""".lstrip(),
     }
     try:
         with tempfile.TemporaryDirectory() as tmp:

@@ -83,6 +83,47 @@ SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_di
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
+SETUP_ACTION_REQUIRED_LITERALS = (
+    "inputs.just-version",
+    "inputs.include-deny-version",
+    "inputs.include-nextest-version",
+    "inputs.include-build-values",
+    "inputs.lint-workflow-contract",
+    "CLAUDE_CONFIG_READ_TOKEN:",
+    "inputs.claude-config-read-token",
+    "just ci-lint-workflow",
+    "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
+    "just --evaluate deny_version",
+    "just --evaluate nextest_version",
+    "just --evaluate target",
+    "just --evaluate zig_version",
+    "just --evaluate zigbuild_version",
+    "just --evaluate rust_verification_owner",
+    "just --evaluate rust_verification_source_repo",
+    "just --evaluate rust_verification_source_sha",
+    "just --evaluate rust_verification_ci_install_script",
+    'target-dir --repo "$GITHUB_WORKSPACE"',
+)
+SETUP_ACTION_OUTPUT_MAPPINGS = {
+    "rust_toolchain": "steps.shared.outputs.rust_toolchain",
+    "deny_version": "steps.shared.outputs.deny_version",
+    "nextest_version": "steps.shared.outputs.nextest_version",
+    "target": "steps.shared.outputs.target",
+    "zig_version": "steps.shared.outputs.zig_version",
+    "zigbuild_version": "steps.shared.outputs.zigbuild_version",
+    "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
+    "rust_verification_source_repo": "steps.shared.outputs.rust_verification_source_repo",
+    "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
+    "rust_verification_ci_install_script": "steps.shared.outputs.rust_verification_ci_install_script",
+    "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
+}
+SETUP_ACTION_ORDERED_STEPS = (
+    "Lint workflow contract",
+    "Read shared values",
+    "Install managed Rust owner",
+    "Resolve managed target dir",
+    "Setup Rust toolchain",
+)
 TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
 TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
 TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
@@ -454,6 +495,34 @@ def input_block_has_default_false(input_block: list[str]) -> bool:
     return any(re.match(r"^\s+default:\s*(['\"]?)false\1\s*$", strip_comment(line)) for line in input_block)
 
 
+def action_step_line(action_text: str, step_name: str) -> int | None:
+    pattern = re.compile(rf"^\s+-\s+name:\s*{re.escape(step_name)}\s*$")
+    for line_number, line in enumerate(action_text.splitlines(), start=1):
+        if pattern.match(strip_comment(line)):
+            return line_number
+    return None
+
+
+def extract_action_output_block(action_text: str, output_name: str) -> list[str]:
+    lines = action_text.splitlines()
+    output_re = re.compile(rf"^  {re.escape(output_name)}:\s*$")
+    next_output_re = re.compile(r"^  [A-Za-z0-9_.-]+:\s*$")
+    for start, line in enumerate(lines):
+        if not output_re.match(strip_comment(line)):
+            continue
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            clean = strip_comment(lines[index])
+            if clean and not clean.startswith((" ", "\t")):
+                end = index
+                break
+            if next_output_re.match(clean):
+                end = index
+                break
+        return lines[start:end]
+    return []
+
+
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
@@ -618,6 +687,21 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
+    uncommented = "\n".join(uncommented_lines)
+    step_lines = [action_step_line(action_text, step) for step in SETUP_ACTION_ORDERED_STEPS]
+    if any(line is None for line in step_lines):
+        errors.append("setup action missing required ordered steps")
+    elif any(left >= right for left, right in zip(step_lines, step_lines[1:]) if left is not None and right is not None):
+        errors.append("setup action step order drifted")
+    for literal in SETUP_ACTION_REQUIRED_LITERALS:
+        if literal not in uncommented:
+            errors.append(f"setup action missing expected literal {literal!r}")
+    for output_name, output_mapping in SETUP_ACTION_OUTPUT_MAPPINGS.items():
+        output_block = extract_action_output_block(action_text, output_name)
+        if not output_block:
+            errors.append(f"setup action missing exported output {output_name!r}")
+        elif output_mapping not in uncommented_text(output_block):
+            errors.append(f"setup action missing output mapping for {output_name!r}")
     target_dir_input = extract_action_input_block(action_text, "include-managed-target-dir")
     if not target_dir_input:
         errors.append("setup action missing include-managed-target-dir input")

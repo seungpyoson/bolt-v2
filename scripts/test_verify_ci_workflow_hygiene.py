@@ -274,8 +274,20 @@ jobs:
 BASE_ACTION = """
 name: Setup Environment
 inputs:
-  include-unrelated-flag:
-    description: Unrelated flag with the same default value.
+  claude-config-read-token:
+    required: true
+  just-version:
+    required: true
+  include-deny-version:
+    required: false
+    default: "false"
+  include-nextest-version:
+    required: false
+    default: "false"
+  include-build-values:
+    required: false
+    default: "false"
+  lint-workflow-contract:
     required: false
     default: "false"
   include-managed-target-dir:
@@ -283,16 +295,73 @@ inputs:
     required: false
     default: "false"
 outputs:
+  rust_toolchain:
+    value: ${{ steps.shared.outputs.rust_toolchain }}
+  deny_version:
+    value: ${{ steps.shared.outputs.deny_version }}
+  nextest_version:
+    value: ${{ steps.shared.outputs.nextest_version }}
+  target:
+    value: ${{ steps.shared.outputs.target }}
+  zig_version:
+    value: ${{ steps.shared.outputs.zig_version }}
+  zigbuild_version:
+    value: ${{ steps.shared.outputs.zigbuild_version }}
+  rust_verification_owner:
+    value: ${{ steps.shared.outputs.rust_verification_owner }}
+  rust_verification_source_repo:
+    value: ${{ steps.shared.outputs.rust_verification_source_repo }}
+  rust_verification_source_sha:
+    value: ${{ steps.shared.outputs.rust_verification_source_sha }}
+  rust_verification_ci_install_script:
+    value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
   managed_target_dir:
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
 runs:
   using: composite
   steps:
+    - name: Install just
+      shell: bash
+      run: echo "${{ inputs.just-version }}"
+    - name: Lint workflow contract
+      if: ${{ inputs.lint-workflow-contract == 'true' }}
+      shell: bash
+      run: just ci-lint-workflow
+    - name: Read shared values
+      id: shared
+      shell: bash
+      run: |
+        echo "rust_toolchain=$(awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
+        echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
+        if [ "${{ inputs.include-deny-version }}" = "true" ]; then
+          echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "${{ inputs.include-nextest-version }}" = "true" ]; then
+          echo "nextest_version=$(just --evaluate nextest_version)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "${{ inputs.include-build-values }}" = "true" ]; then
+          echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
+          echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
+          echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Install managed Rust owner
+      shell: bash
+      env:
+        CLAUDE_CONFIG_READ_TOKEN: ${{ inputs.claude-config-read-token }}
+      run: |
+        bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
       shell: bash
-      run: echo "managed_target_dir=/tmp/target" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "managed_target_dir=$(python3 "${{ steps.shared.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")" >> "$GITHUB_OUTPUT"
+    - name: Setup Rust toolchain
+      shell: bash
+      run: echo setup
 """
 
 
@@ -838,6 +907,43 @@ def main() -> int:
             BASE_WORKFLOW,
             "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
             "          # cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
+        ),
+    )
+    assert_error(
+        "setup action missing exported output 'nextest_version'",
+        action=BASE_ACTION.replace(
+            """  nextest_version:
+    value: ${{ steps.shared.outputs.nextest_version }}
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "setup action missing output mapping for 'rust_verification_owner'",
+        action=replace_once(
+            BASE_ACTION,
+            "    value: ${{ steps.shared.outputs.rust_verification_owner }}",
+            '    value: ""',
+        ),
+    )
+    assert_error(
+        "setup action missing expected literal 'just --evaluate nextest_version'",
+        action=replace_once(BASE_ACTION, "just --evaluate nextest_version", "just --evaluate cargo_nextest_version"),
+    )
+    assert_error(
+        "setup action step order drifted",
+        action=replace_once(
+            replace_once(
+                BASE_ACTION,
+                "    - name: Lint workflow contract",
+                "    - name: Moved lint workflow contract",
+            ),
+            "    - name: Install managed Rust owner",
+            """    - name: Lint workflow contract
+      if: ${{ inputs.lint-workflow-contract == 'true' }}
+      shell: bash
+      run: just ci-lint-workflow
+    - name: Install managed Rust owner""",
         ),
     )
     assert_error(

@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, MutexGuard, OnceLock},
 };
 
 #[cfg(unix)]
@@ -39,6 +39,23 @@ static LIVE_NODE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn live_node_test_lock() -> &'static Mutex<()> {
     LIVE_NODE_TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn acquire_live_node_test_lock() -> MutexGuard<'static, ()> {
+    live_node_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[test]
+fn live_node_test_lock_recovers_after_poison() {
+    let _ = std::thread::spawn(|| {
+        let _guard = acquire_live_node_test_lock();
+        panic!("poison live node test lock");
+    })
+    .join();
+
+    let _guard = acquire_live_node_test_lock();
 }
 
 fn collect_paths(root: &Path) -> Vec<std::path::PathBuf> {
@@ -117,7 +134,7 @@ fn fails_when_live_spool_instance_is_missing() {
 
 #[test]
 fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = acquire_live_node_test_lock();
     let local = LocalSet::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -310,7 +327,7 @@ fn converts_execution_state_sidecars_into_parquet_outputs() {
 
 #[test]
 fn converts_legacy_flat_spool_layout() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = acquire_live_node_test_lock();
     let local = LocalSet::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -411,7 +428,7 @@ fn converts_legacy_flat_spool_layout() {
 
 #[test]
 fn converts_all_seven_stream_classes_with_multi_batch_feather() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = acquire_live_node_test_lock();
     let local = LocalSet::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -665,7 +682,7 @@ fn fails_when_previous_report_only_output_root_exists_without_deleting_it() {
 
 #[test]
 fn allows_preexisting_empty_output_root() {
-    let _guard = live_node_test_lock().lock().unwrap();
+    let _guard = acquire_live_node_test_lock();
     let local = LocalSet::new();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

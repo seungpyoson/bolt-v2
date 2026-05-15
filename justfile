@@ -91,8 +91,8 @@ managed-clippy: check-workspace
     cargo clippy --locked -- -D warnings
 
 [private]
-managed-test: check-workspace
-    cargo nextest run --locked
+managed-test *args: check-workspace
+    cargo nextest run --locked {{args}}
 
 [private]
 managed-build: check-workspace
@@ -101,8 +101,8 @@ managed-build: check-workspace
 clippy: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" clippy
 
-test: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test
+test *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
 build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
@@ -490,7 +490,7 @@ ci-lint-workflow:
                     if (current == "test" && has_setup_step && !has_setup_nextest_version) {
                         print current "|setup-nextest-version"
                     }
-                    if (current == "build" && has_setup_step && !has_setup_build_values) {
+                    if ((current == "build" || current == "check-aarch64") && has_setup_step && !has_setup_build_values) {
                         print current "|setup-build-values"
                     }
                     if (current == "fmt-check" && has_setup_step && !has_setup_rustfmt) {
@@ -499,7 +499,7 @@ ci-lint-workflow:
                     if (current == "clippy" && has_setup_step && !has_setup_clippy) {
                         print current "|setup-clippy"
                     }
-                    if (current == "build" && has_setup_step && !has_setup_default_target) {
+                    if ((current == "build" || current == "check-aarch64") && has_setup_step && !has_setup_default_target) {
                         print current "|setup-default-target"
                     }
                     if ((current == "deny" || current == "advisories") && !has_deny_output) {
@@ -731,8 +731,41 @@ ci-lint-workflow:
                 gate-clippy-result)
                     echo "ERROR: .github/workflows/ci.yml aggregate gate must validate clippy result"
                     ;;
+                gate-check-aarch64-needs)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must need check-aarch64"
+                    ;;
+                gate-check-aarch64-result)
+                    echo "ERROR: .github/workflows/ci.yml aggregate gate must validate check-aarch64 result"
+                    ;;
                 gate-test-result)
                     echo "ERROR: .github/workflows/ci.yml aggregate gate must validate test result"
+                    ;;
+                check-aarch64-job)
+                    echo "ERROR: .github/workflows/ci.yml check-aarch64 job missing"
+                    ;;
+                check-aarch64-detector-needs)
+                    echo "ERROR: .github/workflows/ci.yml check-aarch64 job must depend on detector"
+                    ;;
+                clippy-check-aarch64)
+                    echo "ERROR: .github/workflows/ci.yml clippy job must not run check-aarch64"
+                    ;;
+                clippy-aarch64-compiler)
+                    echo "ERROR: .github/workflows/ci.yml clippy job must not install aarch64 cross compiler"
+                    ;;
+                test-fail-fast)
+                    echo "ERROR: .github/workflows/ci.yml test matrix must set fail-fast false"
+                    ;;
+                test-matrix-shard)
+                    echo "ERROR: .github/workflows/ci.yml test matrix shard must be [1, 2, 3, 4]"
+                    ;;
+                test-partition-command)
+                    echo "ERROR: .github/workflows/ci.yml test job must run partitioned nextest through just test"
+                    ;;
+                test-reproduction-command)
+                    echo "ERROR: .github/workflows/ci.yml test job must log shard reproduction command"
+                    ;;
+                test-shard-cache-key)
+                    echo "ERROR: .github/workflows/ci.yml test cache key must include matrix.shard"
                     ;;
                 source-fence-job)
                     echo "ERROR: .github/workflows/ci.yml source-fence job missing"
@@ -767,22 +800,33 @@ ci-lint-workflow:
                 BEGIN {
                     in_jobs = 0
                     current = ""
+                    saw_check_aarch64 = 0
                     saw_source_fence = 0
+                    has_check_aarch64_detector_needs = 0
                     has_source_fence_detector_needs = 0
                     has_managed_target_dir = 0
                     has_cache_key = 0
                     has_test_source_fence_needs = 0
                     has_gate_always = 0
+                    has_gate_check_aarch64_needs = 0
                     has_gate_source_fence_needs = 0
                     has_gate_detector_result = 0
                     has_gate_fmt_result = 0
                     has_gate_deny_result = 0
                     has_gate_clippy_result = 0
+                    has_gate_check_aarch64_result = 0
                     has_gate_test_result = 0
                     has_gate_source_fence_result = 0
                     has_gate_build_result = 0
                     has_gate_build_required = 0
                     has_build_required_output = 0
+                    has_test_fail_fast = 0
+                    has_test_matrix_shard = 0
+                    has_test_partition_command = 0
+                    has_test_reproduction_command = 0
+                    has_test_shard_cache_key = 0
+                    clippy_runs_check_aarch64 = 0
+                    clippy_installs_aarch64 = 0
                     in_needs_block = 0
                 }
 
@@ -800,15 +844,27 @@ ci-lint-workflow:
                     }
                 }
 
+                function mark_check_aarch64_need() {
+                    if (current == "gate") {
+                        has_gate_check_aarch64_needs = 1
+                    }
+                }
+
                 function mark_detector_need() {
                     if (current == "source-fence") {
                         has_source_fence_detector_needs = 1
+                    }
+                    if (current == "check-aarch64") {
+                        has_check_aarch64_detector_needs = 1
                     }
                 }
 
                 function mark_need(name) {
                     if (name == "detector") {
                         mark_detector_need()
+                    }
+                    if (name == "check-aarch64") {
+                        mark_check_aarch64_need()
                     }
                     if (name == "source-fence") {
                         mark_source_fence_need()
@@ -820,6 +876,9 @@ ci-lint-workflow:
                     if (clean ~ /^    needs:/) {
                         if (index(clean, "detector") > 0) {
                             mark_need("detector")
+                        }
+                        if (index(clean, "check-aarch64") > 0) {
+                            mark_need("check-aarch64")
                         }
                         if (index(clean, "source-fence") > 0) {
                             mark_need("source-fence")
@@ -834,21 +893,48 @@ ci-lint-workflow:
                     if (in_needs_block && clean ~ /^[[:space:]]*-[[:space:]]*detector[[:space:]]*$/) {
                         mark_need("detector")
                     }
+                    if (in_needs_block && clean ~ /^[[:space:]]*-[[:space:]]*check-aarch64[[:space:]]*$/) {
+                        mark_need("check-aarch64")
+                    }
                     if (in_needs_block && clean ~ /^[[:space:]]*-[[:space:]]*source-fence[[:space:]]*$/) {
                         mark_need("source-fence")
                     }
                 }
 
                 function flush_job() {
-                    if (current == "clippy" || current == "test" || current == "build" || current == "source-fence") {
+                    if (current == "clippy" || current == "check-aarch64" || current == "test" || current == "build" || current == "source-fence") {
                         if (!has_managed_target_dir) {
                             print current "|managed-target-dir"
                         }
                     }
-                    if (current == "deny" || current == "test" || current == "clippy" || current == "build" || current == "source-fence") {
+                    if (current == "deny" || current == "test" || current == "clippy" || current == "check-aarch64" || current == "build" || current == "source-fence") {
                         if (!has_cache_key) {
                             print current "|cache-key"
                         }
+                    }
+                    if (current == "clippy" && clippy_runs_check_aarch64) {
+                        print current "|clippy-check-aarch64"
+                    }
+                    if (current == "clippy" && clippy_installs_aarch64) {
+                        print current "|clippy-aarch64-compiler"
+                    }
+                    if (current == "check-aarch64" && !has_check_aarch64_detector_needs) {
+                        print current "|check-aarch64-detector-needs"
+                    }
+                    if (current == "test" && !has_test_fail_fast) {
+                        print current "|test-fail-fast"
+                    }
+                    if (current == "test" && !has_test_matrix_shard) {
+                        print current "|test-matrix-shard"
+                    }
+                    if (current == "test" && !has_test_partition_command) {
+                        print current "|test-partition-command"
+                    }
+                    if (current == "test" && !has_test_reproduction_command) {
+                        print current "|test-reproduction-command"
+                    }
+                    if (current == "test" && !has_test_shard_cache_key) {
+                        print current "|test-shard-cache-key"
                     }
                     if (current == "test" && !has_test_source_fence_needs) {
                         print current "|test-source-fence-needs"
@@ -874,6 +960,12 @@ ci-lint-workflow:
                         }
                         if (!has_gate_clippy_result) {
                             print current "|gate-clippy-result"
+                        }
+                        if (!has_gate_check_aarch64_needs) {
+                            print current "|gate-check-aarch64-needs"
+                        }
+                        if (!has_gate_check_aarch64_result) {
+                            print current "|gate-check-aarch64-result"
                         }
                         if (!has_gate_test_result) {
                             print current "|gate-test-result"
@@ -910,24 +1002,37 @@ ci-lint-workflow:
                     current = $0
                     sub(/^  /, "", current)
                     sub(/:.*/, "", current)
+                    if (current == "check-aarch64") {
+                        saw_check_aarch64 = 1
+                    }
                     if (current == "source-fence") {
                         saw_source_fence = 1
                     }
+                    has_check_aarch64_detector_needs = 0
                     has_source_fence_detector_needs = 0
                     has_managed_target_dir = 0
                     has_cache_key = 0
                     has_test_source_fence_needs = 0
                     has_gate_always = 0
+                    has_gate_check_aarch64_needs = 0
                     has_gate_source_fence_needs = 0
                     has_gate_detector_result = 0
                     has_gate_fmt_result = 0
                     has_gate_deny_result = 0
                     has_gate_clippy_result = 0
+                    has_gate_check_aarch64_result = 0
                     has_gate_test_result = 0
                     has_gate_source_fence_result = 0
                     has_gate_build_result = 0
                     has_gate_build_required = 0
                     has_build_required_output = 0
+                    has_test_fail_fast = 0
+                    has_test_matrix_shard = 0
+                    has_test_partition_command = 0
+                    has_test_reproduction_command = 0
+                    has_test_shard_cache_key = 0
+                    clippy_runs_check_aarch64 = 0
+                    clippy_installs_aarch64 = 0
                     in_needs_block = 0
                     next
                 }
@@ -938,6 +1043,27 @@ ci-lint-workflow:
                     }
                     if ($0 ~ /key:[[:space:]]*[[:graph:]]+/) {
                         has_cache_key = 1
+                    }
+                    if (current == "test" && $0 ~ /^[[:space:]]*fail-fast:[[:space:]]*false[[:space:]]*$/) {
+                        has_test_fail_fast = 1
+                    }
+                    if (current == "test" && $0 ~ /^[[:space:]]*shard:[[:space:]]*\[[[:space:]]*1,[[:space:]]*2,[[:space:]]*3,[[:space:]]*4[[:space:]]*\][[:space:]]*$/) {
+                        has_test_matrix_shard = 1
+                    }
+                    if (current == "test" && index($0, "run: just test -- --partition count:") > 0 && index($0, "matrix.shard") > 0 && index($0, "/4") > 0) {
+                        has_test_partition_command = 1
+                    }
+                    if (current == "test" && tolower($0) ~ /reproduce/ && index($0, "just test -- --partition count:") > 0 && index($0, "matrix.shard") > 0 && index($0, "/4") > 0) {
+                        has_test_reproduction_command = 1
+                    }
+                    if (current == "test" && $0 ~ /key:.*matrix\.shard.*of-4/) {
+                        has_test_shard_cache_key = 1
+                    }
+                    if (current == "clippy" && index($0, "just check-aarch64") > 0) {
+                        clippy_runs_check_aarch64 = 1
+                    }
+                    if (current == "clippy" && ($0 ~ /gcc-aarch64-linux-gnu/ || $0 ~ /libc6-dev-arm64-cross/)) {
+                        clippy_installs_aarch64 = 1
                     }
                     scan_needs($0)
                     if (current == "gate") {
@@ -955,6 +1081,9 @@ ci-lint-workflow:
                         }
                         if (index($0, "needs.clippy.result") > 0) {
                             has_gate_clippy_result = 1
+                        }
+                        if (index($0, "needs.check-aarch64.result") > 0) {
+                            has_gate_check_aarch64_result = 1
                         }
                         if (index($0, "needs.test.result") > 0) {
                             has_gate_test_result = 1
@@ -976,6 +1105,9 @@ ci-lint-workflow:
 
                 END {
                     flush_job()
+                    if (!saw_check_aarch64) {
+                        print "check-aarch64|check-aarch64-job"
+                    }
                     if (!saw_source_fence) {
                         print "source-fence|source-fence-job"
                     }

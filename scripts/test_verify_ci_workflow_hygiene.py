@@ -254,9 +254,19 @@ jobs:
         raise AssertionError(f"parse_jobs must store stripped job lines, got: {clippy!r}")
 
 
+def assert_strip_comment_handles_single_quoted_backslash() -> None:
+    verifier = load_verifier()
+    line = r"pattern: 'path\' # trailing comment"
+    expected = r"pattern: 'path\'"
+    actual = verifier.strip_comment(line)
+    if actual != expected:
+        raise AssertionError(f"single-quoted backslash comment stripping failed: {actual!r}")
+
+
 def main() -> int:
     assert_clean()
     assert_parse_jobs_strips_comments()
+    assert_strip_comment_handles_single_quoted_backslash()
     for job in (
         "detector",
         "fmt-check",

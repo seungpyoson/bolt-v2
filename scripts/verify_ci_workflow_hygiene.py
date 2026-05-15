@@ -47,7 +47,7 @@ def strip_comment(line: str) -> str:
         if quote is not None:
             if escaped:
                 escaped = False
-            elif char == "\\":
+            elif char == "\\" and quote == '"':
                 escaped = True
             elif char == quote:
                 quote = None

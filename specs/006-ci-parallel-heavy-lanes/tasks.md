@@ -51,7 +51,7 @@
 
 - [x] T021 [US3] Update `.github/workflows/ci.yml` comments to state source-fence duplicate execution is intentional under #332
 - [x] T022 [US3] Preserve `test.needs: [detector, source-fence]` and existing source-fence gate result checks in verifier and workflow
-- [ ] T023 [US3] Add PR-body evidence note placeholder for source-fence ownership decision
+- [x] T023 [US3] Add PR-body evidence note placeholder for source-fence ownership decision
 
 ## User Story 4 - Keep Narrow Lint Ownership (Priority: P2)
 
@@ -60,7 +60,7 @@
 **Independent Test**: Spec and PR body name #195, #205, #344, and #340 as not implemented; verifier does not invent their future topology.
 
 - [x] T024 [US4] Ensure verifier changes do not require #195 cache persistence, #205 same-SHA reuse, #344 pass-stub, or #340 config path changes
-- [ ] T025 [US4] Update PR body with exact residual scope and before/after evidence placeholders
+- [x] T025 [US4] Update PR body with exact residual scope and before/after evidence placeholders
 
 ## Verification
 
@@ -70,7 +70,7 @@
 - [x] T029 Run `just --dry-run test -- --partition count:1/4`
 - [x] T030 Run `just fmt-check`
 - [x] T031 Run `git diff --check`
-- [ ] T032 Obtain exact-head CI run for the final PR head before external review or mark it explicitly blocked by stacked PR trigger limits
+- [x] T032 Obtain exact-head CI run for the final PR head before external review or mark it explicitly blocked by stacked PR trigger limits
 
 ## Dependencies
 

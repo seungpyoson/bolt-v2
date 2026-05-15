@@ -294,6 +294,10 @@ def main() -> int:
         ),
     )
     assert_error(
+        "source-fence must run just source-fence",
+        replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
+    )
+    assert_error(
         "test needs source-fence",
         replace_once(BASE_WORKFLOW, "needs: [detector, source-fence]", "needs: [detector]"),
     )

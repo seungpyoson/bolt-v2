@@ -142,6 +142,29 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any("./.github/actions/setup-environment" in line for line in block)]
 
 
+def block_runs_command(block: list[str], command: str) -> bool:
+    for index, line in enumerate(block):
+        clean = strip_comment(line)
+        inline = re.match(r"^\s*(?:-\s*)?run:\s*(.*?)\s*$", clean)
+        if inline is None:
+            continue
+        value = inline.group(1).strip().strip("'\"")
+        if value == command:
+            return True
+        if value not in {"|", ">"}:
+            continue
+        for nested in block[index + 1 :]:
+            nested_clean = strip_comment(nested).strip()
+            if nested_clean == command:
+                return True
+        return False
+    return False
+
+
+def job_runs_command(job_lines: list[str], command: str) -> bool:
+    return any(block_runs_command(block, command) for block in step_blocks(job_lines))
+
+
 def block_has_target_dir_opt_in(block: list[str]) -> bool:
     return any(TARGET_DIR_OPT_IN_RE.match(strip_comment(line)) for line in block)
 
@@ -292,6 +315,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
+    if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
+        errors.append("source-fence must run just source-fence")
 
     if "test" in jobs and "source-fence" not in extract_needs(jobs["test"]):
         errors.append("test needs source-fence")

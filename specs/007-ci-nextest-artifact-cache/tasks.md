@@ -49,7 +49,7 @@
 
 ## Evidence And Handoff
 
-- [ ] T024 Record exact current head/base and local verification in PR/issue notes
-- [ ] T025 Mark exact cold/warm CI evidence as blocked if stacked PR CI still does not run full `pull_request`
+- [x] T024 Record exact current head/base and local verification in PR/issue notes
+- [x] T025 Mark exact cold/warm CI evidence as blocked if stacked PR CI still does not run full `pull_request`
 - [ ] T026 After exact CI is available, record cold/warm run IDs, log excerpts, cache sizes, timings, and warm `Compiling bolt-v2` finding
 - [ ] T027 Request external reviews only after exact PR-head CI is green, unless the user explicitly waives the repo rule

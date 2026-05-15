@@ -31,7 +31,7 @@ All via `just` (must be installed). The justfile is the single source of truth â
 | Command | What it does |
 |---------|-------------|
 | `just build` | Release cross-compile via `cargo zigbuild` (target: `aarch64-unknown-linux-gnu`). |
-| `just test` | `cargo nextest run --locked` â€” requires `cargo-nextest`; LiveNode-heavy integration binaries are serialized by `.config/nextest.toml`. |
+| `just test` | `cargo nextest run --locked`; pass nextest args after `--`, e.g. `just test -- --partition count:1/4`; LiveNode-heavy integration binaries are serialized by `.config/nextest.toml`. |
 | `just source-fence` | Bolt-v3 source-fence verifier set + targeted structural cargo test filters before the full test lane. |
 | `just fmt` | `cargo fmt` (gated by rust-verification wrapper). |
 | `just fmt-check` | `cargo fmt --check` + Python verification scripts as prerequisites. |

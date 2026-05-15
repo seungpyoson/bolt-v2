@@ -301,7 +301,22 @@ def branch_exits(gate_text: str, keyword: str, condition: str) -> bool:
 
 
 def body_exits(body: str) -> bool:
-    exit_codes = [match.group(1) for match in EXIT_RE.finditer(body)]
+    exit_codes: list[str | None] = []
+    depth = 0
+    for line in body.splitlines():
+        if FI_RE.match(line):
+            depth = max(0, depth - 1)
+            continue
+        branch_match = IF_OR_ELIF_RE.match(line)
+        if branch_match:
+            if branch_match.group(1) == "if":
+                depth += 1
+            continue
+        if ELSE_RE.match(line):
+            continue
+        match = EXIT_RE.match(line)
+        if depth == 0 and match:
+            exit_codes.append(match.group(1))
     return exit_codes == ["1"]
 
 

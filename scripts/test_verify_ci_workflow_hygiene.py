@@ -270,11 +270,26 @@ def assert_required_job_indentation_is_actionable() -> None:
     )
 
 
+def assert_body_exits_requires_top_level_exit() -> None:
+    verifier = load_verifier()
+    nested_only = """
+            if [[ "$inner_result" != "success" ]]; then
+              exit 1
+            fi
+"""
+    if verifier.body_exits(nested_only):
+        raise AssertionError("body_exits must ignore exits nested inside inner conditionals")
+    nested_then_top_level = nested_only + "            exit 1\n"
+    if not verifier.body_exits(nested_then_top_level):
+        raise AssertionError("body_exits must accept one top-level exit 1")
+
+
 def main() -> int:
     assert_clean()
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_required_job_indentation_is_actionable()
+    assert_body_exits_requires_top_level_exit()
     for job in (
         "detector",
         "fmt-check",
@@ -380,6 +395,22 @@ def main() -> int:
             """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
             exit 0
             exit 1
+          fi
+""",
+        ),
+    )
+    assert_error(
+        "gate must check needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            exit 1
+          fi
+""",
+            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            if [[ "$inner_result" != "success" ]]; then
+              exit 1
+            fi
           fi
 """,
         ),

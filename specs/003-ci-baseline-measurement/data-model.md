@@ -31,7 +31,7 @@
 - `run_id`: Parent `BaselineRun`.
 - `job_name`: Job where cache evidence was observed.
 - `cache_key`: Log-reported cache key or restore key.
-- `cache_result`: `hit`, `miss`, or `unknown`.
+- `cache_result`: `hit`, `miss`, or `unknown`; summary tables may list multiple job-specific results when one run has mixed cache evidence.
 - `archive_size`: Log-reported cache archive size when present.
 - `compile_or_test_signal`: Concrete log signal, such as nextest command time, first-test time, failure line, or build command time.
 

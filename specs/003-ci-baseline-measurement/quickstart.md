@@ -18,10 +18,13 @@ gh run view 25866346320 --repo seungpyoson/bolt-v2 --json databaseId,headSha,eve
 gh run view 24623219988 --repo seungpyoson/bolt-v2 --json databaseId,headSha,event,status,conclusion,createdAt,updatedAt,url
 ```
 
+If GitHub Actions log retention has expired an older run, treat the missing log as stale evidence and recapture a fresh comparable run pair before using it for #195 or #205 acceptance.
+
 ## Verification commands
 
 ```bash
 rg -n "25855655415|25866930064|25866346320|25859831755|25862551803|24623219988|24623274722|#343|#342|#332|#195|#205|#203|#335|#344|#340|#333|drift-detection" docs/ci/ci-baseline-2026-05-15.md specs/003-ci-baseline-measurement
+test -z "$(git diff --name-only origin/main...HEAD -- .github/workflows)"
 just ci-lint-workflow
 git diff --check
 ```

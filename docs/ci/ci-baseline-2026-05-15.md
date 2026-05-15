@@ -11,7 +11,7 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 - Local branch: `codex/ci-333-baseline`.
 - Local base: `origin/main` at `cece0f22c6b0e2a0c9141fd7325f720bff452911`.
 - Root status at setup: clean worktree on `main`, then isolated worktree from `origin/main`.
-- Link evidence: #333 comment `4452104657` and #343 comment `4452106073` link this baseline document and PR #345.
+- Link evidence: #333 comment [`4452104657`](https://github.com/seungpyoson/bolt-v2/issues/333#issuecomment-4452104657) and #343 comment [`4452106073`](https://github.com/seungpyoson/bolt-v2/issues/343#issuecomment-4452106073) link this baseline document and PR #345.
 
 ## Method
 
@@ -20,24 +20,26 @@ Purpose: baseline current CI wall time, job durations, critical path, runner-min
 - Raw runner minutes: sum of executed job durations.
 - Rounded runner-minute estimate: each executed job rounded up to the next whole minute. Skipped jobs are counted as zero.
 - Cache warmth: `warm` only when logs show cache hit/restored key; `cold miss` only when logs show `No cache found`; otherwise `unknown`.
+- Workflow wall time can exceed the named critical-path step because GitHub job duration includes setup, cache restore/save, artifact upload, post-job cleanup, and gate/deploy follow-on work.
 - Evidence freshness: run `25866346320` for exact base `cece0f22` was rechecked after external review and is now completed success, so it is included below as the exact-base main-push row. Run `24623219988` is included as the #205 issue-cited same-SHA main-push pair for smoke tag run `24623274722`.
 
 ## Baseline Runs
 
-| Shape | Run | Event | SHA | Created UTC | Conclusion | Wall | Critical path | Raw runner min | Rounded estimate | Cache state |
-|---|---:|---|---|---|---|---:|---|---:|---:|---|
-| PR, build skipped, #332 bottleneck | [25855655415](https://github.com/seungpyoson/bolt-v2/actions/runs/25855655415) | pull_request | `1cf7baae739fc8f288511cc9055d4b76adc82537` | 2026-05-14T10:41:42Z | success | 11m11s | `clippy` 10m41s | 17.6 | 21 | `test` warm cache hit; `clippy` cache state unknown |
-| PR, build-affecting current shape | [25866930064](https://github.com/seungpyoson/bolt-v2/actions/runs/25866930064) | pull_request | `2300c78bbfd7a1e4551ab1ef5d794625b26dcd15` | 2026-05-14T14:51:21Z | success | 20m27s | `build` 20m05s | 28.6 | 34 | `test` warm cache hit; `build` cache state unknown |
-| Main push exact base, cold build | [25866346320](https://github.com/seungpyoson/bolt-v2/actions/runs/25866346320) | push/main | `cece0f22c6b0e2a0c9141fd7325f720bff452911` | 2026-05-14T14:40:06Z | success | 51m06s | `build` 50m46s | 83.3 | 87 | `deny` warm cache hit; `clippy`/`test`/`build` cold misses |
-| Main push current completed, warm test | [25862551803](https://github.com/seungpyoson/bolt-v2/actions/runs/25862551803) | push/main | `fde50d3452859a51f7f27b807913b1f12697b273` | 2026-05-14T13:25:18Z | success | 19m36s | `build` 19m11s | 27.7 | 33 | `test` warm cache hit; `build` cache state unknown |
-| Same-SHA main path for #205 | [24623219988](https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988) | push/main | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:52:43Z | success | 10m28s | `build` 10m13s, then `gate` 3s | 18.3 | 24 | `deny`/`clippy`/`test`/`build` warm cache hits; older cache key shape |
-| Smoke tag duplicate path | [24623274722](https://github.com/seungpyoson/bolt-v2/actions/runs/24623274722) | push/tag | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:56:12Z | success | 10m45s | `build` 10m15s, then `gate` 3s, then `deploy` 12s | 18.5 | 25 | `test`/`build` warm cache hits; older cache key shape |
-| Late source-fence failure | [25859831755](https://github.com/seungpyoson/bolt-v2/actions/runs/25859831755) | pull_request | `81e9d85f6c242cf6c73e13732da4c6f7c9d99f4d` | 2026-05-14T12:24:40Z | failure | 5m20s | `test` failed at source fence | 5.7 | 10 | `test` warm cache hit |
+| Shape | Run | Event | SHA | Created UTC | Updated UTC | Status | Conclusion | Wall | Critical path | Raw runner min | Rounded estimate | Cache state |
+|---|---:|---|---|---|---|---|---|---:|---|---:|---:|---|
+| PR, build skipped, #332 bottleneck | [25855655415](https://github.com/seungpyoson/bolt-v2/actions/runs/25855655415) | pull_request | `1cf7baae739fc8f288511cc9055d4b76adc82537` | 2026-05-14T10:41:42Z | 2026-05-14T10:52:53Z | completed | success | 11m11s | `clippy` 10m41s | 17.6 | 21 | `deny`/`test` warm cache hits; `clippy` cache state unknown |
+| PR, build-affecting current shape | [25866930064](https://github.com/seungpyoson/bolt-v2/actions/runs/25866930064) | pull_request | `2300c78bbfd7a1e4551ab1ef5d794625b26dcd15` | 2026-05-14T14:51:21Z | 2026-05-14T15:11:48Z | completed | success | 20m27s | `build` 20m05s | 28.6 | 34 | `deny`/`test`/`build` warm cache hits |
+| Main push exact base, cold build | [25866346320](https://github.com/seungpyoson/bolt-v2/actions/runs/25866346320) | push/main | `cece0f22c6b0e2a0c9141fd7325f720bff452911` | 2026-05-14T14:40:06Z | 2026-05-14T15:31:12Z | completed | success | 51m06s | `build` 50m46s | 83.3 | 87 | `deny` warm cache hit; `clippy`/`test`/`build` cold misses |
+| Main push current completed, warm test/build | [25862551803](https://github.com/seungpyoson/bolt-v2/actions/runs/25862551803) | push/main | `fde50d3452859a51f7f27b807913b1f12697b273` | 2026-05-14T13:25:18Z | 2026-05-14T13:44:54Z | completed | success | 19m36s | `build` 19m11s | 27.7 | 33 | `deny`/`test`/`build` warm cache hits |
+| Same-SHA main path for #205 | [24623219988](https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988) | push/main | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:52:43Z | 2026-04-19T07:03:11Z | completed | success | 10m28s | `build` 10m13s, then `gate` 3s | 18.3 | 24 | `deny`/`clippy`/`test`/`build` warm cache hits; older cache key shape |
+| Smoke tag duplicate path | [24623274722](https://github.com/seungpyoson/bolt-v2/actions/runs/24623274722) | push/tag | `a1a6be0d94e887538ebcd9afced6c94046a557d6` | 2026-04-19T06:56:12Z | 2026-04-19T07:06:57Z | completed | success | 10m45s | `build` 10m15s, then `gate` 3s, then `deploy` 12s | 18.5 | 25 | `test`/`build` warm cache hits; older cache key shape |
+| Late source-fence failure | [25859831755](https://github.com/seungpyoson/bolt-v2/actions/runs/25859831755) | pull_request | `81e9d85f6c242cf6c73e13732da4c6f7c9d99f4d` | 2026-05-14T12:24:40Z | 2026-05-14T12:30:00Z | completed | failure | 5m20s | `test` failed at source fence | 5.7 | 10 | `deny`/`test` warm cache hits |
 
 Notes:
 
 - Run `25866346320` was initially observed as `in_progress`; the refreshed `gh run view` metadata now shows `status=completed`, `conclusion=success`, `updatedAt=2026-05-14T15:31:12Z`.
 - The rounded estimate is approximate. It is intentionally separate from raw active runner time. All rows here are Ubuntu Linux jobs; if future topology adds non-Linux runners, runner-minute billing multipliers must be handled separately.
+- GitHub log retention can expire old run logs. If any April run log returns 404 later, re-run the same-SHA main/tag measurement before using it as #205/#195 final evidence.
 
 ## Job Timing Details
 
@@ -60,7 +62,12 @@ Observed inside `clippy`: `check-aarch64` ran from 10:42:35 to 10:47:57, then ho
 
 Observed inside `test`: `cargo nextest run --locked` at 10:43:03; first nextest start line at 10:44:51 reported `882 tests across 45 binaries`; job completed at 10:47:49.
 
-Cache evidence for `test`: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce0762-7d508d2e`; restored archive size `1612359237 B` (about 1538 MB); restored full match.
+Cache evidence:
+
+- `deny`: cache hit for `v0-rust-cargo-deny-deny-Linux-x64-34ce0762-7d508d2e`; restored archive size `373164931 B` (about 356 MB); restored full match.
+- `test`: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce0762-7d508d2e`; restored archive size `1612359237 B` (about 1538 MB); restored full match.
+
+Skip meaning: `build` was skipped by the detector path decision; `deploy` was skipped because no build artifact lane ran.
 
 ### Build-affecting PR: run 25866930064
 
@@ -77,9 +84,17 @@ Cache evidence for `test`: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce
 
 Critical path: `build`.
 
-Observed inside `build`: `build` step ran from 14:52:31 to 15:11:35; upload completed at 15:11:37. The metadata shows the `Swatinem/rust-cache` step ran, but no targeted build cache-hit log excerpt was captured for this row.
+Observed inside `build`: `build` step ran from 14:52:31 to 15:11:35; upload completed at 15:11:37.
 
 Observed inside `test`: `test` step ran from 14:52:46 to 14:57:39.
+
+Cache evidence:
+
+- `deny`: cache hit for `v0-rust-cargo-deny-deny-Linux-x64-71010953-7d508d2e`; restored archive size `375770771 B` (about 358 MB); restored full match.
+- `test`: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce0762-7d508d2e`; restored archive size `1612359237 B` (about 1538 MB); restored full match.
+- `build`: cache hit for `v0-rust-cross-aarch64-build-Linux-x64-34ce0762-7d508d2e`; restored archive size `1423517900 B` (about 1358 MB); restored full match.
+
+Skip meaning: `deploy` was skipped because this PR run does not deploy artifacts.
 
 ### Exact-base main push: run 25866346320
 
@@ -124,9 +139,11 @@ Interpretation for #195/#332: the exact-base main-push run is a cold-cache outli
 
 Critical path: `build`.
 
-Cache evidence for `test`: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce0762-7d508d2e`; restored archive size `1612359237 B` (about 1538 MB); restored full match.
+Cache evidence:
 
-No targeted build cache-hit log excerpt was captured for this row. Treat the 19m11s build as a current warm-test main-push point, not as controlled proof of warm build-cache behavior.
+- `deny`: cache hit for `v0-rust-cargo-deny-deny-Linux-x64-34ce0762-7d508d2e`; restored archive size `373164931 B` (about 356 MB); restored full match.
+- `test`: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce0762-7d508d2e`; restored archive size `1612359237 B` (about 1538 MB); restored full match.
+- `build`: cache hit for `v0-rust-cross-aarch64-build-Linux-x64-34ce0762-7d508d2e`; restored archive size `1423517900 B` (about 1358 MB); restored full match.
 
 Observed inside `test`: `cargo nextest run --locked` at 13:26:46; job completed at 13:31:49.
 
@@ -205,7 +222,12 @@ Failure evidence:
 - nextest summary: `498/893 tests run: 497 passed, 1 failed, 3 skipped`; `395/893 tests were not run due to test failure`.
 - `gate` failed after `test` failed.
 
-Cache evidence: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce0762-7d508d2e`; restored archive size `1612359237 B` (about 1538 MB); restored full match.
+Cache evidence:
+
+- `deny`: cache hit for `v0-rust-cargo-deny-deny-Linux-x64-34ce0762-7d508d2e`; restored archive size `373164931 B` (about 356 MB); restored full match.
+- `test`: cache hit for `v0-rust-nextest-v2-test-Linux-x64-34ce0762-7d508d2e`; restored archive size `1612359237 B` (about 1538 MB); restored full match.
+
+Skip meaning: `build` and `deploy` were skipped after the failed `test` lane; `gate` failed because required lanes did not all pass.
 
 Interpretation for #342: deterministic source-fence drift surfaced only inside the full `test` lane, after cache restore, nextest setup, and partial test execution.
 

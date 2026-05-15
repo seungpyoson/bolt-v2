@@ -34,7 +34,8 @@
 - [x] T015 Run `rg -n "25855655415|25866930064|25866346320|25859831755|25862551803|24623219988|24623274722|#343|#342|#332|#195|#205|#203|#335|#344|#340|#333|drift-detection" docs/ci/ci-baseline-2026-05-15.md specs/003-ci-baseline-measurement`
 - [x] T016 Run `git diff --check`
 - [x] T017 Run `just ci-lint-workflow`
-- [x] T018 Post #333 and #343 comments linking `docs/ci/ci-baseline-2026-05-15.md` after commit/push
+- [x] T017a Run `test -z "$(git diff --name-only origin/main...HEAD -- .github/workflows)"` to prove #343 did not change workflow files
+- [x] T018 Post #333 and #343 comments linking `docs/ci/ci-baseline-2026-05-15.md` after commit/push: #333 comment `4452104657`, #343 comment `4452106073`
 
 ## Dependencies
 

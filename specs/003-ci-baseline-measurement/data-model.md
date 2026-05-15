@@ -24,7 +24,7 @@
 - `conclusion`: Job conclusion.
 - `duration_seconds`: Derived from job timestamps.
 - `required_for_gate`: Whether the `gate` job checks this lane in current workflow.
-- `skip_meaning`: Empty for executed jobs; otherwise why skipped matters.
+- `skip_meaning`: Empty for executed jobs; otherwise why the skipped job matters and whether it came from detector path selection, PR deploy policy, or upstream failure.
 
 ## CacheObservation
 

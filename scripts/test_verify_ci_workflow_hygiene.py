@@ -201,16 +201,35 @@ runs:
 """
 
 
-def assert_clean(workflow: str = BASE_WORKFLOW, action: str = BASE_ACTION) -> None:
+BASE_NEXTEST_CONFIG = """
+[test-groups]
+live-node = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=platform_runtime)'
+test-group = 'live-node'
+"""
+
+
+def assert_clean(
+    workflow: str = BASE_WORKFLOW,
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
     verifier = load_verifier()
-    errors = verifier.verify_text(workflow, action)
+    errors = verifier.verify_text(workflow, action, nextest_config)
     if errors:
         raise AssertionError(f"expected no errors, got: {errors}")
 
 
-def assert_error(fragment: str, workflow: str = BASE_WORKFLOW, action: str = BASE_ACTION) -> None:
+def assert_error(
+    fragment: str,
+    workflow: str = BASE_WORKFLOW,
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
     verifier = load_verifier()
-    errors = verifier.verify_text(workflow, action)
+    errors = verifier.verify_text(workflow, action, nextest_config)
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
@@ -284,12 +303,32 @@ def assert_body_exits_requires_top_level_exit() -> None:
         raise AssertionError("body_exits must accept one top-level exit 1")
 
 
+def assert_nextest_live_node_group_required() -> None:
+    assert_error(
+        "nextest config missing live-node test group",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("live-node = { max-threads = 1 }", ""),
+    )
+    assert_error(
+        "nextest live-node test group max-threads must be 1",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("max-threads = 1", "max-threads = 2"),
+    )
+    assert_error(
+        "nextest config must assign LiveNode integration tests to live-node group",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("binary(=platform_runtime)", "binary(=config_schema)"),
+    )
+    assert_error(
+        "nextest config must assign LiveNode integration tests to live-node group",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
+    )
+
+
 def main() -> int:
     assert_clean()
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_required_job_indentation_is_actionable()
     assert_body_exits_requires_top_level_exit()
+    assert_nextest_live_node_group_required()
     for job in (
         "detector",
         "fmt-check",

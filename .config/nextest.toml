@@ -1,0 +1,6 @@
+[test-groups]
+live-node = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=platform_runtime)'
+test-group = 'live-node'

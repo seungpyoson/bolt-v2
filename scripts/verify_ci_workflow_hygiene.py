@@ -6,11 +6,13 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
+import tomllib
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
+DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 REQUIRED_JOBS = (
     "detector",
@@ -26,6 +28,9 @@ REQUIRED_JOBS = (
 GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "source-fence", "test", "build")
 DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test")
 TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
+LIVE_NODE_TEST_GROUP = "live-node"
+LIVE_NODE_NEXTEST_BINARIES = ("lake_batch", "nt_runtime_capture", "platform_runtime")
+LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
 BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
@@ -423,14 +428,51 @@ def verify_setup_action(action_text: str) -> list[str]:
     return errors
 
 
-def verify_text(workflow_text: str, action_text: str) -> list[str]:
-    return verify_workflow(workflow_text) + verify_setup_action(action_text)
+def verify_nextest_config(config_text: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        config = tomllib.loads(config_text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"nextest config invalid TOML: {exc}"]
+
+    groups = config.get("test-groups", {})
+    if not isinstance(groups, dict):
+        groups = {}
+    live_node_group = groups.get(LIVE_NODE_TEST_GROUP)
+    if not isinstance(live_node_group, dict):
+        errors.append("nextest config missing live-node test group")
+    elif live_node_group.get("max-threads") != 1:
+        errors.append("nextest live-node test group max-threads must be 1")
+
+    profile = config.get("profile", {})
+    default_profile = profile.get("default", {}) if isinstance(profile, dict) else {}
+    overrides = default_profile.get("overrides", []) if isinstance(default_profile, dict) else []
+    if not isinstance(overrides, list):
+        overrides = []
+    has_live_node_override = any(
+        isinstance(override, dict)
+        and override.get("test-group") == LIVE_NODE_TEST_GROUP
+        and override.get("filter") == LIVE_NODE_NEXTEST_FILTER
+        for override in overrides
+    )
+    if not has_live_node_override:
+        errors.append("nextest config must assign LiveNode integration tests to live-node group")
+    return errors
+
+
+def verify_text(workflow_text: str, action_text: str, nextest_config_text: str) -> list[str]:
+    return (
+        verify_workflow(workflow_text)
+        + verify_setup_action(action_text)
+        + verify_nextest_config(nextest_config_text)
+    )
 
 
 def main() -> int:
     workflow_text = DEFAULT_WORKFLOW.read_text()
     action_text = DEFAULT_SETUP_ACTION.read_text()
-    errors = verify_text(workflow_text, action_text)
+    nextest_config_text = DEFAULT_NEXTEST_CONFIG.read_text()
+    errors = verify_text(workflow_text, action_text, nextest_config_text)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

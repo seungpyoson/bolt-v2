@@ -98,7 +98,7 @@ jobs:
           use-default-target: "true"
           include-managed-target-dir: "true"
       - name: Install aarch64 cross compiler
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       - uses: Swatinem/rust-cache@example
         with:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
@@ -491,6 +491,42 @@ def main() -> int:
     for job in ("gate", "build", "detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
         assert_error("deploy needs " + job, replace_once(BASE_WORKFLOW, DEPLOY_NEEDS, without_inline_need(DEPLOY_NEEDS, job)))
     assert_error(
+        "check-aarch64 needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  check-aarch64:\n    name: check-aarch64\n    needs: detector",
+            "  check-aarch64:\n    name: check-aarch64",
+        ),
+    )
+    assert_error(
+        "check-aarch64 must run just check-aarch64",
+        replace_once(BASE_WORKFLOW, "      - run: just check-aarch64", "      - run: echo skip check-aarch64"),
+    )
+    assert_error(
+        "check-aarch64 must install aarch64 cross compiler packages",
+        replace_once(
+            BASE_WORKFLOW,
+            "        run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross",
+            "        run: sudo apt-get install -y gcc-aarch64-linux-gnu",
+        ),
+    )
+    assert_error(
+        "ci.yml check-aarch64 must include build values",
+        replace_once(
+            BASE_WORKFLOW,
+            '          just-version: ${{ env.JUST_VERSION }}\n'
+            '          include-build-values: "true"\n'
+            '          use-default-target: "true"',
+            '          just-version: ${{ env.JUST_VERSION }}\n'
+            '          # include-build-values: "true"\n'
+            '          use-default-target: "true"',
+        ),
+    )
+    assert_error(
+        "ci.yml check-aarch64 must use default target",
+        replace_once(BASE_WORKFLOW, '          use-default-target: "true"', '          # use-default-target: "true"'),
+    )
+    assert_error(
         "check-aarch64 must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
@@ -817,8 +853,9 @@ def main() -> int:
         "test must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: nextest",
-            "          key: nextest",
+            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
+            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
+            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
         ),
     )
     assert_error(

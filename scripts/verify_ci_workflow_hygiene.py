@@ -335,6 +335,11 @@ def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
     return "gcc-aarch64-linux-gnu" in text or "libc6-dev-arm64-cross" in text
 
 
+def check_aarch64_installs_cross_compiler_packages(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "gcc-aarch64-linux-gnu" in text and "libc6-dev-arm64-cross" in text
+
+
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
     condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
     return branch_exits(gate_text, "if", condition)
@@ -526,6 +531,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("check-aarch64 needs detector")
         if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):
             errors.append("check-aarch64 must run just check-aarch64")
+        if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must install aarch64 cross compiler packages")
 
     if "test" in jobs:
         test_lines = jobs["test"]
@@ -622,6 +629,11 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
                 errors.append(f"{workflow_name} {job} must include nextest version")
             if "steps.setup.outputs.nextest_version" not in uncommented_text(lines):
                 errors.append(f"{workflow_name} {job} must use setup.outputs.nextest_version")
+        if "check-aarch64" in lanes:
+            if not job_has_setup_input(lines, "include-build-values", '"true"'):
+                errors.append(f"{workflow_name} {job} must include build values")
+            if not job_has_setup_input(lines, "use-default-target", '"true"'):
+                errors.append(f"{workflow_name} {job} must use default target")
         if "build" in lanes:
             if not job_has_setup_input(lines, "include-build-values", '"true"'):
                 errors.append(f"{workflow_name} {job} must include build values")

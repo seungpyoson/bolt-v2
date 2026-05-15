@@ -9,7 +9,7 @@ use std::{
     path::Path,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -73,6 +73,16 @@ fn polymarket_selector(tag_slug: &str) -> Value {
 }
 use tempfile::tempdir;
 use tokio::{sync::Notify, task::LocalSet};
+
+static LIVE_NODE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn with_live_node_build_lock<T>(build: impl FnOnce() -> T) -> T {
+    let _guard = LIVE_NODE_BUILD_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    build()
+}
 
 #[derive(Clone, Debug)]
 struct UploadCall {
@@ -252,22 +262,24 @@ fn test_config(audit_dir: &Path) -> Config {
 }
 
 fn build_node() -> LiveNode {
-    LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
-        .unwrap()
-        .with_name("TEST-NODE")
-        .with_logging(LoggerConfig::default())
-        .with_timeout_connection(1)
-        .with_timeout_disconnection_secs(1)
-        .with_delay_post_stop_secs(0)
-        .with_delay_shutdown_secs(0)
-        .add_data_client(
-            Some("BINANCE".to_string()),
-            Box::new(MockDataClientFactory),
-            Box::new(MockDataClientConfig::new("BINANCE", "BINANCE")),
-        )
-        .unwrap()
-        .build()
-        .unwrap()
+    with_live_node_build_lock(|| {
+        LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
+            .unwrap()
+            .with_name("TEST-NODE")
+            .with_logging(LoggerConfig::default())
+            .with_timeout_connection(1)
+            .with_timeout_disconnection_secs(1)
+            .with_delay_post_stop_secs(0)
+            .with_delay_shutdown_secs(0)
+            .add_data_client(
+                Some("BINANCE".to_string()),
+                Box::new(MockDataClientFactory),
+                Box::new(MockDataClientConfig::new("BINANCE", "BINANCE")),
+            )
+            .unwrap()
+            .build()
+            .unwrap()
+    })
 }
 
 fn lifecycle_test_config(audit_dir: &Path) -> Config {
@@ -306,39 +318,41 @@ fn stub_runtime_lifecycle_config(audit_dir: &Path) -> Config {
 }
 
 fn build_lifecycle_node() -> LiveNode {
-    LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
-        .unwrap()
-        .with_name("TEST-NODE")
-        .with_logging(LoggerConfig::default())
-        .with_reconciliation(false)
-        .with_timeout_connection(1)
-        .with_timeout_disconnection_secs(1)
-        .with_delay_post_stop_secs(0)
-        .with_delay_shutdown_secs(0)
-        .add_data_client(
-            Some("BINANCE".to_string()),
-            Box::new(MockDataClientFactory),
-            Box::new(MockDataClientConfig::new("BINANCE", "BINANCE")),
-        )
-        .unwrap()
-        .add_data_client(
-            Some("TEST".to_string()),
-            Box::new(MockDataClientFactory),
-            Box::new(MockDataClientConfig::new("TEST", "POLYMARKET")),
-        )
-        .unwrap()
-        .add_exec_client(
-            Some("TEST".to_string()),
-            Box::new(MockExecutionClientFactory),
-            Box::new(MockExecClientConfig::new(
-                "TEST",
-                "TEST-ACCOUNT",
-                "POLYMARKET",
-            )),
-        )
-        .unwrap()
-        .build()
-        .unwrap()
+    with_live_node_build_lock(|| {
+        LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
+            .unwrap()
+            .with_name("TEST-NODE")
+            .with_logging(LoggerConfig::default())
+            .with_reconciliation(false)
+            .with_timeout_connection(1)
+            .with_timeout_disconnection_secs(1)
+            .with_delay_post_stop_secs(0)
+            .with_delay_shutdown_secs(0)
+            .add_data_client(
+                Some("BINANCE".to_string()),
+                Box::new(MockDataClientFactory),
+                Box::new(MockDataClientConfig::new("BINANCE", "BINANCE")),
+            )
+            .unwrap()
+            .add_data_client(
+                Some("TEST".to_string()),
+                Box::new(MockDataClientFactory),
+                Box::new(MockDataClientConfig::new("TEST", "POLYMARKET")),
+            )
+            .unwrap()
+            .add_exec_client(
+                Some("TEST".to_string()),
+                Box::new(MockExecutionClientFactory),
+                Box::new(MockExecClientConfig::new(
+                    "TEST",
+                    "TEST-ACCOUNT",
+                    "POLYMARKET",
+                )),
+            )
+            .unwrap()
+            .build()
+            .unwrap()
+    })
 }
 
 #[derive(Debug)]
@@ -456,22 +470,24 @@ impl DataClient for DelayedDataClient {
 }
 
 fn build_delayed_start_node(release: Arc<Notify>) -> LiveNode {
-    LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
-        .unwrap()
-        .with_name("TEST-NODE")
-        .with_logging(LoggerConfig::default())
-        .with_timeout_connection(1)
-        .with_timeout_disconnection_secs(1)
-        .with_delay_post_stop_secs(0)
-        .with_delay_shutdown_secs(0)
-        .add_data_client(
-            Some("BINANCE".to_string()),
-            Box::new(DelayedDataClientFactory { release }),
-            Box::new(DelayedDataClientConfig::new("BINANCE", "BINANCE")),
-        )
-        .unwrap()
-        .build()
-        .unwrap()
+    with_live_node_build_lock(|| {
+        LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
+            .unwrap()
+            .with_name("TEST-NODE")
+            .with_logging(LoggerConfig::default())
+            .with_timeout_connection(1)
+            .with_timeout_disconnection_secs(1)
+            .with_delay_post_stop_secs(0)
+            .with_delay_shutdown_secs(0)
+            .add_data_client(
+                Some("BINANCE".to_string()),
+                Box::new(DelayedDataClientFactory { release }),
+                Box::new(DelayedDataClientConfig::new("BINANCE", "BINANCE")),
+            )
+            .unwrap()
+            .build()
+            .unwrap()
+    })
 }
 
 fn uploaded_records(uploader: &MockUploader) -> Vec<serde_json::Value> {

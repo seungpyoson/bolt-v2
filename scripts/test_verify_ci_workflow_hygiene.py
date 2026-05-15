@@ -138,7 +138,8 @@ jobs:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
           key: nextest-v3-shard-${{ matrix.shard }}-of-4
       - name: Show shard reproduction command
-        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
+        run: |
+          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
       - run: just test -- --partition count:${{ matrix.shard }}/4
 
   build:
@@ -367,8 +368,16 @@ def main() -> int:
         "test must log shard reproduction command",
         replace_once(
             BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"\n',
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"\n',
             "",
+        ),
+    )
+    assert_error(
+        "test shard reproduction command must use YAML block scalar",
+        replace_once(
+            BASE_WORKFLOW,
+            '        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
+            '        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
         ),
     )
     assert_error(

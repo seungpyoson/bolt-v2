@@ -54,6 +54,7 @@ TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
 TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
 TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
 TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
+TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
 TEST_SHARD_CACHE_RE = re.compile(r"^\s+key:\s*.*matrix\.shard.*of-4\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+key:\s*\S+.*$")
 
@@ -241,10 +242,23 @@ def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
-    for line in job_lines:
-        clean = strip_comment(line)
-        if "reproduce" in clean.lower() and TEST_REPRODUCTION_COMMAND in clean:
-            return True
+    for block in step_blocks(job_lines):
+        for index, line in enumerate(block):
+            clean = strip_comment(line).strip()
+            if clean == "run: |":
+                for nested in block[index + 1 :]:
+                    if strip_comment(nested).strip() == TEST_REPRODUCTION_ECHO:
+                        return True
+                break
+    return False
+
+
+def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
+    for block in step_blocks(job_lines):
+        for line in block:
+            clean = strip_comment(line).strip()
+            if clean.startswith(("run:", "- run:")) and "reproduce" in clean.lower() and TEST_REPRODUCTION_COMMAND in clean:
+                return True
     return False
 
 
@@ -425,7 +439,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test matrix shard must be [1, 2, 3, 4]")
         if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
             errors.append("test must run partitioned nextest through just test")
-        if not test_has_shard_reproduction_command(test_lines):
+        if test_has_inline_shard_reproduction_command(test_lines):
+            errors.append("test shard reproduction command must use YAML block scalar")
+        elif not test_has_shard_reproduction_command(test_lines):
             errors.append("test must log shard reproduction command")
         if not has_line_matching(test_lines, TEST_SHARD_CACHE_RE):
             errors.append("test cache key must include matrix.shard")

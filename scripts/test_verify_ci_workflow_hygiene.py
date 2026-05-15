@@ -417,6 +417,29 @@ def main() -> int:
         ),
     )
     assert_error(
+        "gate must check needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            """          if [[ "$build_required" == "true" ]]; then
+            if [[ "$build_result" != "success" ]]; then
+              exit 1
+            fi
+          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            exit 1
+          fi
+""",
+            """          if [[ "$build_required" == "true" ]]; then
+            echo "build required"
+          fi
+          if [[ "$build_result" != "success" ]]; then
+            exit 1
+          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
+            exit 1
+          fi
+""",
+        ),
+    )
+    assert_error(
         "deploy must be tag-gated",
         replace_once(BASE_WORKFLOW, "if: startsWith(github.ref, 'refs/tags/v')", "if: ${{ always() }}"),
     )

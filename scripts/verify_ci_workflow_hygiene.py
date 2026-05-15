@@ -30,6 +30,9 @@ BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.bu
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 EXIT_RE = re.compile(r"^\s*exit(?:\s+([0-9]+))?\s*$", re.MULTILINE)
+IF_OR_ELIF_RE = re.compile(r"^\s*(if|elif)\s+\[\[\s*(?P<condition>.*?)\s*\]\];\s*then\s*$")
+ELSE_RE = re.compile(r"^\s*else\s*$")
+FI_RE = re.compile(r"^\s*fi\s*$")
 TARGET_DIR_OPT_IN_RE = re.compile(r"^\s+include-managed-target-dir:\s*(['\"])true\1\s*$")
 SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir\s*\}\}\s*$")
 SETUP_TARGET_DIR_IF_RE = re.compile(
@@ -167,13 +170,61 @@ def gate_checks_lane_success(gate_text: str, job: str) -> bool:
 def gate_checks_build_result(gate_text: str) -> bool:
     # These literals intentionally lock the current gate shell contract.
     # Any gate refactor must update this verifier and its self-tests together.
+    required_condition = '"$build_required" == "true"'
+    true_result_condition = '"$build_result" != "success"'
+    optional_result_condition = '"$build_result" != "success" && "$build_result" != "skipped"'
+    chain = if_chain_bodies(gate_text, required_condition)
+    if chain is None:
+        return False
     return (
         'build_required="${{ needs.detector.outputs.build_required }}"' in gate_text
         and 'build_result="${{ needs.build.result }}"' in gate_text
-        and branch_exists(gate_text, "if", '"$build_required" == "true"')
-        and branch_exits(gate_text, "if", '"$build_result" != "success"')
-        and branch_exits(gate_text, "elif", '"$build_result" != "success" && "$build_result" != "skipped"')
+        and branch_exits(chain.get(("if", required_condition), ""), "if", true_result_condition)
+        and body_exits(chain.get(("elif", optional_result_condition), ""))
     )
+
+
+def if_chain_bodies(gate_text: str, condition: str) -> dict[tuple[str, str], str] | None:
+    lines = gate_text.splitlines()
+    for start, line in enumerate(lines):
+        match = IF_OR_ELIF_RE.match(line)
+        if match and match.group(1) == "if" and match.group("condition") == condition:
+            return collect_if_chain_bodies(lines, start, condition)
+    return None
+
+
+def collect_if_chain_bodies(lines: list[str], start: int, condition: str) -> dict[tuple[str, str], str] | None:
+    bodies: dict[tuple[str, str], list[str]] = {("if", condition): []}
+    current = ("if", condition)
+    depth = 0
+    for line in lines[start + 1 :]:
+        branch_match = IF_OR_ELIF_RE.match(line)
+        if branch_match:
+            keyword = branch_match.group(1)
+            branch_condition = branch_match.group("condition")
+            if depth == 0 and keyword == "elif":
+                current = ("elif", branch_condition)
+                bodies[current] = []
+                continue
+            bodies[current].append(line)
+            if keyword == "if":
+                depth += 1
+            continue
+        if ELSE_RE.match(line):
+            if depth == 0:
+                current = ("else", "")
+                bodies[current] = []
+            else:
+                bodies[current].append(line)
+            continue
+        if FI_RE.match(line):
+            if depth == 0:
+                return {key: "\n".join(value) for key, value in bodies.items()}
+            bodies[current].append(line)
+            depth -= 1
+            continue
+        bodies[current].append(line)
+    return None
 
 
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
@@ -195,6 +246,10 @@ def branch_exits(gate_text: str, keyword: str, condition: str) -> bool:
     body = branch_body(gate_text, keyword, condition)
     if body is None:
         return False
+    return body_exits(body)
+
+
+def body_exits(body: str) -> bool:
     exit_codes = [match.group(1) for match in EXIT_RE.finditer(body)]
     return exit_codes == ["1"]
 

@@ -356,7 +356,7 @@ Current blocker: claude-config #677, unless an explicitly verified transition me
 
 - PR with build skipped: `clippy` dominates because `check-aarch64` and host `clippy` run sequentially in one job.
 - PR/main with build required: `build` dominates; observed current rows range from about 19-20 minutes with some cache evidence gaps to 50m46s on exact-base cold cache.
-- Warm `test`: cache hits still spend several minutes in restore/install/nextest execution. The April smoke-tag run restored a much larger about-7.1 GB nextest cache.
+- Warm `test`: cache hits still spend several minutes in restore/install/nextest execution. The April smoke-tag run restored a much larger `7479253178 B` (about 7133 MB) nextest cache.
 - Source-fence drift: cheap deterministic structural failure currently appears in `test`, not an early structural lane.
 - Smoke tag deploy: deploy itself is short; heavy `test` and `build` work dominates before deploy, duplicating the same-SHA `main` run when the tag is pushed immediately after merge.
 

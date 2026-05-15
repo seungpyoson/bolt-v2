@@ -236,8 +236,27 @@ def without_inline_need(line: str, job: str) -> str:
     return line.replace(f"{job}, ", "").replace(f", {job}", "")
 
 
+def assert_parse_jobs_strips_comments() -> None:
+    verifier = load_verifier()
+    jobs = verifier.parse_jobs(
+        """
+name: CI
+jobs:
+  clippy:
+    name: clippy
+    steps:
+      # include-managed-target-dir: "true"
+      - run: echo "${{ steps.setup.outputs.managed_target_dir }}"
+""",
+    )
+    clippy = jobs["clippy"]
+    if any("#" in line or "include-managed-target-dir" in line for line in clippy):
+        raise AssertionError(f"parse_jobs must store stripped job lines, got: {clippy!r}")
+
+
 def main() -> int:
     assert_clean()
+    assert_parse_jobs_strips_comments()
     for job in (
         "detector",
         "fmt-check",

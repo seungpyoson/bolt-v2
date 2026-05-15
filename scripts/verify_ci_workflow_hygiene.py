@@ -79,7 +79,7 @@ def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
             jobs[current] = []
             continue
         if current is not None:
-            jobs[current].append(line)
+            jobs[current].append(clean)
 
     return jobs
 

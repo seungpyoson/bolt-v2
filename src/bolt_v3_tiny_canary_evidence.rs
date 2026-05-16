@@ -639,6 +639,10 @@ impl Phase8CanaryEvidence {
                 )
             }
             Phase8CanaryOutcome::BlockedBeforeSubmit => {
+                validate_phase8_optional_absent(
+                    stringify!(decision_evidence_ref),
+                    self.decision_evidence_ref.is_some(),
+                )?;
                 validate_phase8_live_refs_absent(self)?;
                 validate_phase8_block_reasons_present(&self.block_reasons)?;
                 validate_phase8_submit_admission_ref(

@@ -633,6 +633,30 @@ fn blocked_canary_evidence_writer_rejects_inconsistent_submit_admission() {
 }
 
 #[test]
+fn blocked_canary_evidence_writer_rejects_decision_evidence_ref() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::blocked_before_submit(
+        evidence_input(),
+        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+    );
+    evidence.decision_evidence_ref = Some(valid_evidence_ref("cccc", "dddd"));
+
+    let error = evidence
+        .write_json_file(&evidence_path)
+        .expect_err("blocked evidence must not carry decision evidence");
+
+    assert!(
+        error.to_string().contains("decision_evidence_ref"),
+        "error should mention decision evidence ref on blocked proof: {error}"
+    );
+    assert!(
+        !evidence_path.exists(),
+        "blocked proof with decision ref must not create evidence file"
+    );
+}
+
+#[test]
 fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids() {
     let evidence = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),

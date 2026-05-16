@@ -249,7 +249,7 @@ base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClient
 http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
-auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments
+auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 auto_load_debounce_milliseconds = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms
@@ -1009,7 +1009,9 @@ Presence of `[data]` means a data client is configured.
 
 - type: boolean
 - required: yes
-- maps directly to `PolymarketDataClientConfig.auto_load_missing_instruments`
+- must be `false` in the current bolt-v3 scope: validation fails closed if set to `true`
+- the pinned NautilusTrader Polymarket data client can use this flag to trigger ad-hoc instrument loads, which violates the bolt-v3 controlled-loading boundary
+- this flag is forced `false` until a dedicated controlled-loading slice owns the reviewed activation path
 
 ##### `update_instruments_interval_minutes`
 
@@ -1759,7 +1761,7 @@ base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClient
 http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
-auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments
+auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 auto_load_debounce_milliseconds = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms

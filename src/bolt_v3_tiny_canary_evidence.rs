@@ -620,6 +620,10 @@ impl Phase8CanaryEvidence {
         match self.outcome {
             Phase8CanaryOutcome::DryNoSubmitProof => {
                 validate_phase8_live_refs_absent(self)?;
+                validate_phase8_block_reasons_exact(
+                    &self.block_reasons,
+                    Phase8CanaryBlockReason::BlockedBeforeLiveOrder,
+                )?;
                 validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_REJECTED,
@@ -722,6 +726,20 @@ impl Phase8CanaryEvidence {
                 validate_phase8_evidence_ref(stringify!(post_run_hygiene_ref), post_run_hygiene_ref)
             }
         }
+    }
+}
+
+fn validate_phase8_block_reasons_exact(
+    block_reasons: &[Phase8CanaryBlockReason],
+    expected: Phase8CanaryBlockReason,
+) -> Result<()> {
+    if block_reasons == [expected] {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "phase8 canary evidence {} does not match expected outcome reason",
+            stringify!(block_reasons)
+        ))
     }
 }
 

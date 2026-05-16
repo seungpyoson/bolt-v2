@@ -553,6 +553,30 @@ fn dry_canary_evidence_writer_rejects_live_order_ref() {
 }
 
 #[test]
+fn dry_canary_evidence_writer_rejects_missing_block_reason() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    evidence.block_reasons.clear();
+
+    let error = evidence
+        .write_json_file(&evidence_path)
+        .expect_err("dry proof must carry blocked-before-live-order reason");
+
+    assert!(
+        error.to_string().contains("block_reasons"),
+        "error should mention dry proof block reasons: {error}"
+    );
+    assert!(
+        !evidence_path.exists(),
+        "dry proof without block reason must not create evidence file"
+    );
+}
+
+#[test]
 fn dry_canary_evidence_writer_rejects_existing_json_file() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("phase8-canary-evidence.json");

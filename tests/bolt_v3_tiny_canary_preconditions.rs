@@ -482,19 +482,37 @@ fn operator_approval_envelope_projects_operator_evidence_from_config() {
         envelope.operator_approval_id,
         "operator-approved-canary-001"
     );
-    assert_eq!(envelope.ssm_manifest_path, "operator/ssm-manifest.json");
+    let resolved = |relative: &str| {
+        loaded
+            .root_path
+            .parent()
+            .expect("root path should have parent")
+            .join(relative)
+            .to_string_lossy()
+            .to_string()
+    };
+    assert_eq!(
+        envelope.ssm_manifest_path,
+        resolved("operator/ssm-manifest.json")
+    );
     assert_eq!(
         envelope.strategy_input_evidence_path,
-        "operator/strategy-input.json"
+        resolved("operator/strategy-input.json")
     );
     assert_eq!(envelope.approval_not_before_unix_seconds, 1_000);
     assert_eq!(envelope.approval_not_after_unix_seconds, 2_000);
-    assert_eq!(envelope.approval_nonce_path, "operator/approval-nonce.json");
+    assert_eq!(
+        envelope.approval_nonce_path,
+        resolved("operator/approval-nonce.json")
+    );
     assert_eq!(
         envelope.approval_consumption_path,
-        "operator/approval-consumed.json"
+        resolved("operator/approval-consumed.json")
     );
-    assert_eq!(envelope.canary_evidence_path, "operator/tiny-canary.json");
+    assert_eq!(
+        envelope.canary_evidence_path,
+        resolved("operator/tiny-canary.json")
+    );
 }
 
 #[test]

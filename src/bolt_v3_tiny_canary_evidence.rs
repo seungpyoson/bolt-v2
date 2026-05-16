@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
 };
 
@@ -477,7 +477,8 @@ impl TinyCanaryOperatorApprovalEnvelope {
             head_sha: current_head_sha.to_string(),
             root_toml_path: loaded.root_path.to_string_lossy().to_string(),
             root_toml_sha256: current_root_toml_sha256.to_string(),
-            ssm_manifest_path: required_config_value(
+            ssm_manifest_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.ssm_manifest_path,
                 "[live_canary.operator_evidence].ssm_manifest_path",
             )?,
@@ -485,7 +486,8 @@ impl TinyCanaryOperatorApprovalEnvelope {
                 &operator_evidence.ssm_manifest_sha256,
                 "[live_canary.operator_evidence].ssm_manifest_sha256",
             )?,
-            strategy_input_evidence_path: required_config_value(
+            strategy_input_evidence_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.strategy_input_evidence_path,
                 "[live_canary.operator_evidence].strategy_input_evidence_path",
             )?,
@@ -497,13 +499,15 @@ impl TinyCanaryOperatorApprovalEnvelope {
                 &live_canary.approval_id,
                 "[live_canary].approval_id",
             )?,
-            canary_evidence_path: required_config_value(
+            canary_evidence_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.canary_evidence_path,
                 "[live_canary.operator_evidence].canary_evidence_path",
             )?,
             approval_not_before_unix_seconds: operator_evidence.approval_not_before_unix_seconds,
             approval_not_after_unix_seconds: operator_evidence.approval_not_after_unix_seconds,
-            approval_nonce_path: required_config_value(
+            approval_nonce_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.approval_nonce_path,
                 "[live_canary.operator_evidence].approval_nonce_path",
             )?,
@@ -511,7 +515,8 @@ impl TinyCanaryOperatorApprovalEnvelope {
                 &operator_evidence.approval_nonce_sha256,
                 "[live_canary.operator_evidence].approval_nonce_sha256",
             )?,
-            approval_consumption_path: required_config_value(
+            approval_consumption_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.approval_consumption_path,
                 "[live_canary.operator_evidence].approval_consumption_path",
             )?,
@@ -708,6 +713,13 @@ fn required_config_value(value: &str, field: &str) -> Result<String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+fn required_operator_path(root_path: &Path, value: &str, field: &str) -> Result<String> {
+    let trimmed = required_config_value(value, field)?;
+    Ok(resolve_root_relative_path(root_path, trimmed)
+        .to_string_lossy()
+        .to_string())
 }
 
 fn sha256_text(value: &str) -> String {

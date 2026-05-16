@@ -592,6 +592,26 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         "rejected approval must not create consumption evidence"
     );
 
+    let mut inverted_window_envelope = envelope.clone();
+    inverted_window_envelope.approval_not_before_unix_seconds = 2_000;
+    inverted_window_envelope.approval_not_after_unix_seconds = 1_000;
+    let inverted_window_error = inverted_window_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            1_500,
+        )
+        .expect_err("inverted approval window should fail closed");
+    assert!(
+        inverted_window_error.to_string().contains("not_after"),
+        "error should mention inverted approval window: {inverted_window_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "inverted approval window must not create consumption evidence"
+    );
+
     let mut wrong_nonce_envelope = envelope.clone();
     wrong_nonce_envelope.approval_nonce_sha256 =
         "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();

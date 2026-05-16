@@ -102,20 +102,20 @@ impl TinyCanaryStrategyInputSafetyAudit {
                 "required tiny canary strategy input evidence sha256 is empty"
             ));
         }
-        let current_sha256 = TinyCanaryOperatorApprovalEnvelope::sha256_file(path)?;
+        let bytes = fs::read(path).map_err(|source| {
+            anyhow!(
+                "failed to read tiny canary strategy input evidence `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let current_sha256 = sha256_bytes(&bytes);
         if current_sha256 != expected_sha256 {
             return Err(anyhow!(
                 "tiny canary strategy input evidence sha256 does not match current evidence"
             ));
         }
-        let file = fs::File::open(path).map_err(|source| {
-            anyhow!(
-                "failed to open tiny canary strategy input evidence `{}`: {source}",
-                path.display()
-            )
-        })?;
         let raw: TinyCanaryStrategyInputEvidenceFile =
-            serde_json::from_reader(BufReader::new(file)).map_err(|source| {
+            serde_json::from_slice(&bytes).map_err(|source| {
                 anyhow!(
                     "failed to parse tiny canary strategy input evidence `{}`: {source}",
                     path.display()

@@ -362,7 +362,8 @@ impl TinyCanaryOperatorLiveResultPaths {
                 )
             })?;
         Ok(Self {
-            decision_evidence_path: required_operator_field(
+            decision_evidence_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.decision_evidence_path,
                 "[live_canary.operator_evidence].decision_evidence_path",
             )?,
@@ -374,18 +375,22 @@ impl TinyCanaryOperatorLiveResultPaths {
                 &operator_evidence.venue_order_id_hash,
                 "[live_canary.operator_evidence].venue_order_id_hash",
             )?,
-            nt_submit_event_path: required_operator_field(
+            nt_submit_event_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.nt_submit_event_path,
                 "[live_canary.operator_evidence].nt_submit_event_path",
             )?,
-            venue_order_state_path: required_operator_field(
+            venue_order_state_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.venue_order_state_path,
                 "[live_canary.operator_evidence].venue_order_state_path",
             )?,
-            strategy_cancel_path: optional_operator_field(
+            strategy_cancel_path: optional_operator_path(
+                &loaded.root_path,
                 operator_evidence.strategy_cancel_path.as_deref(),
             ),
-            restart_reconciliation_path: required_operator_field(
+            restart_reconciliation_path: required_operator_path(
+                &loaded.root_path,
                 &operator_evidence.restart_reconciliation_path,
                 "[live_canary.operator_evidence].restart_reconciliation_path",
             )?,
@@ -557,15 +562,33 @@ fn required_operator_field(value: &str, field: &str) -> anyhow::Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn optional_operator_field(value: Option<&str>) -> Option<String> {
+fn required_operator_path(root_path: &Path, value: &str, field: &str) -> anyhow::Result<String> {
+    let value = required_operator_field(value, field)?;
+    Ok(resolve_operator_path(root_path, &value))
+}
+
+fn optional_operator_path(root_path: &Path, value: Option<&str>) -> Option<String> {
     value.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             None
         } else {
-            Some(trimmed.to_string())
+            Some(resolve_operator_path(root_path, trimmed))
         }
     })
+}
+
+fn resolve_operator_path(root_path: &Path, configured_path: &str) -> String {
+    let configured_path = Path::new(configured_path);
+    let resolved = if configured_path.is_absolute() {
+        configured_path.to_path_buf()
+    } else {
+        root_path
+            .parent()
+            .map(|parent| parent.join(configured_path))
+            .unwrap_or_else(|| configured_path.to_path_buf())
+    };
+    resolved.to_string_lossy().to_string()
 }
 
 fn required_operator_sha256(value: &str, field: &str) -> anyhow::Result<String> {

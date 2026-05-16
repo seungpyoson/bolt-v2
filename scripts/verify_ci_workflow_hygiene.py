@@ -131,8 +131,12 @@ TEST_SHARD_NAME_RE = re.compile(r"^\s+name:\s*nextest shard \$\{\{\s*matrix\.sha
 TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
 TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
-TEST_SHARED_CACHE_RE = re.compile(r"^\s+shared-key:\s*nextest-v3\s*$")
-TEST_CACHE_SAVE_IF_RE = re.compile(r"^\s+save-if:\s*\$\{\{\s*matrix\.shard\s*==\s*1\s*\}\}\s*$")
+TEST_SHARD_CACHE_KEY_RE = re.compile(r"^\s+key:\s*nextest-v3-shard-\$\{\{\s*matrix\.shard\s*\}\}-of-4\s*$")
+TEST_CACHE_WORKSPACES_RE = re.compile(
+    r"^\s+workspaces:\s*\.\s*->\s*\$\{\{\s*steps\.setup\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
+)
+TEST_CACHE_WORKSPACE_CRATES_RE = re.compile(r'^\s+cache-workspace-crates:\s*"true"\s*$')
+TEST_CACHE_RUST_ENV_HASH_RE = re.compile(r'^\s+add-rust-environment-hash-key:\s*"true"\s*$')
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
@@ -313,7 +317,11 @@ def job_has_setup_input(job_lines: list[str], name: str, value: str | None = Non
 
 
 def job_uses_managed_target_dir(job_lines: list[str]) -> bool:
-    return any("steps.setup.outputs.managed_target_dir" in strip_comment(line) for line in job_lines)
+    return any(
+        "steps.setup.outputs.managed_target_dir" in strip_comment(line)
+        or "steps.setup.outputs.managed_target_dir_relative" in strip_comment(line)
+        for line in job_lines
+    )
 
 
 def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
@@ -572,10 +580,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-shards reproduction command must use YAML block scalar")
         elif not test_has_shard_reproduction_command(test_lines):
             errors.append("test-shards must log shard reproduction command")
-        if not has_line_matching(test_lines, TEST_SHARED_CACHE_RE):
-            errors.append("test-shards cache must use shared nextest key")
-        if not has_line_matching(test_lines, TEST_CACHE_SAVE_IF_RE):
-            errors.append("test-shards cache must save only from shard 1")
+        if not has_line_matching(test_lines, TEST_SHARD_CACHE_KEY_RE):
+            errors.append("test-shards cache must use shard-scoped nextest key")
+        if not has_line_matching(test_lines, TEST_CACHE_WORKSPACES_RE):
+            errors.append("test-shards cache must map workspace to managed target dir relative output")
+        if not has_line_matching(test_lines, TEST_CACHE_WORKSPACE_CRATES_RE):
+            errors.append('test-shards cache must set cache-workspace-crates: "true"')
+        if not has_line_matching(test_lines, TEST_CACHE_RUST_ENV_HASH_RE):
+            errors.append('test-shards cache must set add-rust-environment-hash-key: "true"')
 
     if "test" in jobs:
         test_needs = extract_needs(jobs["test"])

@@ -137,9 +137,11 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          shared-key: nextest-v3
-          save-if: ${{ matrix.shard == 1 }}
+          cache-targets: true
+          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
+          cache-workspace-crates: "true"
+          add-rust-environment-hash-key: "true"
+          key: nextest-v3-shard-${{ matrix.shard }}-of-4
       - name: Show shard reproduction command
         run: |
           echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
@@ -670,12 +672,36 @@ def main() -> int:
         )
     )
     assert_error(
-        "test-shards cache must use shared nextest key",
-        replace_once(BASE_WORKFLOW, "          shared-key: nextest-v3", "          key: nextest-v3-shard-${{ matrix.shard }}-of-4"),
+        "test-shards cache must use shard-scoped nextest key",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
+            "          key: nextest-v3",
+        ),
     )
     assert_error(
-        "test-shards cache must save only from shard 1",
-        replace_once(BASE_WORKFLOW, "          save-if: ${{ matrix.shard == 1 }}\n", ""),
+        "test-shards cache must map workspace to managed target dir relative output",
+        replace_once(
+            BASE_WORKFLOW,
+            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        'test-shards cache must set cache-workspace-crates: "true"',
+        replace_once(
+            BASE_WORKFLOW,
+            '          cache-workspace-crates: "true"\n',
+            "",
+        ),
+    )
+    assert_error(
+        'test-shards cache must set add-rust-environment-hash-key: "true"',
+        replace_once(
+            BASE_WORKFLOW,
+            '          add-rust-environment-hash-key: "true"\n',
+            "",
+        ),
     )
     assert_error(
         "test-shards needs source-fence",
@@ -997,14 +1023,11 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-shards must use setup.outputs.managed_target_dir",
+        "test-shards cache must map workspace to managed target dir relative output",
         replace_once(
             BASE_WORKFLOW,
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
-            "          shared-key: nextest-v3\n"
-            "          save-if: ${{ matrix.shard == 1 }}",
-            "          shared-key: nextest-v3\n"
-            "          save-if: ${{ matrix.shard == 1 }}",
+            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n",
+            "",
         ),
     )
     assert_error(

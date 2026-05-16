@@ -261,10 +261,11 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
-          cache-targets: false
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          shared-key: nextest-v3
-          save-if: ${{ matrix.shard == 1 }}
+          cache-targets: true
+          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
+          cache-workspace-crates: "true"
+          add-rust-environment-hash-key: "true"
+          key: nextest-v3-shard-${{ matrix.shard }}-of-4
 
       - name: Install cargo-nextest
         run: |

@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
+        id: setup
         with:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
@@ -120,16 +121,16 @@ jobs:
           key: source-fence
       - run: just source-fence
 
-  test-shards:
-    name: nextest shard ${{ matrix.shard }} of 4
+  test-archive:
+    name: nextest archive
     needs: [detector, source-fence]
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      NEXTEST_ARCHIVE_KEY: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}
     steps:
       - uses: ./.github/actions/setup-environment
+        id: setup
         with:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
@@ -142,14 +143,63 @@ jobs:
           workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
           cache-workspace-crates: "true"
           add-rust-environment-hash-key: "true"
-          key: nextest-v3-shard-${{ matrix.shard }}-of-4
+          key: nextest-archive-build-v1
+      - name: Restore nextest archive
+        id: nextest-archive-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          key: ${{ env.NEXTEST_ARCHIVE_KEY }}
+      - name: Install cargo-nextest
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
+      - name: Build nextest archive
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          just test-archive "$NEXTEST_ARCHIVE_PATH"
+      - name: Save nextest archive
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          key: ${{ env.NEXTEST_ARCHIVE_KEY }}
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          if-no-files-found: error
+          retention-days: 1
+
+  test-shards:
+    name: nextest shard ${{ matrix.shard }} of 4
+    needs: test-archive
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nextest-archive
+          path: ${{ runner.temp }}/nextest-archive
       - name: Show shard reproduction command
         run: |
-          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
+          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"
       - name: Install cargo-nextest
         run: |
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
-      - run: just test -- --partition count:${{ matrix.shard }}/4
+      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" --partition count:${{ matrix.shard }}/4
 
   test:
     name: test
@@ -567,6 +617,7 @@ def main() -> int:
         "clippy",
         "check-aarch64",
         "source-fence",
+        "test-archive",
         "test-shards",
         "test",
         "build",
@@ -643,14 +694,18 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-shards must run partitioned nextest through just test",
-        replace_once(BASE_WORKFLOW, "      - run: just test -- --partition count:${{ matrix.shard }}/4", "      - run: just test"),
+        "test-shards must run partitioned nextest from archive",
+        replace_once(
+            BASE_WORKFLOW,
+            '      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" --partition count:${{ matrix.shard }}/4',
+            "      - run: just test",
+        ),
     )
     assert_error(
         "test-shards must log shard reproduction command",
         replace_once(
             BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"\n',
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"\n',
             "",
         ),
     )
@@ -658,27 +713,27 @@ def main() -> int:
         "test-shards reproduction command must use YAML block scalar",
         replace_once(
             BASE_WORKFLOW,
-            '        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
-            '        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
+            '        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
+            '        run: echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
         ),
     )
     assert_clean(
         replace_once(
             BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
-            '      - run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
+            '      - run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
         )
     )
     assert_error(
-        "test-shards cache must use shard-scoped nextest key",
+        "test-archive cache must use archive-build key",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
+            "          key: nextest-archive-build-v1",
             "          key: nextest-v3",
         ),
     )
     assert_error(
-        "test-shards cache must map workspace to managed target dir relative output",
+        "test-archive cache must map workspace to managed target dir relative output",
         replace_once(
             BASE_WORKFLOW,
             "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n",
@@ -686,7 +741,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-shards cache must set cache-on-failure: true",
+        "test-archive cache must set cache-on-failure: true",
         replace_once(
             BASE_WORKFLOW,
             "          cache-on-failure: true\n",
@@ -694,7 +749,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-shards cache must set cache-targets: true",
+        "test-archive cache must set cache-targets: true",
         replace_once(
             BASE_WORKFLOW,
             "          cache-targets: true\n",
@@ -702,7 +757,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        'test-shards cache must set cache-workspace-crates: "true"',
+        'test-archive cache must set cache-workspace-crates: "true"',
         replace_once(
             BASE_WORKFLOW,
             '          cache-workspace-crates: "true"\n',
@@ -710,7 +765,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        'test-shards cache must set add-rust-environment-hash-key: "true"',
+        'test-archive cache must set add-rust-environment-hash-key: "true"',
         replace_once(
             BASE_WORKFLOW,
             '          add-rust-environment-hash-key: "true"\n',
@@ -718,10 +773,82 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-shards needs source-fence",
+        "test-archive must restore nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [detector, source-fence]",
+            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must save nextest archive cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive cache key must include Rust and test graph inputs",
+        replace_once(
+            BASE_WORKFLOW,
+            "'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs'",
+            "'tests/**/*.rs'",
+        ),
+    )
+    assert_error(
+        "test-archive cache must not use restore-keys",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: ${{ env.NEXTEST_ARCHIVE_KEY }}\n      - name: Install cargo-nextest",
+            "          key: ${{ env.NEXTEST_ARCHIVE_KEY }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+        ),
+    )
+    assert_error(
+        "test-archive build must be skipped on archive cache hit",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Build nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'",
+            "      - name: Build nextest archive",
+        ),
+    )
+    assert_error(
+        "test-archive must upload nextest archive artifact",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Upload nextest archive\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-shards must download nextest archive artifact",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Download nextest archive\n        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-shards must not restore a per-shard Rust target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Download nextest archive",
+            "      - uses: Swatinem/rust-cache@example\n        with:\n          key: nextest-v3-shard-${{ matrix.shard }}-of-4\n      - name: Download nextest archive",
+        ),
+    )
+    assert_error(
+        "test-archive needs source-fence",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
+            "  test-archive:\n    name: nextest archive\n    needs: detector",
+        ),
+    )
+    assert_error(
+        "test-shards needs test-archive",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
             "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: detector",
         ),
     )
@@ -772,14 +899,6 @@ def main() -> int:
     assert_error(
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
-    )
-    assert_error(
-        "test-shards needs source-fence",
-        replace_once(
-            BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [detector, source-fence]",
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: detector",
-        ),
     )
     assert_error(
         "build needs detector",

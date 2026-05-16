@@ -25,6 +25,7 @@ REQUIRED_JOBS = (
     "clippy",
     "check-aarch64",
     "source-fence",
+    "test-archive",
     "test-shards",
     "test",
     "build",
@@ -43,8 +44,8 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
-CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-shards", "build")
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-archive", "build")
+CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 LIVE_NODE_TEST_GROUP = "live-node"
 LIVE_NODE_UNIT_TEST_FILTERS = (
     "binary(=bolt_v2)",
@@ -140,10 +141,16 @@ SETUP_ACTION_ORDERED_STEPS = (
 TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
 TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
 TEST_SHARD_NAME_RE = re.compile(r"^\s+name:\s*nextest shard \$\{\{\s*matrix\.shard\s*\}\} of 4\s*$")
-TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
-TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
+TEST_PARTITION_COMMAND = (
+    'just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" '
+    "--partition count:${{ matrix.shard }}/4"
+)
+TEST_REPRODUCTION_COMMAND = (
+    "just test-archive-run .nextest-archive/nextest-archive.tar.zst "
+    "--partition count:${{ matrix.shard }}/4"
+)
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
-TEST_SHARD_CACHE_KEY_RE = re.compile(r"^\s+key:\s*nextest-v3-shard-\$\{\{\s*matrix\.shard\s*\}\}-of-4\s*$")
+TEST_ARCHIVE_BUILD_CACHE_KEY_RE = re.compile(r"^\s+key:\s*nextest-archive-build-v1\s*$")
 TEST_CACHE_WORKSPACES_RE = re.compile(
     r"^\s+workspaces:\s*\.\s*->\s*\$\{\{\s*steps\.setup\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
 )
@@ -151,10 +158,32 @@ TEST_CACHE_ON_FAILURE_RE = re.compile(r"^\s+cache-on-failure:\s*true\s*$")
 TEST_CACHE_TARGETS_RE = re.compile(r"^\s+cache-targets:\s*true\s*$")
 TEST_CACHE_WORKSPACE_CRATES_RE = re.compile(r'^\s+cache-workspace-crates:\s*"true"\s*$')
 TEST_CACHE_RUST_ENV_HASH_RE = re.compile(r'^\s+add-rust-environment-hash-key:\s*"true"\s*$')
+TEST_ARCHIVE_KEY_INPUTS = (
+    "NEXTEST_ARCHIVE_KEY: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+    "'Cargo.lock'",
+    "'Cargo.toml'",
+    "'rust-toolchain.toml'",
+    "'.cargo/config.toml'",
+    "'.config/nextest.toml'",
+    "'.claude/rust-verification.toml'",
+    "'justfile'",
+    "'src/**/*.rs'",
+    "'tests/**/*.rs'",
+    "'benches/**/*.rs'",
+    "'examples/**/*.rs'",
+)
+TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
+TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
+TEST_ARCHIVE_CACHE_KEY = "key: ${{ env.NEXTEST_ARCHIVE_KEY }}"
+TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
-    r"(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|source-fence)"
+    r"(fmt-check|deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
     r"([^A-Za-z0-9_]|$)"
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
@@ -562,8 +591,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
         errors.append("source-fence must run just source-fence")
 
-    if "test-shards" in jobs and "source-fence" not in extract_needs(jobs["test-shards"]):
-        errors.append("test-shards needs source-fence")
+    if "test-archive" in jobs and "source-fence" not in extract_needs(jobs["test-archive"]):
+        errors.append("test-archive needs source-fence")
+    if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
+        errors.append("test-shards needs test-archive")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -580,8 +611,43 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
             errors.append("check-aarch64 must install aarch64 cross compiler packages")
 
+    if "test-archive" in jobs:
+        archive_lines = jobs["test-archive"]
+        archive_text = uncommented_text(archive_lines)
+        if TEST_ARCHIVE_PATH not in archive_text:
+            errors.append("test-archive must declare nextest archive path")
+        if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
+            errors.append("test-archive cache key must include Rust and test graph inputs")
+        if not has_line_matching(archive_lines, TEST_ARCHIVE_BUILD_CACHE_KEY_RE):
+            errors.append("test-archive cache must use archive-build key")
+        if not has_line_matching(archive_lines, TEST_CACHE_WORKSPACES_RE):
+            errors.append("test-archive cache must map workspace to managed target dir relative output")
+        if not has_line_matching(archive_lines, TEST_CACHE_ON_FAILURE_RE):
+            errors.append("test-archive cache must set cache-on-failure: true")
+        if not has_line_matching(archive_lines, TEST_CACHE_TARGETS_RE):
+            errors.append("test-archive cache must set cache-targets: true")
+        if not has_line_matching(archive_lines, TEST_CACHE_WORKSPACE_CRATES_RE):
+            errors.append('test-archive cache must set cache-workspace-crates: "true"')
+        if not has_line_matching(archive_lines, TEST_CACHE_RUST_ENV_HASH_RE):
+            errors.append('test-archive cache must set add-rust-environment-hash-key: "true"')
+        if TEST_ARCHIVE_RESTORE_ACTION not in archive_text:
+            errors.append("test-archive must restore nextest archive cache")
+        if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
+            errors.append("test-archive must save nextest archive cache")
+        if TEST_ARCHIVE_UPLOAD_ACTION not in archive_text:
+            errors.append("test-archive must upload nextest archive artifact")
+        if "restore-keys:" in archive_text:
+            errors.append("test-archive cache must not use restore-keys")
+        if TEST_ARCHIVE_CACHE_PATH not in archive_text or TEST_ARCHIVE_CACHE_KEY not in archive_text:
+            errors.append("test-archive cache must use archive path and key env")
+        if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 3:
+            errors.append("test-archive build must be skipped on archive cache hit")
+        if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
+            errors.append("test-archive must build through just test-archive")
+
     if "test-shards" in jobs:
         test_lines = jobs["test-shards"]
+        test_text = uncommented_text(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
             errors.append("test-shards matrix must set fail-fast false")
         if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
@@ -589,23 +655,15 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not has_line_matching(test_lines, TEST_SHARD_NAME_RE):
             errors.append("test-shards name must describe nextest shard")
         if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
-            errors.append("test-shards must run partitioned nextest through just test")
+            errors.append("test-shards must run partitioned nextest from archive")
         if test_has_inline_shard_reproduction_command(test_lines):
             errors.append("test-shards reproduction command must use YAML block scalar")
         elif not test_has_shard_reproduction_command(test_lines):
             errors.append("test-shards must log shard reproduction command")
-        if not has_line_matching(test_lines, TEST_SHARD_CACHE_KEY_RE):
-            errors.append("test-shards cache must use shard-scoped nextest key")
-        if not has_line_matching(test_lines, TEST_CACHE_WORKSPACES_RE):
-            errors.append("test-shards cache must map workspace to managed target dir relative output")
-        if not has_line_matching(test_lines, TEST_CACHE_ON_FAILURE_RE):
-            errors.append("test-shards cache must set cache-on-failure: true")
-        if not has_line_matching(test_lines, TEST_CACHE_TARGETS_RE):
-            errors.append("test-shards cache must set cache-targets: true")
-        if not has_line_matching(test_lines, TEST_CACHE_WORKSPACE_CRATES_RE):
-            errors.append('test-shards cache must set cache-workspace-crates: "true"')
-        if not has_line_matching(test_lines, TEST_CACHE_RUST_ENV_HASH_RE):
-            errors.append('test-shards cache must set add-rust-environment-hash-key: "true"')
+        if TEST_ARCHIVE_DOWNLOAD_ACTION not in test_text:
+            errors.append("test-shards must download nextest archive artifact")
+        if "Swatinem/rust-cache" in test_text:
+            errors.append("test-shards must not restore a per-shard Rust target cache")
 
     if "test" in jobs:
         test_needs = extract_needs(jobs["test"])
@@ -692,7 +750,7 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
                 errors.append(f"{workflow_name} {job} must include deny version")
             if "steps.setup.outputs.deny_version" not in uncommented_text(lines):
                 errors.append(f"{workflow_name} {job} must use setup.outputs.deny_version")
-        if "test" in lanes:
+        if lanes.intersection({"test", "test-archive", "test-archive-run"}):
             if not job_has_setup_input(lines, "include-nextest-version", '"true"'):
                 errors.append(f"{workflow_name} {job} must include nextest version")
             if "steps.setup.outputs.nextest_version" not in uncommented_text(lines):

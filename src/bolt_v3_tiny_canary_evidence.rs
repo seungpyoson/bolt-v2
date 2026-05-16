@@ -623,6 +623,7 @@ impl Phase8CanaryEvidence {
             &self.strategy_input_evidence_ref,
             &self.runtime_capture_ref,
         )?;
+        validate_phase8_nt_lifecycle_refs(&self.nt_lifecycle_refs)?;
         match self.outcome {
             Phase8CanaryOutcome::DryNoSubmitProof => {
                 validate_phase8_live_refs_absent(self)?;
@@ -933,6 +934,10 @@ fn validate_phase8_evidence_hashes(
         stringify!(runtime_capture_ref),
         stringify!(spool_root_hash),
         &runtime_capture_ref.spool_root_hash,
+    )?;
+    validate_phase8_required_text_field(
+        stringify!(runtime_capture_ref.run_id),
+        &runtime_capture_ref.run_id,
     )
 }
 
@@ -955,6 +960,30 @@ fn validate_phase8_live_order_ref(live_order_ref: &Phase8LiveOrderRef) -> Result
         stringify!(venue_order_id_hash),
         &live_order_ref.venue_order_id_hash,
     )
+}
+
+fn validate_phase8_nt_lifecycle_refs(nt_lifecycle_refs: &[Phase8NtLifecycleRef]) -> Result<()> {
+    for nt_lifecycle_ref in nt_lifecycle_refs {
+        validate_phase8_required_text_field(
+            stringify!(nt_lifecycle_refs.kind),
+            &nt_lifecycle_ref.kind,
+        )?;
+        validate_phase8_sha256_field(
+            stringify!(nt_lifecycle_refs.event_hash),
+            &nt_lifecycle_ref.event_hash,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_phase8_required_text_field(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        Err(anyhow!(
+            "phase8 live canary proof {field} must not be empty"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_phase8_nested_sha256_field(parent: &str, child: &str, value: &str) -> Result<()> {

@@ -5,8 +5,9 @@ use bolt_v2::{
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
         Phase8CanaryPreflightStatus, Phase8EvidenceRef, Phase8LiveCanaryResultRefs,
-        Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8StrategyInputSafetyAudit,
-        Phase8StrategyInputSafetyInputs, evaluate_phase8_canary_preflight,
+        Phase8LiveOrderRef, Phase8NtLifecycleRef, Phase8OperatorApprovalEnvelope,
+        Phase8StrategyInputSafetyAudit, Phase8StrategyInputSafetyInputs,
+        evaluate_phase8_canary_preflight,
     },
 };
 use rust_decimal::Decimal;
@@ -1054,6 +1055,54 @@ fn canary_evidence_writer_rejects_mutated_identity_fields() {
     assert!(
         !approval_path.exists(),
         "raw approval evidence must not create evidence file"
+    );
+}
+
+#[test]
+fn canary_evidence_writer_rejects_invalid_runtime_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+
+    let mut run_id_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    run_id_evidence.runtime_capture_ref.run_id.clear();
+    let run_id_path = temp.path().join("phase8-canary-run-id.json");
+    let error = run_id_evidence
+        .write_json_file(&run_id_path)
+        .expect_err("empty runtime capture run id must not be written");
+
+    assert!(
+        error.to_string().contains("runtime_capture_ref.run_id"),
+        "error should mention runtime capture run id: {error}"
+    );
+    assert!(
+        !run_id_path.exists(),
+        "empty runtime capture run id must not create evidence file"
+    );
+
+    let mut lifecycle_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    lifecycle_evidence
+        .nt_lifecycle_refs
+        .push(Phase8NtLifecycleRef {
+            kind: String::new(),
+            event_hash: "not-a-sha256".to_string(),
+        });
+    let lifecycle_path = temp.path().join("phase8-canary-lifecycle.json");
+    let error = lifecycle_evidence
+        .write_json_file(&lifecycle_path)
+        .expect_err("invalid NT lifecycle ref must not be written");
+
+    assert!(
+        error.to_string().contains("nt_lifecycle_refs"),
+        "error should mention NT lifecycle refs: {error}"
+    );
+    assert!(
+        !lifecycle_path.exists(),
+        "invalid NT lifecycle ref must not create evidence file"
     );
 }
 

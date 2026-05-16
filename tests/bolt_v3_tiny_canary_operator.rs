@@ -42,19 +42,43 @@ fn tiny_canary_operator_contract_is_config_owned_not_env_owned() {
 fn tiny_canary_operator_harness_is_ignored_and_uses_production_runner_shape() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
+    let start = source
+        .find(
+            "#[ignore]\nfn tiny_canary_operator_harness_requires_exact_approval_before_live_runner",
+        )
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn tiny_canary_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    let harness = &source[start..end];
 
     assert!(source.contains("#[ignore]"));
     assert!(source.contains("TinyCanaryOperatorApprovalEnvelope::from_config"));
     assert!(source.contains("validate_and_consume_against"));
     assert!(source.contains("evaluate_tiny_canary_preflight"));
     assert!(source.contains("write_json_file"));
-    assert!(source.contains("build_bolt_v3_live_node"));
-    assert!(source.contains("run_bolt_v3_live_node"));
-    assert!(source.contains("tokio::task::LocalSet"));
+    assert!(harness.contains("build_bolt_v3_live_node"));
+    assert!(harness.contains("run_bolt_v3_live_node"));
+    assert!(harness.contains("tokio::task::LocalSet"));
+    assert!(harness.contains("runtime.block_on(local.run_until"));
+    assert!(!source.contains(concat!("#[", "tokio::test")));
     assert!(!source.contains(&format!("{}{}", "LiveNode", "::run")));
     assert!(!source.contains(&format!("{}{}", ".submit", "_order(")));
     assert!(!source.contains(&format!("{}{}", ".cancel", "_order(")));
     assert!(!source.contains(&format!("{}{}", ".replace", "_order(")));
+
+    let build_live_node = harness
+        .find("let mut node = build_bolt_v3_live_node(&loaded)?;")
+        .expect("operator harness must build the LiveNode");
+    let build_runtime = harness
+        .find("let runtime = tokio::runtime::Builder::new_current_thread()")
+        .expect("operator harness must build the Tokio runtime");
+    let enter_runtime = harness
+        .find("runtime.block_on(local.run_until")
+        .expect("operator harness must enter the runner future through LocalSet");
+    assert!(build_live_node < build_runtime);
+    assert!(build_runtime < enter_runtime);
 }
 
 #[test]
@@ -86,7 +110,7 @@ fn tiny_canary_operator_harness_prevalidates_success_evidence_before_runner() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
     let start = source
-        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .rfind("fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
     let end = source[start..]
         .find("\nfn tiny_canary_current_checkout_head_sha")
@@ -131,10 +155,9 @@ fn tiny_canary_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[test]
 #[ignore]
-async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner()
--> anyhow::Result<()> {
+fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner() -> anyhow::Result<()> {
     let root_toml_path = env::var("BOLT_V3_ROOT_TOML")
         .map_err(|_| anyhow::anyhow!("BOLT_V3_ROOT_TOML must point to root TOML"))?;
     let loaded = load_bolt_v3_config(std::path::Path::new(&root_toml_path))?;
@@ -158,7 +181,15 @@ async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner
         &envelope.strategy_input_evidence_path,
         &envelope.strategy_input_evidence_sha256,
     )?;
-    let preflight = evaluate_tiny_canary_preflight(&loaded, &current_head, strategy_audit).await;
+    let preflight_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let preflight = preflight_runtime.block_on(evaluate_tiny_canary_preflight(
+        &loaded,
+        &current_head,
+        strategy_audit,
+    ));
+    drop(preflight_runtime);
     if !preflight.can_enter_live_runner() {
         let blocked_runtime_capture_ref = TinyCanaryRuntimeCaptureRef {
             spool_root_hash: tiny_canary_sha256_text(&loaded.root.persistence.catalog_directory),
@@ -182,37 +213,36 @@ async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner
     }
     let result_paths = TinyCanaryOperatorLiveResultPaths::from_config(&loaded)?;
 
+    let mut node = build_bolt_v3_live_node(&loaded)?;
+    let runtime_capture = tiny_canary_operator_runtime_capture(&loaded, &node.instance_id());
+    let evidence_input = tiny_canary_operator_evidence_input(
+        &envelope,
+        &loaded,
+        &root_hash,
+        runtime_capture.reference.clone(),
+    )?;
+    result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
+    let pre_run_snapshot = result_paths.snapshot_before_run()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let mut node = build_bolt_v3_live_node(&loaded)?;
-            let runtime_capture =
-                tiny_canary_operator_runtime_capture(&loaded, &node.instance_id());
-            let evidence_input = tiny_canary_operator_evidence_input(
-                &envelope,
-                &loaded,
-                &root_hash,
-                runtime_capture.reference.clone(),
-            )?;
-            result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
-            let pre_run_snapshot = result_paths.snapshot_before_run()?;
-            run_bolt_v3_live_node(&mut node, &loaded)
-                .await
-                .map_err(anyhow::Error::from)?;
-            let admitted_order_count = node.admitted_order_count();
-            let (decision_evidence_ref, live_order_ref, result_refs) =
-                result_paths.to_refs(&pre_run_snapshot, &runtime_capture.reference.run_id)?;
-            let evidence = TinyCanaryEvidence::live_canary_proof(
-                evidence_input,
-                decision_evidence_ref,
-                live_order_ref,
-                result_refs,
-                admitted_order_count,
-            )?;
-            evidence.write_json_file(&envelope.canary_evidence_path)?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .await?;
+    runtime.block_on(local.run_until(async {
+        run_bolt_v3_live_node(&mut node, &loaded)
+            .await
+            .map_err(anyhow::Error::from)
+    }))?;
+    let admitted_order_count = node.admitted_order_count();
+    let (decision_evidence_ref, live_order_ref, result_refs) =
+        result_paths.to_refs(&pre_run_snapshot, &runtime_capture.reference.run_id)?;
+    let evidence = TinyCanaryEvidence::live_canary_proof(
+        evidence_input,
+        decision_evidence_ref,
+        live_order_ref,
+        result_refs,
+        admitted_order_count,
+    )?;
+    evidence.write_json_file(&envelope.canary_evidence_path)?;
     Ok(())
 }
 

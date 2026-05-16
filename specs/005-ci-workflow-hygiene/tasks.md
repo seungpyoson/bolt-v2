@@ -55,7 +55,7 @@
 - [x] T021 [P] Document accepted verification-support co-scope in `specs/005-ci-workflow-hygiene/spec.md`
 - [x] T022 [P] Serialize LiveNode-heavy tests in `tests/lake_batch.rs`, `tests/nt_runtime_capture.rs`, and `tests/platform_runtime.rs`
 - [x] T023 [P] Extend pure-Rust verifier alias detection in `scripts/verify_bolt_v3_pure_rust_runtime.py` and `scripts/test_verify_bolt_v3_pure_rust_runtime.py`
-- [ ] T024 [P] Re-record exact-head verification for the spec-kit co-scope traceability fix after commit/push
+- [x] T024 [P] Re-record exact-head verification for the spec-kit co-scope traceability fix after commit/push
 
 ## Dependencies
 

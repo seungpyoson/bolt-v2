@@ -766,6 +766,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "underlying_asset": "BTC",
             "cadence_seconds": 300,
             "market_selection_rule": "active_or_next",
+            "retry_interval_seconds": 5,
+            "blocked_after_seconds": 60,
             "order_notional_target": "5.00",
             "maximum_position_notional": "10.00",
             "book_impact_cap_bps": 50
@@ -900,6 +902,66 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "book impact cap mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_retry_loaded = loaded.clone();
+    let target = mismatched_retry_loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("strategy target should be a TOML table");
+    target.insert(
+        "retry_interval_seconds".to_string(),
+        toml::Value::Integer(6),
+    );
+    let mismatched_retry_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_retry_loaded,
+            1_500,
+        )
+        .expect_err("target retry window mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_retry_error.to_string().contains(
+            "phase8 financial envelope `retry_interval_seconds` does not match loaded TOML"
+        ),
+        "error should mention mismatched retry window: {mismatched_retry_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "target retry window mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_block_loaded = loaded.clone();
+    let target = mismatched_block_loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("strategy target should be a TOML table");
+    target.insert(
+        "blocked_after_seconds".to_string(),
+        toml::Value::Integer(61),
+    );
+    let mismatched_block_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_block_loaded,
+            1_500,
+        )
+        .expect_err("target blocked window mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_block_error.to_string().contains(
+            "phase8 financial envelope `blocked_after_seconds` does not match loaded TOML"
+        ),
+        "error should mention mismatched blocked window: {mismatched_block_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "target blocked window mismatch must not create consumption evidence"
     );
 
     envelope
@@ -1226,6 +1288,8 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "underlying_asset": "BTC",
         "cadence_seconds": 300,
         "market_selection_rule": "active_or_next",
+        "retry_interval_seconds": 5,
+        "blocked_after_seconds": 60,
         "order_notional_target": "5.00",
         "maximum_position_notional": "10.00",
         "book_impact_cap_bps": 50

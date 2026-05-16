@@ -786,6 +786,8 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     underlying_asset: String,
     cadence_seconds: i64,
     market_selection_rule: String,
+    retry_interval_seconds: i64,
+    blocked_after_seconds: i64,
     order_notional_target: String,
     maximum_position_notional: String,
     book_impact_cap_bps: i64,
@@ -836,6 +838,14 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
             cadence_seconds: required_toml_integer(target, stringify!(cadence_seconds))?,
             market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
+            retry_interval_seconds: required_toml_integer(
+                target,
+                stringify!(retry_interval_seconds),
+            )?,
+            blocked_after_seconds: required_toml_integer(
+                target,
+                stringify!(blocked_after_seconds),
+            )?,
             order_notional_target: required_toml_string(
                 parameters,
                 stringify!(order_notional_target),
@@ -892,6 +902,16 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         if self.market_selection_rule != loaded.market_selection_rule {
             return Err(financial_envelope_mismatch(stringify!(
                 market_selection_rule
+            )));
+        }
+        if self.retry_interval_seconds != loaded.retry_interval_seconds {
+            return Err(financial_envelope_mismatch(stringify!(
+                retry_interval_seconds
+            )));
+        }
+        if self.blocked_after_seconds != loaded.blocked_after_seconds {
+            return Err(financial_envelope_mismatch(stringify!(
+                blocked_after_seconds
             )));
         }
         if self.order_notional_target != loaded.order_notional_target {

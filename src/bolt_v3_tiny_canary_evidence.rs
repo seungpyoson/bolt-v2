@@ -788,6 +788,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     market_selection_rule: String,
     order_notional_target: String,
     maximum_position_notional: String,
+    book_impact_cap_bps: i64,
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
@@ -813,6 +814,14 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         let parameters = strategy.parameters.as_table().ok_or_else(|| {
             anyhow!("phase8 financial envelope strategy parameters must be a TOML table")
         })?;
+        let runtime_parameters = parameters
+            .get(stringify!(runtime))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| {
+                anyhow!(
+                    "phase8 financial envelope strategy runtime parameters must be a TOML table"
+                )
+            })?;
         Ok(Self {
             max_live_order_count: live_canary.max_live_order_count,
             max_notional_per_order: live_canary.max_notional_per_order.clone(),
@@ -834,6 +843,10 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             maximum_position_notional: required_toml_string(
                 parameters,
                 stringify!(maximum_position_notional),
+            )?,
+            book_impact_cap_bps: required_toml_integer(
+                runtime_parameters,
+                stringify!(book_impact_cap_bps),
             )?,
         })
     }
@@ -890,6 +903,9 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             return Err(financial_envelope_mismatch(stringify!(
                 maximum_position_notional
             )));
+        }
+        if self.book_impact_cap_bps != loaded.book_impact_cap_bps {
+            return Err(financial_envelope_mismatch(stringify!(book_impact_cap_bps)));
         }
         Ok(())
     }

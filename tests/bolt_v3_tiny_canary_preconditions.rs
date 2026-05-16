@@ -767,7 +767,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "cadence_seconds": 300,
             "market_selection_rule": "active_or_next",
             "order_notional_target": "5.00",
-            "maximum_position_notional": "10.00"
+            "maximum_position_notional": "10.00",
+            "book_impact_cap_bps": 50
         }))
         .expect("financial envelope should serialize"),
     )
@@ -870,6 +871,35 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "financial mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_impact_loaded = loaded.clone();
+    let runtime_parameters = mismatched_impact_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .and_then(|parameters| parameters.get_mut("runtime"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("strategy runtime parameters should be a TOML table");
+    runtime_parameters.insert("book_impact_cap_bps".to_string(), toml::Value::Integer(49));
+    let mismatched_impact_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_impact_loaded,
+            1_500,
+        )
+        .expect_err("book impact cap mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_impact_error
+            .to_string()
+            .contains("phase8 financial envelope `book_impact_cap_bps` does not match loaded TOML"),
+        "error should mention mismatched book impact cap: {mismatched_impact_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "book impact cap mismatch must not create consumption evidence"
     );
 
     envelope
@@ -1197,7 +1227,8 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "cadence_seconds": 300,
         "market_selection_rule": "active_or_next",
         "order_notional_target": "5.00",
-        "maximum_position_notional": "10.00"
+        "maximum_position_notional": "10.00",
+        "book_impact_cap_bps": 50
     });
     std::fs::write(
         path,

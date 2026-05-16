@@ -32,6 +32,10 @@ inputs:
     description: Whether to install the repo's default Rust target from `just target`.
     required: false
     default: "false"
+  include-managed-target-dir:
+    description: Whether to resolve the managed target dir.
+    required: false
+    default: "false"
 
 outputs:
   rust_toolchain:
@@ -65,7 +69,7 @@ outputs:
     description: Managed Rust owner install script path.
     value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
   managed_target_dir:
-    description: Canonical managed cargo target directory for the repository.
+    description: Canonical managed cargo target directory when include-managed-target-dir is true.
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
 
 runs:
@@ -157,6 +161,7 @@ runs:
         bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
 
     - name: Resolve managed target dir
+      if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
       shell: bash
       run: |

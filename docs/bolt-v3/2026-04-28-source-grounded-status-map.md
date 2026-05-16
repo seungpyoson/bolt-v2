@@ -102,7 +102,7 @@ folded into one of the active docs above.
 | 40 | Dry-run / no-trade audit mode | Missing | Runtime capture exists, but not strategy dry-run audit | No dry-run strategy tests found | Define before execution gate. |
 | 41 | Execution gate / kill switch | Missing | No Bolt-v3 execution gate accepted | No execution-gate tests found | Required before any live order submission. |
 | 42 | Paper/shadow mode on live data | Missing | No accepted Bolt-v3 live data shadow runner found | No shadow-mode tests found | Comes after readiness, strategy construction, and dry-run audit. |
-| 43 | CI compile/test gating | Partial | `.github/workflows/ci.yml` runs `just source-fence` before `just test`, includes `source-fence` in the aggregate `gate`, and still runs `just fmt-check`, `just deny`, `just clippy`, `just test`, and conditional `just build`; `justfile` defines those recipes | `just source-fence` runs the Bolt-v3 runtime-literal, provider-leak, core-boundary, naming, status-map-current, and pure-Rust-runtime verifiers plus targeted structural cargo test filters | Source-fence proves deterministic source-boundary checks, not live trading, readiness, production sockets, or broader roadmap completeness. |
+| 43 | CI compile/test gating | Partial | `.github/workflows/ci.yml` runs `just source-fence` before `just test`, includes `source-fence` in the aggregate `gate`, and still runs `just fmt-check`, `just deny`, `just clippy`, `just test`, and conditional `just build`; `justfile` defines those recipes and `just ci-lint-workflow` for workflow-hygiene proof | `just source-fence` runs the Bolt-v3 runtime-literal, provider-leak, core-boundary, naming, status-map-current, and pure-Rust-runtime verifiers plus targeted structural cargo test filters; `just ci-lint-workflow` runs `scripts/verify_ci_workflow_hygiene.py` to prove exact CI jobs, gate/deploy needs, fmt-check/detector decoupling, and managed target-dir opt-ins | Source-fence and workflow-hygiene checks prove deterministic source-boundary and CI-topology contracts, not live trading, readiness, production sockets, or broader roadmap completeness. |
 | 44 | Release identity and deploy trust | Missing | Contract ledger marks release identity/deploy trust as accepted contract requiring evidence | No deploy-trust evidence found in this status pass | Required before canary or production. |
 | 45 | Panic gate and service policy | Missing | Contract ledger marks panic gate/systemd policy as requiring issue evidence | No panic-gate evidence found in this status pass | Required before live capital. |
 | 46 | Polymarket CLOB V2 readiness gate | Partial; live gate still blocked | Contract ledger marks CLOB V2 readiness as blocker; this branch pins NT to release `v1.226.0` (`38b912a8b0fe14e4046773973ff46a3b798b1e3e`), which contains upstream Polymarket CLOB V2 migration support | Historical pin-change audit/probe: `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-audit.md` and `docs/bolt-v3/research/nt-pin-change/2026-04-28-clob-v2-pin-probe.md`; v1.226.0 bump evidence: `docs/bolt-v3/research/nt-pin-change/2026-04-30-nt-v1-226-pin-bump.md`; compile and focused Bolt-v3 tests passed | Upstream support blocker is reduced, not closed. Bolt still needs live CLOB V2 signing/order/fill/fee validation, runtime-contract updates for pUSD/fee behavior, dependency review, and explicit production approval before this gate can close. |
@@ -125,9 +125,10 @@ The most accurate status is:
   config mapping, NT client registration, controlled connect, runtime capture,
   and pure market identity.
 - Architecture-clean provider neutrality is incomplete.
-- The next implementation work should be the provider-leak verifier and then the
-  provider-boundary refactor for adapter mapping, secret projection, and client
-  registration. It should not be a new trading feature.
+- The provider-leak verifier is implemented and wired through `just source-fence`;
+  the next implementation work should be the provider-boundary refactor for
+  adapter mapping, secret projection, and client registration. It should not be a
+  new trading feature.
 - Cost/fee facts, broad discovery/classification, and portfolio-allocation
   evidence are architecture work items, but they should follow the provider
   boundary because they need the same provider-owned binding surface.

@@ -792,6 +792,16 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     order_notional_target: String,
     maximum_position_notional: String,
     book_impact_cap_bps: i64,
+    entry_order_type: String,
+    entry_time_in_force: String,
+    entry_is_post_only: bool,
+    entry_is_reduce_only: bool,
+    entry_is_quote_quantity: bool,
+    exit_order_type: String,
+    exit_time_in_force: String,
+    exit_is_post_only: bool,
+    exit_is_reduce_only: bool,
+    exit_is_quote_quantity: bool,
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
@@ -824,6 +834,18 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 anyhow!(
                     "phase8 financial envelope strategy runtime parameters must be a TOML table"
                 )
+            })?;
+        let entry_order = parameters
+            .get(stringify!(entry_order))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| {
+                anyhow!("phase8 financial envelope strategy entry order must be a TOML table")
+            })?;
+        let exit_order = parameters
+            .get(stringify!(exit_order))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| {
+                anyhow!("phase8 financial envelope strategy exit order must be a TOML table")
             })?;
         Ok(Self {
             max_live_order_count: live_canary.max_live_order_count,
@@ -863,6 +885,19 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 runtime_parameters,
                 stringify!(book_impact_cap_bps),
             )?,
+            entry_order_type: required_toml_string(entry_order, stringify!(order_type))?,
+            entry_time_in_force: required_toml_string(entry_order, stringify!(time_in_force))?,
+            entry_is_post_only: required_toml_bool(entry_order, stringify!(is_post_only))?,
+            entry_is_reduce_only: required_toml_bool(entry_order, stringify!(is_reduce_only))?,
+            entry_is_quote_quantity: required_toml_bool(
+                entry_order,
+                stringify!(is_quote_quantity),
+            )?,
+            exit_order_type: required_toml_string(exit_order, stringify!(order_type))?,
+            exit_time_in_force: required_toml_string(exit_order, stringify!(time_in_force))?,
+            exit_is_post_only: required_toml_bool(exit_order, stringify!(is_post_only))?,
+            exit_is_reduce_only: required_toml_bool(exit_order, stringify!(is_reduce_only))?,
+            exit_is_quote_quantity: required_toml_bool(exit_order, stringify!(is_quote_quantity))?,
         })
     }
 
@@ -936,6 +971,42 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         }
         if self.book_impact_cap_bps != loaded.book_impact_cap_bps {
             return Err(financial_envelope_mismatch(stringify!(book_impact_cap_bps)));
+        }
+        if self.entry_order_type != loaded.entry_order_type {
+            return Err(financial_envelope_mismatch(stringify!(entry_order_type)));
+        }
+        if self.entry_time_in_force != loaded.entry_time_in_force {
+            return Err(financial_envelope_mismatch(stringify!(entry_time_in_force)));
+        }
+        if self.entry_is_post_only != loaded.entry_is_post_only {
+            return Err(financial_envelope_mismatch(stringify!(entry_is_post_only)));
+        }
+        if self.entry_is_reduce_only != loaded.entry_is_reduce_only {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_is_reduce_only
+            )));
+        }
+        if self.entry_is_quote_quantity != loaded.entry_is_quote_quantity {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_is_quote_quantity
+            )));
+        }
+        if self.exit_order_type != loaded.exit_order_type {
+            return Err(financial_envelope_mismatch(stringify!(exit_order_type)));
+        }
+        if self.exit_time_in_force != loaded.exit_time_in_force {
+            return Err(financial_envelope_mismatch(stringify!(exit_time_in_force)));
+        }
+        if self.exit_is_post_only != loaded.exit_is_post_only {
+            return Err(financial_envelope_mismatch(stringify!(exit_is_post_only)));
+        }
+        if self.exit_is_reduce_only != loaded.exit_is_reduce_only {
+            return Err(financial_envelope_mismatch(stringify!(exit_is_reduce_only)));
+        }
+        if self.exit_is_quote_quantity != loaded.exit_is_quote_quantity {
+            return Err(financial_envelope_mismatch(stringify!(
+                exit_is_quote_quantity
+            )));
         }
         Ok(())
     }
@@ -1096,6 +1167,16 @@ fn required_toml_integer(
     table
         .get(field)
         .and_then(toml::Value::as_integer)
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
+}
+
+fn required_toml_bool(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<bool> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_bool)
         .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
 }
 

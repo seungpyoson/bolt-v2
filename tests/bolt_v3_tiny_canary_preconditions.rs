@@ -771,7 +771,17 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "edge_threshold_basis_points": 100,
             "order_notional_target": "5.00",
             "maximum_position_notional": "10.00",
-            "book_impact_cap_bps": 50
+            "book_impact_cap_bps": 50,
+            "entry_order_type": "limit",
+            "entry_time_in_force": "fok",
+            "entry_is_post_only": false,
+            "entry_is_reduce_only": false,
+            "entry_is_quote_quantity": false,
+            "exit_order_type": "market",
+            "exit_time_in_force": "ioc",
+            "exit_is_post_only": false,
+            "exit_is_reduce_only": false,
+            "exit_is_quote_quantity": false
         }))
         .expect("financial envelope should serialize"),
     )
@@ -993,6 +1003,67 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "edge threshold mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_entry_order_loaded = loaded.clone();
+    let entry_order = mismatched_entry_order_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .and_then(|parameters| parameters.get_mut("entry_order"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("strategy entry order parameters should be a TOML table");
+    entry_order.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    let mismatched_entry_order_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_entry_order_loaded,
+            1_500,
+        )
+        .expect_err("entry order mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_entry_order_error
+            .to_string()
+            .contains("phase8 financial envelope `entry_time_in_force` does not match loaded TOML"),
+        "error should mention mismatched entry order field: {mismatched_entry_order_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "entry order mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_exit_order_loaded = loaded.clone();
+    let exit_order = mismatched_exit_order_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .and_then(|parameters| parameters.get_mut("exit_order"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("strategy exit order parameters should be a TOML table");
+    exit_order.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+    let mismatched_exit_order_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_exit_order_loaded,
+            1_500,
+        )
+        .expect_err("exit order mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_exit_order_error
+            .to_string()
+            .contains("phase8 financial envelope `exit_is_reduce_only` does not match loaded TOML"),
+        "error should mention mismatched exit order field: {mismatched_exit_order_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "exit order mismatch must not create consumption evidence"
     );
 
     envelope
@@ -1324,7 +1395,17 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "edge_threshold_basis_points": 100,
         "order_notional_target": "5.00",
         "maximum_position_notional": "10.00",
-        "book_impact_cap_bps": 50
+        "book_impact_cap_bps": 50,
+        "entry_order_type": "limit",
+        "entry_time_in_force": "fok",
+        "entry_is_post_only": false,
+        "entry_is_reduce_only": false,
+        "entry_is_quote_quantity": false,
+        "exit_order_type": "market",
+        "exit_time_in_force": "ioc",
+        "exit_is_post_only": false,
+        "exit_is_reduce_only": false,
+        "exit_is_quote_quantity": false
     });
     std::fs::write(
         path,

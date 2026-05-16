@@ -13,7 +13,7 @@
 
 - [x] T004 Add failing verifier self-tests for top-level `check-aarch64` job requirements in `scripts/test_verify_ci_workflow_hygiene.py`
 - [x] T005 Add failing verifier self-tests for four-way `test` matrix requirements in `scripts/test_verify_ci_workflow_hygiene.py`
-- [x] T006 Add failing verifier self-tests for shard reproduction command and shard-aware bounded cache key in `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T006 Add failing verifier self-tests for shard reproduction command and bounded shared nextest cache policy in `scripts/test_verify_ci_workflow_hygiene.py`
 - [x] T007 Add failing verifier self-tests proving `clippy` no longer owns aarch64 compiler install or `just check-aarch64` in `scripts/test_verify_ci_workflow_hygiene.py`
 - [x] T008 Add failing justfile passthrough evidence for `just test -- --partition count:1/4`
 
@@ -33,14 +33,14 @@
 
 **Goal**: Full nextest runs as four deterministic matrix shards through managed `just test` with one aggregate gate result.
 
-**Independent Test**: Verifier self-tests fail if the `test` job lacks shard values 1-4, `fail-fast: false`, the exact partition command, shard-aware cache key, or reproduction log.
+**Independent Test**: Verifier self-tests fail if the `test` job lacks shard values 1-4, `fail-fast: false`, the exact partition command, bounded shared nextest cache with shard-1 save guard, or reproduction log.
 
 - [x] T014 [US2] Add variadic passthrough args to `managed-test` and `test` recipes in `justfile`
 - [x] T015 [US2] Add `strategy.fail-fast: false` and `strategy.matrix.shard: [1, 2, 3, 4]` to the workflow `test` job
 - [x] T016 [US2] Change workflow `test` command to `just test -- --partition count:${{ matrix.shard }}/4`
 - [x] T017 [US2] Add shard reproduction log output to the workflow `test` job
-- [x] T018 [US2] Add bounded shard-aware nextest cache key to the workflow `test` job
-- [x] T019 [US2] Enforce matrix, partition, fail-fast, reproduction log, and shard cache invariants in `scripts/verify_ci_workflow_hygiene.py`
+- [x] T018 [US2] Add bounded shared nextest cache key and shard-1 save guard to the workflow `test` job
+- [x] T019 [US2] Enforce matrix, partition, fail-fast, reproduction log, and shared-cache invariants in `scripts/verify_ci_workflow_hygiene.py`
 - [x] T020 [US2] Extend the Python workflow verifier path for the test-shard invariants
 
 ## User Story 3 - Preserve Source-Fence Ownership (Priority: P1)

@@ -46,12 +46,13 @@
 - Exclude the canonical filters from full nextest now: rejected because the marginal speedup is small relative to the risk of an imprecise filter removing non-source-fence coverage.
 - Remove `source-fence` dependency from `test`: rejected because #342 exists to fail deterministic source-fence drift before full nextest.
 
-## Decision: Use bounded shard-aware cache keys
+## Decision: Use bounded shared nextest cache with shard-1 save
 
-**Rationale**: #332 asks for independent rust-cache keys and coordination with #195 so keys remain shard-aware but not unbounded. Host clippy and aarch64 get separate fixed keys. Test shards use a fixed `nextest-v3-shard-${{ matrix.shard }}-of-4` dimension so #195 can later tune artifact reuse without inheriting unbounded commit-specific keys.
+**Rationale**: #332 asks for independent rust-cache keys and coordination with #195 so cache behavior remains bounded and reviewable. Host clippy and aarch64 get separate fixed keys. Test shards restore from the fixed `shared-key: nextest-v3`, and only shard 1 saves it through `save-if: ${{ matrix.shard == 1 }}` so cold-cache runs avoid four concurrent nextest cache writes while #195 can still reason about warm reruns.
 
 **Alternatives considered**:
-- Keep one `nextest-v2` cache key for all shards: rejected because it makes shard cache behavior harder to reason about for #195.
+- Keep one unrestricted nextest cache key for all shards: rejected because every shard could attempt to save the same cold cache concurrently.
+- Use per-shard `nextest-v3-shard-${{ matrix.shard }}-of-4` keys: rejected after review because it makes cache-invalidating changes compile the same test binaries independently in every shard.
 - Include `github.sha` in the key: rejected because it is unbounded and would defeat warm rerun reuse.
 
 ## Decision: Extend #203 verifier only for #332 topology

@@ -84,12 +84,12 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Local tests cover report schema and zero-order guard. Ignored operator test produces real artifact only with explicit approval.
 
-- [ ] T034 [US4] Write failing schema tests for no-submit readiness report producer and gate consumer compatibility.
-- [ ] T035 [US4] Write zero-order source/behavior fence proving readiness code cannot call submit, cancel, replace, or amend order APIs.
-- [ ] T036 [US4] Implement minimal no-submit readiness runner using existing bolt-v3 build and controlled-connect/disconnect boundaries.
-- [ ] T037 [US4] Run local readiness tests with mock SSM resolver and no network.
+- [x] T034 [US4] Write failing schema tests for no-submit readiness report producer and gate consumer compatibility.
+- [x] T035 [US4] Write zero-order source/behavior fence proving readiness code cannot call submit, cancel, replace, or amend order APIs.
+- [x] T036 [US4] Implement minimal no-submit readiness runner using existing bolt-v3 build and controlled-connect/disconnect boundaries.
+- [x] T037 [US4] Run local readiness tests with mock SSM resolver and no network.
 - [ ] T038 [US4] With explicit operator approval, run ignored real SSM/venue no-submit readiness and store redacted report path outside tracked secrets.
-- [ ] T039 [US4] Run `cargo test --test bolt_v3_live_canary_gate` against the redacted report fixture shape.
+- [x] T039 [US4] Run `cargo test --test bolt_v3_live_canary_gate` against the redacted report fixture shape.
 
 ## Phase 8: Tiny-capital Live Canary (US5)
 

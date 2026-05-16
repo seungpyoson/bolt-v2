@@ -54,6 +54,7 @@ pub enum Phase8CanaryBlockReason {
     NonPositivePriceToBeatValue,
     NonPositiveExpectedEdgeBasisPoints,
     NonPositiveWorstCaseEdgeBasisPoints,
+    NonPositiveThetaScaledMinEdgeBps,
     NegativeFeeRateBasisPoints,
     MissingPriceToBeatSource,
     MissingReferenceQuoteTsEvent,
@@ -79,6 +80,7 @@ pub struct Phase8StrategyInputSafetyInputs<'a> {
     pub price_to_beat_value: Decimal,
     pub expected_edge_basis_points: Decimal,
     pub worst_case_edge_basis_points: Decimal,
+    pub theta_scaled_min_edge_bps: Decimal,
     pub fee_rate_basis_points: Decimal,
     pub price_to_beat_source: &'a str,
     pub reference_quote_ts_event: u64,
@@ -120,6 +122,9 @@ impl Phase8StrategyInputSafetyAudit {
         }
         if inputs.worst_case_edge_basis_points <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints);
+        }
+        if inputs.theta_scaled_min_edge_bps <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveThetaScaledMinEdgeBps);
         }
         if inputs.fee_rate_basis_points < Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
@@ -208,9 +213,10 @@ impl Phase8StrategyInputSafetyAudit {
             Decimal::from_str_exact(raw.theta_decay_factor.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input theta_decay_factor: {source}")
             })?;
-        Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
-            anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
-        })?;
+        let theta_scaled_min_edge_bps =
+            Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
+            })?;
         let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
             seconds_to_expiry: raw.seconds_to_expiry,
@@ -218,6 +224,7 @@ impl Phase8StrategyInputSafetyAudit {
             price_to_beat_value,
             expected_edge_basis_points,
             worst_case_edge_basis_points,
+            theta_scaled_min_edge_bps,
             fee_rate_basis_points,
             price_to_beat_source: &raw.price_to_beat_source,
             reference_quote_ts_event: raw.reference_quote_ts_event,

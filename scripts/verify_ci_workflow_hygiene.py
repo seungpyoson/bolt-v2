@@ -382,9 +382,14 @@ def runs_cargo_install_tool(text: str, tool: str) -> bool:
         except ValueError:
             continue
         for index, token in enumerate(tokens[:-1]):
-            if token != "cargo" or tokens[index + 1] != "install":
+            if token != "cargo":
                 continue
-            for arg in tokens[index + 2 :]:
+            command_index = index + 1
+            while command_index < len(tokens) and tokens[command_index].startswith("+"):
+                command_index += 1
+            if command_index >= len(tokens) or tokens[command_index] != "install":
+                continue
+            for arg in tokens[command_index + 1 :]:
                 if arg in {";", "&&", "||", "|"}:
                     break
                 if arg == tool:

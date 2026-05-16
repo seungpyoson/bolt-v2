@@ -890,6 +890,16 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo +stable install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
         "ci.yml test-shards must install cargo-nextest with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
@@ -938,6 +948,16 @@ def main() -> int:
             "      - run: just build",
             """      - run: |
           cargo install --version "${{ steps.setup.outputs.zigbuild_version }}" cargo-zigbuild
+          just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo +stable install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}"
           just build""",
         ),
     )

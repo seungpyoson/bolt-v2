@@ -469,12 +469,14 @@ pub fn resolve_secrets(
         &secrets.private_key_ssm_path,
         resolver,
     )?;
-    if !has_valid_private_key_shape(&private_key) {
+    if let Err(reason) = validate_private_key_shape(&private_key) {
         return Err(BoltV3SecretError {
             venue_key: context.venue_key.to_string(),
             field: "private_key_ssm_path".to_string(),
             ssm_path: secrets.private_key_ssm_path.clone(),
-            source: "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter".to_string(),
+            source: format!(
+                "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter: {reason}"
+            ),
         });
     }
     let api_key = resolve_field(
@@ -507,8 +509,10 @@ pub fn resolve_secrets(
     }))
 }
 
-fn has_valid_private_key_shape(private_key: &str) -> bool {
-    EvmPrivateKey::new(private_key).is_ok()
+fn validate_private_key_shape(private_key: &str) -> Result<(), String> {
+    EvmPrivateKey::new(private_key)
+        .map(|_| ())
+        .map_err(|source| source.to_string())
 }
 
 fn normalize_api_secret_padding(mut api_secret: String) -> String {

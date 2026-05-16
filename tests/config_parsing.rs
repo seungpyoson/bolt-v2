@@ -122,6 +122,22 @@ fn root_example_declares_live_canary_gate_contract() {
 }
 
 #[test]
+fn root_example_passes_root_validation_contract() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root_text = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
+        .expect("root example should be readable");
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_text).expect("root example should parse as root config");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "root example must satisfy root validation without hidden defaults or doc drift: {messages:#?}"
+    );
+}
+
+#[test]
 fn parses_nt_environment_runtime_modes_in_bolt_v3_root() {
     use bolt_v2::bolt_v3_config::{BoltV3RootConfig, RuntimeMode};
 
@@ -221,6 +237,39 @@ fn rejects_binary_oracle_zero_market_exit_runtime_fields_before_strategy_build()
                 .iter()
                 .any(|message| message.contains(field) && message.contains("positive integer")),
             "{field}=0 must fail during strategy validation, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_binary_oracle_non_positive_notional_fields_before_strategy_build() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    for (field, notional) in [
+        ("order_notional_target", "0"),
+        ("order_notional_target", "-1.00"),
+        ("maximum_position_notional", "0"),
+        ("maximum_position_notional", "-1.00"),
+    ] {
+        let current_value = match field {
+            "order_notional_target" => "5.00",
+            "maximum_position_notional" => "10.00",
+            _ => unreachable!("test only mutates binary-oracle notional fields"),
+        };
+        let mutated_strategy = strategy_toml.replace(
+            &format!("{field} = \"{current_value}\""),
+            &format!("{field} = \"{notional}\""),
+        );
+        let messages = binary_oracle_strategy_validation_messages(&mutated_strategy);
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains(field) && message.contains("positive decimal")),
+            "{field}={notional} must fail during strategy validation, got: {messages:#?}"
         );
     }
 }
@@ -376,10 +425,12 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
+snapshot_positions_interval_seconds = 0
 external_client_ids = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
@@ -388,16 +439,25 @@ generate_missing_orders = true
 inflight_check_interval_milliseconds = 2000
 inflight_check_threshold_milliseconds = 5000
 inflight_check_retries = 5
+open_check_interval_seconds = 0
 open_check_lookback_mins = 60
 open_check_threshold_milliseconds = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
 position_check_lookback_mins = 60
 position_check_threshold_milliseconds = 5000
 position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
 purge_from_database = false
+own_books_audit_interval_seconds = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -524,10 +584,12 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
+snapshot_positions_interval_seconds = 0
 external_client_ids = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
@@ -536,16 +598,25 @@ generate_missing_orders = true
 inflight_check_interval_milliseconds = 2000
 inflight_check_threshold_milliseconds = 5000
 inflight_check_retries = 5
+open_check_interval_seconds = 0
 open_check_lookback_mins = 60
 open_check_threshold_milliseconds = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
 position_check_lookback_mins = 60
 position_check_threshold_milliseconds = 5000
 position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
 purge_from_database = false
+own_books_audit_interval_seconds = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -665,10 +736,12 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
+snapshot_positions_interval_seconds = 0
 external_client_ids = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_seconds = 10
+reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
@@ -677,16 +750,25 @@ generate_missing_orders = true
 inflight_check_interval_milliseconds = 2000
 inflight_check_threshold_milliseconds = 5000
 inflight_check_retries = 5
+open_check_interval_seconds = 0
 open_check_lookback_mins = 60
 open_check_threshold_milliseconds = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_milliseconds = 100
+position_check_interval_seconds = 0
 position_check_lookback_mins = 60
 position_check_threshold_milliseconds = 5000
 position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
 purge_from_database = false
+own_books_audit_interval_seconds = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -1024,55 +1106,38 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
 }
 
 #[test]
-fn rejects_zero_optional_nt_exec_runtime_values() {
+fn accepts_explicit_zero_nt_exec_disable_fields() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    const OPTIONAL_NT_EXEC_FIELDS: &[&str] = &[
-        "snapshot_positions_interval_seconds",
-        "reconciliation_lookback_mins",
-        "open_check_interval_seconds",
-        "open_check_lookback_mins",
-        "position_check_interval_seconds",
-        "purge_closed_orders_interval_mins",
-        "purge_closed_orders_buffer_mins",
-        "purge_closed_positions_interval_mins",
-        "purge_closed_positions_buffer_mins",
-        "purge_account_events_interval_mins",
-        "purge_account_events_lookback_mins",
-        "own_books_audit_interval_seconds",
+    const ZERO_DISABLE_FIELDS: &[(&str, &str)] = &[
+        ("snapshot_positions_interval_seconds", "0"),
+        ("reconciliation_lookback_mins", "0"),
+        ("open_check_interval_seconds", "0"),
+        ("open_check_lookback_mins", "60"),
+        ("position_check_interval_seconds", "0"),
+        ("purge_closed_orders_interval_mins", "0"),
+        ("purge_closed_orders_buffer_mins", "0"),
+        ("purge_closed_positions_interval_mins", "0"),
+        ("purge_closed_positions_buffer_mins", "0"),
+        ("purge_account_events_interval_mins", "0"),
+        ("purge_account_events_lookback_mins", "0"),
+        ("own_books_audit_interval_seconds", "0"),
     ];
 
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture root should load");
-    let mut without_optional_fields = String::new();
-    for line in fixture.lines() {
-        if OPTIONAL_NT_EXEC_FIELDS
-            .iter()
-            .any(|field| line.trim_start().starts_with(&format!("{field} =")))
-        {
-            continue;
-        }
-        without_optional_fields.push_str(line);
-        without_optional_fields.push('\n');
-    }
-
-    let zero_optional_fields = OPTIONAL_NT_EXEC_FIELDS
-        .iter()
-        .map(|field| format!("{field} = 0\n"))
-        .collect::<String>();
-    let mutated = without_optional_fields.replace(
-        "snapshot_positions = false\n",
-        &format!("snapshot_positions = false\n{zero_optional_fields}"),
-    );
-
-    let root: BoltV3RootConfig =
-        toml::from_str(&mutated).expect("zero optional NT exec fixture should parse");
-    let messages = validate_root_only(&root);
-    for field in OPTIONAL_NT_EXEC_FIELDS {
-        let needle = format!("nautilus.exec_engine.{field} must be a positive integer when set");
+    for (field, current_value) in ZERO_DISABLE_FIELDS {
+        let mutated = fixture.replace(
+            &format!("{field} = {current_value}"),
+            &format!("{field} = 0"),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("explicit-zero NT exec fixture should parse");
+        let messages = validate_root_only(&root);
+        let needle = format!("nautilus.exec_engine.{field}");
         assert!(
-            messages.iter().any(|message| message == &needle),
-            "expected validation error `{needle}`, got: {messages:#?}"
+            !messages.iter().any(|message| message.contains(&needle)),
+            "explicit zero must be a TOML-owned disable value for `{field}`, got: {messages:#?}"
         );
     }
 }
@@ -1545,10 +1610,10 @@ fn rejects_binance_execution_empty_product_types() {
         .expect("empty Binance execution product_types fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("binance_reference") && m.contains("execution.product_types")),
-        "expected Binance execution product_types validation error, got: {messages:#?}"
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "expected unsupported Binance execution block rejection, got: {messages:#?}"
     );
 }
 
@@ -1564,10 +1629,10 @@ fn rejects_binance_execution_blank_account_id() {
         toml::from_str(&fixture).expect("blank account-id fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("binance_reference") && m.contains("execution.account_id")),
-        "expected Binance execution account-id validation error, got: {messages:#?}"
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "expected unsupported Binance execution block rejection, got: {messages:#?}"
     );
 }
 
@@ -1600,9 +1665,9 @@ fn rejects_empty_binance_execution_urls() {
         let messages = validate_root_only(&root);
         assert!(
             messages.iter().any(|m| m.contains("binance_reference")
-                && m.contains(&format!("execution.{field}"))
-                && m.contains("non-empty URL")),
-            "expected Binance execution URL validation error for {field}, got: {messages:#?}"
+                && m.contains("execution")
+                && m.contains("reference-data scope")),
+            "expected unsupported Binance execution block rejection for {field}, got: {messages:#?}"
         );
     }
 }

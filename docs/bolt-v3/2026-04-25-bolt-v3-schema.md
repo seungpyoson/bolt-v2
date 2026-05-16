@@ -267,6 +267,7 @@ max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+fee_cache_ttl_seconds = 300 # bolt-v3 fee-provider cache TTL
 transport_backend = "tungstenite" # NT: PolymarketExecClientConfig.transport_backend
 
 [venues.polymarket_main.secrets]
@@ -1467,6 +1468,22 @@ They are not a bolt-wide executable-order schema.
 
 They must map directly to NautilusTrader-native order semantics used by the archetype.
 
+#### `side`
+
+- type: string enum
+- allowed values for the current archetype:
+  - `buy`
+  - `sell`
+- maps to NautilusTrader `OrderSide`
+
+#### `position_side`
+
+- type: string enum
+- allowed values for the current archetype:
+  - `long`
+  - `short`
+- maps to NautilusTrader `PositionSide`
+
 #### `order_type`
 
 - type: string enum
@@ -1509,10 +1526,12 @@ The archetype must not impose a code-owned fixed order combination. These TOML f
 projected into the runtime strategy config and then into NautilusTrader's order factory.
 
 - `[parameters.entry_order]`
+  - supplies the configured NT order side and position side
   - creates the configured entry order type and time-in-force
   - supplies configured post-only, reduce-only, and quote-quantity flags
 
 - `[parameters.exit_order]`
+  - supplies the configured NT order side and position side
   - creates the configured exit order type and time-in-force
   - supplies configured post-only, reduce-only, and quote-quantity flags
 
@@ -1779,6 +1798,7 @@ max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+fee_cache_ttl_seconds = 300 # bolt-v3 fee-provider cache TTL
 transport_backend = "tungstenite" # NT: PolymarketExecClientConfig.transport_backend
 
 [venues.polymarket_main.secrets]

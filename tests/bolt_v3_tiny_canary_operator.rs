@@ -2,9 +2,9 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
-        TINY_CANARY_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, TinyCanaryBlockReason, TinyCanaryEvidence,
-        TinyCanaryEvidenceInput, TinyCanaryEvidenceRef, TinyCanaryLiveCanaryResultRefs,
-        TinyCanaryLiveOrderRef, TinyCanaryOperatorApprovalEnvelope, TinyCanaryRuntimeCaptureRef,
+        TINY_CANARY_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, TinyCanaryEvidence, TinyCanaryEvidenceInput,
+        TinyCanaryEvidenceRef, TinyCanaryLiveCanaryResultRefs, TinyCanaryLiveOrderRef,
+        TinyCanaryOperatorApprovalEnvelope, TinyCanaryRuntimeCaptureRef,
         TinyCanaryStrategyInputSafetyAudit, evaluate_tiny_canary_preflight,
         tiny_canary_sha256_text,
     },
@@ -201,11 +201,7 @@ fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner() -> 
                 &root_hash,
                 blocked_runtime_capture_ref,
             )?,
-            preflight
-                .block_reasons
-                .first()
-                .cloned()
-                .unwrap_or(TinyCanaryBlockReason::BlockedBeforeLiveOrder),
+            preflight.block_reasons.clone(),
         );
         evidence.write_json_file(&envelope.canary_evidence_path)?;
         anyhow::bail!("tiny canary preflight blocked before live runner");

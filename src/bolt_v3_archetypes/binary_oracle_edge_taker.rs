@@ -832,7 +832,14 @@ fn validate_parameter_bounds(
     let order_target_decimal = match crate::bolt_v3_validate::parse_decimal_string(
         &parameters.order_notional_target,
     ) {
-        Ok(value) => Some(value),
+        Ok(value) => {
+            if value <= Decimal::ZERO {
+                errors.push(format!(
+                    "{context}: parameters.order_notional_target must be a positive decimal string"
+                ));
+            }
+            Some(value)
+        }
         Err(reason) => {
             errors.push(format!(
                     "{context}: parameters.order_notional_target is not a valid decimal string ({reason}): `{}`",
@@ -841,13 +848,20 @@ fn validate_parameter_bounds(
             None
         }
     };
-    if let Err(reason) =
-        crate::bolt_v3_validate::parse_decimal_string(&parameters.maximum_position_notional)
-    {
-        errors.push(format!(
-            "{context}: parameters.maximum_position_notional is not a valid decimal string ({reason}): `{}`",
-            parameters.maximum_position_notional
-        ));
+    match crate::bolt_v3_validate::parse_decimal_string(&parameters.maximum_position_notional) {
+        Ok(value) => {
+            if value <= Decimal::ZERO {
+                errors.push(format!(
+                    "{context}: parameters.maximum_position_notional must be a positive decimal string"
+                ));
+            }
+        }
+        Err(reason) => {
+            errors.push(format!(
+                "{context}: parameters.maximum_position_notional is not a valid decimal string ({reason}): `{}`",
+                parameters.maximum_position_notional
+            ));
+        }
     }
     if let (Some(order_target), Some(default_max)) =
         (order_target_decimal.as_ref(), default_max_notional)

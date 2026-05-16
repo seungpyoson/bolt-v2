@@ -352,30 +352,6 @@ reason = "This label names the Binance data config URL field being validated for
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
-literal = "\"base_url_http\""
-context = "(\"base_url_http\", execution.base_url_http.as_str()),"
-classification = "validation_field_label"
-reason = "This label names the Binance execution config URL field being validated for non-empty input."
-
-[[allowed]]
-path = "src/bolt_v3_providers/binance.rs"
-kind = "string"
-literal = "\"base_url_ws\""
-context = "(\"base_url_ws\", execution.base_url_ws.as_str()),"
-classification = "validation_field_label"
-reason = "This label names the Binance execution config URL field being validated for non-empty input."
-
-[[allowed]]
-path = "src/bolt_v3_providers/binance.rs"
-kind = "string"
-literal = "\"base_url_ws_trading\""
-context = "\"base_url_ws_trading\","
-classification = "validation_field_label"
-reason = "This label names the Binance execution config URL field being validated for non-empty input."
-
-[[allowed]]
-path = "src/bolt_v3_providers/binance.rs"
-kind = "string"
 literal = "\"data.product_types\""
 context = "reject_empty_product_types(venue_key, \"data.product_types\", &cfg.product_types)?;"
 classification = "validation_field_label"
@@ -384,10 +360,10 @@ reason = "This label names the Binance data config product type field being vali
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
-literal = "\"execution.product_types\""
-context = "reject_empty_product_types(venue_key, \"execution.product_types\", &cfg.product_types)?;"
-classification = "validation_field_label"
-reason = "This label names the Binance execution config product type field being validated for non-empty input before mapping to NT."
+literal = "\"venues.{venue_key}.execution {}\""
+context = "\"venues.{venue_key}.execution {}\","
+classification = "validation_error_prefix"
+reason = "This diagnostic prefix anchors the unsupported Binance execution-block error to the configured venue key; the execution runtime remains rejected until a separate contract is approved."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"

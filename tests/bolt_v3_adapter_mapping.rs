@@ -715,7 +715,8 @@ fn binance_execution_venue_fails_closed_before_nt_mapping() {
 }
 
 #[test]
-fn adapter_mapper_rejects_empty_binance_execution_product_types_if_validation_was_bypassed() {
+fn adapter_mapper_rejects_binance_execution_before_product_type_mapping_if_validation_was_bypassed()
+{
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     binance_execution_table(&mut loaded)
@@ -723,7 +724,7 @@ fn adapter_mapper_rejects_empty_binance_execution_product_types_if_validation_wa
 
     let resolved = fixture_resolved_secrets();
     let error = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect_err("mapper must reject empty Binance execution product_types");
+        .expect_err("mapper must reject Binance execution before NT mapping");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
             venue_key,
@@ -731,10 +732,10 @@ fn adapter_mapper_rejects_empty_binance_execution_product_types_if_validation_wa
             message,
         } => {
             assert_eq!(venue_key, "binance_reference");
-            assert_eq!(field, "execution.product_types");
+            assert_eq!(field, "execution");
             assert!(
-                message.contains("must not be empty"),
-                "expected non-empty product-types message, got: {message}"
+                message.contains("reference-data scope"),
+                "expected current-scope execution rejection, got: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -742,7 +743,7 @@ fn adapter_mapper_rejects_empty_binance_execution_product_types_if_validation_wa
 }
 
 #[test]
-fn adapter_mapper_rejects_invalid_binance_execution_default_taker_fee_if_validation_was_bypassed() {
+fn adapter_mapper_rejects_binance_execution_before_taker_fee_mapping_if_validation_was_bypassed() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     binance_execution_table(&mut loaded).insert(
@@ -752,7 +753,7 @@ fn adapter_mapper_rejects_invalid_binance_execution_default_taker_fee_if_validat
 
     let resolved = fixture_resolved_secrets();
     let error = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect_err("mapper must reject invalid Binance execution default_taker_fee");
+        .expect_err("mapper must reject Binance execution before NT mapping");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
             venue_key,
@@ -760,10 +761,10 @@ fn adapter_mapper_rejects_invalid_binance_execution_default_taker_fee_if_validat
             message,
         } => {
             assert_eq!(venue_key, "binance_reference");
-            assert_eq!(field, "execution.default_taker_fee");
+            assert_eq!(field, "execution");
             assert!(
-                message.contains("non-negative"),
-                "expected non-negative taker-fee message, got: {message}"
+                message.contains("reference-data scope"),
+                "expected current-scope execution rejection, got: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),

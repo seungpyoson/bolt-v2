@@ -270,6 +270,14 @@ pub fn resolve_field(
             source: "resolved SSM value has leading or trailing whitespace".to_string(),
         });
     }
+    if value.chars().any(char::is_whitespace) {
+        return Err(BoltV3SecretError {
+            venue_key: venue_key.to_string(),
+            field: field.to_string(),
+            ssm_path: ssm_path.to_string(),
+            source: "resolved SSM value contains embedded whitespace".to_string(),
+        });
+    }
     Ok(value)
 }
 
@@ -463,9 +471,12 @@ mod tests {
         assert_eq!(error.venue_key, "polymarket_main");
         assert_eq!(error.field, "private_key_ssm_path");
         assert_eq!(error.ssm_path, "/bolt/polymarket_main/private_key");
-        assert_eq!(
-            error.source,
-            "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter"
+        assert!(
+            error.source.contains(
+                "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter:"
+            ),
+            "error should preserve adapter diagnostic detail, got: {}",
+            error.source
         );
     }
 
@@ -488,6 +499,28 @@ mod tests {
         assert_eq!(
             error.source,
             "resolved SSM value has leading or trailing whitespace"
+        );
+    }
+
+    #[test]
+    fn rejects_embedded_whitespace_resolved_secret_values_without_normalizing() {
+        let loaded = fixture_loaded_config();
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/polymarket_main/api_key" {
+                Ok::<_, &'static str>("abc def".to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err("SSM secret values must be exact and must not be normalized in code");
+
+        assert_eq!(error.venue_key, "polymarket_main");
+        assert_eq!(error.field, "api_key_ssm_path");
+        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
+        assert_eq!(
+            error.source,
+            "resolved SSM value contains embedded whitespace"
         );
     }
 

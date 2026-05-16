@@ -198,69 +198,6 @@ fn validate_exec_engine_block(
             errors.push(format!("{label} must be a positive integer"));
         }
     }
-    let optional_u64_fields: &[(&str, Option<u64>)] = &[
-        (
-            "nautilus.exec_engine.snapshot_positions_interval_seconds",
-            block.snapshot_positions_interval_seconds,
-        ),
-        (
-            "nautilus.exec_engine.open_check_interval_seconds",
-            block.open_check_interval_seconds,
-        ),
-        (
-            "nautilus.exec_engine.position_check_interval_seconds",
-            block.position_check_interval_seconds,
-        ),
-        (
-            "nautilus.exec_engine.own_books_audit_interval_seconds",
-            block.own_books_audit_interval_seconds,
-        ),
-    ];
-    for (label, value) in optional_u64_fields {
-        if *value == Some(0) {
-            errors.push(format!("{label} must be a positive integer when set"));
-        }
-    }
-    let optional_u32_fields: &[(&str, Option<u32>)] = &[
-        (
-            "nautilus.exec_engine.reconciliation_lookback_mins",
-            block.reconciliation_lookback_mins,
-        ),
-        (
-            "nautilus.exec_engine.open_check_lookback_mins",
-            block.open_check_lookback_mins,
-        ),
-        (
-            "nautilus.exec_engine.purge_closed_orders_interval_mins",
-            block.purge_closed_orders_interval_mins,
-        ),
-        (
-            "nautilus.exec_engine.purge_closed_orders_buffer_mins",
-            block.purge_closed_orders_buffer_mins,
-        ),
-        (
-            "nautilus.exec_engine.purge_closed_positions_interval_mins",
-            block.purge_closed_positions_interval_mins,
-        ),
-        (
-            "nautilus.exec_engine.purge_closed_positions_buffer_mins",
-            block.purge_closed_positions_buffer_mins,
-        ),
-        (
-            "nautilus.exec_engine.purge_account_events_interval_mins",
-            block.purge_account_events_interval_mins,
-        ),
-        (
-            "nautilus.exec_engine.purge_account_events_lookback_mins",
-            block.purge_account_events_lookback_mins,
-        ),
-    ];
-    for (label, value) in optional_u32_fields {
-        if *value == Some(0) {
-            errors.push(format!("{label} must be a positive integer when set"));
-        }
-    }
-
     for client_id in &block.external_client_ids {
         if let Err(error) = ClientId::new_checked(client_id) {
             errors.push(format!(

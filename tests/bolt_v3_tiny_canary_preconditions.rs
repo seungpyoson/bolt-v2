@@ -276,7 +276,7 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
 
     let replacement = TinyCanaryEvidence::blocked_before_submit(
         evidence_input(),
-        TinyCanaryBlockReason::RootConfigHashUnavailable,
+        vec![TinyCanaryBlockReason::RootConfigHashUnavailable],
     );
     let error = replacement
         .write_json_file(&evidence_path)
@@ -295,7 +295,10 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
 fn decision_evidence_unavailable_blocks_before_submit_admission() {
     let evidence = TinyCanaryEvidence::blocked_before_submit(
         evidence_input(),
-        TinyCanaryBlockReason::DecisionEvidenceUnavailable,
+        vec![
+            TinyCanaryBlockReason::DecisionEvidenceUnavailable,
+            TinyCanaryBlockReason::LiveCanaryGateRejected,
+        ],
     );
 
     assert_eq!(evidence.outcome, TinyCanaryOutcome::BlockedBeforeSubmit);
@@ -304,6 +307,11 @@ fn decision_evidence_unavailable_blocks_before_submit_admission() {
         evidence
             .block_reasons
             .contains(&TinyCanaryBlockReason::DecisionEvidenceUnavailable)
+    );
+    assert!(
+        evidence
+            .block_reasons
+            .contains(&TinyCanaryBlockReason::LiveCanaryGateRejected)
     );
     assert!(evidence.decision_evidence_ref.is_none());
     assert!(evidence.nt_lifecycle_refs.is_empty());

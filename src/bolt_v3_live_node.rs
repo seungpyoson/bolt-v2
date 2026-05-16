@@ -752,13 +752,13 @@ pub fn make_live_node_config(
         load_cache: exec.load_cache,
         snapshot_orders: exec.snapshot_orders,
         snapshot_positions: exec.snapshot_positions,
-        snapshot_positions_interval_secs: exec
-            .snapshot_positions_interval_seconds
-            .map(|seconds| seconds as f64),
+        snapshot_positions_interval_secs: zero_u64_as_f64_option(
+            exec.snapshot_positions_interval_seconds,
+        ),
         external_clients: strings_as_client_ids(&exec.external_client_ids),
         debug: exec.debug,
         reconciliation: exec.reconciliation,
-        reconciliation_lookback_mins: exec.reconciliation_lookback_mins,
+        reconciliation_lookback_mins: zero_u32_as_option(exec.reconciliation_lookback_mins),
         // `f64` is lossless for all practical delay values (< 2^53 seconds).
         reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_seconds as f64,
         reconciliation_instrument_ids: non_empty_strings(&exec.reconciliation_instrument_ids),
@@ -769,31 +769,37 @@ pub fn make_live_node_config(
         inflight_check_interval_ms: exec.inflight_check_interval_milliseconds,
         inflight_check_threshold_ms: exec.inflight_check_threshold_milliseconds,
         inflight_check_retries: exec.inflight_check_retries,
-        open_check_interval_secs: exec
-            .open_check_interval_seconds
-            .map(|seconds| seconds as f64),
-        open_check_lookback_mins: exec.open_check_lookback_mins,
+        open_check_interval_secs: zero_u64_as_f64_option(exec.open_check_interval_seconds),
+        open_check_lookback_mins: zero_u32_as_option(exec.open_check_lookback_mins),
         open_check_threshold_ms: exec.open_check_threshold_milliseconds,
         open_check_missing_retries: exec.open_check_missing_retries,
         open_check_open_only: exec.open_check_open_only,
         max_single_order_queries_per_cycle: exec.max_single_order_queries_per_cycle,
         single_order_query_delay_ms: exec.single_order_query_delay_milliseconds,
-        position_check_interval_secs: exec
-            .position_check_interval_seconds
-            .map(|seconds| seconds as f64),
+        position_check_interval_secs: zero_u64_as_f64_option(exec.position_check_interval_seconds),
         position_check_lookback_mins: exec.position_check_lookback_mins,
         position_check_threshold_ms: exec.position_check_threshold_milliseconds,
         position_check_retries: exec.position_check_retries,
-        purge_closed_orders_interval_mins: exec.purge_closed_orders_interval_mins,
-        purge_closed_orders_buffer_mins: exec.purge_closed_orders_buffer_mins,
-        purge_closed_positions_interval_mins: exec.purge_closed_positions_interval_mins,
-        purge_closed_positions_buffer_mins: exec.purge_closed_positions_buffer_mins,
-        purge_account_events_interval_mins: exec.purge_account_events_interval_mins,
-        purge_account_events_lookback_mins: exec.purge_account_events_lookback_mins,
+        purge_closed_orders_interval_mins: zero_u32_as_option(
+            exec.purge_closed_orders_interval_mins,
+        ),
+        purge_closed_orders_buffer_mins: zero_u32_as_option(exec.purge_closed_orders_buffer_mins),
+        purge_closed_positions_interval_mins: zero_u32_as_option(
+            exec.purge_closed_positions_interval_mins,
+        ),
+        purge_closed_positions_buffer_mins: zero_u32_as_option(
+            exec.purge_closed_positions_buffer_mins,
+        ),
+        purge_account_events_interval_mins: zero_u32_as_option(
+            exec.purge_account_events_interval_mins,
+        ),
+        purge_account_events_lookback_mins: zero_u32_as_option(
+            exec.purge_account_events_lookback_mins,
+        ),
         purge_from_database: exec.purge_from_database,
-        own_books_audit_interval_secs: exec
-            .own_books_audit_interval_seconds
-            .map(|seconds| seconds as f64),
+        own_books_audit_interval_secs: zero_u64_as_f64_option(
+            exec.own_books_audit_interval_seconds,
+        ),
         graceful_shutdown_on_error: exec.graceful_shutdown_on_error,
         qsize: exec.qsize,
         allow_overfills: exec.allow_overfills,
@@ -1007,6 +1013,14 @@ fn logger_levels(
 
 fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
+}
+
+fn zero_u32_as_option(value: u32) -> Option<u32> {
+    std::num::NonZeroU32::new(value).map(std::num::NonZeroU32::get)
+}
+
+fn zero_u64_as_f64_option(value: u64) -> Option<f64> {
+    std::num::NonZeroU64::new(value).map(|non_zero| non_zero.get() as f64)
 }
 
 /// Caller must run root validation first so the string is a valid NT `BarIntervalType`.
@@ -1426,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn live_node_config_maps_absent_lookback_to_unbounded_reconciliation() {
+    fn live_node_config_maps_zero_lookback_to_unbounded_reconciliation() {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
         assert_eq!(cfg.exec_engine.reconciliation_lookback_mins, None);

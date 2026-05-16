@@ -26,24 +26,22 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
-use std::{any::Any, collections::BTreeMap, str::FromStr, sync::Arc};
+use std::{any::Any, collections::BTreeMap, sync::Arc};
 
 use nautilus_binance::{
     common::credential::Ed25519Credential,
     common::enums::{
         BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
     },
-    config::{BinanceDataClientConfig, BinanceExecClientConfig},
-    factories::{BinanceDataClientFactory, BinanceExecutionClientFactory},
+    config::BinanceDataClientConfig,
+    factories::BinanceDataClientFactory,
 };
 use nautilus_network::websocket::TransportBackend;
-use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig,
-        BoltV3ExecutionClientAdapterConfig, BoltV3VenueAdapterConfig,
+        BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig, BoltV3VenueAdapterConfig,
     },
     bolt_v3_config::VenueBlock,
     bolt_v3_providers::{
@@ -204,16 +202,8 @@ pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
             Err(message) => errors.push(format!("venues.{key}.data: {message}")),
         }
     }
-    if let Some(execution) = &venue.execution {
-        match execution.clone().try_into::<BinanceExecutionConfig>() {
-            Ok(parsed) => {
-                errors.extend(validate_execution_bounds(key, &parsed));
-                errors.push(format!(
-                    "venues.{key}.execution is not supported in the current Binance reference-data scope; Binance execution requires a separate approved runtime contract"
-                ));
-            }
-            Err(message) => errors.push(format!("venues.{key}.execution: {message}")),
-        }
+    if venue.execution.is_some() {
+        errors.push(unsupported_binance_execution_message(key));
     }
     if let Some(secrets) = &venue.secrets {
         if venue.data.is_none() && venue.execution.is_none() {
@@ -253,61 +243,6 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
         errors.push(format!(
             "venues.{key}.data.instrument_status_poll_seconds must be a positive integer"
         ));
-    }
-    errors
-}
-
-fn validate_execution_bounds(key: &str, execution: &BinanceExecutionConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    if execution.account_id.trim().is_empty() {
-        errors.push(format!(
-            "venues.{key}.execution.account_id must not be empty"
-        ));
-    }
-    if execution.product_types.is_empty() {
-        errors.push(format!(
-            "venues.{key}.execution.product_types must not be empty"
-        ));
-    }
-    let url_fields: &[(&str, &str)] = &[
-        ("base_url_http", execution.base_url_http.as_str()),
-        ("base_url_ws", execution.base_url_ws.as_str()),
-        (
-            "base_url_ws_trading",
-            execution.base_url_ws_trading.as_str(),
-        ),
-    ];
-    for (field, value) in url_fields {
-        if value.trim().is_empty() {
-            errors.push(format!(
-                "venues.{key}.execution.{field} must be a non-empty URL"
-            ));
-        }
-    }
-    if let Err(reason) = parse_default_taker_fee(execution.default_taker_fee.as_str()) {
-        errors.push(format!(
-            "venues.{key}.execution.default_taker_fee is not a valid decimal string ({reason}): `{}`",
-            execution.default_taker_fee
-        ));
-    }
-    for (symbol, leverage) in &execution.futures_leverages {
-        if symbol.trim().is_empty() {
-            errors.push(format!(
-                "venues.{key}.execution.futures_leverages contains an empty symbol key"
-            ));
-        }
-        if *leverage == 0 {
-            errors.push(format!(
-                "venues.{key}.execution.futures_leverages[`{symbol}`] must be a positive integer"
-            ));
-        }
-    }
-    for symbol in execution.futures_margin_types.keys() {
-        if symbol.trim().is_empty() {
-            errors.push(format!(
-                "venues.{key}.execution.futures_margin_types contains an empty symbol key"
-            ));
-        }
     }
     errors
 }
@@ -357,12 +292,12 @@ pub fn resolve_secrets(
         &secrets.api_secret_ssm_path,
         resolver,
     )?;
-    validate_api_secret_shape(context.venue_key, &api_secret).map_err(|_| {
+    validate_api_secret_shape(context.venue_key, &api_secret).map_err(|reason| {
         BoltV3SecretError {
-        venue_key: context.venue_key.to_string(),
-        field: "api_secret_ssm_path".to_string(),
-        ssm_path: secrets.api_secret_ssm_path.clone(),
-        source: "resolved binance api_secret is not valid Ed25519 PKCS8 base64 key material accepted by the NautilusTrader binance adapter".to_string(),
+            venue_key: context.venue_key.to_string(),
+            field: "api_secret_ssm_path".to_string(),
+            ssm_path: secrets.api_secret_ssm_path.clone(),
+            source: format!("resolved binance api_secret is not valid Ed25519 PKCS8 base64 key material accepted by the NautilusTrader binance adapter: {reason}"),
         }
     })?;
     let api_key = resolve_field(
@@ -391,21 +326,10 @@ pub fn map_adapters(
         }
         None => None,
     };
-    let execution = match &context.venue.execution {
-        Some(value) => {
-            let secrets = secrets_for(context.venue_key, context.resolved)?;
-            Some(BoltV3ExecutionClientAdapterConfig {
-                factory: Box::new(BinanceExecutionClientFactory::new()),
-                config: Box::new(map_execution(
-                    context.root,
-                    context.venue_key,
-                    value,
-                    secrets,
-                )?),
-            })
-        }
-        None => None,
-    };
+    if context.venue.execution.is_some() {
+        return Err(unsupported_binance_execution_error(context.venue_key));
+    }
+    let execution = None;
     Ok(BoltV3VenueAdapterConfig { data, execution })
 }
 
@@ -435,35 +359,22 @@ fn map_data(
     })
 }
 
-fn map_execution(
-    root: &crate::bolt_v3_config::BoltV3RootConfig,
-    venue_key: &str,
-    value: &toml::Value,
-    secrets: &ResolvedBoltV3BinanceSecrets,
-) -> Result<BinanceExecClientConfig, BoltV3AdapterMappingError> {
-    let cfg: BinanceExecutionConfig =
-        value.clone().try_into().map_err(|error: toml::de::Error| {
-            BoltV3AdapterMappingError::SchemaParse {
-                venue_key: venue_key.to_string(),
-                block: "execution",
-                message: error.to_string(),
-            }
-        })?;
-    reject_empty_product_types(venue_key, "execution.product_types", &cfg.product_types)?;
-    let default_taker_fee =
-        parse_default_taker_fee(cfg.default_taker_fee.as_str()).map_err(|message| {
-            BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key: venue_key.to_string(),
-                field: "execution.default_taker_fee",
-                message,
-            }
-        })?;
-    let _ = (root, secrets, default_taker_fee);
-    Err(BoltV3AdapterMappingError::ValidationInvariant {
+fn unsupported_binance_execution_error(venue_key: &str) -> BoltV3AdapterMappingError {
+    BoltV3AdapterMappingError::ValidationInvariant {
         venue_key: venue_key.to_string(),
         field: "execution",
         message: "is not supported in the current Binance reference-data scope; Binance execution requires a separate approved runtime contract".to_string(),
-    })
+    }
+}
+
+fn unsupported_binance_execution_message(venue_key: &str) -> String {
+    format!(
+        "venues.{venue_key}.execution {}",
+        match unsupported_binance_execution_error(venue_key) {
+            BoltV3AdapterMappingError::ValidationInvariant { message, .. } => message,
+            _ => unreachable!("unsupported Binance execution helper only builds invariant errors"),
+        }
+    )
 }
 
 fn secrets_for<'a>(
@@ -497,14 +408,6 @@ fn reject_empty_product_types(
         });
     }
     Ok(())
-}
-
-fn parse_default_taker_fee(value: &str) -> Result<Decimal, String> {
-    let parsed = Decimal::from_str(value).map_err(|error| error.to_string())?;
-    if parsed < Decimal::ZERO {
-        return Err("must be non-negative".to_string());
-    }
-    Ok(parsed)
 }
 
 fn validate_api_secret_shape(venue_key: &str, api_secret: &str) -> Result<(), String> {

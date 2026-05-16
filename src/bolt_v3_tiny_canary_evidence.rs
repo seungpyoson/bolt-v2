@@ -323,8 +323,9 @@ impl TinyCanaryEvidence {
 
     pub fn blocked_before_submit(
         input: TinyCanaryEvidenceInput,
-        block_reason: TinyCanaryBlockReason,
+        block_reasons: Vec<TinyCanaryBlockReason>,
     ) -> Self {
+        let block_reasons = non_empty_block_reasons(block_reasons);
         Self {
             schema_version: TINY_CANARY_EVIDENCE_SCHEMA_VERSION,
             head_sha: input.head_sha,
@@ -349,7 +350,7 @@ impl TinyCanaryEvidence {
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: TinyCanaryOutcome::BlockedBeforeSubmit,
-            block_reasons: vec![block_reason],
+            block_reasons,
         }
     }
 
@@ -444,6 +445,15 @@ impl TinyCanaryEvidence {
         }
         Ok(())
     }
+}
+
+fn non_empty_block_reasons(
+    mut block_reasons: Vec<TinyCanaryBlockReason>,
+) -> Vec<TinyCanaryBlockReason> {
+    if block_reasons.is_empty() {
+        block_reasons.push(TinyCanaryBlockReason::BlockedBeforeLiveOrder);
+    }
+    block_reasons
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

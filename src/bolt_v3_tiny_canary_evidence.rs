@@ -455,6 +455,8 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub strategy_input_evidence_sha256: String,
     pub financial_envelope_path: String,
     pub financial_envelope_sha256: String,
+    pub pre_run_state_path: String,
+    pub pre_run_state_sha256: String,
     pub operator_approval_id: String,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,
@@ -480,6 +482,8 @@ impl Phase8OperatorApprovalEnvelope {
             )?,
             financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,
             financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,
+            pre_run_state_path: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,
+            pre_run_state_sha256: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256")?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
             approval_not_before_unix_seconds: required_i64_env(
                 "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
@@ -546,6 +550,7 @@ impl Phase8OperatorApprovalEnvelope {
         )?;
         self.validate_approval_not_consumed()?;
         self.validate_financial_envelope_against(loaded)?;
+        self.validate_pre_run_state_against(loaded)?;
         self.validate_approval_window(current_unix_seconds)?;
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
@@ -579,6 +584,31 @@ impl Phase8OperatorApprovalEnvelope {
             })?;
         let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
         approved.validate_matches(&loaded)
+    }
+
+    fn validate_pre_run_state_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
+        let current_pre_run_state_sha256 = Self::sha256_file(&self.pre_run_state_path)?;
+        if self.pre_run_state_sha256 != current_pre_run_state_sha256 {
+            return Err(anyhow!(
+                "phase8 operator approval pre_run_state_sha256 does not match current pre-run state evidence"
+            ));
+        }
+        let path = Path::new(&self.pre_run_state_path);
+        let file = fs::File::open(path).map_err(|source| {
+            anyhow!(
+                "failed to open phase8 pre-run state evidence `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let approved: Phase8PreRunStateEvidenceFile = serde_json::from_reader(BufReader::new(file))
+            .map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 pre-run state evidence `{}`: {source}",
+                    path.display()
+                )
+            })?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
+        approved.validate_matches_loaded(&loaded)
     }
 
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
@@ -629,6 +659,8 @@ impl Phase8OperatorApprovalEnvelope {
             root_toml_sha256: &self.root_toml_sha256,
             ssm_manifest_sha256: &self.ssm_manifest_sha256,
             strategy_input_evidence_sha256: &self.strategy_input_evidence_sha256,
+            financial_envelope_sha256: &self.financial_envelope_sha256,
+            pre_run_state_sha256: &self.pre_run_state_sha256,
             approval_id_hash: sha256_text(&self.operator_approval_id),
             approval_nonce_sha256: &self.approval_nonce_sha256,
             approval_not_before_unix_seconds: self.approval_not_before_unix_seconds,
@@ -831,6 +863,80 @@ fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 financial envelope `{field}` does not match loaded TOML")
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Phase8PreRunStateEvidenceFile {
+    strategy_venue: String,
+    configured_target_id: String,
+    host_clock_skew_within_bound: bool,
+    conflicting_open_orders_absent: bool,
+    preexisting_position_absent: bool,
+    market_state_approved: bool,
+    market_window_approved: bool,
+    funding_margin_covers_max_notional_plus_fees: bool,
+    single_runner_lock_acquired: bool,
+    egress_identity_approved: bool,
+}
+
+impl Phase8PreRunStateEvidenceFile {
+    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+        if self.strategy_venue != loaded.strategy_venue {
+            return Err(pre_run_state_mismatch(stringify!(strategy_venue)));
+        }
+        if self.configured_target_id != loaded.configured_target_id {
+            return Err(pre_run_state_mismatch(stringify!(configured_target_id)));
+        }
+        require_pre_run_clearance(
+            stringify!(host_clock_skew_within_bound),
+            self.host_clock_skew_within_bound,
+        )?;
+        require_pre_run_clearance(
+            stringify!(conflicting_open_orders_absent),
+            self.conflicting_open_orders_absent,
+        )?;
+        require_pre_run_clearance(
+            stringify!(preexisting_position_absent),
+            self.preexisting_position_absent,
+        )?;
+        require_pre_run_clearance(
+            stringify!(market_state_approved),
+            self.market_state_approved,
+        )?;
+        require_pre_run_clearance(
+            stringify!(market_window_approved),
+            self.market_window_approved,
+        )?;
+        require_pre_run_clearance(
+            stringify!(funding_margin_covers_max_notional_plus_fees),
+            self.funding_margin_covers_max_notional_plus_fees,
+        )?;
+        require_pre_run_clearance(
+            stringify!(single_runner_lock_acquired),
+            self.single_runner_lock_acquired,
+        )?;
+        require_pre_run_clearance(
+            stringify!(egress_identity_approved),
+            self.egress_identity_approved,
+        )
+    }
+}
+
+fn require_pre_run_clearance(field: &'static str, satisfied: bool) -> Result<()> {
+    if satisfied {
+        Ok(())
+    } else {
+        Err(pre_run_state_blocked(field))
+    }
+}
+
+fn pre_run_state_mismatch(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 pre-run state `{field}` does not match loaded TOML")
+}
+
+fn pre_run_state_blocked(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 pre-run state `{field}` is not satisfied")
+}
+
 fn required_toml_string(
     table: &toml::map::Map<String, toml::Value>,
     field: &'static str,
@@ -860,6 +966,8 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     root_toml_sha256: &'a str,
     ssm_manifest_sha256: &'a str,
     strategy_input_evidence_sha256: &'a str,
+    financial_envelope_sha256: &'a str,
+    pre_run_state_sha256: &'a str,
     approval_id_hash: String,
     approval_nonce_sha256: &'a str,
     approval_not_before_unix_seconds: i64,

@@ -36,7 +36,7 @@
 
 No-submit readiness proof requires explicit operator approval, real SSM resolution, and real NT venue connect/disconnect with zero orders.
 
-Tiny-capital proof requires exact commit SHA, config checksum, time-bound approval id, one-shot approval nonce consumption evidence, cap values, NT submit evidence, venue accept/fill/reject evidence, strategy-driven cancel evidence if order remains open, and restart reconciliation evidence.
+Tiny-capital proof requires exact commit SHA, config checksum, time-bound approval id, one-shot approval nonce consumption evidence, cap values, financial envelope evidence, pre-run host/account/market/funding/runner/egress state evidence, NT submit evidence, venue accept/fill/reject evidence, strategy-driven cancel evidence if order remains open, and restart reconciliation evidence.
 
 ## Phase 6 Boundary
 

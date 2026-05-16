@@ -396,6 +396,8 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         strategy_input_evidence_sha256: "expected-strategy-input-hash".to_string(),
         financial_envelope_path: "phase8-financial-envelope.json".to_string(),
         financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
+        pre_run_state_path: "phase8-pre-run-state.json".to_string(),
+        pre_run_state_sha256: "expected-pre-run-state-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -452,6 +454,10 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     let financial_envelope_hash =
         Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
             .expect("financial envelope hash should compute");
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+        .expect("pre-run state hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
     let envelope = Phase8OperatorApprovalEnvelope {
@@ -464,6 +470,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         strategy_input_evidence_sha256: strategy_input_hash,
         financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
         financial_envelope_sha256: financial_envelope_hash,
+        pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
+        pre_run_state_sha256: pre_run_state_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -602,6 +610,8 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         strategy_input_evidence_sha256: strategy_input_hash,
         financial_envelope_path: "phase8-financial-envelope.json".to_string(),
         financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
+        pre_run_state_path: "phase8-pre-run-state.json".to_string(),
+        pre_run_state_sha256: "expected-pre-run-state-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -663,6 +673,8 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         strategy_input_evidence_sha256: strategy_input_hash,
         financial_envelope_path: "phase8-financial-envelope.json".to_string(),
         financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
+        pre_run_state_path: "phase8-pre-run-state.json".to_string(),
+        pre_run_state_sha256: "expected-pre-run-state-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -737,6 +749,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     let financial_envelope_hash =
         Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
             .expect("financial envelope hash should compute");
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+        .expect("pre-run state hash should compute");
     let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
     std::fs::write(
         &approval_nonce_path,
@@ -763,6 +779,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         strategy_input_evidence_sha256: strategy_input_hash,
         financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
         financial_envelope_sha256: financial_envelope_hash,
+        pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
+        pre_run_state_sha256: pre_run_state_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -837,6 +855,130 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     );
 }
 
+#[test]
+fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearances() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
+    )
+    .expect("manifest should write");
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+        .expect("manifest hash should compute");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
+    let financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+            .expect("financial envelope hash should compute");
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+        .expect("pre-run state hash should compute");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
+    std::fs::write(
+        &approval_nonce_path,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+    )
+    .expect("approval nonce should write");
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+        .expect("approval nonce hash should compute");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: "expected-head".to_string(),
+        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_sha256: "expected-config-hash".to_string(),
+        ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256: manifest_hash,
+        strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256: strategy_input_hash,
+        financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
+        financial_envelope_sha256: financial_envelope_hash,
+        pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
+        pre_run_state_sha256: pre_run_state_hash,
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
+        approval_nonce_sha256: approval_nonce_hash,
+        approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+    };
+
+    let mut wrong_hash_envelope = envelope.clone();
+    wrong_hash_envelope.pre_run_state_sha256 =
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();
+    let wrong_hash_error = wrong_hash_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("pre-run state hash mismatch should fail closed");
+    assert!(
+        wrong_hash_error
+            .to_string()
+            .contains("pre_run_state_sha256"),
+        "error should mention pre-run state hash mismatch: {wrong_hash_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "pre-run state mismatch must not create consumption evidence"
+    );
+
+    write_phase8_pre_run_state(&pre_run_state_path, true);
+    let blocked_pre_run_state_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+            .expect("pre-run state hash should compute");
+    let mut blocked_envelope = envelope.clone();
+    blocked_envelope.pre_run_state_sha256 = blocked_pre_run_state_hash;
+    let blocked_error = blocked_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("unsafe pre-run state should fail closed");
+    assert!(
+        blocked_error
+            .to_string()
+            .contains("preexisting_position_absent"),
+        "error should mention blocked pre-run clearance: {blocked_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "unsafe pre-run state must not create consumption evidence"
+    );
+
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect("matching pre-run state should pass and consume approval");
+    assert!(
+        approval_consumption_path.exists(),
+        "matching pre-run state should create consumption evidence"
+    );
+}
+
 fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -897,6 +1039,26 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         serde_json::to_vec(&json).expect("financial envelope should serialize"),
     )
     .expect("financial envelope should write");
+}
+
+fn write_phase8_pre_run_state(path: &std::path::Path, has_preexisting_position: bool) {
+    let json = serde_json::json!({
+        "strategy_venue": "polymarket_main",
+        "configured_target_id": "btc_updown_5m",
+        "host_clock_skew_within_bound": true,
+        "conflicting_open_orders_absent": true,
+        "preexisting_position_absent": !has_preexisting_position,
+        "market_state_approved": true,
+        "market_window_approved": true,
+        "funding_margin_covers_max_notional_plus_fees": true,
+        "single_runner_lock_acquired": true,
+        "egress_identity_approved": true
+    });
+    std::fs::write(
+        path,
+        serde_json::to_vec(&json).expect("pre-run state should serialize"),
+    )
+    .expect("pre-run state should write");
 }
 
 fn runtime_capture_ref() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8RuntimeCaptureRef {

@@ -953,6 +953,111 @@ fn live_canary_evidence_rejects_invalid_cap_values() {
 }
 
 #[test]
+fn canary_evidence_writer_rejects_mutated_cap_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+
+    let mut order_count_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    order_count_evidence.max_live_order_count = 2;
+    let order_count_path = temp.path().join("phase8-canary-order-count.json");
+    let error = order_count_evidence
+        .write_json_file(&order_count_path)
+        .expect_err("mutated live order cap must not be written");
+
+    assert!(
+        error.to_string().contains("max_live_order_count"),
+        "error should mention invalid live order cap: {error}"
+    );
+    assert!(
+        !order_count_path.exists(),
+        "mutated order cap evidence must not create evidence file"
+    );
+
+    let mut notional_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    notional_evidence.max_notional_per_order = Decimal::ZERO.to_string();
+    let notional_path = temp.path().join("phase8-canary-notional.json");
+    let error = notional_evidence
+        .write_json_file(&notional_path)
+        .expect_err("mutated non-positive notional cap must not be written");
+
+    assert!(
+        error.to_string().contains("max_notional_per_order"),
+        "error should mention invalid notional cap: {error}"
+    );
+    assert!(
+        !notional_path.exists(),
+        "mutated notional evidence must not create evidence file"
+    );
+}
+
+#[test]
+fn canary_evidence_writer_rejects_mutated_identity_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+
+    let mut schema_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    schema_evidence.schema_version = 0;
+    let schema_path = temp.path().join("phase8-canary-schema.json");
+    let error = schema_evidence
+        .write_json_file(&schema_path)
+        .expect_err("mutated schema version must not be written");
+
+    assert!(
+        error.to_string().contains("schema_version"),
+        "error should mention schema version: {error}"
+    );
+    assert!(
+        !schema_path.exists(),
+        "mutated schema evidence must not create evidence file"
+    );
+
+    let mut head_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    head_evidence.head_sha.clear();
+    let head_path = temp.path().join("phase8-canary-head.json");
+    let error = head_evidence
+        .write_json_file(&head_path)
+        .expect_err("empty head sha must not be written");
+
+    assert!(
+        error.to_string().contains("head_sha"),
+        "error should mention head sha: {error}"
+    );
+    assert!(
+        !head_path.exists(),
+        "empty head evidence must not create evidence file"
+    );
+
+    let mut approval_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    approval_evidence.approval_id_hash = "operator-approved-canary-001".to_string();
+    let approval_path = temp.path().join("phase8-canary-approval.json");
+    let error = approval_evidence
+        .write_json_file(&approval_path)
+        .expect_err("raw approval id must not be written as approval hash");
+
+    assert!(
+        error.to_string().contains("approval_id_hash"),
+        "error should mention approval id hash: {error}"
+    );
+    assert!(
+        !approval_path.exists(),
+        "raw approval evidence must not create evidence file"
+    );
+}
+
+#[test]
 fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),

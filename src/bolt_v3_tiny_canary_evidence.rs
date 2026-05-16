@@ -610,6 +610,12 @@ impl Phase8CanaryEvidence {
     }
 
     fn validate_before_write(&self) -> Result<()> {
+        validate_phase8_canary_identity_fields(
+            self.schema_version,
+            &self.head_sha,
+            &self.approval_id_hash,
+        )?;
+        validate_phase8_canary_cap_values(self.max_live_order_count, &self.max_notional_per_order)?;
         validate_phase8_evidence_hashes(
             &self.root_config_sha256,
             &self.ssm_manifest_sha256,
@@ -727,6 +733,53 @@ impl Phase8CanaryEvidence {
             }
         }
     }
+}
+
+fn validate_phase8_canary_identity_fields(
+    schema_version: u32,
+    head_sha: &str,
+    approval_id_hash: &str,
+) -> Result<()> {
+    if schema_version != PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION {
+        return Err(anyhow!(
+            "phase8 canary evidence {} expected {PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION} got {schema_version}",
+            stringify!(schema_version)
+        ));
+    }
+    if head_sha.trim().is_empty() {
+        return Err(anyhow!(
+            "phase8 canary evidence {} must not be empty",
+            stringify!(head_sha)
+        ));
+    }
+    validate_phase8_sha256_field(stringify!(approval_id_hash), approval_id_hash)
+}
+
+fn validate_phase8_canary_cap_values(
+    max_live_order_count: u32,
+    max_notional_per_order: &str,
+) -> Result<()> {
+    if max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
+        return Err(anyhow!(
+            "phase8 canary evidence {} expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {max_live_order_count}",
+            stringify!(max_live_order_count)
+        ));
+    }
+    let max_notional_per_order = max_notional_per_order
+        .parse::<Decimal>()
+        .map_err(|source| {
+            anyhow!(
+                "phase8 canary evidence {} must be a decimal: {source}",
+                stringify!(max_notional_per_order)
+            )
+        })?;
+    if max_notional_per_order <= Decimal::ZERO {
+        return Err(anyhow!(
+            "phase8 canary evidence {} must be positive",
+            stringify!(max_notional_per_order)
+        ));
+    }
+    Ok(())
 }
 
 fn validate_phase8_block_reasons_exact(

@@ -35,6 +35,7 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_controlled_connect",
     "bolt_v3_credential_log_suppression",
     "bolt_v3_live_canary_gate",
+    "bolt_v3_readiness",
     "bolt_v3_strategy_registration",
     "bolt_v3_submit_admission",
     "bolt_v3_tiny_canary_operator",

@@ -53,6 +53,15 @@
 - [x] T019 Run `git diff --check`
 - [x] T020 Update PR body with exact-head CI and residual #332/#195/#205/#344/#340 scope
 
+## Phase 7: Prebuilt CI Tool Install Contract
+
+- [x] T021 [P] Add failing verifier self-tests for source-built `cargo-deny`, `cargo-nextest`, and `cargo-zigbuild` regressions in `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T022 [P] Switch CI/advisory Rust helper tool installs to prebuilt paths in `.github/workflows/ci.yml` and `.github/workflows/advisory.yml`
+- [x] T023 Add pinned `cargo-zigbuild` Linux x86_64 archive SHA256 to `justfile`
+- [x] T024 Export `zigbuild_x86_64_unknown_linux_gnu_sha256` from `.github/actions/setup-environment/action.yml`
+- [x] T025 Enforce install-action pinning, `fallback: none`, source-install rejection, full cargo-zigbuild install steps, and pinned SHA256 use in `scripts/verify_ci_workflow_hygiene.py`
+- [x] T026 Update `spec.md`, `quickstart.md`, `data-model.md`, `research.md`, `plan.md`, and checklist docs for the prebuilt install contract
+
 ## Dependencies
 
 - T003 before T004.
@@ -67,6 +76,7 @@
 - T001 and T002 can run in parallel.
 - T006-T008 can be implemented together after parser foundation exists.
 - T009 and T012/T013 touch different files and can proceed after tests define the contract.
+- T021 and T022 can run after T004 because the verifier parser already exists.
 
 ## Implementation Strategy
 

@@ -5,7 +5,7 @@
 
 ## Summary
 
-Implement #203 as a stacked follow-up to #342. Add a deterministic, standard-library workflow hygiene verifier with self-tests; wire it into `just ci-lint-workflow`; remove unnecessary `fmt-check` detector serialization; make managed target-dir setup opt-in; and add direct deploy needs for defense-in-depth. Keep the slice limited to current #203 workflow hygiene surfaces and explicitly leave #332, #195, #205, #344, and #340 to their own issues.
+Implement #203 as a stacked follow-up to #342. Add a deterministic, standard-library workflow hygiene verifier with self-tests; wire it into `just ci-lint-workflow`; remove unnecessary `fmt-check` detector serialization; make managed target-dir setup opt-in; add direct deploy needs for defense-in-depth; and enforce the prebuilt CI build-tool install contract used by the #250 priority-item-1 slice. Keep the slice limited to current workflow hygiene surfaces and explicitly leave #332, #195, #205, #344, and #340 to their own issues.
 
 ## Technical Context
 
@@ -15,7 +15,7 @@ Implement #203 as a stacked follow-up to #342. Add a deterministic, standard-lib
 **Testing**: TDD with `scripts/test_verify_ci_workflow_hygiene.py`, `scripts/verify_ci_workflow_hygiene.py`, `just ci-lint-workflow`, `just fmt-check`, `git diff --check`, exact-head CI
 **Target Platform**: GitHub Actions `ubuntu-latest`
 **Project Type**: Rust live trading binary with CI workflow automation
-**Performance Goals**: Remove detector serialization from `fmt-check`; avoid managed target-dir resolution in non-target-cache lanes; preserve fail-closed merge/deploy gate semantics
+**Performance Goals**: Remove detector serialization from `fmt-check`; avoid managed target-dir resolution in non-target-cache lanes; preserve fail-closed merge/deploy gate semantics; prevent CI regressions back to source-building `cargo-deny`, `cargo-nextest`, or `cargo-zigbuild`
 **Constraints**: no new unpinned dependencies, no runtime behavior changes, no #332 sharding, no #195 artifact retention, no #205 deploy reuse, no #344 pass-stub, no #340 config relocation, no merge without approval
 **Scale/Scope**: One #203 workflow hygiene slice on top of #342 source-fence topology
 
@@ -40,6 +40,7 @@ Detailed decisions are in [research.md](research.md).
 - Make managed target-dir resolution opt-in because only target-cache jobs use it.
 - Add direct deploy needs while retaining the aggregate `gate`.
 - Do not pre-lint absent #332/#205/#344 topology.
+- Enforce pinned prebuilt installs for CI Rust helper tools: `taiki-e/install-action` for cargo-deny/nextest and an in-repo SHA256-checked cargo-zigbuild archive.
 
 ## Phase 1 Design Summary
 
@@ -49,9 +50,9 @@ Implementation surfaces:
 
 - `scripts/test_verify_ci_workflow_hygiene.py`: self-tests for missing job, needs, gate result, deploy direct needs, and target-dir opt-in failures.
 - `scripts/verify_ci_workflow_hygiene.py`: parser and invariant verifier.
-- `justfile`: run the self-tests and verifier inside `ci-lint-workflow`.
-- `.github/actions/setup-environment/action.yml`: add target-dir opt-in.
-- `.github/workflows/ci.yml`: remove `fmt-check needs: detector`, set target-dir opt-ins, and add deploy direct needs.
+- `justfile`: run the self-tests and verifier inside `ci-lint-workflow`; keep the pinned cargo-zigbuild Linux x86_64 archive SHA256 beside the pinned tool version.
+- `.github/actions/setup-environment/action.yml`: add target-dir opt-in and export the cargo-zigbuild archive SHA256 under `include-build-values`.
+- `.github/workflows/ci.yml`: remove `fmt-check needs: detector`, set target-dir opt-ins, add deploy direct needs, and use prebuilt Rust helper-tool installs.
 
 Explicitly out-of-scope surfaces:
 

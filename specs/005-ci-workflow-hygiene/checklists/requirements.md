@@ -10,12 +10,14 @@
 - [x] CHK002 Are #333 conditional requirements for #342 represented because #342 exists in the stacked base? [Completeness, Spec FR-005]
 - [x] CHK003 Are #332, #205, and #344 conditional requirements explicitly excluded until their workflow surfaces exist? [Completeness, Spec Edge Cases]
 - [x] CHK004 Are local and exact-head CI verification requirements specified? [Completeness, Spec FR-013, SC-004]
+- [x] CHK004A Is the prebuilt CI tool install contract represented for cargo-deny, cargo-nextest, cargo-zigbuild, action fallback behavior, and pinned cargo-zigbuild SHA256? [Completeness, Spec FR-014, SC-006]
 
 ## Requirement Clarity
 
 - [x] CHK005 Are exact required job ids listed by name instead of described generically? [Clarity, Spec FR-003]
 - [x] CHK006 Is "lane-specific setup trimming" defined as managed target-dir opt-in, not removal of the managed Rust owner from fmt-check? [Clarity, Spec FR-009..FR-010]
 - [x] CHK007 Is deploy defense-in-depth defined as direct needs plus retained aggregate gate? [Clarity, Spec FR-007]
+- [x] CHK007A Is cargo-zigbuild checksum verification defined as an in-repo pinned hash rather than same-origin release checksum trust? [Clarity, Spec FR-014]
 
 ## Requirement Consistency
 
@@ -27,6 +29,7 @@
 
 - [x] CHK011 Are success criteria measurable by exact commands and exact CI jobs? [Acceptance Criteria, Spec SC-001..SC-004]
 - [x] CHK012 Are negative lint cases required, not only happy-path lint success? [Acceptance Criteria, Spec SC-001]
+- [x] CHK012A Do negative lint cases cover source-build, fallback, missing install step, same-origin checksum, and `crate@version`/toolchain-prefixed cargo-install regressions? [Acceptance Criteria, Spec SC-006]
 
 ## Scenario Coverage
 

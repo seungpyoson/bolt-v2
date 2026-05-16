@@ -69,6 +69,16 @@ fn tiny_canary_schema_doc_names_required_operator_artifacts() {
     }
 }
 
+#[test]
+fn tiny_canary_quickstart_names_conditional_strategy_cancel_artifact() {
+    let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
+
+    assert!(
+        quickstart.contains("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH"),
+        "phase8 quickstart must name conditional strategy cancel artifact"
+    );
+}
+
 #[tokio::test]
 async fn preflight_blocks_missing_phase7_report_before_build() {
     let loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");

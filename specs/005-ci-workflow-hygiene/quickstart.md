@@ -16,7 +16,7 @@ Expected result after implementation: all commands pass.
 
 ```bash
 rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
-rg -n "live-node|max-threads|lake_batch|nt_runtime_capture|platform_runtime" .config/nextest.toml
+rg -n "live-node|max-threads|bolt_v3_live_canary_gate|bolt_v3_tiny_canary_operator|eth_chainlink_taker_runtime|lake_batch|live_node_run|nt_runtime_capture|platform_runtime|polymarket_bootstrap|venue_contract" .config/nextest.toml
 ```
 
 Expected evidence:
@@ -26,7 +26,8 @@ Expected evidence:
 - Jobs using `steps.setup.outputs.managed_target_dir` set `include-managed-target-dir: "true"`.
 - `deploy.needs` includes all required safety lanes directly.
 - `gate` checks all required lane results.
-- `.config/nextest.toml` assigns `lake_batch`, `nt_runtime_capture`, and `platform_runtime` to the `live-node` group with `max-threads = 1`.
+- `.config/nextest.toml` assigns the full LiveNode binary set to the `live-node` group with `max-threads = 1`:
+  `bolt_v3_live_canary_gate`, `bolt_v3_tiny_canary_operator`, `eth_chainlink_taker_runtime`, `lake_batch`, `live_node_run`, `nt_runtime_capture`, `platform_runtime`, `polymarket_bootstrap`, and `venue_contract`.
 
 ## Verification Gate
 

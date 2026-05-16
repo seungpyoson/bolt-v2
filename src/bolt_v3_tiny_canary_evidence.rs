@@ -253,6 +253,7 @@ pub struct Phase8LiveCanaryResultRefs {
     pub venue_order_state_ref: Phase8EvidenceRef,
     pub strategy_cancel_ref: Option<Phase8EvidenceRef>,
     pub restart_reconciliation_ref: Phase8EvidenceRef,
+    pub post_run_hygiene_ref: Phase8EvidenceRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -273,6 +274,7 @@ pub struct Phase8CanaryEvidence {
     pub venue_order_state_ref: Option<Phase8EvidenceRef>,
     pub strategy_cancel_ref: Option<Phase8EvidenceRef>,
     pub restart_reconciliation_ref: Option<Phase8EvidenceRef>,
+    pub post_run_hygiene_ref: Option<Phase8EvidenceRef>,
     pub runtime_capture_ref: Phase8RuntimeCaptureRef,
     pub nt_lifecycle_refs: Vec<Phase8NtLifecycleRef>,
     pub outcome: Phase8CanaryOutcome,
@@ -318,6 +320,7 @@ impl Phase8CanaryEvidence {
             venue_order_state_ref: None,
             strategy_cancel_ref: None,
             restart_reconciliation_ref: None,
+            post_run_hygiene_ref: None,
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::DryNoSubmitProof,
@@ -350,6 +353,7 @@ impl Phase8CanaryEvidence {
             venue_order_state_ref: None,
             strategy_cancel_ref: None,
             restart_reconciliation_ref: None,
+            post_run_hygiene_ref: None,
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::BlockedBeforeSubmit,
@@ -390,6 +394,7 @@ impl Phase8CanaryEvidence {
             venue_order_state_ref: Some(result_refs.venue_order_state_ref),
             strategy_cancel_ref: result_refs.strategy_cancel_ref,
             restart_reconciliation_ref: Some(result_refs.restart_reconciliation_ref),
+            post_run_hygiene_ref: Some(result_refs.post_run_hygiene_ref),
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::LiveCanaryProof,

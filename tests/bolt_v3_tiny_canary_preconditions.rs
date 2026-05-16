@@ -312,6 +312,12 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
                 record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
                     .to_string(),
             },
+            post_run_hygiene_ref: Phase8EvidenceRef {
+                path_hash: "9999999999999999999999999999999999999999999999999999999999999999"
+                    .to_string(),
+                record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            },
         },
         1,
     )
@@ -325,11 +331,13 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
     assert!(evidence.venue_order_state_ref.is_some());
     assert!(evidence.strategy_cancel_ref.is_some());
     assert!(evidence.restart_reconciliation_ref.is_some());
+    assert!(evidence.post_run_hygiene_ref.is_some());
 
     let rendered = serde_json::to_string(&evidence).expect("evidence should render");
     assert!(!rendered.contains("operator-approved-canary-001"));
     assert!(!rendered.contains("client-order-001"));
     assert!(rendered.contains("restart_reconciliation_ref"));
+    assert!(rendered.contains("post_run_hygiene_ref"));
 }
 
 #[test]
@@ -371,6 +379,12 @@ fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
                 path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
                     .to_string(),
                 record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+                    .to_string(),
+            },
+            post_run_hygiene_ref: Phase8EvidenceRef {
+                path_hash: "9999999999999999999999999999999999999999999999999999999999999999"
+                    .to_string(),
+                record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                     .to_string(),
             },
         },

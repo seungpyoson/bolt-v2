@@ -304,6 +304,7 @@ struct Phase8OperatorLiveResultPaths {
     venue_order_state_path: String,
     strategy_cancel_path: Option<String>,
     restart_reconciliation_path: String,
+    post_run_hygiene_path: String,
 }
 
 struct Phase8OperatorLiveResultSnapshot {
@@ -311,6 +312,7 @@ struct Phase8OperatorLiveResultSnapshot {
     nt_submit_event_sha256: Option<String>,
     venue_order_state_sha256: Option<String>,
     strategy_cancel_sha256: Option<String>,
+    post_run_hygiene_sha256: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +338,7 @@ impl Phase8OperatorLiveResultPaths {
             restart_reconciliation_path: phase8_required_env(
                 "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
             )?,
+            post_run_hygiene_path: phase8_required_env("BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH")?,
         })
     }
 
@@ -357,6 +360,11 @@ impl Phase8OperatorLiveResultPaths {
                 "strategy cancel evidence",
             )?;
         }
+        phase8_assert_path_starts_with(
+            &self.post_run_hygiene_path,
+            spool_root,
+            "post-run hygiene evidence",
+        )?;
         Ok(())
     }
 
@@ -369,6 +377,7 @@ impl Phase8OperatorLiveResultPaths {
                 Some(strategy_cancel_path) => phase8_optional_sha256_file(strategy_cancel_path)?,
                 None => None,
             },
+            post_run_hygiene_sha256: phase8_optional_sha256_file(&self.post_run_hygiene_path)?,
         })
     }
 
@@ -398,6 +407,11 @@ impl Phase8OperatorLiveResultPaths {
                 "strategy cancel evidence",
             )?;
         }
+        phase8_assert_changed_after_run(
+            &self.post_run_hygiene_path,
+            &snapshot.post_run_hygiene_sha256,
+            "post-run hygiene evidence",
+        )?;
         Ok(())
     }
 
@@ -429,6 +443,7 @@ impl Phase8OperatorLiveResultPaths {
                 restart_reconciliation_ref: phase8_operator_evidence_ref(
                     &self.restart_reconciliation_path,
                 )?,
+                post_run_hygiene_ref: phase8_operator_evidence_ref(&self.post_run_hygiene_path)?,
             },
         ))
     }
@@ -473,6 +488,14 @@ impl Phase8OperatorLiveResultPaths {
             "restart_reconciliation",
             None,
             Some(run_id),
+            Some(&self.client_order_id_hash),
+            Some(&self.venue_order_id_hash),
+        )?;
+        phase8_assert_operator_evidence_proof(
+            &self.post_run_hygiene_path,
+            "post_run_hygiene",
+            Some(run_id),
+            None,
             Some(&self.client_order_id_hash),
             Some(&self.venue_order_id_hash),
         )

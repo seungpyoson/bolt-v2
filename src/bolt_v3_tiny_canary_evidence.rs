@@ -457,6 +457,8 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub financial_envelope_sha256: String,
     pub pre_run_state_path: String,
     pub pre_run_state_sha256: String,
+    pub abort_plan_path: String,
+    pub abort_plan_sha256: String,
     pub operator_approval_id: String,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,
@@ -484,6 +486,8 @@ impl Phase8OperatorApprovalEnvelope {
             financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,
             pre_run_state_path: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,
             pre_run_state_sha256: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256")?,
+            abort_plan_path: required_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,
+            abort_plan_sha256: required_env("BOLT_V3_PHASE8_ABORT_PLAN_SHA256")?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
             approval_not_before_unix_seconds: required_i64_env(
                 "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
@@ -551,6 +555,7 @@ impl Phase8OperatorApprovalEnvelope {
         self.validate_approval_not_consumed()?;
         self.validate_financial_envelope_against(loaded)?;
         self.validate_pre_run_state_against(loaded)?;
+        self.validate_abort_plan_against(loaded)?;
         self.validate_approval_window(current_unix_seconds)?;
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
@@ -611,6 +616,31 @@ impl Phase8OperatorApprovalEnvelope {
         approved.validate_matches_loaded(&loaded)
     }
 
+    fn validate_abort_plan_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
+        let current_abort_plan_sha256 = Self::sha256_file(&self.abort_plan_path)?;
+        if self.abort_plan_sha256 != current_abort_plan_sha256 {
+            return Err(anyhow!(
+                "phase8 operator approval abort_plan_sha256 does not match current abort plan evidence"
+            ));
+        }
+        let path = Path::new(&self.abort_plan_path);
+        let file = fs::File::open(path).map_err(|source| {
+            anyhow!(
+                "failed to open phase8 abort plan evidence `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let approved: Phase8AbortPlanEvidenceFile = serde_json::from_reader(BufReader::new(file))
+            .map_err(|source| {
+            anyhow!(
+                "failed to parse phase8 abort plan evidence `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
+        approved.validate_matches_loaded(&loaded)
+    }
+
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
         if self.approval_not_after_unix_seconds < self.approval_not_before_unix_seconds {
             return Err(anyhow!(
@@ -661,6 +691,7 @@ impl Phase8OperatorApprovalEnvelope {
             strategy_input_evidence_sha256: &self.strategy_input_evidence_sha256,
             financial_envelope_sha256: &self.financial_envelope_sha256,
             pre_run_state_sha256: &self.pre_run_state_sha256,
+            abort_plan_sha256: &self.abort_plan_sha256,
             approval_id_hash: sha256_text(&self.operator_approval_id),
             approval_nonce_sha256: &self.approval_nonce_sha256,
             approval_not_before_unix_seconds: self.approval_not_before_unix_seconds,
@@ -937,6 +968,65 @@ fn pre_run_state_blocked(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 pre-run state `{field}` is not satisfied")
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Phase8AbortPlanEvidenceFile {
+    strategy_venue: String,
+    configured_target_id: String,
+    cancel_if_open_defined: bool,
+    nt_accepted_venue_pending_abort_defined: bool,
+    partial_fill_abort_defined: bool,
+    network_partition_during_submit_abort_defined: bool,
+    panic_gate_trip_abort_defined: bool,
+}
+
+impl Phase8AbortPlanEvidenceFile {
+    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+        if self.strategy_venue != loaded.strategy_venue {
+            return Err(abort_plan_mismatch(stringify!(strategy_venue)));
+        }
+        if self.configured_target_id != loaded.configured_target_id {
+            return Err(abort_plan_mismatch(stringify!(configured_target_id)));
+        }
+        require_abort_plan_path(
+            stringify!(cancel_if_open_defined),
+            self.cancel_if_open_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(nt_accepted_venue_pending_abort_defined),
+            self.nt_accepted_venue_pending_abort_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(partial_fill_abort_defined),
+            self.partial_fill_abort_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(network_partition_during_submit_abort_defined),
+            self.network_partition_during_submit_abort_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(panic_gate_trip_abort_defined),
+            self.panic_gate_trip_abort_defined,
+        )
+    }
+}
+
+fn require_abort_plan_path(field: &'static str, defined: bool) -> Result<()> {
+    if defined {
+        Ok(())
+    } else {
+        Err(abort_plan_blocked(field))
+    }
+}
+
+fn abort_plan_mismatch(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 abort plan `{field}` does not match loaded TOML")
+}
+
+fn abort_plan_blocked(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 abort plan `{field}` is not defined")
+}
+
 fn required_toml_string(
     table: &toml::map::Map<String, toml::Value>,
     field: &'static str,
@@ -968,6 +1058,7 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     strategy_input_evidence_sha256: &'a str,
     financial_envelope_sha256: &'a str,
     pre_run_state_sha256: &'a str,
+    abort_plan_sha256: &'a str,
     approval_id_hash: String,
     approval_nonce_sha256: &'a str,
     approval_not_before_unix_seconds: i64,

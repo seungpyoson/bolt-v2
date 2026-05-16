@@ -768,6 +768,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "market_selection_rule": "active_or_next",
             "retry_interval_seconds": 5,
             "blocked_after_seconds": 60,
+            "edge_threshold_basis_points": 100,
             "order_notional_target": "5.00",
             "maximum_position_notional": "10.00",
             "book_impact_cap_bps": 50
@@ -962,6 +963,36 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "target blocked window mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_edge_loaded = loaded.clone();
+    let parameters = mismatched_edge_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a TOML table");
+    parameters.insert(
+        "edge_threshold_basis_points".to_string(),
+        toml::Value::Integer(101),
+    );
+    let mismatched_edge_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_edge_loaded,
+            1_500,
+        )
+        .expect_err("edge threshold mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_edge_error.to_string().contains(
+            "phase8 financial envelope `edge_threshold_basis_points` does not match loaded TOML"
+        ),
+        "error should mention mismatched edge threshold: {mismatched_edge_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "edge threshold mismatch must not create consumption evidence"
     );
 
     envelope
@@ -1290,6 +1321,7 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "market_selection_rule": "active_or_next",
         "retry_interval_seconds": 5,
         "blocked_after_seconds": 60,
+        "edge_threshold_basis_points": 100,
         "order_notional_target": "5.00",
         "maximum_position_notional": "10.00",
         "book_impact_cap_bps": 50

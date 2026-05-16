@@ -788,6 +788,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     market_selection_rule: String,
     retry_interval_seconds: i64,
     blocked_after_seconds: i64,
+    edge_threshold_basis_points: i64,
     order_notional_target: String,
     maximum_position_notional: String,
     book_impact_cap_bps: i64,
@@ -845,6 +846,10 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             blocked_after_seconds: required_toml_integer(
                 target,
                 stringify!(blocked_after_seconds),
+            )?,
+            edge_threshold_basis_points: required_toml_integer(
+                parameters,
+                stringify!(edge_threshold_basis_points),
             )?,
             order_notional_target: required_toml_string(
                 parameters,
@@ -912,6 +917,11 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         if self.blocked_after_seconds != loaded.blocked_after_seconds {
             return Err(financial_envelope_mismatch(stringify!(
                 blocked_after_seconds
+            )));
+        }
+        if self.edge_threshold_basis_points != loaded.edge_threshold_basis_points {
+            return Err(financial_envelope_mismatch(stringify!(
+                edge_threshold_basis_points
             )));
         }
         if self.order_notional_target != loaded.order_notional_target {

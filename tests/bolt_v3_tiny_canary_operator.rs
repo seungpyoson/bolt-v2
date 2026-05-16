@@ -202,6 +202,101 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
     );
 }
 
+#[test]
+fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "phase8-live-run-001";
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&restart_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "accepted",
+            "order_remains_open": true
+        }),
+    );
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(&snapshot, run_id)
+        .expect_err("open venue order must require strategy cancel evidence");
+
+    assert!(
+        error.to_string().contains("strategy cancel"),
+        "error should mention missing strategy cancel evidence: {error}"
+    );
+}
+
 fn write_json_proof(path: &Path, value: serde_json::Value) {
     std::fs::write(
         path,
@@ -508,6 +603,8 @@ struct Phase8OperatorEvidenceProof {
     source_run_id: Option<String>,
     client_order_id_hash: Option<String>,
     venue_order_id_hash: Option<String>,
+    venue_order_outcome: Option<String>,
+    order_remains_open: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -674,6 +771,10 @@ impl Phase8OperatorLiveResultPaths {
             Some(&self.client_order_id_hash),
             Some(&self.venue_order_id_hash),
         )?;
+        phase8_assert_venue_order_state_proof(
+            &self.venue_order_state_path,
+            self.strategy_cancel_path.is_some(),
+        )?;
         if let Some(strategy_cancel_path) = &self.strategy_cancel_path {
             phase8_assert_operator_evidence_proof(
                 strategy_cancel_path,
@@ -699,6 +800,33 @@ impl Phase8OperatorLiveResultPaths {
             &self.venue_order_id_hash,
         )
     }
+}
+
+fn phase8_assert_venue_order_state_proof(
+    path: &str,
+    strategy_cancel_present: bool,
+) -> anyhow::Result<()> {
+    let proof = phase8_read_operator_evidence_proof(path, "venue_order_state")?;
+    let outcome = proof.venue_order_outcome.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("phase8 venue_order_state proof venue_order_outcome is missing")
+    })?;
+    match outcome {
+        "accepted" | "filled" | "rejected" => {}
+        _ => {
+            return Err(anyhow::anyhow!(
+                "phase8 venue_order_state proof venue_order_outcome must be accepted, filled, or rejected"
+            ));
+        }
+    }
+    let order_remains_open = proof.order_remains_open.ok_or_else(|| {
+        anyhow::anyhow!("phase8 venue_order_state proof order_remains_open is missing")
+    })?;
+    if order_remains_open && !strategy_cancel_present {
+        return Err(anyhow::anyhow!(
+            "phase8 venue_order_state proof requires strategy cancel evidence when order remains open"
+        ));
+    }
+    Ok(())
 }
 
 fn phase8_operator_evidence_ref(path: &str) -> anyhow::Result<Phase8EvidenceRef> {

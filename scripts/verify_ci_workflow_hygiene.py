@@ -29,6 +29,12 @@ GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "source-fence", "tes
 DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test")
 TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
 LIVE_NODE_TEST_GROUP = "live-node"
+LIVE_NODE_UNIT_TEST_FILTERS = (
+    "binary(=bolt_v2)",
+    "test(~bolt_v3_client_registration::tests::)",
+    "test(~bolt_v3_live_node::tests::)",
+    "test(~platform::runtime::tests::)",
+)
 LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_adapter_mapping",
     "bolt_v3_client_registration",
@@ -477,9 +483,16 @@ def verify_nextest_config(config_text: str) -> list[str]:
         for binary in LIVE_NODE_NEXTEST_BINARIES
         if not any(isinstance(filter_expr, str) and f"binary(={binary})" in filter_expr for filter_expr in live_node_filters)
     ]
-    if missing_binaries:
-        missing = ", ".join(f"binary(={binary})" for binary in missing_binaries)
-        errors.append(f"nextest config must assign LiveNode integration tests to live-node group: missing {missing}")
+    missing_unit_filters = [
+        fragment
+        for fragment in LIVE_NODE_UNIT_TEST_FILTERS
+        if not any(isinstance(filter_expr, str) and fragment in filter_expr for filter_expr in live_node_filters)
+    ]
+    if missing_binaries or missing_unit_filters:
+        missing = ", ".join(
+            [f"binary(={binary})" for binary in missing_binaries] + missing_unit_filters
+        )
+        errors.append(f"nextest config must assign LiveNode test paths to live-node group: missing {missing}")
     return errors
 
 

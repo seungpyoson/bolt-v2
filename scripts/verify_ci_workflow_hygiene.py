@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shlex
 import sys
 import tomllib
 
@@ -161,10 +162,6 @@ ZIGBUILD_PREBUILT_LITERALS = (
     'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
     "cargo-zigbuild --version",
 )
-
-
-def has_source_cargo_install(text: str, tool: str) -> bool:
-    return re.search(rf"(?m)(^|[;&|])\s*cargo\s+install\b[^\n;&|]*\b{re.escape(tool)}\b", text) is not None
 
 
 def strip_comment(line: str) -> str:
@@ -372,6 +369,27 @@ def install_action_tool_block(job_lines: list[str], tool: str, output: str) -> l
         if f"uses: {TAIKI_INSTALL_ACTION}" in text and expected_tool in text:
             return block
     return None
+
+
+def runs_cargo_install_tool(text: str, tool: str) -> bool:
+    for line in text.replace("\\\n", " ").splitlines():
+        if "cargo" not in line or "install" not in line:
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        for index, token in enumerate(tokens[:-1]):
+            if token != "cargo" or tokens[index + 1] != "install":
+                continue
+            for arg in tokens[index + 2 :]:
+                if arg in {";", "&&", "||", "|"}:
+                    break
+                if arg == tool:
+                    return True
+    return False
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
@@ -747,7 +765,7 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
         if job_lines is None:
             continue
         text = uncommented_text(job_lines)
-        if has_source_cargo_install(text, tool):
+        if runs_cargo_install_tool(text, tool):
             errors.append(f"{workflow_name} {job} must not compile {tool} from source")
         block = install_action_tool_block(job_lines, tool, output)
         if block is None:
@@ -760,7 +778,7 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
     if build_lines is None:
         return errors
     build_text = uncommented_text(build_lines)
-    if has_source_cargo_install(build_text, "cargo-zigbuild"):
+    if runs_cargo_install_tool(build_text, "cargo-zigbuild"):
         errors.append(f"{workflow_name} build must not compile cargo-zigbuild from source")
     for literal in ZIGBUILD_PREBUILT_LITERALS:
         if literal not in build_text:

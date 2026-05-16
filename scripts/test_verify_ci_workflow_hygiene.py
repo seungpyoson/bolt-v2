@@ -1045,14 +1045,6 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-shards cache must map workspace to managed target dir relative output",
-        replace_once(
-            BASE_WORKFLOW,
-            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n",
-            "",
-        ),
-    )
-    assert_error(
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,

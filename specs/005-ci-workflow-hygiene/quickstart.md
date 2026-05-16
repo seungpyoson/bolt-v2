@@ -16,7 +16,7 @@ Expected result after implementation: all commands pass.
 
 ```bash
 rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
-rg -n "live-node|max-threads|bolt_v3_adapter_mapping|bolt_v3_client_registration|bolt_v3_controlled_connect|bolt_v3_credential_log_suppression|bolt_v3_live_canary_gate|bolt_v3_strategy_registration|bolt_v3_submit_admission|bolt_v3_tiny_canary_operator|eth_chainlink_taker_runtime|lake_batch|live_node_run|nt_runtime_capture|platform_runtime|polymarket_bootstrap|venue_contract" .config/nextest.toml
+rg -n "live-node|max-threads|bolt_v3_adapter_mapping|bolt_v3_client_registration|bolt_v3_controlled_connect|bolt_v3_credential_log_suppression|bolt_v3_live_canary_gate|bolt_v3_strategy_registration|bolt_v3_submit_admission|bolt_v3_tiny_canary_operator|config_parsing|eth_chainlink_taker_runtime|lake_batch|live_node_run|nt_runtime_capture|platform_runtime|polymarket_bootstrap|venue_contract" .config/nextest.toml
 ```
 
 Expected evidence:
@@ -27,7 +27,7 @@ Expected evidence:
 - `deploy.needs` includes all required safety lanes directly.
 - `gate` checks all required lane results.
 - `.config/nextest.toml` assigns the full LiveNode binary set to the `live-node` group with `max-threads = 1`:
-  `bolt_v3_adapter_mapping`, `bolt_v3_client_registration`, `bolt_v3_controlled_connect`, `bolt_v3_credential_log_suppression`, `bolt_v3_live_canary_gate`, `bolt_v3_strategy_registration`, `bolt_v3_submit_admission`, `bolt_v3_tiny_canary_operator`, `eth_chainlink_taker_runtime`, `lake_batch`, `live_node_run`, `nt_runtime_capture`, `platform_runtime`, `polymarket_bootstrap`, and `venue_contract`.
+  `bolt_v3_adapter_mapping`, `bolt_v3_client_registration`, `bolt_v3_controlled_connect`, `bolt_v3_credential_log_suppression`, `bolt_v3_live_canary_gate`, `bolt_v3_strategy_registration`, `bolt_v3_submit_admission`, `bolt_v3_tiny_canary_operator`, `config_parsing`, `eth_chainlink_taker_runtime`, `lake_batch`, `live_node_run`, `nt_runtime_capture`, `platform_runtime`, `polymarket_bootstrap`, and `venue_contract`.
 
 ## Verification Gate
 

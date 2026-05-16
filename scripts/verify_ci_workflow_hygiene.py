@@ -38,6 +38,7 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_strategy_registration",
     "bolt_v3_submit_admission",
     "bolt_v3_tiny_canary_operator",
+    "config_parsing",
     "eth_chainlink_taker_runtime",
     "lake_batch",
     "live_node_run",

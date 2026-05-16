@@ -540,16 +540,8 @@ def assert_nextest_live_node_group_required() -> None:
 
 
 def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
-    for binary in (
-        "bolt_v3_adapter_mapping",
-        "bolt_v3_client_registration",
-        "bolt_v3_controlled_connect",
-        "bolt_v3_credential_log_suppression",
-        "bolt_v3_readiness",
-        "bolt_v3_strategy_registration",
-        "bolt_v3_submit_admission",
-        "config_parsing",
-    ):
+    verifier = load_verifier()
+    for binary in verifier.LIVE_NODE_NEXTEST_BINARIES:
         assert_error(
             f"missing binary(={binary})",
             nextest_config=BASE_NEXTEST_CONFIG.replace(f"binary(={binary}) | ", "").replace(

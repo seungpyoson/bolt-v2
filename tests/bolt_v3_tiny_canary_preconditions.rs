@@ -759,6 +759,41 @@ fn live_canary_evidence_rejects_malformed_identity_hashes() {
 }
 
 #[test]
+fn live_canary_evidence_rejects_invalid_cap_values() {
+    let mut input = evidence_input();
+    input.max_live_order_count = 2;
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        input,
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("non-one live order cap must not produce live canary proof");
+
+    assert!(
+        error.to_string().contains("max_live_order_count"),
+        "error should mention invalid live order cap: {error}"
+    );
+
+    let mut input = evidence_input();
+    input.max_notional_per_order = Decimal::ZERO;
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        input,
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("non-positive notional cap must not produce live canary proof");
+
+    assert!(
+        error.to_string().contains("max_notional_per_order"),
+        "error should mention invalid notional cap: {error}"
+    );
+}
+
+#[test]
 fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),

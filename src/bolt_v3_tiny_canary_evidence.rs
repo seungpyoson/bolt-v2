@@ -619,7 +619,21 @@ fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()>
         stringify!(runtime_capture_ref),
         stringify!(spool_root_hash),
         &input.runtime_capture_ref.spool_root_hash,
-    )
+    )?;
+    if input.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
+        return Err(anyhow!(
+            "phase8 live canary proof {} expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {}",
+            stringify!(max_live_order_count),
+            input.max_live_order_count
+        ));
+    }
+    if input.max_notional_per_order <= Decimal::ZERO {
+        return Err(anyhow!(
+            "phase8 live canary proof {} must be positive",
+            stringify!(max_notional_per_order)
+        ));
+    }
+    Ok(())
 }
 
 fn validate_phase8_evidence_ref(

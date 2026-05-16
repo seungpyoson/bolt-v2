@@ -6,7 +6,7 @@ use bolt_v2::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
         Phase8CanaryPreflightStatus, Phase8EvidenceRef, Phase8LiveCanaryResultRefs,
         Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8StrategyInputSafetyAudit,
-        evaluate_phase8_canary_preflight,
+        Phase8StrategyInputSafetyInputs, evaluate_phase8_canary_preflight,
     },
 };
 use rust_decimal::Decimal;
@@ -95,19 +95,20 @@ async fn preflight_blocks_live_order_count_above_one_before_build() {
 
 #[test]
 fn strategy_audit_blocks_non_positive_realized_volatility() {
-    let audit = Phase8StrategyInputSafetyAudit::from_strategy_inputs(
-        Decimal::ZERO,
-        300,
-        Decimal::new(100_000, 0),
-        Decimal::new(100_000, 0),
-        Decimal::new(125, 1),
-        Decimal::new(125, 1),
-        Decimal::ZERO,
-        "chainlink_data_streams",
-        1_234_567_890,
-        Decimal::ZERO,
-        Decimal::ZERO,
-    );
+    let audit =
+        Phase8StrategyInputSafetyAudit::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
+            realized_volatility: Decimal::ZERO,
+            seconds_to_expiry: 300,
+            spot_price: Decimal::new(100_000, 0),
+            price_to_beat_value: Decimal::new(100_000, 0),
+            expected_edge_basis_points: Decimal::new(125, 1),
+            worst_case_edge_basis_points: Decimal::new(125, 1),
+            fee_rate_basis_points: Decimal::ZERO,
+            price_to_beat_source: "chainlink_data_streams",
+            reference_quote_ts_event: 1_234_567_890,
+            pricing_kurtosis: Decimal::ZERO,
+            theta_decay_factor: Decimal::ZERO,
+        });
 
     assert!(
         audit
@@ -119,19 +120,20 @@ fn strategy_audit_blocks_non_positive_realized_volatility() {
 
 #[test]
 fn strategy_audit_blocks_zero_time_to_expiry() {
-    let audit = Phase8StrategyInputSafetyAudit::from_strategy_inputs(
-        Decimal::new(25, 1),
-        0,
-        Decimal::new(100_000, 0),
-        Decimal::new(100_000, 0),
-        Decimal::new(125, 1),
-        Decimal::new(125, 1),
-        Decimal::ZERO,
-        "chainlink_data_streams",
-        1_234_567_890,
-        Decimal::ZERO,
-        Decimal::ZERO,
-    );
+    let audit =
+        Phase8StrategyInputSafetyAudit::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
+            realized_volatility: Decimal::new(25, 1),
+            seconds_to_expiry: 0,
+            spot_price: Decimal::new(100_000, 0),
+            price_to_beat_value: Decimal::new(100_000, 0),
+            expected_edge_basis_points: Decimal::new(125, 1),
+            worst_case_edge_basis_points: Decimal::new(125, 1),
+            fee_rate_basis_points: Decimal::ZERO,
+            price_to_beat_source: "chainlink_data_streams",
+            reference_quote_ts_event: 1_234_567_890,
+            pricing_kurtosis: Decimal::ZERO,
+            theta_decay_factor: Decimal::ZERO,
+        });
 
     assert!(
         audit

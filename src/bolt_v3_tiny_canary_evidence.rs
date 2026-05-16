@@ -72,6 +72,20 @@ pub struct Phase8StrategyInputSafetyAudit {
     block_reasons: Vec<Phase8CanaryBlockReason>,
 }
 
+pub struct Phase8StrategyInputSafetyInputs<'a> {
+    pub realized_volatility: Decimal,
+    pub seconds_to_expiry: u64,
+    pub spot_price: Decimal,
+    pub price_to_beat_value: Decimal,
+    pub expected_edge_basis_points: Decimal,
+    pub worst_case_edge_basis_points: Decimal,
+    pub fee_rate_basis_points: Decimal,
+    pub price_to_beat_source: &'a str,
+    pub reference_quote_ts_event: u64,
+    pub pricing_kurtosis: Decimal,
+    pub theta_decay_factor: Decimal,
+}
+
 impl Phase8StrategyInputSafetyAudit {
     pub fn approved() -> Self {
         Self {
@@ -87,51 +101,39 @@ impl Phase8StrategyInputSafetyAudit {
         }
     }
 
-    pub fn from_strategy_inputs(
-        realized_volatility: Decimal,
-        seconds_to_expiry: u64,
-        spot_price: Decimal,
-        price_to_beat_value: Decimal,
-        expected_edge_basis_points: Decimal,
-        worst_case_edge_basis_points: Decimal,
-        fee_rate_basis_points: Decimal,
-        price_to_beat_source: &str,
-        reference_quote_ts_event: u64,
-        pricing_kurtosis: Decimal,
-        theta_decay_factor: Decimal,
-    ) -> Self {
+    pub fn from_strategy_inputs(inputs: Phase8StrategyInputSafetyInputs<'_>) -> Self {
         let mut block_reasons = Vec::new();
-        if realized_volatility <= Decimal::ZERO {
+        if inputs.realized_volatility <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveRealizedVolatility);
         }
-        if seconds_to_expiry == 0 {
+        if inputs.seconds_to_expiry == 0 {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveTimeToExpiry);
         }
-        if spot_price <= Decimal::ZERO {
+        if inputs.spot_price <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveSpotPrice);
         }
-        if price_to_beat_value <= Decimal::ZERO {
+        if inputs.price_to_beat_value <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositivePriceToBeatValue);
         }
-        if expected_edge_basis_points <= Decimal::ZERO {
+        if inputs.expected_edge_basis_points <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveExpectedEdgeBasisPoints);
         }
-        if worst_case_edge_basis_points <= Decimal::ZERO {
+        if inputs.worst_case_edge_basis_points <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints);
         }
-        if fee_rate_basis_points < Decimal::ZERO {
+        if inputs.fee_rate_basis_points < Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
         }
-        if price_to_beat_source.trim().is_empty() {
+        if inputs.price_to_beat_source.trim().is_empty() {
             block_reasons.push(Phase8CanaryBlockReason::MissingPriceToBeatSource);
         }
-        if reference_quote_ts_event == 0 {
+        if inputs.reference_quote_ts_event == 0 {
             block_reasons.push(Phase8CanaryBlockReason::MissingReferenceQuoteTsEvent);
         }
-        if pricing_kurtosis <= Decimal::new(-6, 0) {
+        if inputs.pricing_kurtosis <= Decimal::new(-6, 0) {
             block_reasons.push(Phase8CanaryBlockReason::InvalidPricingKurtosis);
         }
-        if theta_decay_factor < Decimal::ZERO {
+        if inputs.theta_decay_factor < Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NegativeThetaDecayFactor);
         }
         if block_reasons.is_empty() {
@@ -209,19 +211,19 @@ impl Phase8StrategyInputSafetyAudit {
         Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
             anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
         })?;
-        let mut audit = Self::from_strategy_inputs(
+        let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
-            raw.seconds_to_expiry,
+            seconds_to_expiry: raw.seconds_to_expiry,
             spot_price,
             price_to_beat_value,
             expected_edge_basis_points,
             worst_case_edge_basis_points,
             fee_rate_basis_points,
-            &raw.price_to_beat_source,
-            raw.reference_quote_ts_event,
+            price_to_beat_source: &raw.price_to_beat_source,
+            reference_quote_ts_event: raw.reference_quote_ts_event,
             pricing_kurtosis,
             theta_decay_factor,
-        );
+        });
         audit.block_if(
             raw.market_selection_outcome.trim().is_empty()
                 || raw.polymarket_condition_id.trim().is_empty()

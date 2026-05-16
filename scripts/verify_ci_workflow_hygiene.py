@@ -6,26 +6,72 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
+import tomllib
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+DEFAULT_WORKFLOWS = (
+    DEFAULT_WORKFLOW,
+    REPO_ROOT / ".github" / "workflows" / "advisory.yml",
+)
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
+DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 REQUIRED_JOBS = (
     "detector",
     "fmt-check",
     "deny",
     "clippy",
+    "check-aarch64",
     "source-fence",
+    "test-shards",
     "test",
     "build",
     "gate",
     "deploy",
 )
-GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "source-fence", "test", "build")
-DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test")
-TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
+GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+DEPLOY_REQUIRED_NEEDS = (
+    "gate",
+    "build",
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test",
+)
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
+CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-shards", "build")
+LIVE_NODE_TEST_GROUP = "live-node"
+LIVE_NODE_UNIT_TEST_FILTERS = (
+    "binary(=bolt_v2)",
+    "test(~bolt_v3_client_registration::tests::)",
+    "test(~bolt_v3_live_node::tests::)",
+    "test(~platform::runtime::tests::)",
+)
+LIVE_NODE_NEXTEST_BINARIES = (
+    "bolt_v3_adapter_mapping",
+    "bolt_v3_client_registration",
+    "bolt_v3_controlled_connect",
+    "bolt_v3_credential_log_suppression",
+    "bolt_v3_live_canary_gate",
+    "bolt_v3_readiness",
+    "bolt_v3_strategy_registration",
+    "bolt_v3_submit_admission",
+    "bolt_v3_tiny_canary_operator",
+    "config_parsing",
+    "eth_chainlink_taker_runtime",
+    "lake_batch",
+    "live_node_run",
+    "nt_runtime_capture",
+    "platform_runtime",
+    "polymarket_bootstrap",
+    "venue_contract",
+)
+LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
 BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
@@ -38,6 +84,63 @@ SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_di
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
+SETUP_ACTION_REQUIRED_LITERALS = (
+    "inputs.just-version",
+    "inputs.include-deny-version",
+    "inputs.include-nextest-version",
+    "inputs.include-build-values",
+    "inputs.lint-workflow-contract",
+    "CLAUDE_CONFIG_READ_TOKEN:",
+    "inputs.claude-config-read-token",
+    "just ci-lint-workflow",
+    "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
+    "just --evaluate deny_version",
+    "just --evaluate nextest_version",
+    "just --evaluate target",
+    "just --evaluate zig_version",
+    "just --evaluate zigbuild_version",
+    "just --evaluate rust_verification_owner",
+    "just --evaluate rust_verification_source_repo",
+    "just --evaluate rust_verification_source_sha",
+    "just --evaluate rust_verification_ci_install_script",
+    'target-dir --repo "$GITHUB_WORKSPACE"',
+)
+SETUP_ACTION_OUTPUT_MAPPINGS = {
+    "rust_toolchain": "steps.shared.outputs.rust_toolchain",
+    "deny_version": "steps.shared.outputs.deny_version",
+    "nextest_version": "steps.shared.outputs.nextest_version",
+    "target": "steps.shared.outputs.target",
+    "zig_version": "steps.shared.outputs.zig_version",
+    "zigbuild_version": "steps.shared.outputs.zigbuild_version",
+    "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
+    "rust_verification_source_repo": "steps.shared.outputs.rust_verification_source_repo",
+    "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
+    "rust_verification_ci_install_script": "steps.shared.outputs.rust_verification_ci_install_script",
+    "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
+}
+SETUP_ACTION_ORDERED_STEPS = (
+    "Lint workflow contract",
+    "Read shared values",
+    "Install managed Rust owner",
+    "Resolve managed target dir",
+    "Setup Rust toolchain",
+)
+TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
+TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
+TEST_SHARD_NAME_RE = re.compile(r"^\s+name:\s*nextest shard \$\{\{\s*matrix\.shard\s*\}\} of 4\s*$")
+TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
+TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
+TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
+TEST_SHARED_CACHE_RE = re.compile(r"^\s+shared-key:\s*nextest-v3\s*$")
+TEST_CACHE_SAVE_IF_RE = re.compile(r"^\s+save-if:\s*\$\{\{\s*matrix\.shard\s*==\s*1\s*\}\}\s*$")
+CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
+JUST_LANE_RE = re.compile(
+    r"(^|[^A-Za-z0-9_./-])just\s+"
+    r"(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|source-fence)"
+    r"([^A-Za-z0-9_]|$)"
+)
+REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
+BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
 
 
 def strip_comment(line: str) -> str:
@@ -197,6 +300,18 @@ def block_has_target_dir_opt_in(block: list[str]) -> bool:
     return any(TARGET_DIR_OPT_IN_RE.match(strip_comment(line)) for line in block)
 
 
+def block_has_input(block: list[str], name: str, value: str | None = None) -> bool:
+    if value is None:
+        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*\S+.*$")
+    else:
+        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*{re.escape(value)}\s*$")
+    return any(pattern.match(strip_comment(line)) for line in block)
+
+
+def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
+    return any(block_has_input(block, name, value) for block in setup_action_blocks(job_lines))
+
+
 def job_uses_managed_target_dir(job_lines: list[str]) -> bool:
     return any("steps.setup.outputs.managed_target_dir" in strip_comment(line) for line in job_lines)
 
@@ -211,6 +326,42 @@ def uncommented_text(lines: list[str]) -> str:
 
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
+
+
+def has_run_command(lines: list[str], command: str) -> bool:
+    expected = {f"run: {command}", f"- run: {command}"}
+    return any(strip_comment(line).strip() in expected for line in lines)
+
+
+def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
+    return any(CACHE_KEY_RE.match(strip_comment(line)) for line in job_lines)
+
+
+def job_just_lanes(job_lines: list[str]) -> set[str]:
+    return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
+
+
+def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
+    return job_runs_command(job_lines, TEST_REPRODUCTION_ECHO)
+
+
+def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
+    for block in step_blocks(job_lines):
+        for line in block:
+            clean = strip_comment(line).strip()
+            if clean.startswith(("run:", "- run:")) and "reproduce" in clean.lower() and TEST_REPRODUCTION_COMMAND in clean:
+                return True
+    return False
+
+
+def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "gcc-aarch64-linux-gnu" in text or "libc6-dev-arm64-cross" in text
+
+
+def check_aarch64_installs_cross_compiler_packages(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "gcc-aarch64-linux-gnu" in text and "libc6-dev-arm64-cross" in text
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
@@ -344,6 +495,34 @@ def input_block_has_default_false(input_block: list[str]) -> bool:
     return any(re.match(r"^\s+default:\s*(['\"]?)false\1\s*$", strip_comment(line)) for line in input_block)
 
 
+def action_step_line(action_text: str, step_name: str) -> int | None:
+    pattern = re.compile(rf"^\s+-\s+name:\s*{re.escape(step_name)}\s*$")
+    for line_number, line in enumerate(action_text.splitlines(), start=1):
+        if pattern.match(strip_comment(line)):
+            return line_number
+    return None
+
+
+def extract_action_output_block(action_text: str, output_name: str) -> list[str]:
+    lines = action_text.splitlines()
+    output_re = re.compile(rf"^  {re.escape(output_name)}:\s*$")
+    next_output_re = re.compile(r"^  [A-Za-z0-9_.-]+:\s*$")
+    for start, line in enumerate(lines):
+        if not output_re.match(strip_comment(line)):
+            continue
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            clean = strip_comment(lines[index])
+            if clean and not clean.startswith((" ", "\t")):
+                end = index
+                break
+            if next_output_re.match(clean):
+                end = index
+                break
+        return lines[start:end]
+    return []
+
+
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
@@ -361,8 +540,52 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
         errors.append("source-fence must run just source-fence")
 
-    if "test" in jobs and "source-fence" not in extract_needs(jobs["test"]):
-        errors.append("test needs source-fence")
+    if "test-shards" in jobs and "source-fence" not in extract_needs(jobs["test-shards"]):
+        errors.append("test-shards needs source-fence")
+
+    if "clippy" in jobs:
+        clippy_text = uncommented_text(jobs["clippy"])
+        if "just check-aarch64" in clippy_text:
+            errors.append("clippy must not run check-aarch64")
+        if clippy_installs_aarch64_toolchain(jobs["clippy"]):
+            errors.append("clippy must not install aarch64 cross compiler")
+
+    if "check-aarch64" in jobs:
+        if "detector" not in extract_needs(jobs["check-aarch64"]):
+            errors.append("check-aarch64 needs detector")
+        if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must run just check-aarch64")
+        if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must install aarch64 cross compiler packages")
+
+    if "test-shards" in jobs:
+        test_lines = jobs["test-shards"]
+        if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
+            errors.append("test-shards matrix must set fail-fast false")
+        if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
+            errors.append("test-shards matrix shard must be [1, 2, 3, 4]")
+        if not has_line_matching(test_lines, TEST_SHARD_NAME_RE):
+            errors.append("test-shards name must describe nextest shard")
+        if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
+            errors.append("test-shards must run partitioned nextest through just test")
+        if test_has_inline_shard_reproduction_command(test_lines):
+            errors.append("test-shards reproduction command must use YAML block scalar")
+        elif not test_has_shard_reproduction_command(test_lines):
+            errors.append("test-shards must log shard reproduction command")
+        if not has_line_matching(test_lines, TEST_SHARED_CACHE_RE):
+            errors.append("test-shards cache must use shared nextest key")
+        if not has_line_matching(test_lines, TEST_CACHE_SAVE_IF_RE):
+            errors.append("test-shards cache must save only from shard 1")
+
+    if "test" in jobs:
+        test_needs = extract_needs(jobs["test"])
+        test_text = uncommented_text(jobs["test"])
+        if "test-shards" not in test_needs:
+            errors.append("test needs test-shards")
+        if not gate_checks_lane_success(test_text, "test-shards"):
+            errors.append("test must check needs.test-shards.result")
+        if not has_line_matching(jobs["test"], GATE_IF_RE):
+            errors.append("test must use always()")
 
     if "build" in jobs:
         if "detector" not in extract_needs(jobs["build"]):
@@ -405,12 +628,101 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if job in jobs and not job_uses_managed_target_dir(jobs[job]):
             errors.append(f"{job} must use setup.outputs.managed_target_dir")
 
+    for job in CACHE_KEY_JOBS:
+        if job in jobs and not job_has_explicit_cache_key(jobs[job]):
+            errors.append(f"{job} must declare explicit rust-cache key or shared-key")
+
+    return errors
+
+
+def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+    jobs = parse_jobs(workflow_text)
+
+    for job, lines in jobs.items():
+        lanes = job_just_lanes(lines)
+        if not lanes:
+            continue
+        if not setup_action_blocks(lines):
+            errors.append(f"{workflow_name} {job} must use setup-environment")
+            continue
+        if not job_has_setup_input(lines, "claude-config-read-token", "${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"):
+            errors.append(f"{workflow_name} {job} setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN")
+        if not job_has_setup_input(lines, "just-version", "${{ env.JUST_VERSION }}"):
+            errors.append(f"{workflow_name} {job} setup just-version must come from env.JUST_VERSION")
+        if "fmt-check" in lanes:
+            if not job_has_setup_input(lines, "lint-workflow-contract", '"true"'):
+                errors.append(f"{workflow_name} {job} must enable workflow contract lint")
+            if not job_has_setup_input(lines, "toolchain-components", "rustfmt"):
+                errors.append(f"{workflow_name} {job} must install rustfmt component")
+        if "clippy" in lanes and not job_has_setup_input(lines, "toolchain-components", "clippy"):
+            errors.append(f"{workflow_name} {job} must install clippy component")
+        if lanes.intersection({"deny", "deny-advisories"}):
+            if not job_has_setup_input(lines, "include-deny-version", '"true"'):
+                errors.append(f"{workflow_name} {job} must include deny version")
+            if "steps.setup.outputs.deny_version" not in uncommented_text(lines):
+                errors.append(f"{workflow_name} {job} must use setup.outputs.deny_version")
+        if "test" in lanes:
+            if not job_has_setup_input(lines, "include-nextest-version", '"true"'):
+                errors.append(f"{workflow_name} {job} must include nextest version")
+            if "steps.setup.outputs.nextest_version" not in uncommented_text(lines):
+                errors.append(f"{workflow_name} {job} must use setup.outputs.nextest_version")
+        if "check-aarch64" in lanes:
+            if not job_has_setup_input(lines, "include-build-values", '"true"'):
+                errors.append(f"{workflow_name} {job} must include build values")
+            if not job_has_setup_input(lines, "use-default-target", '"true"'):
+                errors.append(f"{workflow_name} {job} must use default target")
+        if "build" in lanes:
+            if not job_has_setup_input(lines, "include-build-values", '"true"'):
+                errors.append(f"{workflow_name} {job} must include build values")
+            if not job_has_setup_input(lines, "use-default-target", '"true"'):
+                errors.append(f"{workflow_name} {job} must use default target")
+            text = uncommented_text(lines)
+            if "steps.setup.outputs.zig_version" not in text:
+                errors.append(f"{workflow_name} {job} must use setup.outputs.zig_version")
+            if "steps.setup.outputs.zigbuild_version" not in text:
+                errors.append(f"{workflow_name} {job} must use setup.outputs.zigbuild_version")
+
+    return errors
+
+
+def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+    if REPO_LOCAL_ARTIFACT_RE.search(uncommented_text(workflow_text.splitlines())):
+        errors.append(f"{workflow_name} must not reference repo-local target release artifacts")
+
+    jobs = parse_jobs(workflow_text)
+    build = jobs.get("build")
+    if build is None:
+        return errors
+    build_text = uncommented_text(build)
+    if BINARY_PATH_COMMAND not in build_text:
+        errors.append(f"{workflow_name} build must resolve artifact through rust_verification_owner binary-path")
+    if 'cp "$binary_path" "$stage_dir/bolt-v2"' not in build_text:
+        errors.append(f"{workflow_name} build must copy the managed binary into a staged artifact directory")
+    if "steps.managed_artifact.outputs.stage_dir" not in build_text:
+        errors.append(f"{workflow_name} build upload must use the staged artifact directory")
     return errors
 
 
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
+    uncommented = "\n".join(uncommented_lines)
+    step_lines = [action_step_line(action_text, step) for step in SETUP_ACTION_ORDERED_STEPS]
+    if any(line is None for line in step_lines):
+        errors.append("setup action missing required ordered steps")
+    elif any(left >= right for left, right in zip(step_lines, step_lines[1:]) if left is not None and right is not None):
+        errors.append("setup action step order drifted")
+    for literal in SETUP_ACTION_REQUIRED_LITERALS:
+        if literal not in uncommented:
+            errors.append(f"setup action missing expected literal {literal!r}")
+    for output_name, output_mapping in SETUP_ACTION_OUTPUT_MAPPINGS.items():
+        output_block = extract_action_output_block(action_text, output_name)
+        if not output_block:
+            errors.append(f"setup action missing exported output {output_name!r}")
+        elif output_mapping not in uncommented_text(output_block):
+            errors.append(f"setup action missing output mapping for {output_name!r}")
     target_dir_input = extract_action_input_block(action_text, "include-managed-target-dir")
     if not target_dir_input:
         errors.append("setup action missing include-managed-target-dir input")
@@ -423,14 +735,71 @@ def verify_setup_action(action_text: str) -> list[str]:
     return errors
 
 
-def verify_text(workflow_text: str, action_text: str) -> list[str]:
-    return verify_workflow(workflow_text) + verify_setup_action(action_text)
+def verify_nextest_config(config_text: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        config = tomllib.loads(config_text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"nextest config invalid TOML: {exc}"]
+
+    groups = config.get("test-groups", {})
+    if not isinstance(groups, dict):
+        groups = {}
+    live_node_group = groups.get(LIVE_NODE_TEST_GROUP)
+    if not isinstance(live_node_group, dict):
+        errors.append("nextest config missing live-node test group")
+    elif live_node_group.get("max-threads") != 1:
+        errors.append("nextest live-node test group max-threads must be 1")
+
+    profile = config.get("profile", {})
+    default_profile = profile.get("default", {}) if isinstance(profile, dict) else {}
+    overrides = default_profile.get("overrides", []) if isinstance(default_profile, dict) else []
+    if not isinstance(overrides, list):
+        overrides = []
+    live_node_filters = [
+        override.get("filter")
+        for override in overrides
+        if isinstance(override, dict) and override.get("test-group") == LIVE_NODE_TEST_GROUP
+    ]
+    missing_binaries = [
+        binary
+        for binary in LIVE_NODE_NEXTEST_BINARIES
+        if not any(isinstance(filter_expr, str) and f"binary(={binary})" in filter_expr for filter_expr in live_node_filters)
+    ]
+    missing_unit_filters = [
+        fragment
+        for fragment in LIVE_NODE_UNIT_TEST_FILTERS
+        if not any(isinstance(filter_expr, str) and fragment in filter_expr for filter_expr in live_node_filters)
+    ]
+    if missing_binaries or missing_unit_filters:
+        missing = ", ".join(
+            [f"binary(={binary})" for binary in missing_binaries] + missing_unit_filters
+        )
+        errors.append(f"nextest config must assign LiveNode test paths to live-node group: missing {missing}")
+    return errors
+
+
+def verify_text(workflow_text: str, action_text: str, nextest_config_text: str) -> list[str]:
+    return verify_workflows({"ci.yml": workflow_text}, action_text, nextest_config_text)
+
+
+def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config_text: str) -> list[str]:
+    errors: list[str] = []
+    for workflow_name, workflow_text in workflows.items():
+        if workflow_name == "ci.yml" or workflow_name.endswith("/ci.yml"):
+            errors.extend(verify_workflow(workflow_text))
+        errors.extend(verify_managed_workflow(workflow_text, workflow_name))
+        errors.extend(verify_build_artifacts(workflow_text, workflow_name))
+    errors.extend(verify_setup_action(action_text))
+    errors.extend(verify_nextest_config(nextest_config_text))
+    return errors
 
 
 def main() -> int:
-    workflow_text = DEFAULT_WORKFLOW.read_text()
+    workflow_texts = {workflow.relative_to(REPO_ROOT).as_posix(): workflow.read_text() for workflow in DEFAULT_WORKFLOWS if workflow.exists()}
     action_text = DEFAULT_SETUP_ACTION.read_text()
-    errors = verify_text(workflow_text, action_text)
+    nextest_config_text = DEFAULT_NEXTEST_CONFIG.read_text()
+    errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

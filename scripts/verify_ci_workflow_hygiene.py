@@ -81,6 +81,12 @@ ELSE_RE = re.compile(r"^\s*else\s*$")
 FI_RE = re.compile(r"^\s*fi\s*$")
 TARGET_DIR_OPT_IN_RE = re.compile(r"^\s+include-managed-target-dir:\s*(['\"])true\1\s*$")
 SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir\s*\}\}\s*$")
+SETUP_TARGET_DIR_RELATIVE_EXPORT_RE = re.compile(
+    r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
+)
+SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE = re.compile(
+    r'^\s*echo\s+"managed_target_dir_relative=\$managed_target_dir_relative"\s*>>\s*"\$GITHUB_OUTPUT"\s*$'
+)
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
@@ -104,6 +110,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate rust_verification_source_sha",
     "just --evaluate rust_verification_ci_install_script",
     'target-dir --repo "$GITHUB_WORKSPACE"',
+    "os.path.relpath",
 )
 SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_toolchain": "steps.shared.outputs.rust_toolchain",
@@ -117,6 +124,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
     "rust_verification_ci_install_script": "steps.shared.outputs.rust_verification_ci_install_script",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
+    "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
 }
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
@@ -742,6 +750,10 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action include-managed-target-dir default must be false")
     if not any(SETUP_TARGET_DIR_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir from target_dir step")
+    if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
+        errors.append("setup action must export managed_target_dir_relative from target_dir step")
+    if not any(SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE.match(line) for line in uncommented_lines):
+        errors.append("setup action target_dir step must write managed_target_dir_relative")
     if not any(SETUP_TARGET_DIR_IF_RE.match(line) for line in uncommented_lines):
         errors.append("setup action target dir step must be conditional")
     return errors

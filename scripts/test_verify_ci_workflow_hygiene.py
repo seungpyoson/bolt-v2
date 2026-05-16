@@ -330,6 +330,8 @@ outputs:
     value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
   managed_target_dir:
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
+  managed_target_dir_relative:
+    value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}
 runs:
   using: composite
   steps:
@@ -371,7 +373,10 @@ runs:
       id: target_dir
       shell: bash
       run: |
-        echo "managed_target_dir=$(python3 "${{ steps.shared.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")" >> "$GITHUB_OUTPUT"
+        managed_target_dir="$(python3 "${{ steps.shared.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")"
+        managed_target_dir_relative="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$managed_target_dir")"
+        echo "managed_target_dir=$managed_target_dir" >> "$GITHUB_OUTPUT"
+        echo "managed_target_dir_relative=$managed_target_dir_relative" >> "$GITHUB_OUTPUT"
     - name: Setup Rust toolchain
       shell: bash
       run: echo setup
@@ -1116,6 +1121,22 @@ def main() -> int:
             BASE_ACTION,
             "    value: ${{ steps.target_dir.outputs.managed_target_dir }}",
             '    value: "" # ${{ steps.target_dir.outputs.managed_target_dir }}',
+        ),
+    )
+    assert_error(
+        "setup action must export managed_target_dir_relative from target_dir step",
+        action=replace_once(
+            BASE_ACTION,
+            "    value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}",
+            '    value: "" # ${{ steps.target_dir.outputs.managed_target_dir_relative }}',
+        ),
+    )
+    assert_error(
+        "setup action target_dir step must write managed_target_dir_relative",
+        action=replace_once(
+            BASE_ACTION,
+            '        echo "managed_target_dir_relative=$managed_target_dir_relative" >> "$GITHUB_OUTPUT"',
+            '        echo "managed_target_dir=$managed_target_dir" >> "$GITHUB_OUTPUT"',
         ),
     )
     assert_error(

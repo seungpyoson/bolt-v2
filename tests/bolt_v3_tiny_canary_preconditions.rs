@@ -13,10 +13,8 @@ use bolt_v2::{
 use rust_decimal::Decimal;
 use serde_json::Value;
 
-#[test]
-fn tiny_canary_quickstart_names_required_operator_artifacts() {
-    let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
-    let required_terms = [
+fn phase8_required_operator_artifact_terms() -> [&'static str; 27] {
+    [
         "BOLT_V3_PHASE8_HEAD_SHA",
         "BOLT_V3_PHASE8_ROOT_TOML_PATH",
         "BOLT_V3_PHASE8_ROOT_TOML_SHA256",
@@ -30,6 +28,7 @@ fn tiny_canary_quickstart_names_required_operator_artifacts() {
         "BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256",
         "BOLT_V3_PHASE8_ABORT_PLAN_PATH",
         "BOLT_V3_PHASE8_ABORT_PLAN_SHA256",
+        "BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID",
         "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
         "BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",
         "BOLT_V3_PHASE8_APPROVAL_NONCE_PATH",
@@ -43,12 +42,29 @@ fn tiny_canary_quickstart_names_required_operator_artifacts() {
         "BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH",
         "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
         "BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH",
-    ];
+    ]
+}
 
-    for term in required_terms {
+#[test]
+fn tiny_canary_quickstart_names_required_operator_artifacts() {
+    let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
+
+    for term in phase8_required_operator_artifact_terms() {
         assert!(
             quickstart.contains(term),
             "phase8 quickstart must name required operator artifact `{term}`"
+        );
+    }
+}
+
+#[test]
+fn tiny_canary_schema_doc_names_required_operator_artifacts() {
+    let schema_doc = include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-schema.md");
+
+    for term in phase8_required_operator_artifact_terms() {
+        assert!(
+            schema_doc.contains(term),
+            "phase8 schema doc must name required operator artifact `{term}`"
         );
     }
 }

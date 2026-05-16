@@ -539,6 +539,7 @@ impl Phase8OperatorApprovalEnvelope {
             current_root_toml_sha256,
             live_canary_approval_id,
         )?;
+        self.validate_approval_not_consumed()?;
         self.validate_approval_window(current_unix_seconds)?;
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
@@ -560,6 +561,19 @@ impl Phase8OperatorApprovalEnvelope {
         }
         if current_unix_seconds > self.approval_not_after_unix_seconds {
             return Err(anyhow!("phase8 operator approval is expired"));
+        }
+        Ok(())
+    }
+
+    fn validate_approval_not_consumed(&self) -> Result<()> {
+        let path = Path::new(&self.approval_consumption_path);
+        if path.try_exists().map_err(|source| {
+            anyhow!(
+                "failed to inspect phase8 operator approval consumption `{}`: {source}",
+                path.display()
+            )
+        })? {
+            return Err(self.approval_already_consumed_error());
         }
         Ok(())
     }
@@ -599,10 +613,7 @@ impl Phase8OperatorApprovalEnvelope {
             .create_new(true)
             .open(path)
             .map_err(|source| match source.kind() {
-                std::io::ErrorKind::AlreadyExists => anyhow!(
-                    "phase8 operator approval consumption `{}` already consumed; refusing to replay",
-                    path.display()
-                ),
+                std::io::ErrorKind::AlreadyExists => self.approval_already_consumed_error(),
                 _ => anyhow!(
                     "failed to create phase8 operator approval consumption `{}`: {source}",
                     path.display()
@@ -623,6 +634,13 @@ impl Phase8OperatorApprovalEnvelope {
             ));
         }
         Ok(())
+    }
+
+    fn approval_already_consumed_error(&self) -> anyhow::Error {
+        anyhow!(
+            "phase8 operator approval consumption `{}` already consumed; refusing to replay",
+            self.approval_consumption_path
+        )
     }
 
     pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {

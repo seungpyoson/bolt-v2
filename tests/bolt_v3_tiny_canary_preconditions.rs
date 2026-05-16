@@ -528,17 +528,19 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     assert_eq!(consumption["approval_not_after_unix_seconds"], 2_000);
     assert_eq!(consumption["consumed_unix_seconds"], 1_500);
 
-    let expired_error = envelope
+    let expired_after_consumption_error = envelope
         .validate_and_consume_against(
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
             2_001,
         )
-        .expect_err("expired approval should fail closed");
+        .expect_err("expired replay after consumption should fail closed as consumed");
     assert!(
-        expired_error.to_string().contains("expired"),
-        "error should mention expired approval: {expired_error}"
+        expired_after_consumption_error
+            .to_string()
+            .contains("already consumed"),
+        "error should mention consumed approval replay: {expired_after_consumption_error}"
     );
 
     let error = envelope

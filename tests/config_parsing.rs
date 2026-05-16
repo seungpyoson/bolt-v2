@@ -202,6 +202,29 @@ fn rejects_binary_oracle_market_exit_time_in_force_before_strategy_build() {
     );
 }
 
+#[test]
+fn rejects_binary_oracle_zero_market_exit_runtime_fields_before_strategy_build() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    for (field, replacement) in [
+        ("market_exit_interval_ms", "market_exit_interval_ms = 0"),
+        ("market_exit_max_attempts", "market_exit_max_attempts = 0"),
+    ] {
+        let mutated_strategy = strategy_toml.replace(&format!("{field} = 100"), replacement);
+        let messages = binary_oracle_strategy_validation_messages(&mutated_strategy);
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains(field) && message.contains("positive integer")),
+            "{field}=0 must fail during strategy validation, got: {messages:#?}"
+        );
+    }
+}
+
 fn binary_oracle_strategy_validation_messages(strategy_toml: &str) -> Vec<String> {
     use bolt_v2::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
     use bolt_v2::bolt_v3_validate::validate_strategies;
@@ -1651,6 +1674,25 @@ fn rejects_polymarket_data_empty_new_market_filter_keyword() {
             && m.contains("new_market_filter")
             && m.contains("must be non-empty")),
         "expected empty new_market_filter keyword validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_data_new_market_filter_unknown_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "transport_backend = \"sockudo\"\n\n[venues.polymarket_main.execution]",
+        "transport_backend = \"sockudo\"\nnew_market_filter = { kind = \"keyword\", keyword = \"bitcoin\", typo = true }\n\n[venues.polymarket_main.execution]",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unknown new-market-filter fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("new_market_filter") && m.contains("typo")),
+        "validation error should name the unknown new_market_filter field, got: {messages:#?}"
     );
 }
 

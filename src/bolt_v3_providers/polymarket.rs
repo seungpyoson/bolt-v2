@@ -115,7 +115,7 @@ pub struct PolymarketDataConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PolymarketNewMarketFilterConfig {
     Keyword { keyword: String },
 }

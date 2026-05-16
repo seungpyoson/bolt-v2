@@ -1161,10 +1161,26 @@ reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TO
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"market_exit_interval_ms"'''
+context = '''("market_exit_interval_ms", strategy.market_exit_interval_ms),'''
+classification = "strategy_runtime_validation_field"
+reason = "This field-name literal labels the configured market-exit runtime value in validation diagnostics; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"market_exit_max_attempts"'''
 context = '''"market_exit_max_attempts",'''
 classification = "strategy_runtime_schema_field"
 reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_max_attempts"'''
+context = '''"market_exit_max_attempts",'''
+classification = "strategy_runtime_validation_field"
+reason = "This field-name literal labels the configured market-exit runtime value in validation diagnostics; the value remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"

@@ -862,15 +862,29 @@ fn validate_parameter_bounds(
 }
 
 fn validate_strategy_runtime_fields(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
-    if toml::Value::String(strategy.market_exit_time_in_force.clone())
-        .try_into::<ArchetypeTimeInForce>()
-        .is_ok()
-    {
-        return Vec::new();
+    let mut errors = Vec::new();
+
+    for (field, value) in [
+        ("market_exit_interval_ms", strategy.market_exit_interval_ms),
+        (
+            "market_exit_max_attempts",
+            strategy.market_exit_max_attempts,
+        ),
+    ] {
+        if value == 0 {
+            errors.push(format!("{context}: {field} must be a positive integer"));
+        }
     }
 
-    vec![format!(
-        "{context}: market_exit_time_in_force must be a supported NT TimeInForce value for binary_oracle_edge_taker: `{}`",
-        strategy.market_exit_time_in_force
-    )]
+    if toml::Value::String(strategy.market_exit_time_in_force.clone())
+        .try_into::<ArchetypeTimeInForce>()
+        .is_err()
+    {
+        errors.push(format!(
+            "{context}: market_exit_time_in_force must be a supported NT TimeInForce value for binary_oracle_edge_taker: `{}`",
+            strategy.market_exit_time_in_force
+        ));
+    }
+
+    errors
 }

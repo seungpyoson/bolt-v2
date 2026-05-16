@@ -640,6 +640,7 @@ impl Phase8CanaryEvidence {
             }
             Phase8CanaryOutcome::BlockedBeforeSubmit => {
                 validate_phase8_live_refs_absent(self)?;
+                validate_phase8_block_reasons_present(&self.block_reasons)?;
                 validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_REJECTED,
@@ -648,6 +649,7 @@ impl Phase8CanaryEvidence {
                 )
             }
             Phase8CanaryOutcome::LiveCanaryProof => {
+                validate_phase8_block_reasons_absent(&self.block_reasons)?;
                 validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_ACCEPTED,
@@ -716,6 +718,28 @@ impl Phase8CanaryEvidence {
                 validate_phase8_evidence_ref(stringify!(post_run_hygiene_ref), post_run_hygiene_ref)
             }
         }
+    }
+}
+
+fn validate_phase8_block_reasons_absent(block_reasons: &[Phase8CanaryBlockReason]) -> Result<()> {
+    if block_reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "phase8 canary evidence {} must be empty for live proof",
+            stringify!(block_reasons)
+        ))
+    }
+}
+
+fn validate_phase8_block_reasons_present(block_reasons: &[Phase8CanaryBlockReason]) -> Result<()> {
+    if block_reasons.is_empty() {
+        Err(anyhow!(
+            "phase8 canary evidence {} must not be empty for blocked proof",
+            stringify!(block_reasons)
+        ))
+    } else {
+        Ok(())
     }
 }
 

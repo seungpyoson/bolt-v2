@@ -702,6 +702,36 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
 }
 
 #[test]
+fn live_canary_evidence_writer_rejects_block_reasons() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect("valid live canary evidence should construct");
+    evidence
+        .block_reasons
+        .push(Phase8CanaryBlockReason::DecisionEvidenceUnavailable);
+
+    let error = evidence
+        .write_json_file(&evidence_path)
+        .expect_err("live proof with block reasons must not be written");
+
+    assert!(
+        error.to_string().contains("block_reasons"),
+        "error should mention live proof block reasons: {error}"
+    );
+    assert!(
+        !evidence_path.exists(),
+        "live proof with block reasons must not create evidence file"
+    );
+}
+
+#[test]
 fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
     let error = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),

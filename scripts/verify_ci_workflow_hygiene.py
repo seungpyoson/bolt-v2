@@ -163,6 +163,10 @@ ZIGBUILD_PREBUILT_LITERALS = (
 )
 
 
+def has_source_cargo_install(text: str, tool: str) -> bool:
+    return re.search(rf"(?m)(^|[;&|])\s*cargo\s+install\b[^\n;&|]*\b{re.escape(tool)}\b", text) is not None
+
+
 def strip_comment(line: str) -> str:
     quote: str | None = None
     escaped = False
@@ -743,7 +747,7 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
         if job_lines is None:
             continue
         text = uncommented_text(job_lines)
-        if f"cargo install {tool}" in text:
+        if has_source_cargo_install(text, tool):
             errors.append(f"{workflow_name} {job} must not compile {tool} from source")
         block = install_action_tool_block(job_lines, tool, output)
         if block is None:
@@ -756,7 +760,7 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
     if build_lines is None:
         return errors
     build_text = uncommented_text(build_lines)
-    if "cargo install cargo-zigbuild" in build_text:
+    if has_source_cargo_install(build_text, "cargo-zigbuild"):
         errors.append(f"{workflow_name} build must not compile cargo-zigbuild from source")
     for literal in ZIGBUILD_PREBUILT_LITERALS:
         if literal not in build_text:

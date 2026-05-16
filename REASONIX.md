@@ -18,7 +18,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 - `src/` — library crate (`lib.rs`) + four binaries (`bolt-v2`, `render_live_config`, `stream_to_lake`, `raw_capture`).
 - `tests/` — integration tests (`.rs` files in root, not `*_test.rs`); unit tests live in-source under `#[cfg(test)]`.
 - `config/` — live TOML runtime config (secrets excluded per `.gitignore`).
-- `scripts/` — Python verification scripts for runtime literals, provider leaks, naming conventions.
+- `scripts/` — Python verification scripts for Bolt-v3 source fences: runtime literals, provider leaks, core boundary, naming conventions, status-map currency, and pure Rust runtime.
 - `deploy/` — systemd unit + install script for production deployment.
 - `contracts/` — Polymarket CLOB contract addresses / ABI.
 - `docs/` — postmortems, bolt-v3 specs, superpowers documentation.
@@ -32,6 +32,7 @@ All via `just` (must be installed). The justfile is the single source of truth �
 |---------|-------------|
 | `just build` | Release cross-compile via `cargo zigbuild` (target: `aarch64-unknown-linux-gnu`). |
 | `just test` | `cargo nextest run --locked` — requires `cargo-nextest`. |
+| `just source-fence` | Bolt-v3 source-fence verifier set + targeted structural cargo test filters before the full test lane. |
 | `just fmt` | `cargo fmt` (gated by rust-verification wrapper). |
 | `just fmt-check` | `cargo fmt --check` + Python verification scripts as prerequisites. |
 | `just clippy` | `cargo clippy` (gated by rust-verification wrapper, `-D warnings`). |

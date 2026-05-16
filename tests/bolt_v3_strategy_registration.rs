@@ -6,8 +6,10 @@ use bolt_v2::{
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState},
-    strategies::{eth_chainlink_taker::EthChainlinkTakerBuilder, registry::StrategyBuilder},
-    validate::ValidationError,
+    strategies::{
+        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+        registry::{StrategyBuilder, ValidationError},
+    },
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
@@ -21,6 +23,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
     ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
     {
+        assert_eq!(context.strategy_kind, "stub_runtime_strategy");
         context
             .submit_admission
             .arm(support::validated_bolt_v3_live_canary_gate_report(
@@ -73,9 +76,14 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         Ok(strategy_id)
     }
 
+    fn stub_strategy_kind() -> &'static str {
+        "stub_runtime_strategy"
+    }
+
     const TEST_BINDINGS: &[bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding] = &[
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
             key: "binary_oracle_edge_taker",
+            strategy_kind: stub_strategy_kind,
             register: register_stub,
         },
     ];
@@ -131,11 +139,11 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
         .expect("fixture should include initial binary oracle strategy");
 
-    let raw = binary_oracle_edge_taker::raw_taker_config(strategy)
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
         .expect("binary oracle strategy should map into existing taker raw config");
 
     let mut errors: Vec<ValidationError> = Vec::new();
-    EthChainlinkTakerBuilder::validate_config(
+    BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
         "strategies.bitcoin_updown_main.parameters.runtime",
         &mut errors,
@@ -153,20 +161,176 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         Some("binary_oracle_edge_taker-001")
     );
     assert_eq!(
+        table.get("order_id_tag").and_then(|value| value.as_str()),
+        Some("001")
+    );
+    assert_eq!(
+        table.get("oms_type").and_then(|value| value.as_str()),
+        Some("netting")
+    );
+    assert_eq!(
         table.get("client_id").and_then(|value| value.as_str()),
         Some("polymarket_main")
     );
     assert_eq!(
         table
-            .get("period_duration_secs")
+            .get("reference_venue")
+            .and_then(|value| value.as_str()),
+        Some("binance_reference")
+    );
+    assert_eq!(
+        table
+            .get("reference_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("BTCUSDT.BINANCE")
+    );
+    assert!(
+        !table.contains_key("reference_publish_topic"),
+        "reference input must come from configured NT reference_data, not a bolt msgbus topic"
+    );
+    assert_eq!(
+        table
+            .get("cadence_seconds")
             .and_then(|value| value.as_integer()),
         Some(300)
+    );
+    assert_eq!(
+        table
+            .get("configured_target_id")
+            .and_then(|value| value.as_str()),
+        Some("btc_updown_5m")
+    );
+    assert_eq!(
+        table.get("target_kind").and_then(|value| value.as_str()),
+        Some("rotating_market")
+    );
+    assert_eq!(
+        table
+            .get("rotating_market_family")
+            .and_then(|value| value.as_str()),
+        Some("updown")
+    );
+    assert_eq!(
+        table
+            .get("underlying_asset")
+            .and_then(|value| value.as_str()),
+        Some("BTC")
+    );
+    assert_eq!(
+        table
+            .get("cadence_slug_token")
+            .and_then(|value| value.as_str()),
+        Some("5m")
+    );
+    assert_eq!(
+        table
+            .get("market_selection_rule")
+            .and_then(|value| value.as_str()),
+        Some("active_or_next")
+    );
+    assert_eq!(
+        table
+            .get("retry_interval_seconds")
+            .and_then(|value| value.as_integer()),
+        Some(5)
+    );
+    assert_eq!(
+        table
+            .get("blocked_after_seconds")
+            .and_then(|value| value.as_integer()),
+        Some(60)
     );
     assert_eq!(
         table
             .get("warmup_tick_count")
             .and_then(|value| value.as_integer()),
         Some(20)
+    );
+    assert_eq!(
+        table
+            .get("entry_order")
+            .and_then(|value| value.as_table())
+            .and_then(|order| order.get("order_type"))
+            .and_then(|value| value.as_str()),
+        Some("limit")
+    );
+    assert_eq!(
+        table
+            .get("entry_order")
+            .and_then(|value| value.as_table())
+            .and_then(|order| order.get("time_in_force"))
+            .and_then(|value| value.as_str()),
+        Some("fok")
+    );
+    assert_eq!(
+        table
+            .get("exit_order")
+            .and_then(|value| value.as_table())
+            .and_then(|order| order.get("order_type"))
+            .and_then(|value| value.as_str()),
+        Some("market")
+    );
+    assert_eq!(
+        table
+            .get("exit_order")
+            .and_then(|value| value.as_table())
+            .and_then(|order| order.get("time_in_force"))
+            .and_then(|value| value.as_str()),
+        Some("ioc")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let reference_data = loaded.strategies[strategy_index]
+        .config
+        .reference_data
+        .remove("spot")
+        .expect("fixture should include reference data role");
+    loaded.strategies[strategy_index]
+        .config
+        .reference_data
+        .insert("reference".to_string(), reference_data);
+
+    let strategy = &loaded.strategies[strategy_index];
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("binary oracle strategy should use the configured reference_data role key");
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+
+    assert_eq!(
+        table
+            .get("reference_venue")
+            .and_then(|value| value.as_str()),
+        Some("binance_reference")
+    );
+    assert_eq!(
+        table
+            .get("reference_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("BTCUSDT.BINANCE")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_uses_market_family_target_projection() {
+    let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+
+    assert!(
+        !source.contains("updown::deserialize_target_block"),
+        "binary_oracle_edge_taker runtime mapping must not deserialize an updown target directly"
+    );
+    assert!(
+        source.contains("target_runtime_fields_from_target"),
+        "binary_oracle_edge_taker runtime mapping should consume the market-family target projection"
     );
 }
 
@@ -184,5 +348,30 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
     assert_eq!(
         node.registered_strategy_ids(),
         vec![StrategyId::from("binary_oracle_edge_taker-001")]
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_rejects_strategy_venue_that_cannot_load_target_family() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-decision-evidence-binance-target-family");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let strategy = loaded
+        .strategies
+        .iter_mut()
+        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    strategy.config.venue = "binance_reference".to_string();
+
+    let error =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect_err("Binance venue must not load the configured target family");
+
+    let message = error.to_string();
+    assert!(message.contains("binance_reference"), "{message}");
+    assert!(
+        message.contains("does not support that market family"),
+        "{message}"
     );
 }

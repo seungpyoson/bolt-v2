@@ -13,6 +13,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use toml::Value;
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
@@ -27,7 +28,6 @@ pub struct BoltV3RootConfig {
     pub risk: RiskBlock,
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
-    #[serde(default)]
     pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
     pub venues: BTreeMap<String, VenueBlock>,
@@ -50,14 +50,23 @@ pub struct RuntimeBlock {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeMode {
+    Backtest,
+    Sandbox,
     Live,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusBlock {
     pub load_state: bool,
     pub save_state: bool,
+    pub instance_id: NautilusComponentConfig,
+    pub cache: NautilusComponentConfig,
+    pub msgbus: NautilusComponentConfig,
+    pub portfolio: NautilusComponentConfig,
+    pub emulator: NautilusComponentConfig,
+    pub streaming: NautilusComponentConfig,
+    pub loop_debug: bool,
     pub timeout_connection_seconds: u64,
     pub timeout_reconciliation_seconds: u64,
     pub data_engine: NautilusDataEngineBlock,
@@ -67,6 +76,8 @@ pub struct NautilusBlock {
     pub delay_post_stop_seconds: u64,
     pub timeout_shutdown_seconds: u64,
 }
+
+pub type NautilusComponentConfig = Value;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -93,12 +104,12 @@ pub struct NautilusExecEngineBlock {
     pub load_cache: bool,
     pub snapshot_orders: bool,
     pub snapshot_positions: bool,
-    pub snapshot_positions_interval_seconds: u64,
+    pub snapshot_positions_interval_seconds: Option<u64>,
     pub external_client_ids: Vec<String>,
     pub debug: bool,
     pub reconciliation: bool,
     pub reconciliation_startup_delay_seconds: u64,
-    pub reconciliation_lookback_mins: u32,
+    pub reconciliation_lookback_mins: Option<u32>,
     pub reconciliation_instrument_ids: Vec<String>,
     pub filter_unclaimed_external_orders: bool,
     pub filter_position_reports: bool,
@@ -107,25 +118,25 @@ pub struct NautilusExecEngineBlock {
     pub inflight_check_interval_milliseconds: u32,
     pub inflight_check_threshold_milliseconds: u32,
     pub inflight_check_retries: u32,
-    pub open_check_interval_seconds: u64,
-    pub open_check_lookback_mins: u32,
+    pub open_check_interval_seconds: Option<u64>,
+    pub open_check_lookback_mins: Option<u32>,
     pub open_check_threshold_milliseconds: u32,
     pub open_check_missing_retries: u32,
     pub open_check_open_only: bool,
     pub max_single_order_queries_per_cycle: u32,
     pub single_order_query_delay_milliseconds: u32,
-    pub position_check_interval_seconds: u64,
+    pub position_check_interval_seconds: Option<u64>,
     pub position_check_lookback_mins: u32,
     pub position_check_threshold_milliseconds: u32,
     pub position_check_retries: u32,
-    pub purge_closed_orders_interval_mins: u32,
-    pub purge_closed_orders_buffer_mins: u32,
-    pub purge_closed_positions_interval_mins: u32,
-    pub purge_closed_positions_buffer_mins: u32,
-    pub purge_account_events_interval_mins: u32,
-    pub purge_account_events_lookback_mins: u32,
+    pub purge_closed_orders_interval_mins: Option<u32>,
+    pub purge_closed_orders_buffer_mins: Option<u32>,
+    pub purge_closed_positions_interval_mins: Option<u32>,
+    pub purge_closed_positions_buffer_mins: Option<u32>,
+    pub purge_account_events_interval_mins: Option<u32>,
+    pub purge_account_events_lookback_mins: Option<u32>,
     pub purge_from_database: bool,
-    pub own_books_audit_interval_seconds: u64,
+    pub own_books_audit_interval_seconds: Option<u64>,
     pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
     pub allow_overfills: bool,
@@ -145,11 +156,23 @@ pub struct RiskBlock {
     pub nt_qsize: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingBlock {
     pub standard_output_level: LogLevel,
     pub file_level: LogLevel,
+    pub component_levels: BTreeMap<String, LogLevel>,
+    pub module_levels: BTreeMap<String, LogLevel>,
+    pub credential_module_level: LogLevel,
+    pub log_components_only: bool,
+    pub is_colored: bool,
+    pub print_config: bool,
+    pub use_tracing: bool,
+    pub bypass_logging: bool,
+    pub file_config: NautilusComponentConfig,
+    pub clear_log_file: bool,
+    pub stale_log_source_directory: String,
+    pub stale_log_archive_directory: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -180,6 +203,7 @@ impl LogLevel {
 #[serde(deny_unknown_fields)]
 pub struct PersistenceBlock {
     pub catalog_directory: String,
+    pub runtime_capture_start_poll_interval_milliseconds: u64,
     pub decision_evidence: DecisionEvidenceBlock,
     pub streaming: StreamingBlock,
 }
@@ -202,6 +226,29 @@ pub struct LiveCanaryBlock {
     pub max_no_submit_readiness_report_bytes: u64,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
+    pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveCanaryOperatorEvidenceBlock {
+    pub ssm_manifest_path: String,
+    pub ssm_manifest_sha256: String,
+    pub strategy_input_evidence_path: String,
+    pub strategy_input_evidence_sha256: String,
+    pub canary_evidence_path: String,
+    pub approval_not_before_unix_seconds: i64,
+    pub approval_not_after_unix_seconds: i64,
+    pub approval_nonce_path: String,
+    pub approval_nonce_sha256: String,
+    pub approval_consumption_path: String,
+    pub decision_evidence_path: String,
+    pub client_order_id_hash: String,
+    pub venue_order_id_hash: String,
+    pub nt_submit_event_path: String,
+    pub venue_order_state_path: String,
+    pub strategy_cancel_path: Option<String>,
+    pub restart_reconciliation_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -235,11 +282,8 @@ pub struct AwsBlock {
 #[serde(deny_unknown_fields)]
 pub struct VenueBlock {
     pub kind: ProviderKey,
-    #[serde(default)]
     pub data: Option<toml::Value>,
-    #[serde(default)]
     pub execution: Option<toml::Value>,
-    #[serde(default)]
     pub secrets: Option<toml::Value>,
 }
 
@@ -261,16 +305,28 @@ pub struct BoltV3StrategyConfig {
     pub strategy_archetype: StrategyArchetypeKey,
     pub order_id_tag: String,
     pub oms_type: OmsType,
+    pub use_uuid_client_order_ids: bool,
+    pub use_hyphens_in_client_order_ids: bool,
+    pub external_order_claims: Vec<String>,
+    pub manage_contingent_orders: bool,
+    pub manage_gtd_expiry: bool,
+    pub manage_stop: bool,
+    pub market_exit_interval_ms: u64,
+    pub market_exit_max_attempts: u64,
+    pub market_exit_time_in_force: String,
+    pub market_exit_reduce_only: bool,
+    pub log_events: bool,
+    pub log_commands: bool,
+    pub log_rejected_due_post_only_as_warning: bool,
     pub venue: String,
     /// Raw `[target]` envelope. The strategy envelope keeps the TOML
     /// field name `target` but its Rust type is a generic raw-TOML
     /// container so target-shape fields live in the per-family binding
     /// modules under `crate::bolt_v3_market_families`. Typed
     /// deserialization with `deny_unknown_fields` happens inside the
-    /// matching family validator and inside the family planner; the
-    /// strategy envelope itself is target-shape-neutral.
+    /// matching family validator and inside the family instrument-filter
+    /// code; the strategy envelope itself stores only the raw TOML value.
     pub target: toml::Value,
-    #[serde(default)]
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
     pub parameters: toml::Value,
 }
@@ -316,7 +372,7 @@ pub struct LoadedBoltV3Config {
 pub enum BoltV3ConfigError {
     FileRead {
         path: PathBuf,
-        source: std::io::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     Parse {
         path: PathBuf,
@@ -342,7 +398,7 @@ impl std::fmt::Display for BoltV3ConfigError {
 impl std::error::Error for BoltV3ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            BoltV3ConfigError::FileRead { source, .. } => Some(source),
+            BoltV3ConfigError::FileRead { source, .. } => Some(source.as_ref()),
             BoltV3ConfigError::Validation(error) => Some(error),
             _ => None,
         }
@@ -350,21 +406,17 @@ impl std::error::Error for BoltV3ConfigError {
 }
 
 pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV3ConfigError> {
-    let root_text =
-        std::fs::read_to_string(root_path).map_err(|source| BoltV3ConfigError::FileRead {
+    let root_text = crate::bounded_config_read::read_to_string(root_path).map_err(|source| {
+        BoltV3ConfigError::FileRead {
             path: root_path.to_path_buf(),
-            source,
-        })?;
+            source: Box::new(source),
+        }
+    })?;
     let root: BoltV3RootConfig =
         toml::from_str(&root_text).map_err(|error| BoltV3ConfigError::Parse {
             path: root_path.to_path_buf(),
             message: error.to_string(),
         })?;
-
-    let root_dir = root_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
 
     let mut strategies = Vec::with_capacity(root.strategy_files.len());
     let mut seen_paths = HashSet::new();
@@ -377,7 +429,7 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
             ));
             continue;
         }
-        let absolute = root_dir.join(relative);
+        let absolute = resolve_root_relative_path(root_path, relative);
         if !absolute.exists() {
             path_errors.push(format!(
                 "strategy file `{relative}` does not exist at {}",
@@ -385,11 +437,12 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
             ));
             continue;
         }
-        let text =
-            std::fs::read_to_string(&absolute).map_err(|source| BoltV3ConfigError::FileRead {
+        let text = crate::bounded_config_read::read_to_string(&absolute).map_err(|source| {
+            BoltV3ConfigError::FileRead {
                 path: absolute.clone(),
-                source,
-            })?;
+                source: Box::new(source),
+            }
+        })?;
         let strategy: BoltV3StrategyConfig =
             toml::from_str(&text).map_err(|error| BoltV3ConfigError::Parse {
                 path: absolute.clone(),
@@ -419,9 +472,25 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
     })
 }
 
+pub(crate) fn resolve_root_relative_path(
+    root_path: &Path,
+    configured_path: impl AsRef<Path>,
+) -> PathBuf {
+    let configured_path = configured_path.as_ref();
+    if configured_path.is_absolute() {
+        return configured_path.to_path_buf();
+    }
+    match root_path.parent() {
+        Some(root_parent) => root_parent.join(configured_path),
+        None => configured_path.to_path_buf(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     fn minimal_root_toml() -> &'static str {
         include_str!("../tests/fixtures/bolt_v3/root.toml")
@@ -429,6 +498,14 @@ mod tests {
 
     fn minimal_strategy_toml() -> &'static str {
         include_str!("../tests/fixtures/bolt_v3/strategies/binary_oracle.toml")
+    }
+
+    fn oversized_config_text() -> String {
+        let mut text = String::new();
+        while text.len() as u64 <= crate::bounded_config_read::CONFIG_FILE_SIZE_LIMIT_BYTES {
+            text.push_str("# oversized config\n");
+        }
+        text
     }
 
     #[test]
@@ -458,6 +535,82 @@ mod tests {
             .as_table()
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
-        assert!(strategy.reference_data.contains_key("primary"));
+        assert!(strategy.reference_data.contains_key("spot"));
+    }
+
+    #[test]
+    fn strategy_config_requires_explicit_reference_data_structure() {
+        let strategy_without_reference_data = minimal_strategy_toml().replace(
+            r#"[reference_data.spot]
+venue = "binance_reference"
+instrument_id = "BTCUSDT.BINANCE"
+
+"#,
+            "",
+        );
+
+        let error = toml::from_str::<BoltV3StrategyConfig>(&strategy_without_reference_data)
+            .expect_err("strategy config must explicitly declare [reference_data]");
+
+        assert!(
+            error.message().contains("missing field `reference_data`"),
+            "expected missing reference_data parse error, got: {error}"
+        );
+    }
+
+    #[test]
+    fn root_relative_path_resolves_against_root_parent() {
+        assert_eq!(
+            resolve_root_relative_path(
+                Path::new("/srv/bolt/config/root.toml"),
+                "strategies/binary_oracle.toml"
+            ),
+            PathBuf::from("/srv/bolt/config/strategies/binary_oracle.toml")
+        );
+    }
+
+    #[test]
+    fn root_relative_path_preserves_absolute_paths() {
+        assert_eq!(
+            resolve_root_relative_path(
+                Path::new("/srv/bolt/config/root.toml"),
+                "/srv/bolt/reports/no-submit.json"
+            ),
+            PathBuf::from("/srv/bolt/reports/no-submit.json")
+        );
+    }
+
+    #[test]
+    fn load_bolt_v3_config_rejects_oversized_root_before_parse() {
+        let tempdir = tempdir().expect("temp dir should be created");
+        let root_path = tempdir.path().join("root.toml");
+        fs::write(&root_path, oversized_config_text()).expect("oversized root should be written");
+
+        let error = load_bolt_v3_config(&root_path).expect_err("oversized root should fail closed");
+
+        assert!(
+            error.to_string().contains("exceeds config file size limit"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_bolt_v3_config_rejects_oversized_strategy_before_parse() {
+        let tempdir = tempdir().expect("temp dir should be created");
+        let strategy_dir = tempdir.path().join("strategies");
+        fs::create_dir_all(&strategy_dir).expect("strategy dir should be created");
+        let root_path = tempdir.path().join("root.toml");
+        let strategy_path = strategy_dir.join("binary_oracle.toml");
+        fs::write(&root_path, minimal_root_toml()).expect("root should be written");
+        fs::write(&strategy_path, oversized_config_text())
+            .expect("oversized strategy should be written");
+
+        let error =
+            load_bolt_v3_config(&root_path).expect_err("oversized strategy should fail closed");
+
+        assert!(
+            error.to_string().contains("exceeds config file size limit"),
+            "unexpected error: {error}"
+        );
     }
 }

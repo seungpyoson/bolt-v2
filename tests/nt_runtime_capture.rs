@@ -204,6 +204,7 @@ async fn rejects_non_local_catalog_paths() {
                 node.handle(),
                 "s3://bucket/catalog",
                 1000,
+                50,
                 None,
             );
 
@@ -231,6 +232,7 @@ async fn accepts_valid_contract_path_on_capture_startup() {
                 node.handle(),
                 catalog_root.to_str().unwrap(),
                 1000,
+                50,
                 Some(repo_path("contracts/polymarket.toml").to_str().unwrap()),
             )
             .unwrap();
@@ -260,6 +262,7 @@ async fn rejects_missing_contract_path_on_capture_startup() {
                 node.handle(),
                 catalog_root.to_str().unwrap(),
                 1000,
+                50,
                 Some(missing.to_str().unwrap()),
             )
             .err()
@@ -291,6 +294,7 @@ async fn rejects_invalid_contract_path_on_capture_startup() {
                 node.handle(),
                 catalog_root.to_str().unwrap(),
                 1000,
+                50,
                 Some(invalid.to_str().unwrap()),
             )
             .err()
@@ -325,6 +329,7 @@ async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -439,6 +444,7 @@ async fn captures_typed_quote_and_close_status_and_flushes_on_shutdown() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -527,6 +533,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -687,6 +694,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -787,7 +795,7 @@ async fn writes_quote_spool_with_per_instrument_layout_and_metadata() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn keeps_bars_on_flat_legacy_spool_contract() {
+async fn does_not_capture_bars_to_flat_spool() {
     let _guard = live_node_test_lock().lock().await;
     let local = LocalSet::new();
 
@@ -807,6 +815,7 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -846,64 +855,15 @@ async fn keeps_bars_on_flat_legacy_spool_contract() {
 
             let spool_root = catalog_root.join("live").join(instance_id);
             let all_paths = collect_paths(&spool_root);
-            let bar_file = all_paths
-                .iter()
-                .find(|path| {
-                    path.extension().and_then(|ext| ext.to_str()) == Some("feather")
-                        && path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.starts_with("bars_"))
-                })
-                .expect("bar spool file should exist");
-
-            assert_eq!(
-                bar_file.parent().unwrap(),
-                spool_root.as_path(),
-                "spool tree: {all_paths:?}"
+            assert!(
+                all_paths.iter().all(|path| {
+                    !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("bars_"))
+                }),
+                "bar capture must not create flat spool files: {all_paths:?}"
             );
-
-            let bytes = std::fs::read(bar_file).unwrap();
-            let reader = StreamReader::try_new(Cursor::new(bytes), None).unwrap();
-            let metadata = reader.schema().metadata().clone();
-
-            assert_eq!(metadata.get("instrument_id"), None);
-            assert_eq!(metadata.get("bar_type"), None);
-
-            let batches = read_record_batches(bar_file);
-            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
-            let batch = &batches[0];
-            let schema = batch.schema();
-            let column_names: Vec<&str> =
-                schema.fields().iter().map(|f| f.name().as_str()).collect();
-            assert_eq!(
-                column_names,
-                vec![
-                    "open", "high", "low", "close", "volume", "ts_event", "ts_init"
-                ],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "open"),
-                vec![Price::from("0.40").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "high"),
-                vec![Price::from("0.55").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "low"),
-                vec![Price::from("0.35").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "close"),
-                vec![Price::from("0.50").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(
-                fixed_binary_col(batch, "volume"),
-                vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
-            );
-            assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
-            assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);
         })
         .await;
 }
@@ -928,6 +888,7 @@ async fn does_not_persist_startup_buffer_if_running_was_never_reached() {
                 node.handle(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -997,6 +958,7 @@ async fn captures_trading_state_changed_to_risk_jsonl_record() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -1060,6 +1022,7 @@ async fn captures_trade_tick_to_per_instrument_feather_spool() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -1137,6 +1100,7 @@ async fn captures_order_book_deltas_to_per_instrument_feather_spool() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -1261,6 +1225,7 @@ async fn captures_order_book_depth10_to_per_instrument_feather_spool() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -1403,6 +1368,7 @@ async fn captures_mark_price_update_to_per_instrument_feather_spool() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -1470,6 +1436,7 @@ async fn captures_index_price_update_to_per_instrument_feather_spool() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -1537,6 +1504,7 @@ async fn captures_instrument_any_to_per_instrument_feather_spool() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();
@@ -1638,6 +1606,7 @@ async fn captures_instrument_close_to_per_instrument_feather_spool() {
                 handle.clone(),
                 catalog_root.to_str().unwrap(),
                 60_000,
+                50,
                 None,
             )
             .unwrap();

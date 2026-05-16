@@ -150,12 +150,27 @@ PATTERN_HELPER_RE = re.compile(r"\b([a-z][a-z0-9_]*_pattern)\(\)")
 SUBSCRIBE_CALL_RE = re.compile(r"\b(subscribe_[a-z0-9_]+)\s*\(", re.MULTILINE)
 SUBSCRIBE_FN_RE = re.compile(r"^pub fn (subscribe_[a-z0-9_]+)\b", re.MULTILINE)
 TEST_FN_RE_TEMPLATE = r"\b(?:async\s+)?fn\s+{}\s*\("
-RISK_JSONL_PATH_FRAGMENT = 'join("risk")'
+RISK_DIR_CONST_RE = re.compile(
+    r'const\s+RISK_DIR:\s*&str\s*=\s*(?:stringify!\(risk\)|"risk")\s*;'
+)
+RISK_JSONL_PATH_RE = re.compile(
+    r'\.join\(\s*(?:RISK_DIR|"risk")\s*\)\s*'
+    r'\.join\(\s*(?:TRADING_STATE_CHANGED_FILE|"trading_state_changed\.jsonl")\s*\)',
+    re.DOTALL,
+)
 RISK_JSONL_FILENAME = "trading_state_changed.jsonl"
 
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def has_risk_jsonl_path(src_text: str) -> bool:
+    return (
+        RISK_DIR_CONST_RE.search(src_text) is not None
+        and RISK_JSONL_FILENAME in src_text
+        and RISK_JSONL_PATH_RE.search(src_text) is not None
+    )
 
 
 def load_yaml(path: Path):
@@ -526,16 +541,13 @@ def collect_failures() -> list[tuple[str, str]]:
                         f"expected captured_now",
                     )
                 )
-    if (
-        RISK_JSONL_FILENAME not in src_text
-        or RISK_JSONL_PATH_FRAGMENT not in src_text
-    ):
+    if not has_risk_jsonl_path(src_text):
         findings.append(
             (
                 "5.risk_jsonl_path_missing_in_src",
                 f"src/nt_runtime_capture.rs does not write to risk/"
-                f"{RISK_JSONL_FILENAME} (expected join(\"risk\") "
-                f"+ join(\"{RISK_JSONL_FILENAME}\"))",
+                f"{RISK_JSONL_FILENAME} (expected risk dir const or literal "
+                f"+ trading-state file const or literal)",
             )
         )
 

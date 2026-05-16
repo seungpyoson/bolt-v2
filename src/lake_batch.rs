@@ -14,51 +14,60 @@ use nautilus_persistence::backend::{catalog::ParquetDataCatalog, custom::decode_
 
 use crate::{
     execution_state,
-    venue_contract::{Capability, ClassReport, CompletenessReport, Policy, VenueContract},
+    venue_contract::{
+        CURRENT_SCHEMA_VERSION, Capability, ClassReport, ClassReportCapability, ClassReportStatus,
+        CompletenessOutcome, CompletenessReport, Policy, STREAM_CLASS_INDEX_PRICES,
+        STREAM_CLASS_INSTRUMENT_CLOSES, STREAM_CLASS_MARK_PRICES, STREAM_CLASS_ORDER_BOOK_DELTAS,
+        STREAM_CLASS_ORDER_BOOK_DEPTHS, STREAM_CLASS_QUOTES, STREAM_CLASS_TRADES, VenueContract,
+    },
 };
 
-const SUPPORTED_STREAM_CLASSES: &[&str] = &[
-    "quotes",
-    "trades",
-    "order_book_deltas",
-    "order_book_depths",
-    "index_prices",
-    "mark_prices",
-    "instrument_closes",
-];
+const NT_TYPE_QUOTE_TICK: &str = "QuoteTick";
+const NT_TYPE_TRADE_TICK: &str = "TradeTick";
+const NT_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
+const NT_TYPE_ORDER_BOOK_DEPTH_10: &str = "OrderBookDepth10";
+const NT_TYPE_INDEX_PRICE_UPDATE: &str = "IndexPriceUpdate";
+const NT_TYPE_MARK_PRICE_UPDATE: &str = "MarkPriceUpdate";
+const NT_TYPE_INSTRUMENT_CLOSE: &str = "InstrumentClose";
+
 const COMPLETENESS_REPORT_FILE: &str = "completeness_report.json";
+const LIVE_SPOOL_DIR: &str = "live";
+const FEATHER_EXTENSION: &str = "feather";
+const PARQUET_TYPE_NAME_METADATA_KEY: &str = "type_name";
+const CATALOG_PATH_LABEL: &str = "catalog_path";
+const OUTPUT_ROOT_LABEL: &str = "output_root";
+const LOCAL_PATH_URI_MARKER: &str = "://";
+const CLASS_DISABLED_SPOOL_REASON: &str = "class is disabled but spool data is present";
+const NO_SPOOL_DATA_REASON: &str = "no_spool_data";
 const SPOOL_NON_CONTRACT_DIRS: &[&str] = &[
     "instruments",
     "status",
     execution_state::ORDER_EVENTS_CLASS,
     execution_state::POSITION_EVENTS_CLASS,
 ];
-const FLAT_SPOOL_IGNORED_INFRASTRUCTURE_CLASSES: &[&str] = &["instruments"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamToLakeReport {
     pub instance_id: String,
     pub output_root: PathBuf,
     pub converted_classes: Vec<&'static str>,
-    pub completeness: Option<CompletenessReport>,
+    pub completeness: CompletenessReport,
 }
 
-pub fn supported_stream_classes() -> &'static [&'static str] {
-    SUPPORTED_STREAM_CLASSES
-}
+pub use crate::venue_contract::supported_stream_classes;
 
 pub fn convert_live_spool_to_parquet(
     catalog_path: &Path,
     instance_id: &str,
     output_root: &Path,
-    contract: Option<&VenueContract>,
+    contract: &VenueContract,
 ) -> Result<StreamToLakeReport> {
-    ensure_local_path(catalog_path, "catalog_path")?;
-    ensure_local_path(output_root, "output_root")?;
+    ensure_local_path(catalog_path, CATALOG_PATH_LABEL)?;
+    ensure_local_path(output_root, OUTPUT_ROOT_LABEL)?;
     ensure_instance_id_segment(instance_id)?;
     ensure_disjoint_paths(catalog_path, output_root)?;
 
-    let source_instance_dir = catalog_path.join("live").join(instance_id);
+    let source_instance_dir = catalog_path.join(LIVE_SPOOL_DIR).join(instance_id);
     ensure!(
         source_instance_dir.is_dir(),
         "missing live spool instance directory: {}",
@@ -67,14 +76,15 @@ pub fn convert_live_spool_to_parquet(
 
     let _output_lock = OutputRootLock::acquire(output_root)?;
     let class_files = discover_source_files(&source_instance_dir)?;
+    let has_supported_source_files = class_files.values().any(|files| !files.is_empty());
     let mut staged_output = StagedOutputRoot::create(output_root)?;
     let catalog = ParquetDataCatalog::new(staged_output.path(), None, None, None, None);
     let mut converted_classes = Vec::new();
-    for data_cls in SUPPORTED_STREAM_CLASSES {
+    for &data_cls in supported_stream_classes() {
         if let Some(files) = class_files.get(data_cls)
             && convert_class_to_parquet(&catalog, files, data_cls)?
         {
-            converted_classes.push(*data_cls);
+            converted_classes.push(data_cls);
         }
     }
     converted_classes.extend(execution_state::convert_sidecars_to_parquet(
@@ -82,33 +92,29 @@ pub fn convert_live_spool_to_parquet(
         staged_output.path(),
     )?);
 
-    let completeness = if let Some(contract) = contract {
-        let report = build_completeness_report(
-            contract,
-            instance_id,
-            &source_instance_dir,
-            &class_files,
-            &converted_classes,
-        )?;
-        let json = serde_json::to_string_pretty(&report)?;
-        if report.outcome == "fail" {
-            staged_output.discard()?;
-            if let Err(error) = staged_output.write_failure_report(&json) {
-                bail!(
-                    "contract validation failed:\n{json}\n(additionally failed to write completeness_report.json: {error})"
-                );
-            }
-            bail!("contract validation failed:\n{json}");
+    let completeness = build_completeness_report(
+        contract,
+        instance_id,
+        &source_instance_dir,
+        &class_files,
+        &converted_classes,
+    )?;
+    let json = serde_json::to_string_pretty(&completeness)?;
+    if completeness.outcome == CompletenessOutcome::Fail {
+        staged_output.discard()?;
+        if let Err(error) = staged_output.write_failure_report(&json) {
+            bail!(
+                "contract validation failed:\n{json}\n(additionally failed to write {COMPLETENESS_REPORT_FILE}: {error})"
+            );
         }
-        staged_output.write_success_report(&json)?;
-        Some(report)
-    } else {
-        ensure!(
-            !converted_classes.is_empty(),
-            "no supported reduced task 4 data found"
-        );
-        None
-    };
+        bail!("contract validation failed:\n{json}");
+    }
+
+    ensure!(
+        !converted_classes.is_empty() || has_supported_source_files,
+        "no supported stream data found"
+    );
+    staged_output.write_success_report(&json)?;
 
     staged_output.persist(output_root)?;
 
@@ -140,9 +146,6 @@ fn build_completeness_report(
         .chain(supported_stream_classes().iter().copied())
         .chain(SPOOL_NON_CONTRACT_DIRS.iter().copied())
         .collect();
-    let known_flat_classes: std::collections::HashSet<&str> =
-        contract.streams.keys().map(String::as_str).collect();
-
     if source_instance_dir.is_dir() {
         for entry in std::fs::read_dir(source_instance_dir)? {
             let entry = entry?;
@@ -162,12 +165,12 @@ fn build_completeness_report(
                     classes.insert(
                         name,
                         ClassReport {
-                            capability: "unknown".to_string(),
+                            capability: ClassReportCapability::Unknown,
                             policy: None,
                             spool_present: true,
                             rows_converted: None,
                             files_converted: None,
-                            status: "fail_unknown".to_string(),
+                            status: ClassReportStatus::FailUnknown,
                             reason: Some("directory not in contract or known classes".into()),
                         },
                     );
@@ -176,37 +179,23 @@ fn build_completeness_report(
             }
 
             if meta.is_file()
-                && let Some(class_name) =
-                    classify_unknown_flat_file(&entry.path(), known_flat_classes.iter().copied())
+                && entry.path().extension().and_then(|ext| ext.to_str()) == Some(FEATHER_EXTENSION)
             {
-                if FLAT_SPOOL_IGNORED_INFRASTRUCTURE_CLASSES.contains(&class_name.as_str()) {
-                    classes.insert(
-                        class_name,
-                        ClassReport {
-                            capability: "infrastructure".to_string(),
-                            policy: None,
-                            spool_present: true,
-                            rows_converted: None,
-                            files_converted: None,
-                            status: "ignored_infrastructure".to_string(),
-                            reason: Some("legacy flat infrastructure file ignored".into()),
-                        },
-                    );
-                } else {
-                    has_failure = true;
-                    classes.insert(
-                        class_name,
-                        ClassReport {
-                            capability: "unknown".to_string(),
-                            policy: None,
-                            spool_present: true,
-                            rows_converted: None,
-                            files_converted: None,
-                            status: "fail_unknown".to_string(),
-                            reason: Some("flat spool file not in contract or known classes".into()),
-                        },
-                    );
-                }
+                has_failure = true;
+                classes.insert(
+                    format!("flat_file:{name}"),
+                    ClassReport {
+                        capability: ClassReportCapability::Unknown,
+                        policy: None,
+                        spool_present: true,
+                        rows_converted: None,
+                        files_converted: None,
+                        status: ClassReportStatus::FailUnknown,
+                        reason: Some(
+                            "flat spool files are not supported; use class directories".into(),
+                        ),
+                    },
+                );
             }
         }
     }
@@ -217,7 +206,7 @@ fn build_completeness_report(
             .get(name.as_str())
             .is_some_and(|f| !f.is_empty());
         let was_converted = converted_classes.contains(&name.as_str());
-        let effective_policy = contract.effective_policy(name).unwrap_or(Policy::Disabled);
+        let effective_policy = stream.policy.clone();
 
         let (status, reason) = match (
             &stream.capability,
@@ -225,88 +214,94 @@ fn build_completeness_report(
             spool_present,
             was_converted,
         ) {
-            (Capability::Unsupported, _, false, _) => ("pass_unsupported", None),
+            (Capability::Unsupported, _, false, _) => (ClassReportStatus::PassUnsupported, None),
             (Capability::Unsupported, _, true, _) => {
                 has_failure = true;
-                ("fail_contract_violation", None)
+                (ClassReportStatus::FailContractViolation, None)
             }
             (Capability::Supported | Capability::Conditional, Policy::Disabled, true, _) => {
                 has_failure = true;
                 (
-                    "fail_contract_violation",
-                    Some("class is disabled but spool data is present".into()),
+                    ClassReportStatus::FailContractViolation,
+                    Some(CLASS_DISABLED_SPOOL_REASON.into()),
                 )
             }
             (Capability::Supported | Capability::Conditional, Policy::Disabled, false, _) => {
-                ("pass_disabled", None)
+                (ClassReportStatus::PassDisabled, None)
             }
             (Capability::Supported | Capability::Conditional, Policy::Required, true, true) => {
-                ("pass", None)
+                (ClassReportStatus::Pass, None)
             }
             (Capability::Supported | Capability::Conditional, Policy::Optional, true, true) => {
-                ("pass", None)
+                (ClassReportStatus::Pass, None)
             }
             (Capability::Supported | Capability::Conditional, Policy::Required, true, false) => {
                 has_failure = true;
                 (
-                    "spool_present_conversion_empty",
+                    ClassReportStatus::SpoolPresentConversionEmpty,
                     Some("required class has spool data but zero converted rows".into()),
                 )
             }
             (Capability::Supported | Capability::Conditional, Policy::Optional, true, false) => {
-                ("spool_present_conversion_empty", None)
+                (ClassReportStatus::SpoolPresentConversionEmpty, None)
             }
             (Capability::Supported | Capability::Conditional, Policy::Required, false, _) => {
                 has_failure = true;
-                ("fail_required_absent", Some("no_spool_data".to_string()))
+                (
+                    ClassReportStatus::FailRequiredAbsent,
+                    Some(NO_SPOOL_DATA_REASON.to_string()),
+                )
             }
             (Capability::Supported | Capability::Conditional, Policy::Optional, false, _) => {
-                ("warn_optional_absent", None)
+                (ClassReportStatus::WarnOptionalAbsent, None)
             }
         };
 
-        let cap_str = match stream.capability {
-            Capability::Supported => "supported",
-            Capability::Unsupported => "unsupported",
-            Capability::Conditional => "conditional",
-        };
-        let policy_str = match effective_policy {
-            Policy::Required => Some("required".to_string()),
-            Policy::Optional => Some("optional".to_string()),
+        let report_policy = match effective_policy {
+            Policy::Required | Policy::Optional => Some(effective_policy.clone()),
             Policy::Disabled => None,
         };
 
         classes.insert(
             name.clone(),
             ClassReport {
-                capability: cap_str.to_string(),
-                policy: policy_str,
+                capability: ClassReportCapability::from(&stream.capability),
+                policy: report_policy,
                 spool_present,
                 rows_converted: None,
                 files_converted: None,
-                status: status.to_string(),
+                status,
                 reason,
             },
         );
     }
 
     Ok(CompletenessReport {
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
         venue: contract.venue.clone(),
         contract_version: contract.schema_version,
         instance_id: instance_id.to_string(),
-        outcome: if has_failure { "fail" } else { "pass" }.to_string(),
+        outcome: if has_failure {
+            CompletenessOutcome::Fail
+        } else {
+            CompletenessOutcome::Pass
+        },
         classes,
     })
 }
 
 fn ensure_local_path(path: &Path, label: &str) -> Result<()> {
-    if path.to_string_lossy().contains("://") {
+    if path.to_string_lossy().contains(LOCAL_PATH_URI_MARKER) {
         bail!(
-            "Task 4 reduced currently supports only local {label}, got `{}`",
+            "{label} must be a local absolute path, got `{}`",
             path.display()
         );
     }
+    ensure!(
+        path.is_absolute(),
+        "{label} must be a local absolute path, got `{}`",
+        path.display()
+    );
 
     Ok(())
 }
@@ -343,7 +338,12 @@ impl OutputRootLock {
         let parent = output_root
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "output_root must include a parent directory: {}",
+                    output_root.display()
+                )
+            })?;
         fs::create_dir_all(parent)?;
         ensure_output_root_available(output_root)?;
 
@@ -386,7 +386,12 @@ impl StagedOutputRoot {
         let parent = output_root
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "output_root must include a parent directory: {}",
+                    output_root.display()
+                )
+            })?;
         let output_root_name = output_root_name(output_root)?;
         let stage_path = parent.join(stage_dir_name(output_root_name)?);
         fs::create_dir(&stage_path)?;
@@ -458,9 +463,8 @@ impl Drop for StagedOutputRoot {
 }
 
 /// Scan a live spool instance directory and build a logical map of
-/// class name → source feather file paths.  Handles both per-class
-/// subdirectories and legacy Task 3 flat spool layouts.  Symlinks
-/// are silently skipped.
+/// class name → source feather file paths. Handles per-class
+/// subdirectories. Symlinks are silently skipped.
 fn discover_source_files(
     source_instance_dir: &Path,
 ) -> Result<BTreeMap<&'static str, Vec<PathBuf>>> {
@@ -477,22 +481,16 @@ fn discover_source_files(
         let file_name_str = file_name.to_string_lossy();
 
         if meta.is_dir() {
-            for data_cls in SUPPORTED_STREAM_CLASSES {
-                if *data_cls == file_name_str.as_ref() {
+            for &data_cls in supported_stream_classes() {
+                if data_cls == file_name_str.as_ref() {
                     let files = collect_feather_files(&entry.path())?;
-                    class_files.entry(data_cls).or_default().extend(files);
+                    if let Some(existing_files) = class_files.get_mut(data_cls) {
+                        existing_files.extend(files);
+                    } else {
+                        class_files.insert(data_cls, files);
+                    }
                     break;
                 }
-            }
-        } else if meta.is_file() {
-            // Legacy Task 3 flat spool: `quotes_<ts>.feather` at instance root.
-            if entry.path().extension().and_then(|e| e.to_str()) != Some("feather") {
-                continue;
-            }
-            if let Some(data_cls) =
-                classify_flat_file(&entry.path(), SUPPORTED_STREAM_CLASSES.iter().copied())
-            {
-                class_files.entry(data_cls).or_default().push(entry.path());
             }
         }
     }
@@ -502,46 +500,6 @@ fn discover_source_files(
     }
 
     Ok(class_files)
-}
-
-fn classify_flat_file<'a>(
-    path: &Path,
-    candidate_classes: impl IntoIterator<Item = &'a str>,
-) -> Option<&'a str> {
-    if path.extension().and_then(|e| e.to_str()) != Some("feather") {
-        return None;
-    }
-
-    let stem = path.file_stem()?.to_string_lossy();
-    candidate_classes
-        .into_iter()
-        .filter(|class_name| {
-            stem == *class_name
-                || stem
-                    .strip_prefix(class_name)
-                    .is_some_and(|suffix| suffix.starts_with('_'))
-        })
-        .max_by_key(|class_name| class_name.len())
-}
-
-fn classify_unknown_flat_file<'a>(
-    path: &Path,
-    data_classes: impl IntoIterator<Item = &'a str>,
-) -> Option<String> {
-    if path.extension().and_then(|ext| ext.to_str()) != Some("feather") {
-        return None;
-    }
-
-    if classify_flat_file(path, data_classes).is_some() {
-        return None;
-    }
-
-    let stem = path.file_stem()?.to_string_lossy();
-    let class_name = stem
-        .rsplit_once('_')
-        .map(|(name, _)| if name.is_empty() { stem.as_ref() } else { name })
-        .unwrap_or(&stem);
-    Some(class_name.to_string())
 }
 
 fn ensure_output_root_available(output_root: &Path) -> Result<()> {
@@ -647,7 +605,7 @@ fn write_atomic_file(path: &Path, contents: &str) -> Result<()> {
     );
     let tmp_path = path
         .parent()
-        .unwrap_or_else(|| Path::new("."))
+        .ok_or_else(|| anyhow::anyhow!("path is missing a parent directory: {}", path.display()))?
         .join(tmp_name);
 
     let result = (|| -> Result<()> {
@@ -681,7 +639,7 @@ fn convert_class_to_parquet(
         let mut reader = open_feather_reader(file)?;
         let mut metadata = reader.schema().metadata().clone();
         metadata
-            .entry("type_name".to_string())
+            .entry(PARQUET_TYPE_NAME_METADATA_KEY.to_string())
             .or_insert_with(|| type_name.to_string());
 
         let mut file_data = Vec::new();
@@ -709,7 +667,7 @@ fn collect_feather_files(root: &Path) -> Result<Vec<PathBuf>> {
         return Ok(files);
     }
     if metadata.is_file() {
-        if root.extension().and_then(|ext| ext.to_str()) == Some("feather") {
+        if root.extension().and_then(|ext| ext.to_str()) == Some(FEATHER_EXTENSION) {
             files.push(root.to_path_buf());
         }
         return Ok(files);
@@ -730,14 +688,14 @@ fn open_feather_reader(path: &Path) -> Result<StreamReader<File>> {
 
 fn type_name_for_data_class(data_cls: &str) -> Result<&'static str> {
     match data_cls {
-        "quotes" => Ok("QuoteTick"),
-        "trades" => Ok("TradeTick"),
-        "order_book_deltas" => Ok("OrderBookDelta"),
-        "order_book_depths" => Ok("OrderBookDepth10"),
-        "index_prices" => Ok("IndexPriceUpdate"),
-        "mark_prices" => Ok("MarkPriceUpdate"),
-        "instrument_closes" => Ok("InstrumentClose"),
-        other => bail!("unsupported reduced task 4 data class: {other}"),
+        STREAM_CLASS_QUOTES => Ok(NT_TYPE_QUOTE_TICK),
+        STREAM_CLASS_TRADES => Ok(NT_TYPE_TRADE_TICK),
+        STREAM_CLASS_ORDER_BOOK_DELTAS => Ok(NT_TYPE_ORDER_BOOK_DELTA),
+        STREAM_CLASS_ORDER_BOOK_DEPTHS => Ok(NT_TYPE_ORDER_BOOK_DEPTH_10),
+        STREAM_CLASS_INDEX_PRICES => Ok(NT_TYPE_INDEX_PRICE_UPDATE),
+        STREAM_CLASS_MARK_PRICES => Ok(NT_TYPE_MARK_PRICE_UPDATE),
+        STREAM_CLASS_INSTRUMENT_CLOSES => Ok(NT_TYPE_INSTRUMENT_CLOSE),
+        other => bail!("unsupported stream data class: {other}"),
     }
 }
 
@@ -745,11 +703,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         Ok(fs::canonicalize(path)?)
     } else {
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(path)
-        };
+        let absolute = path.to_path_buf();
 
         let mut tail = Vec::<OsString>::new();
         let mut cursor = absolute.as_path();
@@ -831,7 +785,7 @@ mod tests {
                 "quotes".to_string(),
                 StreamContract {
                     capability: Capability::Supported,
-                    policy: Some(Policy::Optional),
+                    policy: Policy::Optional,
                     provenance: Provenance::Native,
                     reason: None,
                     derived_from: None,

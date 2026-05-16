@@ -24,15 +24,18 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
+mod fees;
+
 use std::{any::Any, sync::Arc};
 
 use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
-    common::credential::Secrets as PolymarketSecrets,
+    common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
-    filters::{InstrumentFilter, MarketSlugFilter},
+    filters::{InstrumentFilter, MarketSlugFilter, NewMarketPredicateFilter},
     http::clob::PolymarketClobHttpClient,
 };
 use serde::Deserialize;
@@ -40,21 +43,22 @@ use serde::Deserialize;
 use crate::{
     bolt_v3_adapters::{
         BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig,
-        BoltV3ExecutionClientAdapterConfig, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig,
+        BoltV3ExecutionClientAdapterConfig, BoltV3InstrumentFilterClockFn,
+        BoltV3VenueAdapterConfig,
     },
     bolt_v3_config::VenueBlock,
-    bolt_v3_market_families::updown::{
-        self, MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
-    },
+    bolt_v3_instrument_filters::InstrumentFilterConfig,
+    bolt_v3_market_families::updown::{self, updown_market_slug, updown_period_pair},
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
-        SsmSecretResolver,
+        ProviderAdapterMapContext, ProviderBinding, ProviderCredentialedBlock,
+        ProviderResolvedSecrets, ProviderSecretRequirement, ProviderSecretResolveContext,
+        ResolvedVenueSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
-    clients::polymarket::{FeeProvider, PolymarketClobFeeProvider},
-    secrets::pad_base64,
+    strategies::registry::FeeProvider,
 };
+
+use self::fees::PolymarketClobFeeProvider;
 
 pub const KEY: &str = "polymarket";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
@@ -77,6 +81,19 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "POLYMARKET_PASSPHRASE",
 ];
 
+pub const BINDING: ProviderBinding = ProviderBinding {
+    key: KEY,
+    validate_venue,
+    supported_market_families: SUPPORTED_MARKET_FAMILIES,
+    required_secret_blocks: REQUIRED_SECRET_BLOCKS,
+    secret_field_names: SECRET_FIELD_NAMES,
+    credential_log_modules: CREDENTIAL_LOG_MODULES,
+    forbidden_env_vars: FORBIDDEN_ENV_VARS,
+    resolve_secrets,
+    map_adapters,
+    build_fee_provider: Some(build_fee_provider),
+};
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PolymarketDataConfig {
@@ -87,8 +104,20 @@ pub struct PolymarketDataConfig {
     pub http_timeout_seconds: u64,
     pub ws_timeout_seconds: u64,
     pub subscribe_new_markets: bool,
+    pub auto_load_missing_instruments: bool,
     pub update_instruments_interval_minutes: u64,
     pub websocket_max_subscriptions_per_connection: u64,
+    pub auto_load_debounce_milliseconds: u64,
+    /// Required WebSocket transport backend passed through to NT so
+    /// Bolt-v3 does not inherit the NT adapter default.
+    pub transport_backend: TransportBackend,
+    pub new_market_filter: Option<PolymarketNewMarketFilterConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PolymarketNewMarketFilterConfig {
+    Keyword { keyword: String },
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -101,7 +130,6 @@ pub struct PolymarketExecutionConfig {
     /// underlying funder wallet); permitted to be absent for `eoa`,
     /// where the EOA is itself the funder. Validation enforces this
     /// per-signature-type requirement and the EVM address syntax.
-    #[serde(default)]
     pub funder_address: Option<String>,
     pub base_url_http: String,
     pub base_url_ws: String,
@@ -111,6 +139,10 @@ pub struct PolymarketExecutionConfig {
     pub retry_delay_initial_milliseconds: u64,
     pub retry_delay_max_milliseconds: u64,
     pub ack_timeout_seconds: u64,
+    pub fee_cache_ttl_seconds: u64,
+    /// Required WebSocket transport backend passed through to NT so
+    /// Bolt-v3 does not inherit the NT adapter default.
+    pub transport_backend: TransportBackend,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -202,9 +234,9 @@ pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
         }
     }
     if let Some(secrets) = &venue.secrets {
-        // Only Polymarket execution consumes Polymarket credentials in
-        // this slice. A data-only Polymarket venue with `[secrets]`
-        // would carry credential paths that no adapter uses, which is a
+        // Only Polymarket execution consumes Polymarket credentials. A
+        // data-only Polymarket venue with `[secrets]` would carry
+        // credential paths that no adapter uses, which is a
         // misconfiguration rather than a silent no-op.
         if venue.execution.is_none() {
             errors.push(format!(
@@ -222,6 +254,13 @@ pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
 
 fn validate_funder_address(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {
     let mut errors = Vec::new();
+    if let Some(message) = funder_address_violation(execution) {
+        errors.push(format!("venues.{key}.execution.funder_address {message}"));
+    }
+    errors
+}
+
+fn funder_address_violation(execution: &PolymarketExecutionConfig) -> Option<String> {
     let funder = execution
         .funder_address
         .as_deref()
@@ -232,19 +271,14 @@ fn validate_funder_address(key: &str, execution: &PolymarketExecutionConfig) -> 
         PolymarketSignatureType::PolyProxy | PolymarketSignatureType::PolyGnosisSafe
     );
     match (requires_funder, funder) {
-        (true, None) => errors.push(format!(
-            "venues.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
-        )),
-        (_, Some(value)) => {
-            if let Err(message) = check_evm_address_syntax(value) {
-                errors.push(format!(
-                    "venues.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
-                ));
-            }
-        }
-        (false, None) => {}
+        (true, None) => Some(
+            "is required when signature_type is `poly_proxy` or `poly_gnosis_safe`".to_string(),
+        ),
+        (_, Some(value)) => check_evm_address_syntax(value)
+            .err()
+            .map(|message| format!("is not a valid EVM public address ({message}): `{value}`")),
+        (false, None) => None,
     }
-    errors
 }
 
 fn check_evm_address_syntax(value: &str) -> Result<(), &'static str> {
@@ -263,6 +297,17 @@ fn check_evm_address_syntax(value: &str) -> Result<(), &'static str> {
 
 fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
     let mut errors = Vec::new();
+    push_empty_url_errors(
+        key,
+        "data",
+        &[
+            ("base_url_http", data.base_url_http.as_str()),
+            ("base_url_ws", data.base_url_ws.as_str()),
+            ("base_url_gamma", data.base_url_gamma.as_str()),
+            ("base_url_data_api", data.base_url_data_api.as_str()),
+        ],
+        &mut errors,
+    );
     let positive_fields: &[(&str, u64)] = &[
         ("http_timeout_seconds", data.http_timeout_seconds),
         ("ws_timeout_seconds", data.ws_timeout_seconds),
@@ -274,6 +319,10 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
             "websocket_max_subscriptions_per_connection",
             data.websocket_max_subscriptions_per_connection,
         ),
+        (
+            "auto_load_debounce_milliseconds",
+            data.auto_load_debounce_milliseconds,
+        ),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -282,20 +331,11 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
             ));
         }
     }
-    // The pinned NautilusTrader Polymarket data client (`nautilus_polymarket::data`)
-    // calls `ws_client.subscribe_market(vec![])` from inside its `connect()`
-    // implementation when `subscribe_new_markets = true`, which is effectively
-    // an all-markets subscription and violates the bolt-v3 controlled-connect
-    // boundary. The flag is forced false in the current bolt-v3 scope until
-    // the market-subscription slice owns the controlled-subscribe path; failing
-    // closed here keeps that invariant honest.
-    if data.subscribe_new_markets {
+    if let Some(PolymarketNewMarketFilterConfig::Keyword { keyword }) = &data.new_market_filter
+        && keyword.trim().is_empty()
+    {
         errors.push(format!(
-            "venues.{key}.data.subscribe_new_markets must be false in the current bolt-v3 scope; \
-             the pinned NT Polymarket data client subscribes to all markets via \
-             `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
-             which violates the bolt-v3 controlled-connect boundary until the \
-             market-subscription slice owns it"
+            "venues.{key}.data.new_market_filter.keyword must be non-empty"
         ));
     }
     errors
@@ -303,6 +343,16 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
 
 fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {
     let mut errors = Vec::new();
+    push_empty_url_errors(
+        key,
+        "execution",
+        &[
+            ("base_url_http", execution.base_url_http.as_str()),
+            ("base_url_ws", execution.base_url_ws.as_str()),
+            ("base_url_data_api", execution.base_url_data_api.as_str()),
+        ],
+        &mut errors,
+    );
     let positive_fields: &[(&str, u64)] = &[
         ("http_timeout_seconds", execution.http_timeout_seconds),
         ("max_retries", execution.max_retries),
@@ -315,6 +365,7 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
             execution.retry_delay_max_milliseconds,
         ),
         ("ack_timeout_seconds", execution.ack_timeout_seconds),
+        ("fee_cache_ttl_seconds", execution.fee_cache_ttl_seconds),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -323,13 +374,41 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
             ));
         }
     }
-    if execution.retry_delay_initial_milliseconds > execution.retry_delay_max_milliseconds {
+    if execution.max_retries > u64::from(u32::MAX) {
         errors.push(format!(
-            "venues.{key}.execution.retry_delay_initial_milliseconds ({}) must be <= retry_delay_max_milliseconds ({})",
-            execution.retry_delay_initial_milliseconds, execution.retry_delay_max_milliseconds
+            "venues.{key}.execution.max_retries must fit in u32 expected by NT"
         ));
     }
+    if let Some(message) = retry_delay_order_violation(
+        execution.retry_delay_initial_milliseconds,
+        execution.retry_delay_max_milliseconds,
+    ) {
+        errors.push(format!("venues.{key}.execution.{message}"));
+    }
     errors
+}
+
+fn retry_delay_order_violation(initial_milliseconds: u64, max_milliseconds: u64) -> Option<String> {
+    (initial_milliseconds > max_milliseconds).then(|| {
+        format!(
+            "retry_delay_initial_milliseconds ({initial_milliseconds}) must be <= retry_delay_max_milliseconds ({max_milliseconds})"
+        )
+    })
+}
+
+fn push_empty_url_errors(
+    key: &str,
+    block: &str,
+    url_fields: &[(&str, &str)],
+    errors: &mut Vec<String>,
+) {
+    for (field, value) in url_fields {
+        if value.trim().is_empty() {
+            errors.push(format!(
+                "venues.{key}.{block}.{field} must be a non-empty URL"
+            ));
+        }
+    }
 }
 
 fn validate_secret_paths(key: &str, secrets: &PolymarketSecretsConfig) -> Vec<String> {
@@ -379,6 +458,14 @@ pub fn resolve_secrets(
         &secrets.private_key_ssm_path,
         resolver,
     )?;
+    if !has_valid_private_key_shape(&private_key) {
+        return Err(BoltV3SecretError {
+            venue_key: context.venue_key.to_string(),
+            field: "private_key_ssm_path".to_string(),
+            ssm_path: secrets.private_key_ssm_path.clone(),
+            source: "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter".to_string(),
+        });
+    }
     let api_key = resolve_field(
         context.venue_key,
         "api_key_ssm_path",
@@ -386,14 +473,13 @@ pub fn resolve_secrets(
         &secrets.api_key_ssm_path,
         resolver,
     )?;
-    let api_secret_raw = resolve_field(
+    let api_secret = resolve_field(
         context.venue_key,
         "api_secret_ssm_path",
         context.region,
         &secrets.api_secret_ssm_path,
         resolver,
     )?;
-    let api_secret = pad_base64(api_secret_raw);
     let passphrase = resolve_field(
         context.venue_key,
         "passphrase_ssm_path",
@@ -409,6 +495,10 @@ pub fn resolve_secrets(
     }))
 }
 
+fn has_valid_private_key_shape(private_key: &str) -> bool {
+    EvmPrivateKey::new(private_key).is_ok()
+}
+
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
@@ -418,7 +508,7 @@ pub fn map_adapters(
             config: Box::new(map_data(
                 context.venue_key,
                 value,
-                context.plan,
+                context.instrument_filters,
                 context.clock,
             )?),
         }),
@@ -454,16 +544,10 @@ pub fn build_fee_provider(
             .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
                 venue_key: venue_key.to_string(),
                 field: "execution",
-                message: "is required by the existing taker fee-provider boundary".to_string(),
+                message: "is required before building the configured fee provider".to_string(),
             })?;
-    let cfg: PolymarketExecutionConfig =
-        value.clone().try_into().map_err(|error: toml::de::Error| {
-            BoltV3AdapterMappingError::SchemaParse {
-                venue_key: venue_key.to_string(),
-                block: "execution",
-                message: error.to_string(),
-            }
-        })?;
+    let cfg = parse_execution_config(venue_key, value)?;
+    reject_funder_address_violation(venue_key, &cfg)?;
     let secrets = secrets_for(venue_key, resolved)?;
     let secrets = PolymarketSecrets::resolve(
         Some(secrets.private_key.as_str()),
@@ -489,14 +573,30 @@ pub fn build_fee_provider(
         message: format!("failed to create Polymarket fee HTTP client: {error}"),
     })?;
 
-    Ok(Arc::new(PolymarketClobFeeProvider::new(client)))
+    Ok(Arc::new(PolymarketClobFeeProvider::new(
+        client,
+        std::time::Duration::from_secs(cfg.fee_cache_ttl_seconds),
+    )))
+}
+
+fn parse_execution_config(
+    venue_key: &str,
+    value: &toml::Value,
+) -> Result<PolymarketExecutionConfig, BoltV3AdapterMappingError> {
+    value.clone().try_into().map_err(|error: toml::de::Error| {
+        BoltV3AdapterMappingError::SchemaParse {
+            venue_key: venue_key.to_string(),
+            block: "execution",
+            message: error.to_string(),
+        }
+    })
 }
 
 fn map_data(
     venue_key: &str,
     value: &toml::Value,
-    plan: &MarketIdentityPlan,
-    clock: BoltV3UpdownNowFn,
+    instrument_filters: &InstrumentFilterConfig,
+    clock: Option<BoltV3InstrumentFilterClockFn>,
 ) -> Result<PolymarketDataClientConfig, BoltV3AdapterMappingError> {
     let cfg: PolymarketDataConfig =
         value.clone().try_into().map_err(|error: toml::de::Error| {
@@ -506,13 +606,6 @@ fn map_data(
                 message: error.to_string(),
             }
         })?;
-    if cfg.subscribe_new_markets {
-        return Err(BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key: venue_key.to_string(),
-            field: "data.subscribe_new_markets",
-            message: "must be false before mapping to NT because pinned NT subscribes to all Polymarket markets when this flag is true".to_string(),
-        });
-    }
     let ws_max_subscriptions = usize::try_from(cfg.websocket_max_subscriptions_per_connection)
         .map_err(|_| BoltV3AdapterMappingError::NumericRange {
             venue_key: venue_key.to_string(),
@@ -522,7 +615,8 @@ fn map_data(
                 cfg.websocket_max_subscriptions_per_connection
             ),
         })?;
-    let filters = build_market_slug_filters_for_venue(plan, venue_key, clock);
+    let filters = build_market_slug_filters_for_venue(instrument_filters, venue_key, clock)?;
+    let new_market_filter = map_new_market_filter(venue_key, cfg.new_market_filter.as_ref())?;
     Ok(PolymarketDataClientConfig {
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
@@ -533,32 +627,68 @@ fn map_data(
         ws_max_subscriptions,
         update_instruments_interval_mins: cfg.update_instruments_interval_minutes,
         subscribe_new_markets: cfg.subscribe_new_markets,
-        auto_load_missing_instruments: false,
-        auto_load_debounce_ms: 100,
-        transport_backend: Default::default(),
+        auto_load_missing_instruments: cfg.auto_load_missing_instruments,
+        auto_load_debounce_ms: cfg.auto_load_debounce_milliseconds,
+        transport_backend: cfg.transport_backend,
         filters,
-        new_market_filter: None,
+        new_market_filter,
     })
 }
 
-fn build_market_slug_filters_for_venue(
-    plan: &MarketIdentityPlan,
+fn map_new_market_filter(
     venue_key: &str,
-    clock: BoltV3UpdownNowFn,
-) -> Vec<Arc<dyn InstrumentFilter>> {
-    plan.updown_targets
-        .iter()
-        .filter(|target| target.venue_config_key == venue_key)
-        .map(|target| build_market_slug_filter(target, clock.clone()))
-        .collect()
+    filter: Option<&PolymarketNewMarketFilterConfig>,
+) -> Result<Option<Arc<dyn InstrumentFilter>>, BoltV3AdapterMappingError> {
+    match filter {
+        Some(PolymarketNewMarketFilterConfig::Keyword { keyword }) => {
+            let keyword = keyword.trim();
+            if keyword.is_empty() {
+                return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                    venue_key: venue_key.to_string(),
+                    field: "data.new_market_filter.keyword",
+                    message: "must be non-empty".to_string(),
+                });
+            }
+            Ok(Some(Arc::new(NewMarketPredicateFilter::keyword(
+                keyword.to_string(),
+            ))))
+        }
+        None => Ok(None),
+    }
+}
+
+fn build_market_slug_filters_for_venue(
+    instrument_filters: &InstrumentFilterConfig,
+    venue_key: &str,
+    clock: Option<BoltV3InstrumentFilterClockFn>,
+) -> Result<Vec<Arc<dyn InstrumentFilter>>, BoltV3AdapterMappingError> {
+    let mut filters = Vec::new();
+    for target in instrument_filters
+        .target_refs()
+        .filter(|target| SUPPORTED_MARKET_FAMILIES.contains(&target.family_key))
+        .filter(|target| target.venue == venue_key)
+    {
+        let clock = clock.as_ref().cloned().ok_or_else(|| {
+            BoltV3AdapterMappingError::ValidationInvariant {
+                venue_key: venue_key.to_string(),
+                field: "strategy.venue",
+                message: format!(
+                    "configured target `{}` requires a real instrument-filter clock",
+                    target.configured_target_id
+                ),
+            }
+        })?;
+        filters.push(build_market_slug_filter(target, clock));
+    }
+    Ok(filters)
 }
 
 fn build_market_slug_filter(
-    target: &UpdownTargetPlan,
-    clock: BoltV3UpdownNowFn,
+    target: crate::bolt_v3_instrument_filters::InstrumentFilterTargetRef<'_>,
+    clock: BoltV3InstrumentFilterClockFn,
 ) -> Arc<dyn InstrumentFilter> {
-    let asset = target.underlying_asset.clone();
-    let token = target.cadence_slug_token.clone();
+    let asset = target.underlying_asset.to_string();
+    let token = target.cadence_slug_token.to_string();
     let cadence = target.cadence_seconds;
     Arc::new(MarketSlugFilter::new(move || {
         let now = (clock)();
@@ -577,20 +707,38 @@ fn build_market_slug_filter(
     }))
 }
 
+fn reject_funder_address_violation(
+    venue_key: &str,
+    cfg: &PolymarketExecutionConfig,
+) -> Result<(), BoltV3AdapterMappingError> {
+    if let Some(message) = funder_address_violation(cfg) {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key: venue_key.to_string(),
+            field: "execution.funder_address",
+            message,
+        });
+    }
+    Ok(())
+}
+
 fn map_execution(
     root: &crate::bolt_v3_config::BoltV3RootConfig,
     venue_key: &str,
     value: &toml::Value,
     secrets: &ResolvedBoltV3PolymarketSecrets,
 ) -> Result<PolymarketExecClientConfig, BoltV3AdapterMappingError> {
-    let cfg: PolymarketExecutionConfig =
-        value.clone().try_into().map_err(|error: toml::de::Error| {
-            BoltV3AdapterMappingError::SchemaParse {
-                venue_key: venue_key.to_string(),
-                block: "execution",
-                message: error.to_string(),
-            }
-        })?;
+    let cfg = parse_execution_config(venue_key, value)?;
+    reject_funder_address_violation(venue_key, &cfg)?;
+    if let Some(message) = retry_delay_order_violation(
+        cfg.retry_delay_initial_milliseconds,
+        cfg.retry_delay_max_milliseconds,
+    ) {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key: venue_key.to_string(),
+            field: "execution.retry_delay_initial_milliseconds",
+            message,
+        });
+    }
     let max_retries =
         u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
             venue_key: venue_key.to_string(),
@@ -617,7 +765,7 @@ fn map_execution(
         retry_delay_initial_ms: cfg.retry_delay_initial_milliseconds,
         retry_delay_max_ms: cfg.retry_delay_max_milliseconds,
         ack_timeout_secs: cfg.ack_timeout_seconds,
-        transport_backend: Default::default(),
+        transport_backend: cfg.transport_backend,
     })
 }
 

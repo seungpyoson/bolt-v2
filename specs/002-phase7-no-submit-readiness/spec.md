@@ -51,7 +51,7 @@ As the operator, I can use the Phase 7 report as a prerequisite for Phase 8 plan
 **Acceptance Scenarios**:
 
 1. **Given** only local Phase 7 tests have run, **When** Phase 8 readiness is evaluated, **Then** the outcome is "not ready for live order" because no approved real no-submit report exists.
-2. **Given** a redacted no-submit report exists, **When** Phase 8 planning begins, **Then** it must still require strategy-input safety review for `eth_chainlink_taker`, Chainlink feed path, exchange references, market selection, volatility, kurtosis, theta, fee and slippage model, caps, and edge economics.
+2. **Given** a redacted no-submit report exists, **When** Phase 8 planning begins, **Then** it must still require strategy-input safety review for `binary_oracle_edge_taker`, Chainlink feed path, exchange references, market selection, volatility, kurtosis, theta, fee and slippage model, caps, and edge economics.
 
 ### Edge Cases
 
@@ -78,7 +78,7 @@ As the operator, I can use the Phase 7 report as a prerequisite for Phase 8 plan
 - **FR-005**: System MUST fail closed unless every required no-submit readiness stage is satisfied.
 - **FR-006**: System MUST perform zero order placement and contain no submit, cancel, replace, amend, runner-loop, or subscribe call in the no-submit readiness module or operator harness.
 - **FR-007**: System MUST resolve credentials only through `SsmResolverSession` and the Rust AWS SDK SSM path already used by bolt-v3.
-- **FR-008**: System MUST reject missing, whitespace, or mismatched operator approval id before secret resolution, client construction, or venue connection.
+- **FR-008**: System MUST reject missing or whitespace `[live_canary].approval_id` before secret resolution, client construction, or venue connection; operator approval is owned by TOML config, not by a second env-supplied value.
 - **FR-009**: System MUST keep real SSM and venue readiness in an ignored operator harness that never runs in the default test suite.
 - **FR-010**: System MUST write readiness output only to the configured `[live_canary].no_submit_readiness_report_path`.
 - **FR-011**: System MUST redact resolved secret values and avoid printing raw SSM values, API keys, private keys, passphrases, or bearer-like token material.
@@ -93,7 +93,7 @@ As the operator, I can use the Phase 7 report as a prerequisite for Phase 8 plan
 - **NoSubmitReadinessReport**: Redacted report consumed by the live-canary gate. Contains stage records, approval/config identity, and operator-safe failure details.
 - **NoSubmitReadinessStage**: One readiness observation such as approval validation, secret resolution, live-node build, controlled connect, reference readiness, controlled disconnect, and report write.
 - **NoSubmitReadinessStatus**: Stage status. Only satisfied stages may pass the live-canary gate; failed or skipped stages fail closed.
-- **OperatorApproval**: Explicit approval id supplied by operator and matched against config before side-effect-bearing readiness.
+- **OperatorApproval**: Explicit approval id configured by operator in `[live_canary].approval_id` before side-effect-bearing readiness.
 - **ReadinessRunEvidence**: Non-secret record of exact head SHA, root TOML checksum, report path, command, and exit status for approved real no-submit runs.
 
 ## Success Criteria *(mandatory)*
@@ -102,7 +102,7 @@ As the operator, I can use the Phase 7 report as a prerequisite for Phase 8 plan
 
 - **SC-001**: Local Phase 7 tests prove no-submit report schema compatibility with the live-canary gate.
 - **SC-002**: Source-fence tests prove no-submit readiness code contains zero submit, cancel, replace, amend, subscribe, or runner-loop calls.
-- **SC-003**: Local tests prove missing and mismatched operator approval fail before secret resolution.
+- **SC-003**: Local tests prove missing configured operator approval fails before secret resolution.
 - **SC-004**: Local tests prove resolved secret values are absent from report debug and serialized JSON output.
 - **SC-005**: Default test run reports the real operator harness as ignored and performs no real SSM or venue calls.
 - **SC-006**: An explicitly approved real operator run can produce a redacted report from real SSM and venue controlled connect/disconnect that the live-canary gate accepts.

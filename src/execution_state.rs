@@ -16,8 +16,61 @@ use parquet::arrow::ArrowWriter;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub const ORDER_EVENTS_CLASS: &str = "order_events";
-pub const POSITION_EVENTS_CLASS: &str = "position_events";
+pub const ORDER_EVENTS_CLASS: &str = stringify!(order_events);
+pub const POSITION_EVENTS_CLASS: &str = stringify!(position_events);
+const EVENTS_JSONL_FILE: &str = "events.jsonl";
+const DATA_DIR: &str = stringify!(data);
+const PART_ZERO_PARQUET_FILE: &str = "part-0.parquet";
+
+const POSITION_OPENED_EVENT_TYPE: &str = stringify!(PositionOpened);
+const POSITION_CHANGED_EVENT_TYPE: &str = stringify!(PositionChanged);
+const POSITION_CLOSED_EVENT_TYPE: &str = stringify!(PositionClosed);
+const POSITION_ADJUSTED_EVENT_TYPE: &str = stringify!(PositionAdjusted);
+
+const EVENT_TYPE_FIELD: &str = stringify!(event_type);
+const TRADER_ID_FIELD: &str = stringify!(trader_id);
+const STRATEGY_ID_FIELD: &str = stringify!(strategy_id);
+const INSTRUMENT_ID_FIELD: &str = stringify!(instrument_id);
+const CLIENT_ORDER_ID_FIELD: &str = stringify!(client_order_id);
+const VENUE_ORDER_ID_FIELD: &str = stringify!(venue_order_id);
+const ACCOUNT_ID_FIELD: &str = stringify!(account_id);
+const EVENT_ID_FIELD: &str = stringify!(event_id);
+const ENTRY_FIELD: &str = stringify!(entry);
+const SIDE_FIELD: &str = stringify!(side);
+const SIGNED_QTY_FIELD: &str = stringify!(signed_qty);
+const QUANTITY_FIELD: &str = stringify!(quantity);
+const PEAK_QUANTITY_FIELD: &str = stringify!(peak_quantity);
+const LAST_QTY_FIELD: &str = stringify!(last_qty);
+const LAST_PX_FIELD: &str = stringify!(last_px);
+const CURRENCY_FIELD: &str = stringify!(currency);
+const AVG_PX_OPEN_FIELD: &str = stringify!(avg_px_open);
+const AVG_PX_CLOSE_FIELD: &str = stringify!(avg_px_close);
+const REALIZED_RETURN_FIELD: &str = stringify!(realized_return);
+const REALIZED_PNL_FIELD: &str = stringify!(realized_pnl);
+const UNREALIZED_PNL_FIELD: &str = stringify!(unrealized_pnl);
+const DURATION_FIELD: &str = stringify!(duration);
+const TS_OPENED_FIELD: &str = stringify!(ts_opened);
+const TS_CLOSED_FIELD: &str = stringify!(ts_closed);
+const TS_EVENT_FIELD: &str = stringify!(ts_event);
+const TS_INIT_FIELD: &str = stringify!(ts_init);
+const PAYLOAD_JSON_FIELD: &str = stringify!(payload_json);
+const POSITION_ID_FIELD: &str = stringify!(position_id);
+const OPENING_ORDER_ID_FIELD: &str = stringify!(opening_order_id);
+const CLOSING_ORDER_ID_FIELD: &str = stringify!(closing_order_id);
+const ADJUSTMENT_TYPE_FIELD: &str = stringify!(adjustment_type);
+const QUANTITY_CHANGE_FIELD: &str = stringify!(quantity_change);
+const PNL_CHANGE_FIELD: &str = stringify!(pnl_change);
+const REASON_FIELD: &str = stringify!(reason);
+
+macro_rules! json_payload {
+    ({ $( $key:expr => $value:expr ),+ $(,)? }) => {{
+        let mut object = serde_json::Map::new();
+        $(
+            object.insert($key.to_string(), json!($value));
+        )+
+        serde_json::Value::Object(object)
+    }};
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OrderEventRow {
@@ -55,11 +108,13 @@ pub struct PositionEventRow {
 }
 
 pub fn order_events_path(spool_root: &Path) -> PathBuf {
-    spool_root.join(ORDER_EVENTS_CLASS).join("events.jsonl")
+    spool_root.join(ORDER_EVENTS_CLASS).join(EVENTS_JSONL_FILE)
 }
 
 pub fn position_events_path(spool_root: &Path) -> PathBuf {
-    spool_root.join(POSITION_EVENTS_CLASS).join("events.jsonl")
+    spool_root
+        .join(POSITION_EVENTS_CLASS)
+        .join(EVENTS_JSONL_FILE)
 }
 
 pub fn order_event_row(event: &OrderEventAny) -> Result<OrderEventRow> {
@@ -82,7 +137,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
     // OrderEventAny does, so this field intentionally stores a lossless-enough summary.
     match event {
         PositionEvent::PositionOpened(opened) => Ok(PositionEventRow {
-            event_type: "PositionOpened".to_string(),
+            event_type: POSITION_OPENED_EVENT_TYPE.to_string(),
             trader_id: opened.trader_id.to_string(),
             strategy_id: opened.strategy_id.to_string(),
             instrument_id: opened.instrument_id.to_string(),
@@ -99,25 +154,25 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             unrealized_pnl: None,
             ts_event: opened.ts_event.as_u64(),
             ts_init: opened.ts_init.as_u64(),
-            payload_json: json!({
-                "event_type": "PositionOpened",
-                "trader_id": opened.trader_id.to_string(),
-                "event_id": opened.event_id.to_string(),
-                "entry": format!("{:?}", opened.entry).to_uppercase(),
-                "side": format!("{:?}", opened.side).to_uppercase(),
-                "signed_qty": opened.signed_qty,
-                "quantity": opened.quantity.to_string(),
-                "last_qty": opened.last_qty.to_string(),
-                "last_px": opened.last_px.to_string(),
-                "currency": opened.currency.to_string(),
-                "avg_px_open": opened.avg_px_open,
-                "ts_event": opened.ts_event.as_u64(),
-                "ts_init": opened.ts_init.as_u64(),
+            payload_json: json_payload!({
+                EVENT_TYPE_FIELD => POSITION_OPENED_EVENT_TYPE,
+                TRADER_ID_FIELD => opened.trader_id.to_string(),
+                EVENT_ID_FIELD => opened.event_id.to_string(),
+                ENTRY_FIELD => format!("{:?}", opened.entry).to_uppercase(),
+                SIDE_FIELD => format!("{:?}", opened.side).to_uppercase(),
+                SIGNED_QTY_FIELD => opened.signed_qty,
+                QUANTITY_FIELD => opened.quantity.to_string(),
+                LAST_QTY_FIELD => opened.last_qty.to_string(),
+                LAST_PX_FIELD => opened.last_px.to_string(),
+                CURRENCY_FIELD => opened.currency.to_string(),
+                AVG_PX_OPEN_FIELD => opened.avg_px_open,
+                TS_EVENT_FIELD => opened.ts_event.as_u64(),
+                TS_INIT_FIELD => opened.ts_init.as_u64(),
             })
             .to_string(),
         }),
         PositionEvent::PositionChanged(changed) => Ok(PositionEventRow {
-            event_type: "PositionChanged".to_string(),
+            event_type: POSITION_CHANGED_EVENT_TYPE.to_string(),
             trader_id: changed.trader_id.to_string(),
             strategy_id: changed.strategy_id.to_string(),
             instrument_id: changed.instrument_id.to_string(),
@@ -134,31 +189,31 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             unrealized_pnl: Some(changed.unrealized_pnl.to_string()),
             ts_event: changed.ts_event.as_u64(),
             ts_init: changed.ts_init.as_u64(),
-            payload_json: json!({
-                "event_type": "PositionChanged",
-                "trader_id": changed.trader_id.to_string(),
-                "event_id": changed.event_id.to_string(),
-                "entry": format!("{:?}", changed.entry).to_uppercase(),
-                "side": format!("{:?}", changed.side).to_uppercase(),
-                "signed_qty": changed.signed_qty,
-                "quantity": changed.quantity.to_string(),
-                "peak_quantity": changed.peak_quantity.to_string(),
-                "last_qty": changed.last_qty.to_string(),
-                "last_px": changed.last_px.to_string(),
-                "currency": changed.currency.to_string(),
-                "avg_px_open": changed.avg_px_open,
-                "avg_px_close": changed.avg_px_close,
-                "realized_return": changed.realized_return,
-                "realized_pnl": changed.realized_pnl.map(|value| value.to_string()),
-                "unrealized_pnl": changed.unrealized_pnl.to_string(),
-                "ts_opened": changed.ts_opened.as_u64(),
-                "ts_event": changed.ts_event.as_u64(),
-                "ts_init": changed.ts_init.as_u64(),
+            payload_json: json_payload!({
+                EVENT_TYPE_FIELD => POSITION_CHANGED_EVENT_TYPE,
+                TRADER_ID_FIELD => changed.trader_id.to_string(),
+                EVENT_ID_FIELD => changed.event_id.to_string(),
+                ENTRY_FIELD => format!("{:?}", changed.entry).to_uppercase(),
+                SIDE_FIELD => format!("{:?}", changed.side).to_uppercase(),
+                SIGNED_QTY_FIELD => changed.signed_qty,
+                QUANTITY_FIELD => changed.quantity.to_string(),
+                PEAK_QUANTITY_FIELD => changed.peak_quantity.to_string(),
+                LAST_QTY_FIELD => changed.last_qty.to_string(),
+                LAST_PX_FIELD => changed.last_px.to_string(),
+                CURRENCY_FIELD => changed.currency.to_string(),
+                AVG_PX_OPEN_FIELD => changed.avg_px_open,
+                AVG_PX_CLOSE_FIELD => changed.avg_px_close,
+                REALIZED_RETURN_FIELD => changed.realized_return,
+                REALIZED_PNL_FIELD => changed.realized_pnl.map(|value| value.to_string()),
+                UNREALIZED_PNL_FIELD => changed.unrealized_pnl.to_string(),
+                TS_OPENED_FIELD => changed.ts_opened.as_u64(),
+                TS_EVENT_FIELD => changed.ts_event.as_u64(),
+                TS_INIT_FIELD => changed.ts_init.as_u64(),
             })
             .to_string(),
         }),
         PositionEvent::PositionClosed(closed) => Ok(PositionEventRow {
-            event_type: "PositionClosed".to_string(),
+            event_type: POSITION_CLOSED_EVENT_TYPE.to_string(),
             trader_id: closed.trader_id.to_string(),
             strategy_id: closed.strategy_id.to_string(),
             instrument_id: closed.instrument_id.to_string(),
@@ -175,33 +230,33 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             unrealized_pnl: Some(closed.unrealized_pnl.to_string()),
             ts_event: closed.ts_event.as_u64(),
             ts_init: closed.ts_init.as_u64(),
-            payload_json: json!({
-                "event_type": "PositionClosed",
-                "trader_id": closed.trader_id.to_string(),
-                "event_id": closed.event_id.to_string(),
-                "entry": format!("{:?}", closed.entry).to_uppercase(),
-                "side": format!("{:?}", closed.side).to_uppercase(),
-                "signed_qty": closed.signed_qty,
-                "quantity": closed.quantity.to_string(),
-                "peak_quantity": closed.peak_quantity.to_string(),
-                "last_qty": closed.last_qty.to_string(),
-                "last_px": closed.last_px.to_string(),
-                "currency": closed.currency.to_string(),
-                "avg_px_open": closed.avg_px_open,
-                "avg_px_close": closed.avg_px_close,
-                "realized_return": closed.realized_return,
-                "realized_pnl": closed.realized_pnl.map(|value| value.to_string()),
-                "unrealized_pnl": closed.unrealized_pnl.to_string(),
-                "duration": closed.duration,
-                "ts_opened": closed.ts_opened.as_u64(),
-                "ts_closed": closed.ts_closed.map(|value| value.as_u64()),
-                "ts_event": closed.ts_event.as_u64(),
-                "ts_init": closed.ts_init.as_u64(),
+            payload_json: json_payload!({
+                EVENT_TYPE_FIELD => POSITION_CLOSED_EVENT_TYPE,
+                TRADER_ID_FIELD => closed.trader_id.to_string(),
+                EVENT_ID_FIELD => closed.event_id.to_string(),
+                ENTRY_FIELD => format!("{:?}", closed.entry).to_uppercase(),
+                SIDE_FIELD => format!("{:?}", closed.side).to_uppercase(),
+                SIGNED_QTY_FIELD => closed.signed_qty,
+                QUANTITY_FIELD => closed.quantity.to_string(),
+                PEAK_QUANTITY_FIELD => closed.peak_quantity.to_string(),
+                LAST_QTY_FIELD => closed.last_qty.to_string(),
+                LAST_PX_FIELD => closed.last_px.to_string(),
+                CURRENCY_FIELD => closed.currency.to_string(),
+                AVG_PX_OPEN_FIELD => closed.avg_px_open,
+                AVG_PX_CLOSE_FIELD => closed.avg_px_close,
+                REALIZED_RETURN_FIELD => closed.realized_return,
+                REALIZED_PNL_FIELD => closed.realized_pnl.map(|value| value.to_string()),
+                UNREALIZED_PNL_FIELD => closed.unrealized_pnl.to_string(),
+                DURATION_FIELD => closed.duration,
+                TS_OPENED_FIELD => closed.ts_opened.as_u64(),
+                TS_CLOSED_FIELD => closed.ts_closed.map(|value| value.as_u64()),
+                TS_EVENT_FIELD => closed.ts_event.as_u64(),
+                TS_INIT_FIELD => closed.ts_init.as_u64(),
             })
             .to_string(),
         }),
         PositionEvent::PositionAdjusted(adjusted) => Ok(PositionEventRow {
-            event_type: "PositionAdjusted".to_string(),
+            event_type: POSITION_ADJUSTED_EVENT_TYPE.to_string(),
             trader_id: adjusted.trader_id.to_string(),
             strategy_id: adjusted.strategy_id.to_string(),
             instrument_id: adjusted.instrument_id.to_string(),
@@ -218,16 +273,16 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             unrealized_pnl: None,
             ts_event: adjusted.ts_event.as_u64(),
             ts_init: adjusted.ts_init.as_u64(),
-            payload_json: json!({
-                "event_type": "PositionAdjusted",
-                "trader_id": adjusted.trader_id.to_string(),
-                "event_id": adjusted.event_id.to_string(),
-                "adjustment_type": format!("{:?}", adjusted.adjustment_type),
-                "quantity_change": adjusted.quantity_change.map(|value| value.to_string()),
-                "pnl_change": adjusted.pnl_change.map(|value| value.to_string()),
-                "reason": adjusted.reason.map(|value| value.to_string()),
-                "ts_event": adjusted.ts_event.as_u64(),
-                "ts_init": adjusted.ts_init.as_u64(),
+            payload_json: json_payload!({
+                EVENT_TYPE_FIELD => POSITION_ADJUSTED_EVENT_TYPE,
+                TRADER_ID_FIELD => adjusted.trader_id.to_string(),
+                EVENT_ID_FIELD => adjusted.event_id.to_string(),
+                ADJUSTMENT_TYPE_FIELD => format!("{:?}", adjusted.adjustment_type),
+                QUANTITY_CHANGE_FIELD => adjusted.quantity_change.map(|value| value.to_string()),
+                PNL_CHANGE_FIELD => adjusted.pnl_change.map(|value| value.to_string()),
+                REASON_FIELD => adjusted.reason.map(|value| value.to_string()),
+                TS_EVENT_FIELD => adjusted.ts_event.as_u64(),
+                TS_INIT_FIELD => adjusted.ts_init.as_u64(),
             })
             .to_string(),
         }),
@@ -262,15 +317,15 @@ fn convert_order_events_to_parquet(source_instance_dir: &Path, output_root: &Pat
     }
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new("event_type", DataType::Utf8, false),
-        Field::new("strategy_id", DataType::Utf8, false),
-        Field::new("instrument_id", DataType::Utf8, false),
-        Field::new("client_order_id", DataType::Utf8, false),
-        Field::new("venue_order_id", DataType::Utf8, true),
-        Field::new("account_id", DataType::Utf8, true),
-        Field::new("ts_event", DataType::UInt64, false),
-        Field::new("ts_init", DataType::UInt64, false),
-        Field::new("payload_json", DataType::Utf8, false),
+        Field::new(EVENT_TYPE_FIELD, DataType::Utf8, false),
+        Field::new(STRATEGY_ID_FIELD, DataType::Utf8, false),
+        Field::new(INSTRUMENT_ID_FIELD, DataType::Utf8, false),
+        Field::new(CLIENT_ORDER_ID_FIELD, DataType::Utf8, false),
+        Field::new(VENUE_ORDER_ID_FIELD, DataType::Utf8, true),
+        Field::new(ACCOUNT_ID_FIELD, DataType::Utf8, true),
+        Field::new(TS_EVENT_FIELD, DataType::UInt64, false),
+        Field::new(TS_INIT_FIELD, DataType::UInt64, false),
+        Field::new(PAYLOAD_JSON_FIELD, DataType::Utf8, false),
     ]));
     let batch = RecordBatch::try_new(
         schema,
@@ -322,9 +377,9 @@ fn convert_order_events_to_parquet(source_instance_dir: &Path, output_root: &Pat
     write_record_batch(
         batch,
         &output_root
-            .join("data")
+            .join(DATA_DIR)
             .join(ORDER_EVENTS_CLASS)
-            .join("part-0.parquet"),
+            .join(PART_ZERO_PARQUET_FILE),
     )?;
     Ok(true)
 }
@@ -344,24 +399,24 @@ fn convert_position_events_to_parquet(
     }
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new("event_type", DataType::Utf8, false),
-        Field::new("trader_id", DataType::Utf8, false),
-        Field::new("strategy_id", DataType::Utf8, false),
-        Field::new("instrument_id", DataType::Utf8, false),
-        Field::new("position_id", DataType::Utf8, false),
-        Field::new("account_id", DataType::Utf8, false),
-        Field::new("event_id", DataType::Utf8, true),
-        Field::new("opening_order_id", DataType::Utf8, true),
-        Field::new("closing_order_id", DataType::Utf8, true),
-        Field::new("side", DataType::Utf8, true),
-        Field::new("quantity", DataType::Utf8, true),
-        Field::new("ts_opened", DataType::UInt64, true),
-        Field::new("ts_closed", DataType::UInt64, true),
-        Field::new("realized_pnl", DataType::Utf8, true),
-        Field::new("unrealized_pnl", DataType::Utf8, true),
-        Field::new("ts_event", DataType::UInt64, false),
-        Field::new("ts_init", DataType::UInt64, false),
-        Field::new("payload_json", DataType::Utf8, false),
+        Field::new(EVENT_TYPE_FIELD, DataType::Utf8, false),
+        Field::new(TRADER_ID_FIELD, DataType::Utf8, false),
+        Field::new(STRATEGY_ID_FIELD, DataType::Utf8, false),
+        Field::new(INSTRUMENT_ID_FIELD, DataType::Utf8, false),
+        Field::new(POSITION_ID_FIELD, DataType::Utf8, false),
+        Field::new(ACCOUNT_ID_FIELD, DataType::Utf8, false),
+        Field::new(EVENT_ID_FIELD, DataType::Utf8, true),
+        Field::new(OPENING_ORDER_ID_FIELD, DataType::Utf8, true),
+        Field::new(CLOSING_ORDER_ID_FIELD, DataType::Utf8, true),
+        Field::new(SIDE_FIELD, DataType::Utf8, true),
+        Field::new(QUANTITY_FIELD, DataType::Utf8, true),
+        Field::new(TS_OPENED_FIELD, DataType::UInt64, true),
+        Field::new(TS_CLOSED_FIELD, DataType::UInt64, true),
+        Field::new(REALIZED_PNL_FIELD, DataType::Utf8, true),
+        Field::new(UNREALIZED_PNL_FIELD, DataType::Utf8, true),
+        Field::new(TS_EVENT_FIELD, DataType::UInt64, false),
+        Field::new(TS_INIT_FIELD, DataType::UInt64, false),
+        Field::new(PAYLOAD_JSON_FIELD, DataType::Utf8, false),
     ]));
     let batch = RecordBatch::try_new(
         schema,
@@ -452,9 +507,9 @@ fn convert_position_events_to_parquet(
     write_record_batch(
         batch,
         &output_root
-            .join("data")
+            .join(DATA_DIR)
             .join(POSITION_EVENTS_CLASS)
-            .join("part-0.parquet"),
+            .join(PART_ZERO_PARQUET_FILE),
     )?;
     Ok(true)
 }

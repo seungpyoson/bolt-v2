@@ -47,7 +47,7 @@
 
 ## Phase 8 Blocked State
 
-Phase 8 live action remains blocked until a real no-submit report exists, live-canary gate accepts that report, the `eth_chainlink_taker` strategy-input safety audit approves the actual feed/venue/market/math/economics inputs, and the user explicitly approves the exact head SHA plus live command.
+Phase 8 live action remains blocked until a real no-submit report exists, live-canary gate accepts that report, the `binary_oracle_edge_taker` strategy-input safety audit approves the actual feed/venue/market/math/economics inputs, and the user explicitly approves the exact head SHA plus live command.
 
 ## Implementation Discovery
 

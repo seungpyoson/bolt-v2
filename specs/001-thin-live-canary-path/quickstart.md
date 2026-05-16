@@ -73,9 +73,9 @@ Preconditions:
 - all local gates pass
 - no-submit readiness report accepted
 - submit admission consumes live canary report
-- explicit operator approval bound to `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS` and `BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS`
-- approval nonce evidence at `BOLT_V3_PHASE8_APPROVAL_NONCE_PATH` matches `BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256`
-- `BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH` does not exist before the attempt; the harness atomically creates it before live runner entry
+- explicit operator approval window configured in `[live_canary.operator_evidence]`
+- approval nonce evidence path and checksum configured in `[live_canary.operator_evidence]`
+- configured approval consumption path does not exist before the attempt; the harness atomically creates it before live runner entry
 - max live order count and notional cap configured in TOML
 
 Expected result:

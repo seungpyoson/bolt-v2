@@ -1,17 +1,31 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
 use anyhow::{Context, Result};
+use futures_util::future::BoxFuture;
 use nautilus_common::{actor::DataActor, component::Component};
-use nautilus_model::identifiers::StrategyId;
+use nautilus_model::identifiers::{InstrumentId, StrategyId};
 use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
+use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    bolt_v3_submit_admission::BoltV3SubmitAdmissionState, clients::polymarket::FeeProvider,
-    validate::ValidationError,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ValidationError {
+    pub field: String,
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.field, self.message)
+    }
+}
 
 pub trait RuntimeStrategy: Strategy + DataActor + Component + std::fmt::Debug {}
 
@@ -19,10 +33,14 @@ impl<T> RuntimeStrategy for T where T: Strategy + DataActor + Component + std::f
 
 pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 
+pub trait FeeProvider: Send + Sync {
+    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal>;
+    fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>>;
+}
+
 #[derive(Clone)]
 pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
-    reference_publish_topic: String,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
@@ -30,13 +48,11 @@ pub struct StrategyBuildContext {
 impl StrategyBuildContext {
     pub fn new(
         fee_provider: Arc<dyn FeeProvider>,
-        reference_publish_topic: String,
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
     ) -> Self {
         Self {
             fee_provider,
-            reference_publish_topic,
             decision_evidence,
             submit_admission,
         }
@@ -48,10 +64,6 @@ impl StrategyBuildContext {
 
     pub fn fee_provider_arc(&self) -> Arc<dyn FeeProvider> {
         self.fee_provider.clone()
-    }
-
-    pub fn reference_publish_topic(&self) -> &str {
-        &self.reference_publish_topic
     }
 
     pub fn decision_evidence(&self) -> &dyn BoltV3DecisionEvidenceWriter {
@@ -114,14 +126,16 @@ impl StrategyRegistration {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct StrategyRegistry {
     registrations: BTreeMap<&'static str, StrategyRegistration>,
 }
 
 impl StrategyRegistry {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            registrations: BTreeMap::new(),
+        }
     }
 
     pub fn register<B: StrategyBuilder>(&mut self) -> Result<()> {
@@ -189,6 +203,12 @@ impl StrategyRegistry {
     }
 }
 
+impl Default for StrategyRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::{Context, anyhow};
@@ -202,11 +222,11 @@ mod tests {
     struct NoopFeeProvider;
 
     impl FeeProvider for NoopFeeProvider {
-        fn fee_bps(&self, _token_id: &str) -> Option<rust_decimal::Decimal> {
+        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<rust_decimal::Decimal> {
             None
         }
 
-        fn warm(&self, _token_id: &str) -> BoxFuture<'_, Result<()>> {
+        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
             async { Ok(()) }.boxed()
         }
     }
@@ -306,47 +326,9 @@ mod tests {
         }
     }
 
-    struct ContextAwareBuilder;
-
-    impl StrategyBuilder for ContextAwareBuilder {
-        fn kind() -> &'static str {
-            "context_runtime"
-        }
-
-        fn validate_config(_raw: &Value, _field_prefix: &str, _errors: &mut Vec<ValidationError>) {}
-
-        fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-            let strategy_id = raw
-                .get("strategy_id")
-                .and_then(Value::as_str)
-                .context("context builder requires strategy_id")?;
-            let expected_topic = raw
-                .get("expected_reference_publish_topic")
-                .and_then(Value::as_str)
-                .context("context builder requires expected_reference_publish_topic")?;
-            anyhow::ensure!(
-                context.reference_publish_topic() == expected_topic,
-                "expected reference publish topic {expected_topic}, got {}",
-                context.reference_publish_topic()
-            );
-            Ok(Box::new(TestStrategy::new(strategy_id)))
-        }
-
-        fn register(
-            _raw: &Value,
-            _context: &StrategyBuildContext,
-            _trader: &Rc<RefCell<Trader>>,
-        ) -> Result<StrategyId> {
-            Err(anyhow::anyhow!(
-                "context builder register is unused in this test"
-            ))
-        }
-    }
-
     fn test_context() -> StrategyBuildContext {
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
-            "platform.reference.test".to_string(),
             Arc::new(NoopDecisionEvidenceWriter),
             Arc::new(BoltV3SubmitAdmissionState::new_unarmed()),
         )
@@ -409,25 +391,5 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, "missing_strategy_id");
-    }
-
-    #[test]
-    fn strategy_registry_build_passes_reference_publish_topic_through_context() {
-        let mut registry = StrategyRegistry::new();
-        registry.register::<ContextAwareBuilder>().unwrap();
-
-        let context = test_context();
-        let raw = toml::toml! {
-            strategy_id = "ALPHA-REFERENCE-001"
-            expected_reference_publish_topic = "platform.reference.test"
-        }
-        .into();
-
-        let strategy = registry.build("context_runtime", &raw, &context).unwrap();
-
-        assert_eq!(
-            strategy.component_id().inner().as_str(),
-            "ALPHA-REFERENCE-001"
-        );
     }
 }

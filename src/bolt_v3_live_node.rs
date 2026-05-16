@@ -34,12 +34,16 @@
 //! market-data subscription APIs, registers a strategy actor, constructs
 //! an order, or enables any submit path.
 
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_common::{
+    enums::Environment,
+    logging::{logger::LoggerConfig, writer::FileWriterConfig},
+};
+use nautilus_core::{UUID4, UnixNanos};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
@@ -49,6 +53,9 @@ use nautilus_model::{
     enums::BarIntervalType,
     identifiers::{ClientId, StrategyId, TraderId},
 };
+use nautilus_system::config::{RotationConfig, StreamingConfig};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use ustr::Ustr;
 
 use crate::{
@@ -56,7 +63,7 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
+    bolt_v3_config::{LoadedBoltV3Config, LogLevel, NautilusComponentConfig, RuntimeMode},
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
     bolt_v3_secrets::{
@@ -146,12 +153,21 @@ impl std::fmt::Debug for BoltV3LiveNodeRuntime {
 
 #[derive(Debug)]
 pub enum BoltV3LiveNodeBuilderError {
-    BuilderConstruction { source: anyhow::Error },
+    ConfigMapping {
+        field: &'static str,
+        message: String,
+    },
+    BuilderConstruction {
+        source: anyhow::Error,
+    },
 }
 
 impl std::fmt::Display for BoltV3LiveNodeBuilderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            BoltV3LiveNodeBuilderError::ConfigMapping { field, message } => {
+                write!(f, "bolt-v3 NT config mapping failed for {field}: {message}")
+            }
             BoltV3LiveNodeBuilderError::BuilderConstruction { source } => {
                 write!(f, "NT LiveNodeBuilder construction failed: {source}")
             }
@@ -162,6 +178,7 @@ impl std::fmt::Display for BoltV3LiveNodeBuilderError {
 impl std::error::Error for BoltV3LiveNodeBuilderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            BoltV3LiveNodeBuilderError::ConfigMapping { .. } => None,
             BoltV3LiveNodeBuilderError::BuilderConstruction { source } => Some(source.as_ref()),
         }
     }
@@ -230,9 +247,9 @@ pub enum BoltV3LiveNodeError {
     /// dispatchers swallow individual client `connect()` errors and
     /// only log them, so bolt-v3 consults
     /// `NautilusKernel::check_engines_connected()` after dispatch
-    /// returns to keep this failure mode honest. This slice keeps the
-    /// variant generic rather than synthesizing a per-client failure
-    /// list. Callers should follow this with a
+    /// returns to keep this failure mode honest. The variant stays
+    /// generic rather than synthesizing a per-client failure list.
+    /// Callers should follow this with a
     /// [`disconnect_bolt_v3_clients`] call to drain any partially
     /// connected clients under the bounded controlled-disconnect
     /// boundary.
@@ -433,25 +450,38 @@ pub async fn run_bolt_v3_live_node(
         .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
 
-    let run_result = {
-        let run_future = node.run();
-        tokio::pin!(run_future);
-
-        if let Some(receiver) = capture_failure_receiver.as_mut() {
-            tokio::select! {
-                result = &mut run_future => result,
-                _ = receiver => {
-                    log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");
-                    run_future.await
-                }
-            }
-        } else {
-            run_future.await
-        }
-    };
+    let run_result = await_live_node_run_after_capture_failure_notification(
+        node.run(),
+        capture_failure_receiver.as_mut(),
+    )
+    .await;
     let shutdown_result = capture_guards.shutdown().await;
 
     classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+}
+
+async fn await_live_node_run_after_capture_failure_notification<F>(
+    run_future: F,
+    capture_failure_receiver: Option<&mut tokio::sync::oneshot::Receiver<()>>,
+) -> Result<(), anyhow::Error>
+where
+    F: Future<Output = Result<(), anyhow::Error>>,
+{
+    tokio::pin!(run_future);
+
+    if let Some(receiver) = capture_failure_receiver {
+        tokio::select! {
+            result = &mut run_future => result,
+            notification = receiver => {
+                if notification.is_ok() {
+                    log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");
+                }
+                run_future.await
+            }
+        }
+    } else {
+        run_future.await
+    }
 }
 
 pub async fn controlled_no_submit_readiness<F>(
@@ -568,8 +598,9 @@ fn classify_live_node_run_and_capture_shutdown(
 
 /// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller
 /// inject the environment-variable predicate and the SSM resolver. Production
-/// code must use [`build_bolt_v3_live_node`], which queries `std::env` and
-/// invokes the real Amazon Web Services Systems Manager resolver.
+/// code must use [`build_bolt_v3_live_node`], which performs the real
+/// forbidden credential environment-variable check and invokes the real Amazon
+/// Web Services Systems Manager resolver.
 pub fn build_bolt_v3_live_node_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
@@ -649,7 +680,7 @@ fn build_live_node_with_clients(
 pub fn make_bolt_v3_live_node_builder(
     loaded: &LoadedBoltV3Config,
 ) -> Result<LiveNodeBuilder, BoltV3LiveNodeBuilderError> {
-    let cfg = make_live_node_config(loaded);
+    let cfg = make_live_node_config(loaded)?;
     make_bolt_v3_live_node_builder_from_config(cfg)
 }
 
@@ -660,27 +691,41 @@ fn make_bolt_v3_live_node_builder_from_config(
         .map_err(|source| BoltV3LiveNodeBuilderError::BuilderConstruction { source })
 }
 
-pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
+pub fn make_live_node_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<LiveNodeConfig, BoltV3LiveNodeBuilderError> {
     let trader_id = TraderId::from(loaded.root.trader_id.as_str());
     let environment = match loaded.root.runtime.mode {
+        RuntimeMode::Backtest => Environment::Backtest,
+        RuntimeMode::Sandbox => Environment::Sandbox,
         RuntimeMode::Live => Environment::Live,
     };
-    let mut module_level: AHashMap<Ustr, LevelFilter> = AHashMap::new();
+    let component_level = logger_levels(&loaded.root.logging.component_levels);
+    let mut module_level = logger_levels(&loaded.root.logging.module_levels);
     for module_path in bolt_v3_providers::credential_log_modules() {
-        module_level.insert(Ustr::from(module_path), LevelFilter::Warn);
+        module_level.insert(
+            Ustr::from(module_path),
+            loaded
+                .root
+                .logging
+                .credential_module_level
+                .to_level_filter(),
+        );
     }
+    let file_config =
+        optional_file_writer_config("logging.file_config", &loaded.root.logging.file_config)?;
     let logging = LoggerConfig {
         stdout_level: loaded.root.logging.standard_output_level.to_level_filter(),
         fileout_level: loaded.root.logging.file_level.to_level_filter(),
-        component_level: AHashMap::new(),
+        component_level,
         module_level,
-        log_components_only: false,
-        is_colored: true,
-        print_config: false,
-        use_tracing: false,
-        bypass_logging: false,
-        file_config: None,
-        clear_log_file: false,
+        log_components_only: loaded.root.logging.log_components_only,
+        is_colored: loaded.root.logging.is_colored,
+        print_config: loaded.root.logging.print_config,
+        use_tracing: loaded.root.logging.use_tracing,
+        bypass_logging: loaded.root.logging.bypass_logging,
+        file_config,
+        clear_log_file: loaded.root.logging.clear_log_file,
     };
     let nautilus = &loaded.root.nautilus;
     let data = &nautilus.data_engine;
@@ -703,18 +748,17 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         qsize: data.qsize,
     };
     let exec = &nautilus.exec_engine;
-    let reconciliation_lookback_mins = u32_zero_as_none(exec.reconciliation_lookback_mins);
     let exec_engine = nautilus_live::config::LiveExecEngineConfig {
         load_cache: exec.load_cache,
         snapshot_orders: exec.snapshot_orders,
         snapshot_positions: exec.snapshot_positions,
-        snapshot_positions_interval_secs: u64_zero_as_none_f64(
-            exec.snapshot_positions_interval_seconds,
-        ),
+        snapshot_positions_interval_secs: exec
+            .snapshot_positions_interval_seconds
+            .map(|seconds| seconds as f64),
         external_clients: strings_as_client_ids(&exec.external_client_ids),
         debug: exec.debug,
         reconciliation: exec.reconciliation,
-        reconciliation_lookback_mins,
+        reconciliation_lookback_mins: exec.reconciliation_lookback_mins,
         // `f64` is lossless for all practical delay values (< 2^53 seconds).
         reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_seconds as f64,
         reconciliation_instrument_ids: non_empty_strings(&exec.reconciliation_instrument_ids),
@@ -725,33 +769,31 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         inflight_check_interval_ms: exec.inflight_check_interval_milliseconds,
         inflight_check_threshold_ms: exec.inflight_check_threshold_milliseconds,
         inflight_check_retries: exec.inflight_check_retries,
-        open_check_interval_secs: u64_zero_as_none_f64(exec.open_check_interval_seconds),
-        open_check_lookback_mins: u32_zero_as_none(exec.open_check_lookback_mins),
+        open_check_interval_secs: exec
+            .open_check_interval_seconds
+            .map(|seconds| seconds as f64),
+        open_check_lookback_mins: exec.open_check_lookback_mins,
         open_check_threshold_ms: exec.open_check_threshold_milliseconds,
         open_check_missing_retries: exec.open_check_missing_retries,
         open_check_open_only: exec.open_check_open_only,
         max_single_order_queries_per_cycle: exec.max_single_order_queries_per_cycle,
         single_order_query_delay_ms: exec.single_order_query_delay_milliseconds,
-        position_check_interval_secs: u64_zero_as_none_f64(exec.position_check_interval_seconds),
+        position_check_interval_secs: exec
+            .position_check_interval_seconds
+            .map(|seconds| seconds as f64),
         position_check_lookback_mins: exec.position_check_lookback_mins,
         position_check_threshold_ms: exec.position_check_threshold_milliseconds,
         position_check_retries: exec.position_check_retries,
-        purge_closed_orders_interval_mins: u32_zero_as_none(exec.purge_closed_orders_interval_mins),
-        purge_closed_orders_buffer_mins: u32_zero_as_none(exec.purge_closed_orders_buffer_mins),
-        purge_closed_positions_interval_mins: u32_zero_as_none(
-            exec.purge_closed_positions_interval_mins,
-        ),
-        purge_closed_positions_buffer_mins: u32_zero_as_none(
-            exec.purge_closed_positions_buffer_mins,
-        ),
-        purge_account_events_interval_mins: u32_zero_as_none(
-            exec.purge_account_events_interval_mins,
-        ),
-        purge_account_events_lookback_mins: u32_zero_as_none(
-            exec.purge_account_events_lookback_mins,
-        ),
+        purge_closed_orders_interval_mins: exec.purge_closed_orders_interval_mins,
+        purge_closed_orders_buffer_mins: exec.purge_closed_orders_buffer_mins,
+        purge_closed_positions_interval_mins: exec.purge_closed_positions_interval_mins,
+        purge_closed_positions_buffer_mins: exec.purge_closed_positions_buffer_mins,
+        purge_account_events_interval_mins: exec.purge_account_events_interval_mins,
+        purge_account_events_lookback_mins: exec.purge_account_events_lookback_mins,
         purge_from_database: exec.purge_from_database,
-        own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_seconds),
+        own_books_audit_interval_secs: exec
+            .own_books_audit_interval_seconds
+            .map(|seconds| seconds as f64),
         graceful_shutdown_on_error: exec.graceful_shutdown_on_error,
         qsize: exec.qsize,
         allow_overfills: exec.allow_overfills,
@@ -777,39 +819,190 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
 
     // Explicit struct literal: upstream NT `LiveNodeConfig` field additions must be
     // considered here instead of silently inherited through `Default`.
-    LiveNodeConfig {
+    Ok(LiveNodeConfig {
         environment,
         trader_id,
         load_state: nautilus.load_state,
         save_state: nautilus.save_state,
         logging,
-        instance_id: None,
+        instance_id: optional_instance_id("nautilus.instance_id", &nautilus.instance_id)?,
         timeout_connection: Duration::from_secs(nautilus.timeout_connection_seconds),
         timeout_reconciliation: Duration::from_secs(nautilus.timeout_reconciliation_seconds),
         timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_seconds),
         timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_seconds),
         delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_seconds),
         timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_seconds),
-        cache: None,
-        msgbus: None,
-        portfolio: None,
-        emulator: None,
-        streaming: None,
-        loop_debug: false,
+        cache: optional_toml_config("nautilus.cache", &nautilus.cache)?,
+        msgbus: optional_toml_config("nautilus.msgbus", &nautilus.msgbus)?,
+        portfolio: optional_toml_config("nautilus.portfolio", &nautilus.portfolio)?,
+        emulator: optional_toml_config("nautilus.emulator", &nautilus.emulator)?,
+        streaming: optional_streaming_config("nautilus.streaming", &nautilus.streaming)?,
+        loop_debug: nautilus.loop_debug,
         data_engine,
         risk_engine,
         exec_engine,
         data_clients: HashMap::new(),
         exec_clients: HashMap::new(),
+    })
+}
+
+fn optional_toml_config<T>(
+    field: &'static str,
+    config: &NautilusComponentConfig,
+) -> Result<Option<T>, BoltV3LiveNodeBuilderError>
+where
+    T: DeserializeOwned,
+{
+    if disabled_component(config) {
+        return Ok(None);
+    }
+    config
+        .clone()
+        .try_into()
+        .map(Some)
+        .map_err(|source| config_mapping_error(field, source))
+}
+
+fn optional_instance_id(
+    field: &'static str,
+    config: &NautilusComponentConfig,
+) -> Result<Option<UUID4>, BoltV3LiveNodeBuilderError> {
+    if disabled_component(config) {
+        return Ok(None);
+    }
+    let Some(value) = config.as_str() else {
+        return Err(BoltV3LiveNodeBuilderError::ConfigMapping {
+            field,
+            message: "expected UUID string or \"disabled\"".to_string(),
+        });
+    };
+    UUID4::from_str(value)
+        .map(Some)
+        .map_err(|source| BoltV3LiveNodeBuilderError::ConfigMapping {
+            field,
+            message: source,
+        })
+}
+
+fn optional_file_writer_config(
+    field: &'static str,
+    config: &NautilusComponentConfig,
+) -> Result<Option<FileWriterConfig>, BoltV3LiveNodeBuilderError> {
+    optional_toml_config::<BoltV3FileWriterConfig>(field, config)
+        .map(|value| value.map(FileWriterConfig::from))
+}
+
+fn optional_streaming_config(
+    field: &'static str,
+    config: &NautilusComponentConfig,
+) -> Result<Option<StreamingConfig>, BoltV3LiveNodeBuilderError> {
+    optional_toml_config::<BoltV3StreamingConfig>(field, config)
+        .map(|value| value.map(StreamingConfig::from))
+}
+
+fn disabled_component(config: &NautilusComponentConfig) -> bool {
+    if config.as_str() == Some("disabled") {
+        return true;
+    }
+    false
+}
+
+fn config_mapping_error(
+    field: &'static str,
+    source: toml::de::Error,
+) -> BoltV3LiveNodeBuilderError {
+    BoltV3LiveNodeBuilderError::ConfigMapping {
+        field,
+        message: source.to_string(),
     }
 }
 
-fn u32_zero_as_none(value: u32) -> Option<u32> {
-    (value != 0).then_some(value)
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoltV3FileWriterConfig {
+    directory: Option<String>,
+    file_name: Option<String>,
+    file_format: Option<String>,
+    file_rotate: Option<BoltV3FileRotateConfig>,
 }
 
-fn u64_zero_as_none_f64(value: u64) -> Option<f64> {
-    (value != 0).then_some(value as f64)
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoltV3FileRotateConfig {
+    max_file_size: u64,
+    max_backup_count: u32,
+}
+
+impl From<BoltV3FileWriterConfig> for FileWriterConfig {
+    fn from(config: BoltV3FileWriterConfig) -> Self {
+        FileWriterConfig::new(
+            config.directory,
+            config.file_name,
+            config.file_format,
+            config
+                .file_rotate
+                .map(|rotate| (rotate.max_file_size, rotate.max_backup_count)),
+        )
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoltV3StreamingConfig {
+    catalog_path: String,
+    fs_protocol: String,
+    flush_interval_ms: u64,
+    replace_existing: bool,
+    rotation_config: BoltV3RotationConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum BoltV3RotationConfig {
+    Size { max_size: u64 },
+    Interval { interval_ns: u64 },
+    ScheduledDates { interval_ns: u64, schedule_ns: u64 },
+    NoRotation,
+}
+
+impl From<BoltV3StreamingConfig> for StreamingConfig {
+    fn from(config: BoltV3StreamingConfig) -> Self {
+        StreamingConfig::new(
+            config.catalog_path,
+            config.fs_protocol,
+            config.flush_interval_ms,
+            config.replace_existing,
+            RotationConfig::from(config.rotation_config),
+        )
+    }
+}
+
+impl From<BoltV3RotationConfig> for RotationConfig {
+    fn from(config: BoltV3RotationConfig) -> Self {
+        match config {
+            BoltV3RotationConfig::Size { max_size } => RotationConfig::Size { max_size },
+            BoltV3RotationConfig::Interval { interval_ns } => {
+                RotationConfig::Interval { interval_ns }
+            }
+            BoltV3RotationConfig::ScheduledDates {
+                interval_ns,
+                schedule_ns,
+            } => RotationConfig::ScheduledDates {
+                interval_ns,
+                schedule_ns: UnixNanos::from(schedule_ns),
+            },
+            BoltV3RotationConfig::NoRotation => RotationConfig::NoRotation,
+        }
+    }
+}
+
+fn logger_levels(
+    levels: &std::collections::BTreeMap<String, LogLevel>,
+) -> AHashMap<Ustr, LevelFilter> {
+    levels
+        .iter()
+        .map(|(target, level)| (Ustr::from(target.as_str()), level.to_level_filter()))
+        .collect()
 }
 
 fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
@@ -840,6 +1033,10 @@ pub fn wire_bolt_v3_runtime_capture(
             .persistence
             .streaming
             .flush_interval_milliseconds,
+        loaded
+            .root
+            .persistence
+            .runtime_capture_start_poll_interval_milliseconds,
         None,
     )
 }
@@ -861,7 +1058,7 @@ pub fn wire_bolt_v3_runtime_capture(
 /// passed through `LiveNodeBuilder::build`, so the
 /// provider-owned credential log module filters remain active during
 /// connect.
-/// A future production v3 entrypoint must preserve that ordering.
+/// Production callers preserve that ordering.
 ///
 /// This boundary is **bounded**: the dispatched engine-level connect
 /// futures are wrapped in `tokio::time::timeout` driven by
@@ -883,8 +1080,8 @@ pub fn wire_bolt_v3_runtime_capture(
 /// [`BoltV3LiveNodeError::ConnectIncomplete`] rather than `Ok(())`.
 /// The boundary does **not** copy or reimplement NT private drain or
 /// flush logic, and it does not gate on NT cache contents or
-/// instrument-availability checks; that readiness is owned by a
-/// future slice.
+/// instrument-availability checks; that readiness is checked by
+/// [`controlled_no_submit_readiness`].
 ///
 /// This boundary is **no-trade**: it never enters NT's runner loop
 /// and never invokes NT's trader entrypoint, so no strategy actor is
@@ -982,10 +1179,14 @@ mod tests {
         }
     }
 
+    fn toml_table(input: &str) -> toml::Value {
+        toml::from_str(input).expect("test TOML component table should parse")
+    }
+
     #[test]
     fn live_node_config_maps_trader_id_and_environment_from_v3_root() {
         let loaded = fixture_loaded_config();
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
         assert_eq!(cfg.trader_id, TraderId::from("BOLT-001"));
         assert_eq!(cfg.environment, Environment::Live);
@@ -998,10 +1199,124 @@ mod tests {
     }
 
     #[test]
+    fn live_node_config_maps_configured_nt_component_blocks() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.nautilus.instance_id =
+            toml::Value::String("2d89666b-1a1e-4a75-b193-4eb3b454c757".to_string());
+        loaded.root.nautilus.cache = toml_table(
+            r#"
+            use_trader_prefix = false
+            tick_capacity = 321
+            bar_capacity = 654
+            "#,
+        );
+        loaded.root.nautilus.msgbus = toml_table(
+            r#"
+            streams_prefix = "bolt-stream"
+            stream_per_topic = false
+            "#,
+        );
+        loaded.root.nautilus.portfolio = toml_table(
+            r#"
+            use_mark_prices = true
+            bar_updates = false
+            "#,
+        );
+        loaded.root.nautilus.emulator = toml_table(
+            r#"
+            debug = true
+            "#,
+        );
+        loaded.root.nautilus.streaming = toml_table(
+            r#"
+            catalog_path = "/tmp/bolt-v3-catalog"
+            fs_protocol = "file"
+            flush_interval_ms = 250
+            replace_existing = true
+
+            [rotation_config]
+            kind = "size"
+            max_size = 2048
+            "#,
+        );
+        loaded.root.logging.file_config = toml_table(
+            r#"
+            directory = "logs"
+            file_name = "bolt-v3.log"
+            file_format = "json"
+
+            [file_rotate]
+            max_file_size = 4096
+            max_backup_count = 3
+            "#,
+        );
+
+        let cfg = make_live_node_config(&loaded).expect("configured NT components should map");
+
+        assert_eq!(
+            cfg.instance_id
+                .expect("instance id should be configured")
+                .to_string(),
+            "2d89666b-1a1e-4a75-b193-4eb3b454c757"
+        );
+        let cache = cfg.cache.expect("cache config should map");
+        assert!(!cache.use_trader_prefix);
+        assert_eq!(cache.tick_capacity, 321);
+        assert_eq!(cache.bar_capacity, 654);
+        let msgbus = cfg.msgbus.expect("msgbus config should map");
+        assert_eq!(msgbus.streams_prefix, "bolt-stream");
+        assert!(!msgbus.stream_per_topic);
+        let portfolio = cfg.portfolio.expect("portfolio config should map");
+        assert!(portfolio.use_mark_prices);
+        assert!(!portfolio.bar_updates);
+        assert!(cfg.emulator.expect("emulator config should map").debug);
+        let streaming = cfg.streaming.expect("streaming config should map");
+        assert_eq!(streaming.catalog_path, "/tmp/bolt-v3-catalog");
+        match streaming.rotation_config {
+            RotationConfig::Size { max_size } => assert_eq!(max_size, 2048),
+            other => panic!("expected size rotation, got {other:?}"),
+        }
+        let file_config = cfg
+            .logging
+            .file_config
+            .expect("logger file config should map");
+        assert_eq!(file_config.directory.as_deref(), Some("logs"));
+        assert_eq!(file_config.file_name.as_deref(), Some("bolt-v3.log"));
+        assert_eq!(file_config.file_format.as_deref(), Some("json"));
+        assert_eq!(
+            file_config
+                .file_rotate
+                .expect("file rotation should map")
+                .max_file_size,
+            4096
+        );
+    }
+
+    #[test]
+    fn live_node_config_reports_field_for_invalid_nt_component_block() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.nautilus.cache = toml::Value::String("enabled".to_string());
+
+        let error = make_live_node_config(&loaded)
+            .expect_err("invalid cache component should produce a mapping error");
+        match error {
+            BoltV3LiveNodeBuilderError::ConfigMapping { field, message } => {
+                assert_eq!(field, "nautilus.cache");
+                assert!(
+                    message.contains("invalid type") || message.contains("expected"),
+                    "mapping error should explain the parse failure: {message}"
+                );
+            }
+            other => panic!("expected config mapping error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn live_node_builder_rejects_backtest_environment_before_registration() {
         let loaded = fixture_loaded_config();
         let make_error = || {
-            let mut cfg = make_live_node_config(&loaded);
+            let mut cfg =
+                make_live_node_config(&loaded).expect("fixture live-node config should map");
             cfg.environment = Environment::Backtest;
             make_bolt_v3_live_node_builder_from_config(cfg)
                 .expect_err("NT LiveNodeBuilder must reject Backtest environment")
@@ -1020,7 +1335,14 @@ mod tests {
             "builder-construction failure should identify the invalid environment: {rendered}"
         );
 
-        let BoltV3LiveNodeBuilderError::BuilderConstruction { source } = make_error();
+        let source = match make_error() {
+            BoltV3LiveNodeBuilderError::BuilderConstruction { source } => source,
+            BoltV3LiveNodeBuilderError::ConfigMapping { field, message } => {
+                panic!(
+                    "expected builder construction failure, got config mapping failure for {field}: {message}"
+                )
+            }
+        };
         assert!(
             source.to_string().contains("Backtest environment"),
             "builder-construction failure should identify the invalid environment: {source}"
@@ -1054,10 +1376,43 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn capture_failure_notification_waits_for_active_live_node_run_result() {
+        let (notify_failure, mut failure_receiver) = tokio::sync::oneshot::channel();
+        let (finish_run, run_finished) = tokio::sync::oneshot::channel();
+        let run_future = async move {
+            run_finished
+                .await
+                .expect("test should finish the simulated LiveNode run")
+        };
+        let mut pending = Box::pin(await_live_node_run_after_capture_failure_notification(
+            run_future,
+            Some(&mut failure_receiver),
+        ));
+
+        notify_failure
+            .send(())
+            .expect("capture-failure receiver should still be live");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut pending)
+                .await
+                .is_err(),
+            "capture-failure notification must not drop the active LiveNode run future"
+        );
+
+        finish_run
+            .send(Err(anyhow::anyhow!("runner stopped after capture failure")))
+            .expect("simulated LiveNode run should still be awaited");
+        let error = pending
+            .await
+            .expect_err("runner error after capture failure must be preserved");
+        assert_eq!(error.to_string(), "runner stopped after capture failure");
+    }
+
     #[test]
     fn live_node_config_top_level_residuals_are_disabled_or_empty() {
         let loaded = fixture_loaded_config();
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
         assert!(cfg.instance_id.is_none());
         assert!(cfg.cache.is_none());
@@ -1071,16 +1426,16 @@ mod tests {
     }
 
     #[test]
-    fn live_node_config_maps_zero_lookback_to_unbounded_reconciliation() {
+    fn live_node_config_maps_absent_lookback_to_unbounded_reconciliation() {
         let loaded = fixture_loaded_config();
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
         assert_eq!(cfg.exec_engine.reconciliation_lookback_mins, None);
     }
 
     #[test]
     fn live_node_config_maps_explicit_nt_runtime_defaults_from_v3_root() {
         let loaded = fixture_loaded_config();
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
         assert!(cfg.data_engine.time_bars_build_with_no_updates);
         assert!(cfg.data_engine.time_bars_timestamp_on_close);
@@ -1153,9 +1508,19 @@ mod tests {
         let mut loaded = fixture_loaded_config();
         loaded.root.risk.nt_debug = true;
 
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
         assert!(cfg.risk_engine.debug);
+    }
+
+    #[test]
+    fn live_node_config_maps_explicit_nt_risk_bypass_from_v3_root() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.risk.nt_bypass = true;
+
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
+
+        assert!(cfg.risk_engine.bypass);
     }
 
     #[test]
@@ -1163,7 +1528,7 @@ mod tests {
         let mut loaded = fixture_loaded_config();
         loaded.root.nautilus.data_engine.debug = true;
 
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
         assert!(cfg.data_engine.debug);
     }
@@ -1181,7 +1546,7 @@ mod tests {
             .risk
             .nt_max_notional_per_order
             .insert("BTCUSDT.BINANCE".to_string(), "25000.50".to_string());
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
         assert_eq!(
             cfg.risk_engine
@@ -1200,7 +1565,7 @@ mod tests {
     #[test]
     fn live_node_config_maps_log_levels_from_uppercase_strings() {
         let loaded = fixture_loaded_config();
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
         assert_eq!(cfg.logging.stdout_level, log::LevelFilter::Info);
         assert_eq!(cfg.logging.fileout_level, log::LevelFilter::Info);
     }
@@ -1226,15 +1591,44 @@ mod tests {
 
     #[test]
     fn live_node_config_maps_explicit_logger_residuals_in_builder_path() {
-        let loaded = fixture_loaded_config();
-        let cfg = make_live_node_config(&loaded);
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .logging
+            .component_levels
+            .insert("RiskEngine".to_string(), LogLevel::Error);
+        loaded
+            .root
+            .logging
+            .module_levels
+            .insert("nautilus_live::node".to_string(), LogLevel::Debug);
+        loaded.root.logging.credential_module_level = LogLevel::Error;
+        loaded.root.logging.log_components_only = true;
+        loaded.root.logging.is_colored = false;
+        loaded.root.logging.print_config = true;
+        loaded.root.logging.use_tracing = true;
+        loaded.root.logging.bypass_logging = true;
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
-        assert!(cfg.logging.component_level.is_empty());
-        assert!(!cfg.logging.log_components_only);
-        assert!(cfg.logging.is_colored);
-        assert!(!cfg.logging.print_config);
-        assert!(!cfg.logging.use_tracing);
-        assert!(!cfg.logging.bypass_logging);
+        assert_eq!(
+            cfg.logging
+                .component_level
+                .get(&Ustr::from("RiskEngine"))
+                .copied(),
+            Some(log::LevelFilter::Error)
+        );
+        assert_eq!(
+            cfg.logging
+                .module_level
+                .get(&Ustr::from("nautilus_live::node"))
+                .copied(),
+            Some(log::LevelFilter::Debug)
+        );
+        assert!(cfg.logging.log_components_only);
+        assert!(!cfg.logging.is_colored);
+        assert!(cfg.logging.print_config);
+        assert!(cfg.logging.use_tracing);
+        assert!(cfg.logging.bypass_logging);
         assert!(cfg.logging.file_config.is_none());
         assert!(!cfg.logging.clear_log_file);
     }
@@ -1249,7 +1643,7 @@ mod tests {
         // logger filter must contain both module paths with at most
         // `Warn` regardless of the configured root level.
         let loaded = fixture_loaded_config();
-        let cfg = make_live_node_config(&loaded);
+        let cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
 
         for module_path in crate::bolt_v3_providers::credential_log_modules() {
             let key = Ustr::from(module_path);

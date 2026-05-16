@@ -1,0 +1,175 @@
+schema_version = 1
+trader_id = "BOLT-001"
+
+strategy_files = [
+  "strategies/binary_oracle.example.toml",
+]
+
+[runtime]
+mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+instance_id = "disabled"
+cache = "disabled"
+msgbus = "disabled"
+portfolio = "disabled"
+emulator = "disabled"
+streaming = "disabled"
+loop_debug = false
+timeout_connection_seconds = 30
+timeout_reconciliation_seconds = 60
+timeout_portfolio_seconds = 10
+timeout_disconnection_seconds = 10
+delay_post_stop_seconds = 5
+timeout_shutdown_seconds = 10
+
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_client_ids = []
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+external_client_ids = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_seconds = 10
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_milliseconds = 2000
+inflight_check_threshold_milliseconds = 5000
+inflight_check_retries = 5
+open_check_lookback_mins = 60
+open_check_threshold_milliseconds = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_milliseconds = 100
+position_check_lookback_mins = 60
+position_check_threshold_milliseconds = 5000
+position_check_retries = 3
+purge_from_database = false
+graceful_shutdown_on_error = false
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
+
+[risk]
+default_max_notional_per_order = "10.00"
+nt_bypass = false
+nt_max_order_submit_rate = "100/00:00:01"
+nt_max_order_modify_rate = "100/00:00:01"
+nt_max_notional_per_order = {}
+nt_debug = false
+nt_graceful_shutdown_on_error = false
+nt_qsize = 100000
+
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "/var/lib/bolt/reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 65536
+max_live_order_count = 1
+max_notional_per_order = "1.00"
+
+[logging]
+standard_output_level = "INFO"
+file_level = "INFO"
+component_levels = {}
+module_levels = {}
+credential_module_level = "WARN"
+log_components_only = false
+is_colored = true
+print_config = false
+use_tracing = false
+bypass_logging = false
+file_config = "disabled"
+clear_log_file = false
+stale_log_source_directory = "/var/lib/bolt"
+stale_log_archive_directory = "/var/log/bolt/nautilus-archive"
+
+[persistence]
+catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_milliseconds = 50
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_milliseconds = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-1"
+
+[venues.polymarket_main]
+kind = "polymarket"
+
+[venues.polymarket_main.data]
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_gamma = "https://gamma-api.polymarket.com"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 60
+ws_timeout_seconds = 30
+subscribe_new_markets = false
+auto_load_missing_instruments = false
+update_instruments_interval_minutes = 60
+websocket_max_subscriptions_per_connection = 200
+auto_load_debounce_milliseconds = 250
+transport_backend = "sockudo"
+
+[venues.polymarket_main.execution]
+account_id = "POLYMARKET-001"
+signature_type = "poly_proxy"
+funder_address = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_seconds = 60
+max_retries = 3
+retry_delay_initial_milliseconds = 250
+retry_delay_max_milliseconds = 2000
+ack_timeout_seconds = 5
+fee_cache_ttl_seconds = 300
+transport_backend = "sockudo"
+
+[venues.polymarket_main.secrets]
+private_key_ssm_path = "/bolt/polymarket_main/private_key"
+api_key_ssm_path = "/bolt/polymarket_main/api_key"
+api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
+passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+
+[venues.binance_reference]
+kind = "binance"
+
+[venues.binance_reference.data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream.binance.com:9443/ws"
+instrument_status_poll_seconds = 3600
+transport_backend = "sockudo"
+
+[venues.binance_reference.secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"

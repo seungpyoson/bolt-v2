@@ -47,7 +47,7 @@ pub struct BoltV3RegisteredVenue {
 /// name). The summary is the only inspectable surface this module
 /// exposes; the builder itself owns the actual factory and config
 /// instances.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BoltV3RegistrationSummary {
     pub venues: BTreeMap<String, BoltV3RegisteredVenue>,
 }
@@ -131,23 +131,17 @@ mod tests {
 
     use std::{path::PathBuf, sync::Arc};
 
-    use nautilus_common::enums::Environment;
-    use nautilus_live::node::LiveNode;
-    use nautilus_model::identifiers::TraderId;
-    use nautilus_polymarket::{
-        config::PolymarketDataClientConfig, factories::PolymarketDataClientFactory,
-    };
-
     use crate::{
-        bolt_v3_adapters::{
-            BoltV3DataClientAdapterConfig, BoltV3VenueAdapterConfig, map_bolt_v3_adapters,
-        },
+        bolt_v3_adapters::{BoltV3VenueAdapterConfig, map_bolt_v3_adapters},
         bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
         bolt_v3_providers::{
             binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
         },
         bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
     };
+    use nautilus_common::enums::Environment;
+    use nautilus_live::node::LiveNode;
+    use nautilus_model::identifiers::TraderId;
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
@@ -249,35 +243,17 @@ mod tests {
 
     #[test]
     fn polymarket_venue_with_only_data_block_does_not_register_an_exec_client() {
-        let adapters = BoltV3AdapterConfigs {
-            venues: BTreeMap::from([(
-                "polymarket_data_only".to_string(),
-                BoltV3VenueAdapterConfig {
-                    data: Some(BoltV3DataClientAdapterConfig {
-                        factory: Box::new(PolymarketDataClientFactory),
-                        config: Box::new(PolymarketDataClientConfig {
-                            base_url_http: Some("https://clob.polymarket.com".to_string()),
-                            base_url_ws: Some(
-                                "wss://ws-subscriptions-clob.polymarket.com/ws/market".to_string(),
-                            ),
-                            base_url_gamma: Some("https://gamma-api.polymarket.com".to_string()),
-                            base_url_data_api: Some("https://data-api.polymarket.com".to_string()),
-                            http_timeout_secs: 60,
-                            ws_timeout_secs: 30,
-                            ws_max_subscriptions: 200,
-                            update_instruments_interval_mins: 60,
-                            subscribe_new_markets: false,
-                            auto_load_missing_instruments: false,
-                            auto_load_debounce_ms: 100,
-                            transport_backend: Default::default(),
-                            filters: Vec::new(),
-                            new_market_filter: None,
-                        }),
-                    }),
-                    execution: None,
-                },
-            )]),
-        };
+        let mut adapters = fixture_adapters();
+        let mut polymarket = adapters
+            .venues
+            .remove("polymarket_main")
+            .expect("fixture should include polymarket data adapter");
+        polymarket.execution = None;
+        adapters.venues.clear();
+        adapters
+            .venues
+            .insert("polymarket_data_only".to_string(), polymarket);
+
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("data-only registration should succeed");
         let registered = summary

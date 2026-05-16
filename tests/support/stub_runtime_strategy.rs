@@ -1,9 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use anyhow::{Context, Result};
-use bolt_v2::{
-    strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder},
-    validate::ValidationError,
+use bolt_v2::strategies::registry::{
+    BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError,
 };
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::identifiers::StrategyId;

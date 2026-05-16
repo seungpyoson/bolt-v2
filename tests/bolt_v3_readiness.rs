@@ -250,8 +250,11 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
         .as_table_mut()
         .expect("fixture data block should be a TOML table")
         .insert(
-            "subscribe_new_markets".to_string(),
-            toml::Value::Boolean(true),
+            "new_market_filter".to_string(),
+            toml::toml! {
+                keyword = " "
+            }
+            .into(),
         );
 
     let report = run_bolt_v3_startup_check_with(&loaded, |_| false, support::fake_bolt_v3_resolver);

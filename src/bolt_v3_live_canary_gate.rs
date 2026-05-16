@@ -20,9 +20,9 @@ use serde_json::Value;
 use tokio::io::AsyncReadExt;
 
 use crate::{
-    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
+    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE, NAME_KEY,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
         OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
         SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
@@ -314,14 +314,7 @@ async fn read_report_bytes_with_limit(
 }
 
 fn resolve_report_path(root_path: &Path, block: &LiveCanaryBlock) -> PathBuf {
-    let configured = PathBuf::from(&block.no_submit_readiness_report_path);
-    if configured.is_absolute() {
-        return configured;
-    }
-    root_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(&configured)
+    resolve_root_relative_path(root_path, &block.no_submit_readiness_report_path)
 }
 
 fn parse_positive_decimal(
@@ -364,20 +357,19 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
                 let mut present_stage_names = std::collections::BTreeSet::new();
                 let mut satisfied_stage_names = std::collections::BTreeSet::new();
                 for stage in stages {
-                    let name = stage
-                        .get(STAGE_KEY)
-                        .or_else(|| stage.get(NAME_KEY))
-                        .and_then(Value::as_str)
-                        .unwrap_or("<unnamed>");
+                    let Some(name) = stage.get(STAGE_KEY).and_then(Value::as_str) else {
+                        reasons.push("stage entry is missing `stage`".to_string());
+                        continue;
+                    };
                     present_stage_names.insert(name.to_string());
-                    let status = stage.get(STATUS_KEY).and_then(Value::as_str);
-                    if !matches_satisfied_status(status) {
-                        reasons.push(format!(
-                            "stage `{name}` status is `{}`",
-                            status.unwrap_or("<missing>")
-                        ));
-                    } else {
-                        satisfied_stage_names.insert(name.to_string());
+                    match stage.get(STATUS_KEY).and_then(Value::as_str) {
+                        None => reasons.push(format!("stage `{name}` status is missing")),
+                        Some(status) if status == STATUS_SATISFIED => {
+                            satisfied_stage_names.insert(name.to_string());
+                        }
+                        Some(status) => {
+                            reasons.push(format!("stage `{name}` status is `{status}`"))
+                        }
                     }
                 }
                 for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
@@ -400,10 +392,6 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
     }
 }
 
-fn matches_satisfied_status(status: Option<&str>) -> bool {
-    matches!(status, Some(value) if value.eq_ignore_ascii_case(STATUS_SATISFIED))
-}
-
 const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[
     OPERATOR_APPROVAL_STAGE,
     SECRET_RESOLUTION_STAGE,
@@ -421,18 +409,19 @@ mod tests {
     use crate::{bolt_v3_config::LiveCanaryBlock, bolt_v3_live_canary_gate::resolve_report_path};
 
     #[test]
-    fn relative_report_path_without_root_parent_matches_config_loader_fallback() {
+    fn relative_report_path_without_root_parent_uses_configured_relative_path() {
         let block = LiveCanaryBlock {
             approval_id: "operator-approved-canary-001".to_string(),
             no_submit_readiness_report_path: "reports/no-submit-readiness.json".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            operator_evidence: None,
         };
 
         assert_eq!(
             resolve_report_path(Path::new(""), &block),
-            PathBuf::from(".").join("reports/no-submit-readiness.json")
+            PathBuf::from("reports/no-submit-readiness.json")
         );
     }
 }

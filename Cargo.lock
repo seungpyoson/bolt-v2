@@ -1755,21 +1755,17 @@ dependencies = [
  "libc",
  "log",
  "nautilus-binance",
- "nautilus-bybit",
  "nautilus-common",
  "nautilus-core",
  "nautilus-data",
- "nautilus-deribit",
  "nautilus-execution",
- "nautilus-hyperliquid",
- "nautilus-kraken",
  "nautilus-live",
  "nautilus-model",
  "nautilus-network",
- "nautilus-okx",
  "nautilus-persistence",
  "nautilus-persistence-macros",
  "nautilus-polymarket",
+ "nautilus-portfolio",
  "nautilus-serialization",
  "nautilus-system",
  "nautilus-trading",
@@ -4515,43 +4511,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nautilus-bybit"
-version = "0.56.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=38b912a8b0fe14e4046773973ff46a3b798b1e3e#38b912a8b0fe14e4046773973ff46a3b798b1e3e"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "arc-swap",
- "async-stream",
- "async-trait",
- "aws-lc-rs",
- "bon",
- "chrono",
- "dashmap",
- "derive_builder",
- "dotenvy",
- "futures-util",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "rust_decimal",
- "serde",
- "serde_json",
- "serde_repr",
- "serde_urlencoded",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "ustr",
- "zeroize",
-]
-
-[[package]]
 name = "nautilus-common"
 version = "0.56.0"
 source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=38b912a8b0fe14e4046773973ff46a3b798b1e3e#38b912a8b0fe14e4046773973ff46a3b798b1e3e"
@@ -4643,40 +4602,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nautilus-deribit"
-version = "0.56.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=38b912a8b0fe14e4046773973ff46a3b798b1e3e#38b912a8b0fe14e4046773973ff46a3b798b1e3e"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "arc-swap",
- "async-stream",
- "async-trait",
- "aws-lc-rs",
- "bon",
- "chrono",
- "derive_builder",
- "dotenvy",
- "futures-util",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "rust_decimal",
- "serde",
- "serde_json",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "ustr",
- "zeroize",
-]
-
-[[package]]
 name = "nautilus-execution"
 version = "0.56.0"
 source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=38b912a8b0fe14e4046773973ff46a3b798b1e3e#38b912a8b0fe14e4046773973ff46a3b798b1e3e"
@@ -4699,82 +4624,6 @@ dependencies = [
  "serde",
  "ustr",
  "uuid",
-]
-
-[[package]]
-name = "nautilus-hyperliquid"
-version = "0.56.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=38b912a8b0fe14e4046773973ff46a3b798b1e3e#38b912a8b0fe14e4046773973ff46a3b798b1e3e"
-dependencies = [
- "ahash 0.8.12",
- "alloy",
- "alloy-primitives",
- "anyhow",
- "arc-swap",
- "async-trait",
- "bon",
- "chrono",
- "dashmap",
- "derive_builder",
- "futures-util",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "rmp-serde",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "url",
- "ustr",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "nautilus-kraken"
-version = "0.56.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=38b912a8b0fe14e4046773973ff46a3b798b1e3e#38b912a8b0fe14e4046773973ff46a3b798b1e3e"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "arc-swap",
- "async-stream",
- "async-trait",
- "aws-lc-rs",
- "base64",
- "bon",
- "chrono",
- "dashmap",
- "derive_builder",
- "futures-util",
- "indexmap 2.14.0",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "ustr",
- "zeroize",
 ]
 
 [[package]]
@@ -4864,43 +4713,6 @@ dependencies = [
  "url",
  "ustr",
  "webpki-roots 1.0.7",
-]
-
-[[package]]
-name = "nautilus-okx"
-version = "0.56.0"
-source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=38b912a8b0fe14e4046773973ff46a3b798b1e3e#38b912a8b0fe14e4046773973ff46a3b798b1e3e"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "arc-swap",
- "async-stream",
- "async-trait",
- "aws-lc-rs",
- "base64",
- "bon",
- "chrono",
- "dashmap",
- "derive_builder",
- "dotenvy",
- "futures-util",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "rust_decimal",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "ustr",
- "zeroize",
 ]
 
 [[package]]

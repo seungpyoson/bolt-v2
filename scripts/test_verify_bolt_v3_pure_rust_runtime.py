@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-tests for the Bolt-v3 pure Rust runtime verifier."""
+"""Self-tests for the Bolt-v3 pure-Rust runtime verifier."""
 
 from __future__ import annotations
 
@@ -16,6 +16,33 @@ if SPEC is None or SPEC.loader is None:
 VERIFIER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
+
+
+def assert_contains(text: str, needle: str) -> None:
+    if needle not in text:
+        raise AssertionError(f"missing expected text: {needle!r}\n{text}")
+
+
+def assert_not_contains(text: str, needle: str) -> None:
+    if needle in text:
+        raise AssertionError(f"unexpected text: {needle!r}\n{text}")
+
+
+def assert_forbidden_runtime_source_detected(text: str, label: str) -> None:
+    labels = [
+        pattern_label
+        for pattern, pattern_label in VERIFIER.FORBIDDEN_RUNTIME_SOURCE_PATTERNS
+        if pattern.search(text)
+    ]
+    if label not in labels:
+        raise AssertionError(f"missing forbidden runtime-source label {label!r}; got {labels!r}")
+
+
+def assert_production_source_detected(source: str, label: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "source.rs"
+        path.write_text(source, encoding="utf-8")
+        assert_forbidden_runtime_source_detected(VERIFIER.production_text(path), label)
 
 
 def test_collect_dependency_names_covers_workspace_and_target_tables() -> None:
@@ -115,16 +142,180 @@ def test_forbidden_rust_scan_ignores_comments_and_literals() -> None:
         raise AssertionError(f"unexpected labels after stripping comments/literals: {labels!r}")
 
 
+def test_cfg_test_items_are_ignored_but_production_items_remain() -> None:
+    stripped = VERIFIER.strip_cfg_test_items(
+        """
+#[cfg(test)]
+impl SecretError {
+    fn for_test() {
+        std::process::Command::new("aws");
+    }
+}
+
+fn production_resolver() {
+    std::process::Command::new("python3");
+}
+
+#[cfg(test)]
+mod tests {
+    fn helper() {
+        std::process::Command::new("aws");
+    }
+}
+
+#[cfg(all(test, feature = "fixture"))]
+fn complex_test_helper() {
+    std::process::Command::new("aws");
+}
+
+#[cfg(any(test))]
+fn any_test_helper() {
+    std::process::Command::new("aws");
+}
+
+#[cfg(any(test, unix))]
+fn production_cfg_helper() {
+    std::process::Command::new("python3");
+}
+
+fn production_tail() {
+    std::process::Command::new("aws");
+}
+""".lstrip()
+    )
+
+    assert_not_contains(stripped, "fn for_test()")
+    assert_not_contains(stripped, "mod tests")
+    assert_not_contains(stripped, "fn complex_test_helper()")
+    assert_not_contains(stripped, "fn any_test_helper()")
+    assert_contains(stripped, "fn production_cfg_helper()")
+    assert_contains(stripped, 'std::process::Command::new("python3")')
+    assert_contains(stripped, 'std::process::Command::new("aws")')
+
+
+def test_runtime_subprocess_detection_survives_comments_literals_and_cfg_fixtures() -> None:
+    assert_forbidden_runtime_source_detected(
+        """
+fn production_subprocess(binary: &str) {
+    std::process::Command::new(binary);
+}
+""",
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+fn production_subprocess_after_url() {
+    let _endpoint = "http://example.invalid"; std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+/*
+#[cfg(test)]
+*/
+fn production_subprocess_after_block_comment() {
+    std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+fn fixture_text() -> &'static str {
+    "
+#[cfg(test)]
+    "
+}
+
+fn production_subprocess_after_string_literal() {
+    std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+struct FixtureFields {
+    live_field: i32,
+    #[cfg(test)]
+    fixture_field: i32,
+}
+
+fn production_subprocess_after_cfg_field() {
+    std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+struct FixtureFields {
+    live_field: i32,
+    #[cfg(test)]
+    fixture_field: i32
+}
+
+fn production_subprocess_after_final_cfg_field() {
+    std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+enum FixtureVariants {
+    LiveVariant,
+    #[cfg(test)]
+    FixtureVariant,
+}
+
+fn production_subprocess_after_cfg_variant() {
+    std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+enum FixtureVariants {
+    LiveVariant,
+    #[cfg(test)]
+    FixtureVariant
+}
+
+fn production_subprocess_after_final_cfg_variant() {
+    std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+    assert_production_source_detected(
+        r'''
+#[cfg(test)]
+const FIXTURE_BRACE: &str = "{";
+
+fn production_subprocess_after_cfg_string_brace() {
+    std::process::Command::new("python3");
+}
+''',
+        "runtime subprocess",
+    )
+
+
 def main() -> int:
     tests = [
         test_collect_dependency_names_covers_workspace_and_target_tables,
         test_cargo_manifest_paths_scan_nested_manifests_and_skip_managed_dirs,
         test_forbidden_rust_patterns_detect_python_bridge_shapes,
         test_forbidden_rust_scan_ignores_comments_and_literals,
+        test_cfg_test_items_are_ignored_but_production_items_remain,
+        test_runtime_subprocess_detection_survives_comments_literals_and_cfg_fixtures,
     ]
     for test in tests:
         test()
-    print("OK: Bolt-v3 pure Rust verifier self-tests passed.")
+    print("OK: Bolt-v3 pure-Rust verifier self-tests passed.")
     return 0
 
 

@@ -5,9 +5,10 @@ use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
 };
-use bolt_v2::clients::polymarket::FeeProvider;
+use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
+use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 use std::sync::Arc;
 
@@ -182,7 +183,6 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        "reference-topic".to_string(),
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         admission.clone(),
     );
@@ -199,11 +199,11 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
 struct NoopFeeProvider;
 
 impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _token_id: &str) -> Option<Decimal> {
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         None
     }
 
-    fn warm(&self, _token_id: &str) -> BoxFuture<'_, anyhow::Result<()>> {
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, anyhow::Result<()>> {
         async { Ok(()) }.boxed()
     }
 }

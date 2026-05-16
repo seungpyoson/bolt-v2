@@ -19,16 +19,24 @@ provenance = "native"
 
 [streams.order_book_depths]
 capability = "unsupported"
+policy = "disabled"
+provenance = "native"
 reason = "Polymarket emits L2 deltas only, no depth10 snapshots"
 
 [streams.index_prices]
 capability = "unsupported"
+policy = "disabled"
+provenance = "native"
 reason = "not applicable to prediction markets"
 
 [streams.mark_prices]
 capability = "unsupported"
+policy = "disabled"
+provenance = "native"
 reason = "not applicable to prediction markets"
 
 [streams.instrument_closes]
 capability = "unsupported"
+policy = "disabled"
+provenance = "native"
 reason = "Polymarket has no close events; resolution is a separate concept"

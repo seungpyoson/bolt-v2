@@ -140,10 +140,11 @@ The following source anchors were verified before writing this doctrine:
   matching `StrategyArchetype`.
 - `src/bolt_v3_market_families/mod.rs` currently dispatches family validation
   by matching `RotatingMarketFamily`.
-- `src/bolt_v3_validate.rs` currently has a one-venue-per-kind scope rule that
-  groups venues by `venue.kind.as_str()`.
-- `src/bolt_v3_market_identity.rs` is currently a provider-neutral,
-  family-agnostic market-identity boundary with source-level guard tests.
+- `src/bolt_v3_validate.rs` validates each configured venue block by key; the
+  former one-venue-per-kind scope rule has been removed locally and awaits
+  Phase 9 external re-review.
+- `src/bolt_v3_instrument_filters.rs` is currently a provider-neutral,
+  family-agnostic instrument-filter boundary with source-level guard tests.
 - `src/bolt_v3_adapters.rs` owns `BoltV3VenueAdapterConfig`,
   `MarketSlugFilter` construction, adapter dispatch, and secrets-enum
   extraction.
@@ -387,7 +388,7 @@ different date.
 | R13 | Aggregate: tripartite closed dispatch across validation, secrets, and mapping | `src/bolt_v3_providers/mod.rs`, `src/bolt_v3_secrets.rs`, `src/bolt_v3_adapters.rs` | Bolt-v3 maintainers | All three dispatch sites are opened, unified, or explicitly bound by one mechanism | Process-only |
 | R14 | Validation, secrets, and mapping field coupling is implicit | Provider validators, `src/bolt_v3_secrets.rs`, `src/bolt_v3_adapters.rs` | Bolt-v3 maintainers | Field-decision verifier proves required fields are resolved and mapped | Process-only |
 | R15 | Validation versus mapping deserialization drift | Provider validators and adapter mapper | Bolt-v3 maintainers | Mapper consumes the validated typed shape or a verifier proves equivalent deserialization | Process-only |
-| R16 | Core one-venue-per-kind scope policy depends on `venue.kind.as_str()` | `src/bolt_v3_validate.rs` | Bolt-v3 maintainers | Reclassified as approved `BOLT-POLICY[scope]` with removal condition, or retired with provider identity opening | Process-only |
+| R16 | Core one-venue-per-kind scope policy depended on `venue.kind.as_str()` | `src/bolt_v3_validate.rs` | Bolt-v3 maintainers | Retired in local Phase 9 T034 implementation and externally re-reviewed | Process-only |
 | R17 | Polymarket `funder=None` env fallback risk | NT Polymarket credential resolution at pinned rev | Bolt-v3 maintainers | Optional credential fallback policy is selected and implemented | Process-only |
 | R18 | NT env fallback re-resolution risk beyond funder | NT provider credential modules at pinned rev | Bolt-v3 maintainers | Per-field env precedence is audited and enforced | Process-only |
 | R19 | NT provider config structs may auto-derive `Debug` over credential-bearing fields. Bolt currently wraps known Binance adapter debug output, but no verifier proves every NT config reaching Bolt's debug surface redacts credentials. | `src/bolt_v3_adapters.rs`, NT Binance config at pinned rev | Bolt-v3 maintainers | Verifier proves all NT config structs in Bolt's debug surface redact credential fields, or NT rev redacts in its own `Debug` impls | Process-only |

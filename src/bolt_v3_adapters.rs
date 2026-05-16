@@ -13,11 +13,18 @@
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+use nautilus_common::{
+    clock::Clock,
+    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
+    live::clock::LiveClock,
+    runner::try_get_time_event_sender,
+};
+use nautilus_core::datetime::NANOSECONDS_IN_SECOND;
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_market_families::updown::MarketIdentityPlan,
+    bolt_v3_instrument_filters::{InstrumentFilterConfig, InstrumentFilterError},
+    bolt_v3_market_families::instrument_filters_from_config,
     bolt_v3_providers::{self, ProviderAdapterMapContext},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
@@ -26,9 +33,9 @@ use crate::{
 /// current unix-seconds value at the moment a provider filter wants
 /// fresh slugs. The closure is invoked from inside the provider's
 /// `load_all` cycle on every refresh, so it must be `Send + Sync` and
-/// own all state it captures. Tests inject a fixed-time closure;
-/// future live wiring will inject one backed by an NT runtime clock.
-pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+/// own all state it captures. Production mapping injects one backed by
+/// an NT runtime clock; tests inject a fixed-time closure.
+pub type BoltV3InstrumentFilterClockFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// Provider-owned NT data-client factory and config for one configured
 /// Bolt-v3 venue data block.
@@ -107,6 +114,7 @@ impl fmt::Debug for BoltV3AdapterConfigs {
 
 #[derive(Debug)]
 pub enum BoltV3AdapterMappingError {
+    InstrumentFilter(InstrumentFilterError),
     /// The validated venue kind and the resolved secret kind disagree.
     /// Indicates an internal-consistency bug between the resolver output
     /// and the mapper inputs.
@@ -155,6 +163,9 @@ pub enum BoltV3AdapterMappingError {
 impl std::fmt::Display for BoltV3AdapterMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            BoltV3AdapterMappingError::InstrumentFilter(error) => {
+                write!(f, "bolt-v3 instrument filter config failed: {error}")
+            }
             BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key,
                 expected_provider_key,
@@ -201,7 +212,18 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
     }
 }
 
-impl std::error::Error for BoltV3AdapterMappingError {}
+impl std::error::Error for BoltV3AdapterMappingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BoltV3AdapterMappingError::InstrumentFilter(error) => Some(error),
+            BoltV3AdapterMappingError::SecretKindMismatch { .. }
+            | BoltV3AdapterMappingError::MissingResolvedSecrets { .. }
+            | BoltV3AdapterMappingError::SchemaParse { .. }
+            | BoltV3AdapterMappingError::NumericRange { .. }
+            | BoltV3AdapterMappingError::ValidationInvariant { .. } => None,
+        }
+    }
+}
 
 /// Map a validated [`LoadedBoltV3Config`] plus resolved SSM secrets into
 /// NT-native adapter config values, one per configured venue. The mapper
@@ -209,58 +231,58 @@ impl std::error::Error for BoltV3AdapterMappingError {}
 /// owned config structs and may pass them to NT factories at a later
 /// stage.
 ///
-/// This entry point intentionally installs no provider filter and
-/// passes an empty plan into the with-identity variant. Callers that
-/// need the rotating-market filter surface MUST use
-/// [`map_bolt_v3_adapters_with_market_identity`] directly with a
-/// derived [`MarketIdentityPlan`] and a real clock — copying the
-/// `Arc::new(|| 0_i64)` sentinel below into a non-empty-plan call site
-/// would produce slugs anchored to unix-second 0 every cycle.
+/// This entry point derives [`InstrumentFilterConfig`] from the loaded
+/// strategy TOML and gives provider bindings an NT
+/// [`LiveClock`]-backed timestamp source for filter projection.
 pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    let empty_plan = MarketIdentityPlan {
-        updown_targets: Vec::new(),
-    };
-    // The clock here is never invoked: with no updown targets, no
-    // provider filter closure is built, so the closure body is never
-    // entered. We wire in a deterministic constant so callers cannot
-    // observe any wall-clock dependency on the no-identity entry point.
-    // Treat this constant as a sentinel for the no-filter path; do not
-    // reuse it from any call site that supplies a non-empty plan.
-    let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);
-    map_bolt_v3_adapters_with_market_identity(loaded, resolved, &empty_plan, zero_clock)
+    let instrument_filters = instrument_filters_from_config(loaded)
+        .map_err(BoltV3AdapterMappingError::InstrumentFilter)?;
+    map_bolt_v3_adapters_with_instrument_filters(
+        loaded,
+        resolved,
+        &instrument_filters,
+        nt_live_clock(),
+    )
+}
+
+fn nt_live_clock() -> BoltV3InstrumentFilterClockFn {
+    let clock = LiveClock::new(try_get_time_event_sender());
+    Arc::new(move || {
+        let now_unix_seconds = clock.timestamp_ns().as_u64() / NANOSECONDS_IN_SECOND;
+        now_unix_seconds.min(i64::MAX as u64) as i64
+    })
 }
 
 /// Map a validated [`LoadedBoltV3Config`] plus resolved SSM secrets into
-/// provider-owned NT client factory/config assemblies, and additionally
-/// let each provider binding install whatever provider-specific filter
-/// surface corresponds to the supplied provider-neutral
-/// [`MarketIdentityPlan`].
-pub fn map_bolt_v3_adapters_with_market_identity(
+/// provider-owned NT client factory/config assemblies, then lets each
+/// provider binding install provider-specific NT instrument filters from
+/// [`InstrumentFilterConfig`].
+pub fn map_bolt_v3_adapters_with_instrument_filters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
-    plan: &MarketIdentityPlan,
-    clock: BoltV3UpdownNowFn,
+    instrument_filters: &InstrumentFilterConfig,
+    clock: BoltV3InstrumentFilterClockFn,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+    map_bolt_v3_adapters_with_instrument_filters_and_provider_lookup(
         loaded,
         resolved,
-        plan,
-        clock,
+        instrument_filters,
+        Some(clock),
         bolt_v3_providers::binding_for_provider_key,
     )
 }
 
-fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+fn map_bolt_v3_adapters_with_instrument_filters_and_provider_lookup(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
-    plan: &MarketIdentityPlan,
-    clock: BoltV3UpdownNowFn,
+    instrument_filters: &InstrumentFilterConfig,
+    clock: Option<BoltV3InstrumentFilterClockFn>,
     binding_for_provider_key: impl Fn(&str) -> Option<&'static bolt_v3_providers::ProviderBinding>,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    validate_market_identity_target_venues(loaded, plan)?;
+    validate_instrument_filters_target_venues(loaded, instrument_filters)?;
     let mut venues = BTreeMap::new();
     for (venue_key, venue) in &loaded.root.venues {
         let Some(binding) = binding_for_provider_key(venue.kind.as_str()) else {
@@ -273,13 +295,14 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
                 ),
             });
         };
-        validate_provider_market_family_support(venue_key, binding, plan)?;
+        validate_provider_market_family_support(venue_key, binding, instrument_filters)?;
         let mapped = (binding.map_adapters)(ProviderAdapterMapContext {
+            loaded,
             root: &loaded.root,
             venue_key,
             venue,
             resolved,
-            plan,
+            instrument_filters,
             clock: clock.clone(),
         })?;
         venues.insert(venue_key.clone(), mapped);
@@ -290,29 +313,26 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
 fn validate_provider_market_family_support(
     venue_key: &str,
     binding: &bolt_v3_providers::ProviderBinding,
-    plan: &MarketIdentityPlan,
+    instrument_filters: &InstrumentFilterConfig,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    // Only venues referenced by a market-identity target need family
+    // Only venues referenced by an instrument-filter target need family
     // support. A provider with an empty `supported_market_families`
     // remains valid for data-only/reference venues that no strategy
     // target routes through.
-    for target in plan
-        .venue_target_refs()
-        .filter(|target| target.venue_config_key == venue_key)
+    for target in instrument_filters
+        .target_refs()
+        .filter(|target| target.venue == venue_key)
     {
         if !binding
             .supported_market_families
             .contains(&target.family_key)
         {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key: target.venue_config_key.to_string(),
-                field: "strategy.target.venue_config_key",
+                venue_key: target.venue.to_string(),
+                field: "strategy.venue",
                 message: format!(
                     "configured target `{}` uses market family `{}` on venue `{}`, but provider kind `{}` does not support that market family",
-                    target.configured_target_id,
-                    target.family_key,
-                    target.venue_config_key,
-                    binding.key,
+                    target.configured_target_id, target.family_key, target.venue, binding.key,
                 ),
             });
         }
@@ -320,18 +340,18 @@ fn validate_provider_market_family_support(
     Ok(())
 }
 
-fn validate_market_identity_target_venues(
+fn validate_instrument_filters_target_venues(
     loaded: &LoadedBoltV3Config,
-    plan: &MarketIdentityPlan,
+    instrument_filters: &InstrumentFilterConfig,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    for target in plan.venue_target_refs() {
-        if !loaded.root.venues.contains_key(target.venue_config_key) {
+    for target in instrument_filters.target_refs() {
+        if !loaded.root.venues.contains_key(target.venue) {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key: target.venue_config_key.to_string(),
-                field: "strategy.target.venue_config_key",
+                venue_key: target.venue.to_string(),
+                field: "strategy.venue",
                 message: format!(
                     "configured target `{}` references unknown venue `{}`",
-                    target.configured_target_id, target.venue_config_key,
+                    target.configured_target_id, target.venue,
                 ),
             });
         }
@@ -358,7 +378,8 @@ mod tests {
     };
 
     use crate::bolt_v3_config::BoltV3RootConfig;
-    use crate::bolt_v3_market_families::updown::{self, UpdownTargetPlan};
+    use crate::bolt_v3_instrument_filters::{InstrumentFilterConfig, InstrumentFilterTarget};
+    use crate::bolt_v3_market_families::updown;
     use crate::bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
         ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
@@ -403,10 +424,12 @@ mod tests {
     ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
         assert_eq!(context.venue.kind.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
         assert_eq!(context.venue_key, "polymarket_main");
-        assert_eq!(context.plan.updown_targets.len(), 1);
-        assert_eq!(
-            context.plan.updown_targets[0].venue_config_key,
-            context.venue_key
+        let targets: Vec<_> = context.instrument_filters.target_refs().collect();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].venue, context.venue_key,);
+        assert!(
+            context.clock.is_some(),
+            "targeted instrument-filter mapping must carry a real clock"
         );
         Ok(BoltV3VenueAdapterConfig {
             data: None,
@@ -419,7 +442,11 @@ mod tests {
     ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
         assert_eq!(context.venue.kind.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
         assert_eq!(context.venue_key, "polymarket_main");
-        assert!(context.plan.updown_targets.is_empty());
+        assert_eq!(context.instrument_filters.target_refs().count(), 0);
+        assert!(
+            context.clock.is_none(),
+            "no-target adapter mapping should not carry a clock sentinel"
+        );
         Ok(BoltV3VenueAdapterConfig {
             data: None,
             execution: None,
@@ -436,6 +463,7 @@ mod tests {
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         map_adapters: map_fake_provider_adapters,
+        build_fee_provider: None,
     };
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -448,6 +476,7 @@ mod tests {
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         map_adapters: map_fake_provider_adapters,
+        build_fee_provider: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -460,6 +489,7 @@ mod tests {
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         map_adapters: map_fake_no_target_provider_adapters,
+        build_fee_provider: None,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -469,6 +499,49 @@ mod tests {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
             root,
             strategies: Vec::new(),
+        }
+    }
+
+    fn fixture_polymarket_data_config(
+        loaded: &LoadedBoltV3Config,
+    ) -> polymarket::PolymarketDataConfig {
+        loaded.root.venues["polymarket_main"]
+            .data
+            .clone()
+            .expect("fixture polymarket venue should define [data]")
+            .try_into()
+            .expect("fixture polymarket data block should parse")
+    }
+
+    fn fixture_polymarket_execution_config(
+        loaded: &LoadedBoltV3Config,
+    ) -> polymarket::PolymarketExecutionConfig {
+        loaded.root.venues["polymarket_main"]
+            .execution
+            .clone()
+            .expect("fixture polymarket venue should define [execution]")
+            .try_into()
+            .expect("fixture polymarket execution block should parse")
+    }
+
+    fn fixture_binance_data_config(loaded: &LoadedBoltV3Config) -> binance::BinanceDataConfig {
+        loaded.root.venues["binance_reference"]
+            .data
+            .clone()
+            .expect("fixture binance venue should define [data]")
+            .try_into()
+            .expect("fixture binance data block should parse")
+    }
+
+    fn nt_polymarket_signature_type(
+        signature_type: polymarket::PolymarketSignatureType,
+    ) -> NtPolymarketSignatureType {
+        match signature_type {
+            polymarket::PolymarketSignatureType::Eoa => NtPolymarketSignatureType::Eoa,
+            polymarket::PolymarketSignatureType::PolyProxy => NtPolymarketSignatureType::PolyProxy,
+            polymarket::PolymarketSignatureType::PolyGnosisSafe => {
+                NtPolymarketSignatureType::PolyGnosisSafe
+            }
         }
     }
 
@@ -514,26 +587,25 @@ mod tests {
             .root
             .venues
             .retain(|venue_key, _venue| venue_key == "polymarket_main");
-        let plan = MarketIdentityPlan {
-            updown_targets: vec![UpdownTargetPlan {
-                strategy_instance_id: "fake-strategy".to_string(),
-                configured_target_id: "fake-updown".to_string(),
-                venue_config_key: "polymarket_main".to_string(),
-                underlying_asset: "BTC".to_string(),
-                cadence_seconds: 300,
-                cadence_slug_token: "5m".to_string(),
-            }],
-        };
+        let instrument_filters = InstrumentFilterConfig::new(vec![InstrumentFilterTarget {
+            strategy_instance_id: "fake-strategy".to_string(),
+            family_key: updown::KEY,
+            configured_target_id: "fake-updown".to_string(),
+            venue: "polymarket_main".to_string(),
+            underlying_asset: "btc".to_string(),
+            cadence_seconds: 900,
+            cadence_slug_token: "15m".to_string(),
+        }]);
         let resolved = ResolvedBoltV3Secrets {
             venues: BTreeMap::new(),
         };
         let clock = Arc::new(|| 601_i64);
 
-        let configs = map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+        let configs = map_bolt_v3_adapters_with_instrument_filters_and_provider_lookup(
             &loaded,
             &resolved,
-            &plan,
-            clock,
+            &instrument_filters,
+            Some(clock),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UPDOWN_PROVIDER_BINDING)
@@ -565,26 +637,25 @@ mod tests {
             .root
             .venues
             .retain(|venue_key, _venue| venue_key == "polymarket_main");
-        let plan = MarketIdentityPlan {
-            updown_targets: vec![UpdownTargetPlan {
-                strategy_instance_id: "fake-strategy".to_string(),
-                configured_target_id: "fake-updown".to_string(),
-                venue_config_key: "polymarket_main".to_string(),
-                underlying_asset: "BTC".to_string(),
-                cadence_seconds: 300,
-                cadence_slug_token: "5m".to_string(),
-            }],
-        };
+        let instrument_filters = InstrumentFilterConfig::new(vec![InstrumentFilterTarget {
+            strategy_instance_id: "fake-strategy".to_string(),
+            family_key: updown::KEY,
+            configured_target_id: "fake-updown".to_string(),
+            venue: "polymarket_main".to_string(),
+            underlying_asset: "btc".to_string(),
+            cadence_seconds: 900,
+            cadence_slug_token: "15m".to_string(),
+        }]);
         let resolved = ResolvedBoltV3Secrets {
             venues: BTreeMap::new(),
         };
         let clock = Arc::new(|| 601_i64);
 
-        let error = map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+        let error = map_bolt_v3_adapters_with_instrument_filters_and_provider_lookup(
             &loaded,
             &resolved,
-            &plan,
-            clock,
+            &instrument_filters,
+            Some(clock),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UNSUPPORTED_PROVIDER_BINDING)
@@ -602,7 +673,7 @@ mod tests {
                 message,
             } => {
                 assert_eq!(venue_key, "polymarket_main");
-                assert_eq!(field, "strategy.target.venue_config_key");
+                assert_eq!(field, "strategy.venue");
                 assert!(message.contains("does not support that market family"));
             }
             other => panic!("expected ValidationInvariant, got {other}"),
@@ -622,19 +693,16 @@ mod tests {
             .root
             .venues
             .retain(|venue_key, _venue| venue_key == "polymarket_main");
-        let plan = MarketIdentityPlan {
-            updown_targets: Vec::new(),
-        };
+        let instrument_filters = InstrumentFilterConfig::empty();
         let resolved = ResolvedBoltV3Secrets {
             venues: BTreeMap::new(),
         };
-        let clock = Arc::new(|| 601_i64);
 
-        let configs = map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
+        let configs = map_bolt_v3_adapters_with_instrument_filters_and_provider_lookup(
             &loaded,
             &resolved,
-            &plan,
-            clock,
+            &instrument_filters,
+            None,
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING)
@@ -643,7 +711,9 @@ mod tests {
                 }
             },
         )
-        .expect("family support check applies only to venues referenced by plan targets");
+        .expect(
+            "family support check applies only to venues referenced by instrument filter targets",
+        );
 
         assert!(configs.venues.contains_key("polymarket_main"));
     }
@@ -651,6 +721,8 @@ mod tests {
     #[test]
     fn maps_polymarket_venue_data_and_execution_blocks_from_fixture() {
         let loaded = fixture_loaded_config();
+        let expected_data = fixture_polymarket_data_config(&loaded);
+        let expected_exec = fixture_polymarket_execution_config(&loaded);
         let resolved = fixture_resolved_secrets();
 
         let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
@@ -668,26 +740,40 @@ mod tests {
             .expect("polymarket data config should downcast to NT config");
         assert_eq!(
             data.base_url_http.as_deref(),
-            Some("https://clob.polymarket.com")
+            Some(expected_data.base_url_http.as_str())
         );
         assert_eq!(
             data.base_url_ws.as_deref(),
-            Some("wss://ws-subscriptions-clob.polymarket.com/ws/market")
+            Some(expected_data.base_url_ws.as_str())
         );
         assert_eq!(
             data.base_url_gamma.as_deref(),
-            Some("https://gamma-api.polymarket.com")
+            Some(expected_data.base_url_gamma.as_str())
         );
         assert_eq!(
             data.base_url_data_api.as_deref(),
-            Some("https://data-api.polymarket.com")
+            Some(expected_data.base_url_data_api.as_str())
         );
-        assert_eq!(data.http_timeout_secs, 60);
-        assert_eq!(data.ws_timeout_secs, 30);
-        assert_eq!(data.ws_max_subscriptions, 200);
-        assert_eq!(data.update_instruments_interval_mins, 60);
-        assert!(!data.subscribe_new_markets);
-        assert!(data.filters.is_empty());
+        assert_eq!(data.http_timeout_secs, expected_data.http_timeout_seconds);
+        assert_eq!(data.ws_timeout_secs, expected_data.ws_timeout_seconds);
+        let expected_ws_max_subscriptions: usize = expected_data
+            .websocket_max_subscriptions_per_connection
+            .try_into()
+            .expect("fixture ws subscription cap should fit usize");
+        assert_eq!(data.ws_max_subscriptions, expected_ws_max_subscriptions);
+        assert_eq!(
+            data.update_instruments_interval_mins,
+            expected_data.update_instruments_interval_minutes
+        );
+        assert_eq!(
+            data.subscribe_new_markets,
+            expected_data.subscribe_new_markets
+        );
+        assert_eq!(data.transport_backend, expected_data.transport_backend);
+        assert!(
+            data.filters.is_empty(),
+            "root-only adapter mapping has no configured strategy targets to project"
+        );
         assert!(data.new_market_filter.is_none());
 
         let exec = polymarket
@@ -697,7 +783,7 @@ mod tests {
             .config_as::<PolymarketExecClientConfig>()
             .expect("polymarket execution config should downcast to NT config");
         assert_eq!(exec.trader_id, TraderId::from("BOLT-001"));
-        assert_eq!(exec.account_id, AccountId::from("POLYMARKET-001"));
+        assert_eq!(exec.account_id, AccountId::from(expected_exec.account_id));
         assert_eq!(
             exec.private_key.as_deref(),
             Some("fixture-poly-private-key")
@@ -707,31 +793,46 @@ mod tests {
         assert_eq!(exec.passphrase.as_deref(), Some("fixture-poly-passphrase"));
         assert_eq!(
             exec.funder.as_deref(),
-            Some("0x1111111111111111111111111111111111111111")
+            expected_exec.funder_address.as_deref()
         );
-        assert_eq!(exec.signature_type, NtPolymarketSignatureType::PolyProxy);
+        assert_eq!(
+            exec.signature_type,
+            nt_polymarket_signature_type(expected_exec.signature_type)
+        );
         assert_eq!(
             exec.base_url_http.as_deref(),
-            Some("https://clob.polymarket.com")
+            Some(expected_exec.base_url_http.as_str())
         );
         assert_eq!(
             exec.base_url_ws.as_deref(),
-            Some("wss://ws-subscriptions-clob.polymarket.com/ws/user")
+            Some(expected_exec.base_url_ws.as_str())
         );
         assert_eq!(
             exec.base_url_data_api.as_deref(),
-            Some("https://data-api.polymarket.com")
+            Some(expected_exec.base_url_data_api.as_str())
         );
-        assert_eq!(exec.http_timeout_secs, 60);
-        assert_eq!(exec.max_retries, 3);
-        assert_eq!(exec.retry_delay_initial_ms, 250);
-        assert_eq!(exec.retry_delay_max_ms, 2000);
-        assert_eq!(exec.ack_timeout_secs, 5);
+        assert_eq!(exec.http_timeout_secs, expected_exec.http_timeout_seconds);
+        let expected_max_retries: u32 = expected_exec
+            .max_retries
+            .try_into()
+            .expect("fixture retry count should fit u32");
+        assert_eq!(exec.max_retries, expected_max_retries);
+        assert_eq!(
+            exec.retry_delay_initial_ms,
+            expected_exec.retry_delay_initial_milliseconds
+        );
+        assert_eq!(
+            exec.retry_delay_max_ms,
+            expected_exec.retry_delay_max_milliseconds
+        );
+        assert_eq!(exec.ack_timeout_secs, expected_exec.ack_timeout_seconds);
+        assert_eq!(exec.transport_backend, expected_exec.transport_backend);
     }
 
     #[test]
     fn maps_binance_venue_data_block_from_fixture() {
         let loaded = fixture_loaded_config();
+        let expected_data = fixture_binance_data_config(&loaded);
         let resolved = fixture_resolved_secrets();
 
         let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
@@ -755,18 +856,22 @@ mod tests {
         // compiled-in defaults.
         assert_eq!(
             data.base_url_http.as_deref(),
-            Some("https://api.binance.com")
+            Some(expected_data.base_url_http.as_str())
         );
         assert_eq!(
             data.base_url_ws.as_deref(),
-            Some("wss://stream.binance.com:9443/ws")
+            Some(expected_data.base_url_ws.as_str())
         );
         assert_eq!(data.api_key.as_deref(), Some("fixture-binance-api-key"));
         assert_eq!(
             data.api_secret.as_deref(),
             Some("fixture-binance-api-secret")
         );
-        assert_eq!(data.instrument_status_poll_secs, 3600);
+        assert_eq!(
+            data.instrument_status_poll_secs,
+            expected_data.instrument_status_poll_seconds
+        );
+        assert_eq!(data.transport_backend, expected_data.transport_backend);
     }
 
     #[test]
@@ -890,6 +995,25 @@ mod tests {
                 "polymarket adapter Debug must not leak resolved secret values"
             );
         }
+    }
+
+    #[test]
+    fn adapter_mapping_source_uses_nt_live_clock() {
+        let source = include_str!("bolt_v3_adapters.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede cfg(test) test module");
+        let zero_i64 = format!("{}{}", "0", "_i64");
+
+        assert!(
+            !production.contains(&zero_i64),
+            "adapter mapping must not install a code-owned clock sentinel"
+        );
+        assert!(
+            production.contains("LiveClock"),
+            "adapter mapping must use NT LiveClock for live timestamp projection"
+        );
     }
 
     // The no-trade-boundary source-inspection check lives in the

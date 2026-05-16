@@ -46,14 +46,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Secrets { command } => run_secrets_command(command),
         Command::Run { config } => {
-            bolt_v2::log_sweep::sweep_stale_logs();
             let loaded = load_bolt_v3_config(&config)?;
+            bolt_v2::log_sweep::sweep_logs_in(
+                std::path::Path::new(&loaded.root.logging.stale_log_source_directory),
+                std::path::Path::new(&loaded.root.logging.stale_log_archive_directory),
+            );
+            let mut node = build_bolt_v3_live_node(&loaded)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
             let local = tokio::task::LocalSet::new();
             let app = async move {
-                let mut node = build_bolt_v3_live_node(&loaded)?;
                 run_bolt_v3_live_node(&mut node, &loaded).await?;
                 Ok(())
             };

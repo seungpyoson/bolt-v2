@@ -12,20 +12,19 @@ use anyhow::{Result, anyhow, bail};
 use nautilus_common::messages::system::TradingStateChanged;
 use nautilus_common::msgbus::{
     MStr, ShareableMessageHandler, TypedHandler, subscribe_account_state, subscribe_any,
-    subscribe_bars, subscribe_book_deltas, subscribe_book_depth10, subscribe_funding_rates,
-    subscribe_index_prices, subscribe_instrument_close, subscribe_instruments,
-    subscribe_mark_prices, subscribe_order_events, subscribe_position_events, subscribe_quotes,
-    subscribe_trades, unsubscribe_account_state, unsubscribe_any, unsubscribe_bars,
-    unsubscribe_book_deltas, unsubscribe_book_depth10, unsubscribe_funding_rates,
-    unsubscribe_index_prices, unsubscribe_instrument_close, unsubscribe_instruments,
-    unsubscribe_mark_prices, unsubscribe_order_events, unsubscribe_position_events,
-    unsubscribe_quotes, unsubscribe_trades,
+    subscribe_book_deltas, subscribe_book_depth10, subscribe_funding_rates, subscribe_index_prices,
+    subscribe_instrument_close, subscribe_instruments, subscribe_mark_prices,
+    subscribe_order_events, subscribe_position_events, subscribe_quotes, subscribe_trades,
+    unsubscribe_account_state, unsubscribe_any, unsubscribe_book_deltas, unsubscribe_book_depth10,
+    unsubscribe_funding_rates, unsubscribe_index_prices, unsubscribe_instrument_close,
+    unsubscribe_instruments, unsubscribe_mark_prices, unsubscribe_order_events,
+    unsubscribe_position_events, unsubscribe_quotes, unsubscribe_trades,
 };
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     data::{
-        Bar, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
-        OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
+        FundingRateUpdate, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate, OrderBookDeltas,
+        OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
     },
     events::{AccountState, OrderEventAny, PositionEvent},
     instruments::InstrumentAny,
@@ -40,12 +39,60 @@ use tokio::{
     task::{JoinHandle, spawn_local},
 };
 
-use crate::{execution_state, raw_types::JsonlAppender};
+use crate::{
+    execution_state,
+    raw_types::JsonlAppender,
+    venue_contract::{
+        STREAM_CLASS_INDEX_PRICES, STREAM_CLASS_INSTRUMENT_CLOSES, STREAM_CLASS_MARK_PRICES,
+        STREAM_CLASS_ORDER_BOOK_DELTAS, STREAM_CLASS_ORDER_BOOK_DEPTHS, STREAM_CLASS_QUOTES,
+        STREAM_CLASS_TRADES,
+    },
+};
+
+const QUOTES_PATTERN: &str = "data.quotes.*.*";
+const TRADES_PATTERN: &str = "data.trades.*.*";
+const BOOK_DELTAS_PATTERN: &str = "data.book.deltas.*.*";
+const BOOK_DEPTH10_PATTERN: &str = "data.book.depth10.*.*";
+const MARK_PRICES_PATTERN: &str = "data.mark_prices.*.*";
+const INDEX_PRICES_PATTERN: &str = "data.index_prices.*.*";
+const FUNDING_RATES_PATTERN: &str = "data.funding_rates.*.*";
+const INSTRUMENTS_PATTERN: &str = "data.instrument.*.*";
+const INSTRUMENT_CLOSES_PATTERN: &str = "data.close.*.*";
+const INSTRUMENT_STATUSES_PATTERN: &str = "data.status.*.*";
+const ORDER_EVENTS_PATTERN: &str = "events.order.*";
+const POSITION_EVENTS_PATTERN: &str = "events.position.*";
+const ACCOUNT_STATES_PATTERN: &str = "events.account.*";
+const TRADING_STATE_CHANGED_PATTERN: &str = "events.risk";
+const LOCAL_URI_MARKER: &str = "://";
+
+const INSTRUMENTS_STREAM_CLASS: &str = stringify!(instruments);
+const STATUS_DIR: &str = stringify!(status);
+const ACCOUNTS_DIR: &str = stringify!(accounts);
+const FUNDING_RATES_DIR: &str = stringify!(funding_rates);
+const RISK_DIR: &str = stringify!(risk);
+const INSTRUMENT_STATUS_FILE: &str = "instrument_status.jsonl";
+const ACCOUNT_STATE_FILE: &str = "account_state.jsonl";
+const UPDATES_FILE: &str = "updates.jsonl";
+const TRADING_STATE_CHANGED_FILE: &str = "trading_state_changed.jsonl";
+
+const QUOTE_TICK_TYPE: &str = stringify!(QuoteTick);
+const TRADE_TICK_TYPE: &str = stringify!(TradeTick);
+const ORDER_BOOK_DELTAS_TYPE: &str = stringify!(OrderBookDeltas);
+const ORDER_BOOK_DEPTH10_TYPE: &str = stringify!(OrderBookDepth10);
+const MARK_PRICE_UPDATE_TYPE: &str = stringify!(MarkPriceUpdate);
+const INDEX_PRICE_UPDATE_TYPE: &str = stringify!(IndexPriceUpdate);
+const FUNDING_RATE_UPDATE_TYPE: &str = stringify!(FundingRateUpdate);
+const ORDER_EVENT_ANY_TYPE: &str = stringify!(OrderEventAny);
+const POSITION_EVENT_TYPE: &str = stringify!(PositionEvent);
+const ACCOUNT_STATE_TYPE: &str = stringify!(AccountState);
+const INSTRUMENT_ANY_TYPE: &str = stringify!(InstrumentAny);
+const INSTRUMENT_CLOSE_TYPE: &str = stringify!(InstrumentClose);
+const INSTRUMENT_STATUS_TYPE: &str = stringify!(InstrumentStatus);
+const TRADING_STATE_CHANGED_TYPE: &str = stringify!(TradingStateChanged);
 
 struct TypedHandlers {
     quotes: TypedHandler<QuoteTick>,
     trades: TypedHandler<TradeTick>,
-    bars: TypedHandler<Bar>,
     book_deltas: TypedHandler<OrderBookDeltas>,
     book_depth10: TypedHandler<OrderBookDepth10>,
     mark_prices: TypedHandler<MarkPriceUpdate>,
@@ -146,7 +193,6 @@ impl CaptureFailureState {
 enum CaptureMessage {
     Quote(QuoteTick),
     Trade(TradeTick),
-    Bar(Bar),
     Deltas(OrderBookDeltas),
     Depth10(Box<OrderBookDepth10>),
     MarkPrice(MarkPriceUpdate),
@@ -213,7 +259,6 @@ impl NtRuntimeCaptureGuards {
         if let Some(typed) = self.typed_handlers.take() {
             unsubscribe_quotes(quotes_pattern(), &typed.quotes);
             unsubscribe_trades(trades_pattern(), &typed.trades);
-            unsubscribe_bars(bars_pattern(), &typed.bars);
             unsubscribe_book_deltas(book_deltas_pattern(), &typed.book_deltas);
             unsubscribe_book_depth10(book_depth10_pattern(), &typed.book_depth10);
             unsubscribe_mark_prices(mark_prices_pattern(), &typed.mark_prices);
@@ -241,90 +286,79 @@ pub fn spool_root_for_instance(base: &str, instance_id: &str) -> String {
 }
 
 fn quotes_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.quotes.*.*")
+    MStr::pattern(QUOTES_PATTERN)
 }
 
 fn trades_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.trades.*.*")
-}
-
-fn bars_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.bars.*")
+    MStr::pattern(TRADES_PATTERN)
 }
 
 fn book_deltas_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.book.deltas.*.*")
+    MStr::pattern(BOOK_DELTAS_PATTERN)
 }
 
 fn book_depth10_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.book.depth10.*.*")
+    MStr::pattern(BOOK_DEPTH10_PATTERN)
 }
 
 fn mark_prices_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.mark_prices.*.*")
+    MStr::pattern(MARK_PRICES_PATTERN)
 }
 
 fn index_prices_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.index_prices.*.*")
+    MStr::pattern(INDEX_PRICES_PATTERN)
 }
 
 fn funding_rates_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.funding_rates.*.*")
+    MStr::pattern(FUNDING_RATES_PATTERN)
 }
 
 fn instruments_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.instrument.*.*")
+    MStr::pattern(INSTRUMENTS_PATTERN)
 }
 
 fn instrument_closes_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.close.*.*")
+    MStr::pattern(INSTRUMENT_CLOSES_PATTERN)
 }
 
 fn instrument_statuses_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("data.status.*.*")
+    MStr::pattern(INSTRUMENT_STATUSES_PATTERN)
 }
 
 fn order_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("events.order.*")
+    MStr::pattern(ORDER_EVENTS_PATTERN)
 }
 
 fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("events.position.*")
+    MStr::pattern(POSITION_EVENTS_PATTERN)
 }
 
 fn account_states_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
-    MStr::pattern("events.account.*")
+    MStr::pattern(ACCOUNT_STATES_PATTERN)
 }
 
 fn trading_state_changed_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     // The risk engine publishes the literal topic `events.risk` (not a wildcard subtopic),
     // so subscribe with the same literal pattern.
-    MStr::pattern("events.risk")
+    MStr::pattern(TRADING_STATE_CHANGED_PATTERN)
 }
 
 fn per_instrument_stream_types() -> HashSet<String> {
-    // Bars are intentionally excluded. FeatherWriter keys per-instrument writers by
-    // (type, instrument_id), but Bar schema metadata is also bar_type-specific. Grouping all
-    // bars for one instrument into a single per-instrument writer would mix multiple bar_type
-    // streams behind the first bar_type metadata seen. Bars therefore remain on the legacy flat
-    // spool contract until a bar-type-safe offline path is introduced.
     HashSet::from([
-        "quotes".to_string(),
-        "trades".to_string(),
-        "order_book_deltas".to_string(),
-        "order_book_depths".to_string(),
-        "index_prices".to_string(),
-        "mark_prices".to_string(),
-        "instrument_closes".to_string(),
-        "instruments".to_string(),
+        STREAM_CLASS_QUOTES.to_string(),
+        STREAM_CLASS_TRADES.to_string(),
+        STREAM_CLASS_ORDER_BOOK_DELTAS.to_string(),
+        STREAM_CLASS_ORDER_BOOK_DEPTHS.to_string(),
+        STREAM_CLASS_INDEX_PRICES.to_string(),
+        STREAM_CLASS_MARK_PRICES.to_string(),
+        STREAM_CLASS_INSTRUMENT_CLOSES.to_string(),
+        INSTRUMENTS_STREAM_CLASS.to_string(),
     ])
 }
 
 fn ensure_local_catalog_path(catalog_path: &str) -> Result<()> {
-    if catalog_path.contains("://") {
-        bail!(
-            "Task 3 NT runtime capture currently supports only local catalog paths, got `{catalog_path}`"
-        );
+    if catalog_path.contains(LOCAL_URI_MARKER) {
+        bail!("NT runtime capture catalog path must be local, got `{catalog_path}`");
     }
 
     Ok(())
@@ -408,6 +442,7 @@ async fn run_capture_worker(
     mut jsonl_writers: JsonlCaptureWriters,
     jsonl_paths: JsonlCapturePaths,
     failure_state: CaptureFailureState,
+    startup_poll_interval: tokio::time::Duration,
 ) -> Result<()> {
     let mut primary_error: Option<anyhow::Error> = None;
     let mut startup_buffer = VecDeque::new();
@@ -423,7 +458,7 @@ async fn run_capture_worker(
         } else {
             tokio::select! {
                 maybe_message = receiver.recv() => maybe_message,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
+                _ = tokio::time::sleep(startup_poll_interval) => {
                     if failure_state.stop_handle.is_running() {
                         saw_running = true;
                     }
@@ -553,10 +588,6 @@ async fn write_capture_message(
             .write(trade)
             .await
             .map_err(|e| anyhow!("TradeTick write failed: {e}")),
-        CaptureMessage::Bar(bar) => writer
-            .write(bar)
-            .await
-            .map_err(|e| anyhow!("Bar write failed: {e}")),
         CaptureMessage::Deltas(deltas) => {
             for delta in deltas.deltas {
                 writer
@@ -626,6 +657,7 @@ pub fn wire_nt_runtime_capture(
     stop_handle: LiveNodeHandle,
     catalog_path: &str,
     flush_interval_ms: u64,
+    startup_poll_interval_ms: u64,
     contract_path: Option<&str>,
 ) -> Result<NtRuntimeCaptureGuards> {
     ensure_local_catalog_path(catalog_path)?;
@@ -645,15 +677,15 @@ pub fn wire_nt_runtime_capture(
     let spool_root_path = PathBuf::from(&spool_root);
     let jsonl_paths = JsonlCapturePaths {
         status: spool_root_path
-            .join("status")
-            .join("instrument_status.jsonl"),
-        account_states: spool_root_path.join("accounts").join("account_state.jsonl"),
-        funding_rates: spool_root_path.join("funding_rates").join("updates.jsonl"),
+            .join(STATUS_DIR)
+            .join(INSTRUMENT_STATUS_FILE),
+        account_states: spool_root_path.join(ACCOUNTS_DIR).join(ACCOUNT_STATE_FILE),
+        funding_rates: spool_root_path.join(FUNDING_RATES_DIR).join(UPDATES_FILE),
         order_events: execution_state::order_events_path(&spool_root_path),
         position_events: execution_state::position_events_path(&spool_root_path),
         trading_state_changed: spool_root_path
-            .join("risk")
-            .join("trading_state_changed.jsonl"),
+            .join(RISK_DIR)
+            .join(TRADING_STATE_CHANGED_FILE),
     };
 
     let writer = FeatherWriter::new(
@@ -684,6 +716,7 @@ pub fn wire_nt_runtime_capture(
         },
         jsonl_paths,
         failure_state.clone(),
+        tokio::time::Duration::from_millis(startup_poll_interval_ms),
     ));
     let supervisor_failure_state = failure_state.clone();
     let supervisor_handle = spawn_local(async move {
@@ -707,7 +740,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &quotes_sender,
             CaptureMessage::Quote(*quote),
-            "QuoteTick",
+            QUOTE_TICK_TYPE,
             &quotes_failure_state,
         );
     });
@@ -719,23 +752,11 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &trades_sender,
             CaptureMessage::Trade(*trade),
-            "TradeTick",
+            TRADE_TICK_TYPE,
             &trades_failure_state,
         );
     });
     subscribe_trades(trades_pattern(), trades.clone(), None);
-
-    let bars_sender = sender.clone();
-    let bars_failure_state = failure_state.clone();
-    let bars = TypedHandler::from(move |bar: &Bar| {
-        send_capture_message(
-            &bars_sender,
-            CaptureMessage::Bar(*bar),
-            "Bar",
-            &bars_failure_state,
-        );
-    });
-    subscribe_bars(bars_pattern(), bars.clone(), None);
 
     let deltas_sender = sender.clone();
     let deltas_failure_state = failure_state.clone();
@@ -743,7 +764,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &deltas_sender,
             CaptureMessage::Deltas(deltas.clone()),
-            "OrderBookDeltas",
+            ORDER_BOOK_DELTAS_TYPE,
             &deltas_failure_state,
         );
     });
@@ -755,7 +776,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &depth_sender,
             CaptureMessage::Depth10(Box::new(*depth)),
-            "OrderBookDepth10",
+            ORDER_BOOK_DEPTH10_TYPE,
             &depth_failure_state,
         );
     });
@@ -767,7 +788,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &mark_sender,
             CaptureMessage::MarkPrice(*price),
-            "MarkPriceUpdate",
+            MARK_PRICE_UPDATE_TYPE,
             &mark_failure_state,
         );
     });
@@ -779,7 +800,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &index_sender,
             CaptureMessage::IndexPrice(*price),
-            "IndexPriceUpdate",
+            INDEX_PRICE_UPDATE_TYPE,
             &index_failure_state,
         );
     });
@@ -791,7 +812,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &funding_sender,
             CaptureMessage::FundingRate(*funding_rate),
-            "FundingRateUpdate",
+            FUNDING_RATE_UPDATE_TYPE,
             &funding_failure_state,
         );
     });
@@ -803,7 +824,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &order_events_sender,
             CaptureMessage::OrderEvent(Box::new(event.clone())),
-            "OrderEventAny",
+            ORDER_EVENT_ANY_TYPE,
             &order_events_failure_state,
         );
     });
@@ -815,7 +836,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &position_events_sender,
             CaptureMessage::PositionEvent(Box::new(event.clone())),
-            "PositionEvent",
+            POSITION_EVENT_TYPE,
             &position_events_failure_state,
         );
     });
@@ -827,7 +848,7 @@ pub fn wire_nt_runtime_capture(
         send_capture_message(
             &account_sender,
             CaptureMessage::AccountState(Box::new(state.clone())),
-            "AccountState",
+            ACCOUNT_STATE_TYPE,
             &account_failure_state,
         );
     });
@@ -840,7 +861,7 @@ pub fn wire_nt_runtime_capture(
             send_capture_message(
                 &instrument_sender,
                 CaptureMessage::Instrument(Box::new(instrument.clone())),
-                "InstrumentAny",
+                INSTRUMENT_ANY_TYPE,
                 &instrument_failure_state,
             );
         }
@@ -855,7 +876,7 @@ pub fn wire_nt_runtime_capture(
                 send_capture_message(
                     &close_sender,
                     CaptureMessage::InstrumentClose(*close),
-                    "InstrumentClose",
+                    INSTRUMENT_CLOSE_TYPE,
                     &close_failure_state,
                 );
             }
@@ -870,7 +891,7 @@ pub fn wire_nt_runtime_capture(
                 send_capture_message(
                     &status_sender,
                     CaptureMessage::InstrumentStatus(*status),
-                    "InstrumentStatus",
+                    INSTRUMENT_STATUS_TYPE,
                     &status_failure_state,
                 );
             }
@@ -889,7 +910,7 @@ pub fn wire_nt_runtime_capture(
                 send_capture_message(
                     &trading_state_changed_sender,
                     CaptureMessage::TradingStateChanged(Box::new(event.clone())),
-                    "TradingStateChanged",
+                    TRADING_STATE_CHANGED_TYPE,
                     &trading_state_changed_failure_state,
                 );
             }
@@ -906,7 +927,6 @@ pub fn wire_nt_runtime_capture(
         typed_handlers: Some(TypedHandlers {
             quotes,
             trades,
-            bars,
             book_deltas,
             book_depth10,
             mark_prices,
@@ -1000,7 +1020,7 @@ mod tests {
                     "quotes".to_string(),
                     StreamContract {
                         capability: Capability::Supported,
-                        policy: Some(Policy::Required),
+                        policy: Policy::Required,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1010,7 +1030,7 @@ mod tests {
                     "trades".to_string(),
                     StreamContract {
                         capability: Capability::Conditional,
-                        policy: Some(Policy::Optional),
+                        policy: Policy::Optional,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1020,7 +1040,7 @@ mod tests {
                     "order_book_deltas".to_string(),
                     StreamContract {
                         capability: Capability::Supported,
-                        policy: Some(Policy::Disabled),
+                        policy: Policy::Disabled,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1030,7 +1050,7 @@ mod tests {
                     "mark_prices".to_string(),
                     StreamContract {
                         capability: Capability::Conditional,
-                        policy: Some(Policy::Disabled),
+                        policy: Policy::Disabled,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1040,7 +1060,7 @@ mod tests {
                     "instrument_closes".to_string(),
                     StreamContract {
                         capability: Capability::Unsupported,
-                        policy: None,
+                        policy: Policy::Disabled,
                         provenance: Provenance::Native,
                         reason: Some("n/a".to_string()),
                         derived_from: None,
@@ -1073,7 +1093,7 @@ mod tests {
                     "quotes".to_string(),
                     StreamContract {
                         capability: Capability::Supported,
-                        policy: Some(Policy::Required),
+                        policy: Policy::Required,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1083,7 +1103,7 @@ mod tests {
                     "trades".to_string(),
                     StreamContract {
                         capability: Capability::Conditional,
-                        policy: Some(Policy::Optional),
+                        policy: Policy::Optional,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1093,7 +1113,7 @@ mod tests {
                     "order_book_deltas".to_string(),
                     StreamContract {
                         capability: Capability::Supported,
-                        policy: Some(Policy::Disabled),
+                        policy: Policy::Disabled,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1103,7 +1123,7 @@ mod tests {
                     "mark_prices".to_string(),
                     StreamContract {
                         capability: Capability::Conditional,
-                        policy: Some(Policy::Disabled),
+                        policy: Policy::Disabled,
                         provenance: Provenance::Native,
                         reason: None,
                         derived_from: None,
@@ -1113,7 +1133,7 @@ mod tests {
                     "instrument_closes".to_string(),
                     StreamContract {
                         capability: Capability::Unsupported,
-                        policy: None,
+                        policy: Policy::Disabled,
                         provenance: Provenance::Native,
                         reason: Some("n/a".to_string()),
                         derived_from: None,

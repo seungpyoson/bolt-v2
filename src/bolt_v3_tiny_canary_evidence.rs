@@ -59,6 +59,8 @@ pub enum Phase8CanaryBlockReason {
     MissingReferenceQuoteTsEvent,
     InvalidPricingKurtosis,
     NegativeThetaDecayFactor,
+    MissingSelectedMarketIdentity,
+    InvalidSelectedMarketWindow,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
@@ -207,7 +209,7 @@ impl Phase8StrategyInputSafetyAudit {
         Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
             anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
         })?;
-        Ok(Self::from_strategy_inputs(
+        let mut audit = Self::from_strategy_inputs(
             realized_volatility,
             raw.seconds_to_expiry,
             spot_price,
@@ -219,7 +221,24 @@ impl Phase8StrategyInputSafetyAudit {
             raw.reference_quote_ts_event,
             pricing_kurtosis,
             theta_decay_factor,
-        ))
+        );
+        audit.block_if(
+            raw.market_selection_outcome.trim().is_empty()
+                || raw.polymarket_condition_id.trim().is_empty()
+                || raw.polymarket_market_slug.trim().is_empty()
+                || raw.polymarket_question_id.trim().is_empty()
+                || raw.up_instrument_id.trim().is_empty()
+                || raw.down_instrument_id.trim().is_empty(),
+            Phase8CanaryBlockReason::MissingSelectedMarketIdentity,
+        );
+        audit.block_if(
+            raw.selected_market_observed_timestamp == u64::MIN
+                || raw.polymarket_market_start_timestamp_milliseconds == u64::MIN
+                || raw.polymarket_market_end_timestamp_milliseconds
+                    <= raw.polymarket_market_start_timestamp_milliseconds,
+            Phase8CanaryBlockReason::InvalidSelectedMarketWindow,
+        );
+        Ok(audit)
     }
 
     pub fn is_approved(&self) -> bool {
@@ -228,6 +247,13 @@ impl Phase8StrategyInputSafetyAudit {
 
     pub fn block_reasons(&self) -> &[Phase8CanaryBlockReason] {
         &self.block_reasons
+    }
+
+    fn block_if(&mut self, condition: bool, reason: Phase8CanaryBlockReason) {
+        if condition {
+            self.status = Phase8StrategyInputAuditStatus::Blocked;
+            self.block_reasons.push(reason);
+        }
     }
 }
 
@@ -245,6 +271,15 @@ struct Phase8StrategyInputEvidenceFile {
     pricing_kurtosis: String,
     theta_decay_factor: String,
     theta_scaled_min_edge_bps: String,
+    market_selection_outcome: String,
+    polymarket_condition_id: String,
+    polymarket_market_slug: String,
+    polymarket_question_id: String,
+    up_instrument_id: String,
+    down_instrument_id: String,
+    selected_market_observed_timestamp: u64,
+    polymarket_market_start_timestamp_milliseconds: u64,
+    polymarket_market_end_timestamp_milliseconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

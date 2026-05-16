@@ -206,7 +206,7 @@ BASE_NEXTEST_CONFIG = """
 live-node = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=platform_runtime)'
+filter = 'binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_tiny_canary_operator) | binary(=eth_chainlink_taker_runtime) | binary(=lake_batch) | binary(=live_node_run) | binary(=nt_runtime_capture) | binary(=platform_runtime) | binary(=polymarket_bootstrap) | binary(=venue_contract)'
 test-group = 'live-node'
 """
 
@@ -314,7 +314,7 @@ def assert_nextest_live_node_group_required() -> None:
     )
     assert_error(
         "nextest config must assign LiveNode integration tests to live-node group",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("binary(=platform_runtime)", "binary(=config_schema)"),
+        nextest_config=BASE_NEXTEST_CONFIG.replace("binary(=venue_contract)", "binary(=config_schema)"),
     )
     assert_error(
         "nextest config must assign LiveNode integration tests to live-node group",

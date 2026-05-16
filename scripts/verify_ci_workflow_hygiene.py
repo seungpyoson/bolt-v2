@@ -29,7 +29,17 @@ GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "source-fence", "tes
 DEPLOY_REQUIRED_NEEDS = ("gate", "build", "detector", "fmt-check", "deny", "clippy", "source-fence", "test")
 TARGET_DIR_JOBS = ("clippy", "source-fence", "test", "build")
 LIVE_NODE_TEST_GROUP = "live-node"
-LIVE_NODE_NEXTEST_BINARIES = ("lake_batch", "nt_runtime_capture", "platform_runtime")
+LIVE_NODE_NEXTEST_BINARIES = (
+    "bolt_v3_live_canary_gate",
+    "bolt_v3_tiny_canary_operator",
+    "eth_chainlink_taker_runtime",
+    "lake_batch",
+    "live_node_run",
+    "nt_runtime_capture",
+    "platform_runtime",
+    "polymarket_bootstrap",
+    "venue_contract",
+)
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
 BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
@@ -449,14 +459,19 @@ def verify_nextest_config(config_text: str) -> list[str]:
     overrides = default_profile.get("overrides", []) if isinstance(default_profile, dict) else []
     if not isinstance(overrides, list):
         overrides = []
-    has_live_node_override = any(
-        isinstance(override, dict)
-        and override.get("test-group") == LIVE_NODE_TEST_GROUP
-        and override.get("filter") == LIVE_NODE_NEXTEST_FILTER
+    live_node_filters = [
+        override.get("filter")
         for override in overrides
-    )
-    if not has_live_node_override:
-        errors.append("nextest config must assign LiveNode integration tests to live-node group")
+        if isinstance(override, dict) and override.get("test-group") == LIVE_NODE_TEST_GROUP
+    ]
+    missing_binaries = [
+        binary
+        for binary in LIVE_NODE_NEXTEST_BINARIES
+        if not any(isinstance(filter_expr, str) and f"binary(={binary})" in filter_expr for filter_expr in live_node_filters)
+    ]
+    if missing_binaries:
+        missing = ", ".join(f"binary(={binary})" for binary in missing_binaries)
+        errors.append(f"nextest config must assign LiveNode integration tests to live-node group: missing {missing}")
     return errors
 
 

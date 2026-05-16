@@ -111,6 +111,91 @@ fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
 }
 
 #[test]
+fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let proof_path = temp.path().join("post-run-hygiene.json");
+    let client_hash = "a".repeat(64);
+    let venue_hash = "b".repeat(64);
+    let scanned_hash = "c".repeat(64);
+    let retention_hash = "d".repeat(64);
+
+    std::fs::write(
+        &proof_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": "phase8-run-001",
+            "client_order_id_hash": client_hash,
+            "venue_order_id_hash": venue_hash
+        }))
+        .expect("proof should serialize"),
+    )
+    .expect("proof should write");
+    let missing_scan_error = phase8_assert_post_run_hygiene_proof(
+        proof_path.to_str().expect("proof path should be utf8"),
+        "phase8-run-001",
+        &client_hash,
+        &venue_hash,
+    )
+    .expect_err("missing secret scan field should fail");
+    assert!(
+        missing_scan_error
+            .to_string()
+            .contains("raw_secret_residue_absent"),
+        "error should mention missing scan field: {missing_scan_error}"
+    );
+
+    std::fs::write(
+        &proof_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": "phase8-run-001",
+            "client_order_id_hash": client_hash,
+            "venue_order_id_hash": venue_hash,
+            "raw_secret_residue_absent": false,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }))
+        .expect("proof should serialize"),
+    )
+    .expect("proof should write");
+    let residue_error = phase8_assert_post_run_hygiene_proof(
+        proof_path.to_str().expect("proof path should be utf8"),
+        "phase8-run-001",
+        &client_hash,
+        &venue_hash,
+    )
+    .expect_err("positive secret residue scan should fail");
+    assert!(
+        residue_error
+            .to_string()
+            .contains("raw_secret_residue_absent"),
+        "error should mention failed scan field: {residue_error}"
+    );
+
+    std::fs::write(
+        &proof_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": "phase8-run-001",
+            "client_order_id_hash": client_hash,
+            "venue_order_id_hash": venue_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }))
+        .expect("proof should serialize"),
+    )
+    .expect("proof should write");
+    phase8_assert_post_run_hygiene_proof(
+        proof_path.to_str().expect("proof path should be utf8"),
+        "phase8-run-001",
+        &client_hash,
+        &venue_hash,
+    )
+    .expect("secret scan and retention proof should pass");
+}
+
+#[test]
 fn phase8_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
     let head = phase8_current_checkout_head_sha()?;
 
@@ -324,6 +409,13 @@ struct Phase8OperatorEvidenceProof {
     venue_order_id_hash: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct Phase8PostRunHygieneProof {
+    raw_secret_residue_absent: bool,
+    scanned_artifact_hashes: Vec<String>,
+    retention_purge_path_hash: String,
+}
+
 impl Phase8OperatorLiveResultPaths {
     fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
@@ -491,13 +583,11 @@ impl Phase8OperatorLiveResultPaths {
             Some(&self.client_order_id_hash),
             Some(&self.venue_order_id_hash),
         )?;
-        phase8_assert_operator_evidence_proof(
+        phase8_assert_post_run_hygiene_proof(
             &self.post_run_hygiene_path,
-            "post_run_hygiene",
-            Some(run_id),
-            None,
-            Some(&self.client_order_id_hash),
-            Some(&self.venue_order_id_hash),
+            run_id,
+            &self.client_order_id_hash,
+            &self.venue_order_id_hash,
         )
     }
 }
@@ -511,12 +601,16 @@ fn phase8_operator_evidence_ref(path: &str) -> anyhow::Result<Phase8EvidenceRef>
 
 fn phase8_required_sha256_env(name: &str) -> anyhow::Result<String> {
     let value = phase8_required_env(name)?;
-    if value.len() != 64 || !value.chars().all(|byte| byte.is_ascii_hexdigit()) {
+    if !phase8_is_sha256_hex(&value) {
         return Err(anyhow::anyhow!(
             "required phase8 env `{name}` must be a sha256 hex digest"
         ));
     }
     Ok(value)
+}
+
+fn phase8_is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn phase8_assert_path_starts_with(path: &str, base: &str, label: &str) -> anyhow::Result<()> {
@@ -572,6 +666,57 @@ fn phase8_read_operator_evidence_proof(
         .map_err(|source| anyhow::anyhow!("failed to open phase8 {label} proof: {source}"))?;
     serde_json::from_reader(file)
         .map_err(|source| anyhow::anyhow!("failed to parse phase8 {label} proof: {source}"))
+}
+
+fn phase8_read_post_run_hygiene_proof(path: &str) -> anyhow::Result<Phase8PostRunHygieneProof> {
+    let file = std::fs::File::open(path).map_err(|source| {
+        anyhow::anyhow!("failed to open phase8 post_run_hygiene proof: {source}")
+    })?;
+    serde_json::from_reader(file).map_err(|source| {
+        anyhow::anyhow!("failed to parse phase8 post_run_hygiene proof: {source}")
+    })
+}
+
+fn phase8_assert_post_run_hygiene_proof(
+    path: &str,
+    expected_run_id: &str,
+    expected_client_order_id_hash: &str,
+    expected_venue_order_id_hash: &str,
+) -> anyhow::Result<()> {
+    phase8_assert_operator_evidence_proof(
+        path,
+        "post_run_hygiene",
+        Some(expected_run_id),
+        None,
+        Some(expected_client_order_id_hash),
+        Some(expected_venue_order_id_hash),
+    )?;
+    let proof = phase8_read_post_run_hygiene_proof(path)?;
+    if !proof.raw_secret_residue_absent {
+        return Err(anyhow::anyhow!(
+            "phase8 post_run_hygiene proof raw_secret_residue_absent must be true"
+        ));
+    }
+    if proof.scanned_artifact_hashes.is_empty() {
+        return Err(anyhow::anyhow!(
+            "phase8 post_run_hygiene proof scanned_artifact_hashes must not be empty"
+        ));
+    }
+    if proof
+        .scanned_artifact_hashes
+        .iter()
+        .any(|hash| !phase8_is_sha256_hex(hash))
+    {
+        return Err(anyhow::anyhow!(
+            "phase8 post_run_hygiene proof scanned_artifact_hashes must contain sha256 hashes"
+        ));
+    }
+    if !phase8_is_sha256_hex(&proof.retention_purge_path_hash) {
+        return Err(anyhow::anyhow!(
+            "phase8 post_run_hygiene proof retention_purge_path_hash must be a sha256 hash"
+        ));
+    }
+    Ok(())
 }
 
 fn phase8_assert_operator_evidence_proof(

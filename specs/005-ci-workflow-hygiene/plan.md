@@ -56,7 +56,7 @@ Implementation surfaces:
 
 Accepted verification-support co-scope surfaces:
 
-- `.config/nextest.toml`, `tests/lake_batch.rs`, `tests/nt_runtime_capture.rs`, and `tests/platform_runtime.rs`: serialize LiveNode-heavy tests at the nextest runner layer while retaining cargo-test lock recovery so full-suite verification remains stable.
+- `.config/nextest.toml`, `tests/lake_batch.rs`, `tests/live_node_run.rs`, `tests/nt_runtime_capture.rs`, and `tests/platform_runtime.rs`: serialize LiveNode-heavy tests at the nextest runner layer while retaining cargo-test lock recovery so full-suite verification remains stable.
 - `scripts/verify_bolt_v3_pure_rust_runtime.py` and `scripts/test_verify_bolt_v3_pure_rust_runtime.py`: preserve #342 source-fence coverage when aliases or parser edge cases would otherwise hide forbidden runtime usage.
 
 ## Project Structure

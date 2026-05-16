@@ -395,6 +395,11 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         strategy_input_evidence_path: "phase8-strategy-input-evidence.json".to_string(),
         strategy_input_evidence_sha256: "expected-strategy-input-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
+        approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
+        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
@@ -410,6 +415,144 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         error
             .to_string()
             .contains("phase8 operator approval head_sha does not match current head")
+    );
+}
+
+#[test]
+fn operator_approval_envelope_consumes_time_bound_nonce_once() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
+    )
+    .expect("manifest should write");
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+        .expect("manifest hash should compute");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
+    std::fs::write(
+        &approval_nonce_path,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+    )
+    .expect("approval nonce should write");
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+        .expect("approval nonce hash should compute");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: "expected-head".to_string(),
+        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_sha256: "expected-config-hash".to_string(),
+        ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256: manifest_hash,
+        strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256: strategy_input_hash,
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
+        approval_nonce_sha256: approval_nonce_hash,
+        approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+    };
+
+    let too_early_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            999,
+        )
+        .expect_err("approval before not_before should fail closed");
+    assert!(
+        too_early_error.to_string().contains("not yet valid"),
+        "error should mention not-before window: {too_early_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "rejected approval must not create consumption evidence"
+    );
+
+    let mut wrong_nonce_envelope = envelope.clone();
+    wrong_nonce_envelope.approval_nonce_sha256 =
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();
+    let wrong_nonce_error = wrong_nonce_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            1_500,
+        )
+        .expect_err("nonce hash mismatch should fail closed");
+    assert!(
+        wrong_nonce_error.to_string().contains("nonce sha256"),
+        "error should mention nonce hash mismatch: {wrong_nonce_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "nonce mismatch must not create consumption evidence"
+    );
+
+    envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            1_500,
+        )
+        .expect("first approval consumption inside time window should pass");
+    assert!(
+        approval_consumption_path.exists(),
+        "approval consumption evidence should be created"
+    );
+    let consumption_json =
+        std::fs::read_to_string(&approval_consumption_path).expect("consumption should read");
+    assert!(
+        !consumption_json.contains("operator-approved-canary-001"),
+        "consumption evidence must not serialize raw approval id"
+    );
+    let consumption: Value =
+        serde_json::from_str(&consumption_json).expect("consumption should parse as json");
+    assert_eq!(
+        consumption["record_kind"],
+        "phase8_operator_approval_consumption"
+    );
+    assert_eq!(consumption["approval_not_before_unix_seconds"], 1_000);
+    assert_eq!(consumption["approval_not_after_unix_seconds"], 2_000);
+    assert_eq!(consumption["consumed_unix_seconds"], 1_500);
+
+    let expired_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            2_001,
+        )
+        .expect_err("expired approval should fail closed");
+    assert!(
+        expired_error.to_string().contains("expired"),
+        "error should mention expired approval: {expired_error}"
+    );
+
+    let error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            1_500,
+        )
+        .expect_err("second approval consumption should fail closed");
+
+    assert!(
+        error.to_string().contains("already consumed"),
+        "error should mention consumed approval replay: {error}"
     );
 }
 
@@ -441,6 +584,11 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256: strategy_input_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
+        approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
+        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
@@ -495,6 +643,11 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256: strategy_input_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
+        approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
+        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 

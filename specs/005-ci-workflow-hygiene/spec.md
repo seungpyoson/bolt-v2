@@ -75,6 +75,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **FR-011**: The verifier MUST print actionable errors naming the missing or wrong job, dependency, gate check, or setup opt-in.
 - **FR-012**: The branch MUST not implement #332 sharding, #195 cache retention, #205 same-SHA deploy reuse, #335 path filters, #344 pass-stub/evidence work, or #340 config relocation.
 - **FR-013**: Exact-head CI evidence MUST show `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`, `build`, and `gate` passing on the final PR head.
+- **FR-014**: The verifier MUST require CI build-tool installs to avoid source-building `cargo-deny`, `cargo-nextest`, and `cargo-zigbuild`: `cargo-deny` and `cargo-nextest` use pinned `taiki-e/install-action` with `fallback: none`, and `cargo-zigbuild` uses a checksum-verified prebuilt release archive.
 
 ### Key Entities
 
@@ -83,6 +84,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **SetupTargetDirOptIn**: Shared setup action input controlling managed target-dir resolution.
 - **DeployDefenseNeeds**: Direct deploy dependencies on all required safety lanes, not only the aggregate gate.
 - **DetectorSerializationDecision**: Evidence-backed decision that only build remains detector-output-gated while fmt-check can run independently.
+- **PrebuiltToolInstallContract**: CI policy that keeps tool versions sourced from setup outputs while preventing slow `cargo install` source builds in required PR lanes.
 
 ## Success Criteria
 
@@ -93,6 +95,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **SC-003**: `fmt-check` no longer has `needs: detector`; `build` still has detector output gating.
 - **SC-004**: Exact-head CI proves the final topology passes through the aggregate `gate`.
 - **SC-005**: The PR body names residual #332/#195/#205/#344/#340 scope instead of silently treating those future topologies as complete.
+- **SC-006**: The workflow hygiene self-test fails when CI regresses to source-building `cargo-deny`, `cargo-nextest`, or `cargo-zigbuild`, disables install-action fallback protection, or drops checksum verification for the `cargo-zigbuild` archive.
 ## Assumptions
 
 - PR #346 / #342 is the stacked base for this work, so source-fence is active topology.

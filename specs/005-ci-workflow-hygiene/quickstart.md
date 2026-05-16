@@ -15,7 +15,8 @@ Expected result after implementation: all commands pass.
 ## Workflow Sanity Checks
 
 ```bash
-rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
+rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|taiki-e/install-action|fallback: none|cargo-zigbuild-x86_64-unknown-linux-gnu|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
+rg -n "cargo install cargo-(deny|nextest|zigbuild)" .github/workflows/ci.yml
 ```
 
 Expected evidence:
@@ -25,6 +26,9 @@ Expected evidence:
 - Jobs using `steps.setup.outputs.managed_target_dir` set `include-managed-target-dir: "true"`.
 - `deploy.needs` includes all required safety lanes directly.
 - `gate` checks all required lane results.
+- `cargo-deny` and `cargo-nextest` use pinned `taiki-e/install-action` with `fallback: none`.
+- `cargo-zigbuild` installs from the pinned-version release archive and verifies the archive checksum before extraction.
+- The raw `cargo install cargo-(deny|nextest|zigbuild)` scan returns no workflow matches.
 
 ## Verification Gate
 

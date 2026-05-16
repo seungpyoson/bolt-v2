@@ -371,7 +371,59 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
 }
 
 #[test]
-fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
+fn live_canary_evidence_accepts_admitted_count_below_configured_cap() {
+    let mut input = evidence_input();
+    input.max_live_order_count = 2;
+    let evidence = TinyCanaryEvidence::live_canary_proof(
+        input,
+        TinyCanaryEvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .to_string(),
+        },
+        TinyCanaryLiveOrderRef {
+            client_order_id_hash:
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+            venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_string(),
+        },
+        TinyCanaryLiveCanaryResultRefs {
+            nt_submit_event_ref: TinyCanaryEvidenceRef {
+                path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+            },
+            venue_order_state_ref: TinyCanaryEvidenceRef {
+                path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+                    .to_string(),
+            },
+            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
+                path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
+                    .to_string(),
+                record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
+                    .to_string(),
+            }),
+            restart_reconciliation_ref: TinyCanaryEvidenceRef {
+                path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+                    .to_string(),
+                record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+                    .to_string(),
+            },
+        },
+        1,
+    )
+    .expect("positive admitted count below cap should produce live canary proof");
+
+    assert_eq!(evidence.max_live_order_count, 2);
+    assert_eq!(evidence.submit_admission_ref.admitted_order_count, 1);
+}
+
+#[test]
+fn live_canary_evidence_rejects_zero_submit_admission_count() {
     let mut input = evidence_input();
     input.max_live_order_count = 2;
     let error = TinyCanaryEvidence::live_canary_proof(
@@ -421,6 +473,58 @@ fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
     assert!(
         error.to_string().contains("admitted_order_count"),
         "error should mention admitted order count: {error}"
+    );
+}
+
+#[test]
+fn live_canary_evidence_rejects_admitted_count_above_configured_cap() {
+    let error = TinyCanaryEvidence::live_canary_proof(
+        evidence_input(),
+        TinyCanaryEvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .to_string(),
+        },
+        TinyCanaryLiveOrderRef {
+            client_order_id_hash:
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+            venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_string(),
+        },
+        TinyCanaryLiveCanaryResultRefs {
+            nt_submit_event_ref: TinyCanaryEvidenceRef {
+                path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+            },
+            venue_order_state_ref: TinyCanaryEvidenceRef {
+                path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+                    .to_string(),
+            },
+            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
+                path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
+                    .to_string(),
+                record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
+                    .to_string(),
+            }),
+            restart_reconciliation_ref: TinyCanaryEvidenceRef {
+                path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+                    .to_string(),
+                record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+                    .to_string(),
+            },
+        },
+        2,
+    )
+    .expect_err("admitted count above cap must not produce live canary proof");
+
+    assert!(
+        error.to_string().contains("max_live_order_count"),
+        "error should mention configured order cap: {error}"
     );
 }
 

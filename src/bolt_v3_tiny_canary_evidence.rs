@@ -360,9 +360,14 @@ impl TinyCanaryEvidence {
         result_refs: TinyCanaryLiveCanaryResultRefs,
         admitted_order_count: u32,
     ) -> Result<Self> {
-        if admitted_order_count != input.max_live_order_count {
+        if admitted_order_count == 0 {
             return Err(anyhow!(
-                "tiny canary live canary proof admitted_order_count expected configured max_live_order_count {} got {admitted_order_count}",
+                "tiny canary live canary proof admitted_order_count must be positive"
+            ));
+        }
+        if admitted_order_count > input.max_live_order_count {
+            return Err(anyhow!(
+                "tiny canary live canary proof admitted_order_count must be at most configured max_live_order_count {} got {admitted_order_count}",
                 input.max_live_order_count
             ));
         }

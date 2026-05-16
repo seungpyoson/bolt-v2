@@ -509,6 +509,7 @@ impl Phase8CanaryEvidence {
                 "phase8 live canary proof admitted_order_count expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {admitted_order_count}"
             ));
         }
+        validate_phase8_canary_input(&input)?;
         validate_phase8_evidence_ref(stringify!(decision_evidence_ref), &decision_evidence_ref)?;
         validate_phase8_live_order_ref(&live_order_ref)?;
         validate_phase8_evidence_ref(
@@ -604,6 +605,21 @@ impl Phase8CanaryEvidence {
         }
         Ok(())
     }
+}
+
+fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()> {
+    validate_phase8_sha256_field(stringify!(root_config_sha256), &input.root_config_sha256)?;
+    validate_phase8_sha256_field(stringify!(ssm_manifest_sha256), &input.ssm_manifest_sha256)?;
+    validate_phase8_evidence_ref(stringify!(ssm_manifest_ref), &input.ssm_manifest_ref)?;
+    validate_phase8_evidence_ref(
+        stringify!(strategy_input_evidence_ref),
+        &input.strategy_input_evidence_ref,
+    )?;
+    validate_phase8_nested_sha256_field(
+        stringify!(runtime_capture_ref),
+        stringify!(spool_root_hash),
+        &input.runtime_capture_ref.spool_root_hash,
+    )
 }
 
 fn validate_phase8_evidence_ref(

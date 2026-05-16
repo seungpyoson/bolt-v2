@@ -722,6 +722,43 @@ fn live_canary_evidence_rejects_malformed_result_refs() {
 }
 
 #[test]
+fn live_canary_evidence_rejects_malformed_identity_hashes() {
+    let mut input = evidence_input();
+    input.root_config_sha256 = "not-a-sha256".to_string();
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        input,
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("malformed root config hash must not produce live canary proof");
+
+    assert!(
+        error.to_string().contains("root_config_sha256"),
+        "error should mention malformed root config hash: {error}"
+    );
+
+    let mut input = evidence_input();
+    input.runtime_capture_ref.spool_root_hash = String::new();
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        input,
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("missing runtime capture spool hash must not produce live canary proof");
+
+    assert!(
+        error
+            .to_string()
+            .contains("runtime_capture_ref.spool_root_hash"),
+        "error should mention malformed runtime capture spool hash: {error}"
+    );
+}
+
+#[test]
 fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),

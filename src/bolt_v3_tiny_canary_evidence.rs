@@ -619,6 +619,12 @@ impl Phase8CanaryEvidence {
         )?;
         match self.outcome {
             Phase8CanaryOutcome::DryNoSubmitProof => {
+                validate_phase8_submit_admission_ref(
+                    &self.submit_admission_ref,
+                    SUBMIT_ADMISSION_STATUS_REJECTED,
+                    u32::MIN,
+                    BLOCKED_BEFORE_LIVE_ORDER_REASON,
+                )?;
                 let decision_evidence_ref =
                     self.decision_evidence_ref.as_ref().ok_or_else(|| {
                         anyhow!(
@@ -631,8 +637,19 @@ impl Phase8CanaryEvidence {
                     decision_evidence_ref,
                 )
             }
-            Phase8CanaryOutcome::BlockedBeforeSubmit => Ok(()),
+            Phase8CanaryOutcome::BlockedBeforeSubmit => validate_phase8_submit_admission_ref(
+                &self.submit_admission_ref,
+                SUBMIT_ADMISSION_STATUS_REJECTED,
+                u32::MIN,
+                BLOCKED_BEFORE_SUBMIT_REASON,
+            ),
             Phase8CanaryOutcome::LiveCanaryProof => {
+                validate_phase8_submit_admission_ref(
+                    &self.submit_admission_ref,
+                    SUBMIT_ADMISSION_STATUS_ACCEPTED,
+                    PHASE8_REQUIRED_LIVE_ORDER_CAP,
+                    NT_ADAPTER_SUBMIT_PROVEN_REASON,
+                )?;
                 let decision_evidence_ref =
                     self.decision_evidence_ref.as_ref().ok_or_else(|| {
                         anyhow!(
@@ -696,6 +713,42 @@ impl Phase8CanaryEvidence {
             }
         }
     }
+}
+
+fn validate_phase8_submit_admission_ref(
+    submit_admission_ref: &Phase8SubmitAdmissionRef,
+    expected_status: &str,
+    expected_admitted_order_count: u32,
+    expected_reason: &str,
+) -> Result<()> {
+    if submit_admission_ref.status != expected_status {
+        return Err(anyhow!(
+            "phase8 canary evidence {}.{} expected `{}` got `{}`",
+            stringify!(submit_admission_ref),
+            stringify!(status),
+            expected_status,
+            submit_admission_ref.status
+        ));
+    }
+    if submit_admission_ref.admitted_order_count != expected_admitted_order_count {
+        return Err(anyhow!(
+            "phase8 canary evidence {}.{} expected {} got {}",
+            stringify!(submit_admission_ref),
+            stringify!(admitted_order_count),
+            expected_admitted_order_count,
+            submit_admission_ref.admitted_order_count
+        ));
+    }
+    if submit_admission_ref.reason != expected_reason {
+        return Err(anyhow!(
+            "phase8 canary evidence {}.{} expected `{}` got `{}`",
+            stringify!(submit_admission_ref),
+            stringify!(reason),
+            expected_reason,
+            submit_admission_ref.reason
+        ));
+    }
+    Ok(())
 }
 
 fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()> {

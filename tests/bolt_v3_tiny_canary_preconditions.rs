@@ -583,6 +583,32 @@ fn decision_evidence_unavailable_blocks_before_submit_admission() {
 }
 
 #[test]
+fn blocked_canary_evidence_writer_rejects_inconsistent_submit_admission() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::blocked_before_submit(
+        evidence_input(),
+        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+    );
+    evidence.submit_admission_ref.admitted_order_count = 1;
+
+    let error = evidence
+        .write_json_file(&evidence_path)
+        .expect_err("blocked evidence with accepted submit count must not be written");
+
+    assert!(
+        error
+            .to_string()
+            .contains("submit_admission_ref.admitted_order_count"),
+        "error should mention inconsistent submit admission count: {error}"
+    );
+    assert!(
+        !evidence_path.exists(),
+        "inconsistent blocked evidence must not create evidence file"
+    );
+}
+
+#[test]
 fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids() {
     let evidence = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),

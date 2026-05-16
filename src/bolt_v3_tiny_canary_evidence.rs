@@ -52,6 +52,9 @@ pub enum Phase8CanaryBlockReason {
     NonPositiveTimeToExpiry,
     NonPositiveSpotPrice,
     NonPositivePriceToBeatValue,
+    NonPositiveExpectedEdgeBasisPoints,
+    NonPositiveWorstCaseEdgeBasisPoints,
+    NegativeFeeRateBasisPoints,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
@@ -83,6 +86,9 @@ impl Phase8StrategyInputSafetyAudit {
         seconds_to_expiry: u64,
         spot_price: Decimal,
         price_to_beat_value: Decimal,
+        expected_edge_basis_points: Decimal,
+        worst_case_edge_basis_points: Decimal,
+        fee_rate_basis_points: Decimal,
     ) -> Self {
         let mut block_reasons = Vec::new();
         if realized_volatility <= Decimal::ZERO {
@@ -96,6 +102,15 @@ impl Phase8StrategyInputSafetyAudit {
         }
         if price_to_beat_value <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositivePriceToBeatValue);
+        }
+        if expected_edge_basis_points <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveExpectedEdgeBasisPoints);
+        }
+        if worst_case_edge_basis_points <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints);
+        }
+        if fee_rate_basis_points < Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
         }
         if block_reasons.is_empty() {
             Self::approved()
@@ -145,11 +160,30 @@ impl Phase8StrategyInputSafetyAudit {
             Decimal::from_str_exact(raw.price_to_beat_value.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input price_to_beat_value: {source}")
             })?;
+        let expected_edge_basis_points =
+            Decimal::from_str_exact(raw.expected_edge_basis_points.trim()).map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 strategy input expected_edge_basis_points: {source}"
+                )
+            })?;
+        let worst_case_edge_basis_points =
+            Decimal::from_str_exact(raw.worst_case_edge_basis_points.trim()).map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 strategy input worst_case_edge_basis_points: {source}"
+                )
+            })?;
+        let fee_rate_basis_points = Decimal::from_str_exact(raw.fee_rate_basis_points.trim())
+            .map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input fee_rate_basis_points: {source}")
+            })?;
         Ok(Self::from_strategy_inputs(
             realized_volatility,
             raw.seconds_to_expiry,
             spot_price,
             price_to_beat_value,
+            expected_edge_basis_points,
+            worst_case_edge_basis_points,
+            fee_rate_basis_points,
         ))
     }
 
@@ -168,6 +202,9 @@ struct Phase8StrategyInputEvidenceFile {
     seconds_to_expiry: u64,
     spot_price: String,
     price_to_beat_value: String,
+    expected_edge_basis_points: String,
+    worst_case_edge_basis_points: String,
+    fee_rate_basis_points: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -189,8 +189,7 @@ jobs:
           archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
           base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
           curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"
-          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
-          expected="$(awk '{print $1}' "$archive.sha256")"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
           actual="$(sha256sum "$archive" | awk '{print $1}')"
           test "$actual" = "$expected"
           tar --extract --xz --file "$archive"
@@ -336,6 +335,8 @@ outputs:
     value: ${{ steps.shared.outputs.zig_version }}
   zigbuild_version:
     value: ${{ steps.shared.outputs.zigbuild_version }}
+  zigbuild_x86_64_unknown_linux_gnu_sha256:
+    value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
   rust_verification_source_repo:
@@ -375,6 +376,7 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
+          echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
     - name: Install managed Rust owner
       shell: bash
@@ -939,8 +941,7 @@ def main() -> int:
           archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
           base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
           curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"
-          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
-          expected="$(awk '{print $1}' "$archive.sha256")"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
           actual="$(sha256sum "$archive" | awk '{print $1}')"
           test "$actual" = "$expected"
           tar --extract --xz --file "$archive"
@@ -984,6 +985,16 @@ def main() -> int:
     assert_error(
         "ci.yml build must verify cargo-zigbuild archive checksum",
         replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
+    )
+    assert_error(
+        "ci.yml build must use pinned cargo-zigbuild archive sha256",
+        replace_once(
+            BASE_WORKFLOW,
+            '          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"\n',
+            """          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
+          expected="$(awk '{print $1}' "$archive.sha256")"
+""",
+        ),
     )
     assert_error(
         "gate must use always()",

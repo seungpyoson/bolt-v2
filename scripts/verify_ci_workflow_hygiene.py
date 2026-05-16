@@ -100,6 +100,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate target",
     "just --evaluate zig_version",
     "just --evaluate zigbuild_version",
+    "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
     "just --evaluate rust_verification_source_repo",
     "just --evaluate rust_verification_source_sha",
@@ -113,6 +114,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "target": "steps.shared.outputs.target",
     "zig_version": "steps.shared.outputs.zig_version",
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
+    "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
     "rust_verification_source_repo": "steps.shared.outputs.rust_verification_source_repo",
     "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
@@ -153,8 +155,7 @@ ZIGBUILD_PREBUILT_LITERALS = (
     'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
     "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
     'curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"',
-    'curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"',
-    'expected="$(awk \'{print $1}\' "$archive.sha256")"',
+    'expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"',
     'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
     'tar --extract --xz --file "$archive"',
     'mkdir -p "$HOME/.cargo/bin"',
@@ -790,6 +791,8 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
     build_text = uncommented_text(build_lines)
     if runs_cargo_install_tool(build_text, "cargo-zigbuild"):
         errors.append(f"{workflow_name} build must not compile cargo-zigbuild from source")
+    if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
+        errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
     for literal in ZIGBUILD_PREBUILT_LITERALS:
         if literal not in build_text:
             errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")

@@ -371,6 +371,11 @@ def install_action_tool_block(job_lines: list[str], tool: str, output: str) -> l
     return None
 
 
+def cargo_install_arg_matches_tool(arg: str, tool: str) -> bool:
+    crate, separator, _version = arg.partition("@")
+    return arg == tool or (separator == "@" and crate == tool)
+
+
 def runs_cargo_install_tool(text: str, tool: str) -> bool:
     for line in text.replace("\\\n", " ").splitlines():
         if "cargo" not in line or "install" not in line:
@@ -392,7 +397,7 @@ def runs_cargo_install_tool(text: str, tool: str) -> bool:
             for arg in tokens[command_index + 1 :]:
                 if arg in {";", "&&", "||", "|"}:
                     break
-                if arg == tool:
+                if cargo_install_arg_matches_tool(arg, tool):
                     return True
     return False
 

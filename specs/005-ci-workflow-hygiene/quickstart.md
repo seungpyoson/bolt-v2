@@ -16,7 +16,8 @@ Expected result after implementation: all commands pass.
 
 ```bash
 rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|taiki-e/install-action|fallback: none|cargo-zigbuild-x86_64-unknown-linux-gnu|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
-rg -n "cargo install cargo-(deny|nextest|zigbuild)" .github/workflows/ci.yml
+rg -n "advisories:|taiki-e/install-action|fallback: none|cargo-deny" .github/workflows/advisory.yml
+rg -n "cargo install cargo-(deny|nextest|zigbuild)" .github/workflows/ci.yml .github/workflows/advisory.yml
 ```
 
 Expected evidence:
@@ -27,6 +28,7 @@ Expected evidence:
 - `deploy.needs` includes all required safety lanes directly.
 - `gate` checks all required lane results.
 - `cargo-deny` and `cargo-nextest` use pinned `taiki-e/install-action` with `fallback: none`.
+- `advisory.yml` uses the same pinned `cargo-deny` prebuilt install path with `fallback: none`.
 - `cargo-zigbuild` installs from the pinned-version release archive and verifies the archive checksum before extraction.
 - The raw `cargo install cargo-(deny|nextest|zigbuild)` scan returns no workflow matches.
 

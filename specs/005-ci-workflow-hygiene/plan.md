@@ -53,6 +53,7 @@ Implementation surfaces:
 - `justfile`: run the self-tests and verifier inside `ci-lint-workflow`; keep the pinned cargo-zigbuild Linux x86_64 archive SHA256 beside the pinned tool version.
 - `.github/actions/setup-environment/action.yml`: add target-dir opt-in and export the cargo-zigbuild archive SHA256 under `include-build-values`.
 - `.github/workflows/ci.yml`: remove `fmt-check needs: detector`, set target-dir opt-ins, add deploy direct needs, and use prebuilt Rust helper-tool installs.
+- `.github/workflows/advisory.yml`: use the same pinned prebuilt `cargo-deny` install path for the scheduled advisory job.
 
 Explicitly out-of-scope surfaces:
 

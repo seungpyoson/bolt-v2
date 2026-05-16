@@ -97,11 +97,11 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Local tests prove all preconditions and fail-closed paths. Operator artifact proves real submit/venue result/cancel/reconciliation.
 
-- [ ] T040 [US5] Write failing canary precondition tests requiring exact config checksum, approval id, gate report, submit admission state, and decision evidence.
-- [ ] T041 [US5] Write ignored operator test or command harness that submits at most one configured canary order after explicit approval.
-- [ ] T042 [US5] Implement canary operator harness using the production bolt-v3 path and NT adapter submit only.
-- [ ] T043 [US5] Add strategy-driven cancel path evidence capture for open canary orders.
-- [ ] T044 [US5] Add restart reconciliation evidence capture through NT adapter state.
+- [x] T040 [US5] Write failing canary precondition tests requiring exact config checksum, approval id, gate report, submit admission state, and decision evidence.
+- [x] T041 [US5] Write ignored operator test or command harness that submits at most one configured canary order after explicit approval.
+- [x] T042 [US5] Implement canary operator harness using the production bolt-v3 path and NT adapter submit only.
+- [x] T043 [US5] Add strategy-driven cancel path evidence capture for open canary orders.
+- [x] T044 [US5] Add restart reconciliation evidence capture through NT adapter state.
 - [ ] T045 [US5] Run local fail-closed tests, exact-head CI, no-mistakes triage, and external review after branch is clean and pushed.
 - [ ] T046 [US5] With explicit operator approval, run tiny-capital canary and store redacted artifact with exact SHA and config checksum.
 

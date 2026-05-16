@@ -260,7 +260,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: nextest-v3-shard-${{ matrix.shard }}-of-4
+          shared-key: nextest-v3
+          save-if: ${{ matrix.shard == 1 }}
 
       - name: Install cargo-nextest
         run: |

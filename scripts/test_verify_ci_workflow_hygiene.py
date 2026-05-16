@@ -77,7 +77,6 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
-          include-build-values: "true"
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
@@ -139,7 +138,8 @@ jobs:
       - uses: Swatinem/rust-cache@example
         with:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: nextest-v3-shard-${{ matrix.shard }}-of-4
+          shared-key: nextest-v3
+          save-if: ${{ matrix.shard == 1 }}
       - name: Show shard reproduction command
         run: |
           echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
@@ -642,9 +642,20 @@ def main() -> int:
             '        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
         ),
     )
+    assert_clean(
+        replace_once(
+            BASE_WORKFLOW,
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
+            '      - run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
+        )
+    )
     assert_error(
-        "test cache key must include matrix.shard",
-        replace_once(BASE_WORKFLOW, "          key: nextest-v3-shard-${{ matrix.shard }}-of-4", "          key: nextest-v3"),
+        "test cache must use shared nextest key",
+        replace_once(BASE_WORKFLOW, "          shared-key: nextest-v3", "          key: nextest-v3-shard-${{ matrix.shard }}-of-4"),
+    )
+    assert_error(
+        "test cache must save only from shard 1",
+        replace_once(BASE_WORKFLOW, "          save-if: ${{ matrix.shard == 1 }}\n", ""),
     )
     assert_error(
         "clippy must not run check-aarch64",
@@ -934,8 +945,10 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
-            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
-            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
+            "          shared-key: nextest-v3\n"
+            "          save-if: ${{ matrix.shard == 1 }}",
+            "          shared-key: nextest-v3\n"
+            "          save-if: ${{ matrix.shard == 1 }}",
         ),
     )
     assert_error(

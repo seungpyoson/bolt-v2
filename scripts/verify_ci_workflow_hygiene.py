@@ -159,7 +159,7 @@ TEST_CACHE_TARGETS_RE = re.compile(r"^\s+cache-targets:\s*true\s*$")
 TEST_CACHE_WORKSPACE_CRATES_RE = re.compile(r'^\s+cache-workspace-crates:\s*"true"\s*$')
 TEST_CACHE_RUST_ENV_HASH_RE = re.compile(r'^\s+add-rust-environment-hash-key:\s*"true"\s*$')
 TEST_ARCHIVE_KEY_INPUTS = (
-    "NEXTEST_ARCHIVE_KEY: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+    "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
     "'Cargo.lock'",
     "'Cargo.toml'",
     "'rust-toolchain.toml'",
@@ -174,7 +174,6 @@ TEST_ARCHIVE_KEY_INPUTS = (
 )
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
-TEST_ARCHIVE_CACHE_KEY = "key: ${{ env.NEXTEST_ARCHIVE_KEY }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830"
@@ -638,8 +637,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must upload nextest archive artifact")
         if "restore-keys:" in archive_text:
             errors.append("test-archive cache must not use restore-keys")
-        if TEST_ARCHIVE_CACHE_PATH not in archive_text or TEST_ARCHIVE_CACHE_KEY not in archive_text:
-            errors.append("test-archive cache must use archive path and key env")
+        if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
+            errors.append("test-archive cache must use archive path env")
         if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 3:
             errors.append("test-archive build must be skipped on archive cache hit")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):

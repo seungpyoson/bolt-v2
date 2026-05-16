@@ -127,7 +127,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
-      NEXTEST_ARCHIVE_KEY: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}
     steps:
       - uses: ./.github/actions/setup-environment
         id: setup
@@ -149,7 +148,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ env.NEXTEST_ARCHIVE_KEY }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         run: |
@@ -164,7 +163,7 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: ${{ env.NEXTEST_ARCHIVE_KEY }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -791,7 +790,11 @@ def main() -> int:
     assert_error(
         "test-archive cache key must include Rust and test graph inputs",
         replace_once(
-            BASE_WORKFLOW,
+            replace_once(
+                BASE_WORKFLOW,
+                "'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs'",
+                "'tests/**/*.rs'",
+            ),
             "'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs'",
             "'tests/**/*.rs'",
         ),
@@ -800,8 +803,8 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ env.NEXTEST_ARCHIVE_KEY }}\n      - name: Install cargo-nextest",
-            "          key: ${{ env.NEXTEST_ARCHIVE_KEY }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
     assert_error(

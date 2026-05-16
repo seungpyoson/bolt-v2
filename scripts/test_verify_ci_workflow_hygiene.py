@@ -187,18 +187,24 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          include-managed-target-dir: "true"
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nextest-archive
           path: ${{ runner.temp }}/nextest-archive
+      - name: Resolve archive extraction root
+        id: archive-root
+        run: |
+          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"
+          echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"
       - name: Show shard reproduction command
         run: |
-          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"
+          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
       - name: Install cargo-nextest
         run: |
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
-      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" --partition count:${{ matrix.shard }}/4
+      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
 
   test:
     name: test
@@ -696,15 +702,31 @@ def main() -> int:
         "test-shards must run partitioned nextest from archive",
         replace_once(
             BASE_WORKFLOW,
-            '      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" --partition count:${{ matrix.shard }}/4',
+            '      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
             "      - run: just test",
+        ),
+    )
+    assert_error(
+        "test-shards must resolve managed target dir",
+        replace_once(
+            BASE_WORKFLOW,
+            '          include-nextest-version: "true"\n          include-managed-target-dir: "true"\n      - name: Download nextest archive',
+            '          include-nextest-version: "true"\n      - name: Download nextest archive',
+        ),
+    )
+    assert_error(
+        "test-shards must extract archive to managed target parent",
+        replace_once(
+            BASE_WORKFLOW,
+            '          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"',
+            '          archive_extract_root="$RUNNER_TEMP/nextest-archive-extract"',
         ),
     )
     assert_error(
         "test-shards must log shard reproduction command",
         replace_once(
             BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"\n',
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"\n',
             "",
         ),
     )
@@ -712,15 +734,15 @@ def main() -> int:
         "test-shards reproduction command must use YAML block scalar",
         replace_once(
             BASE_WORKFLOW,
-            '        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
-            '        run: echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
+            '        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
+            '        run: echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
         ),
     )
     assert_clean(
         replace_once(
             BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
-            '      - run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst --partition count:${{ matrix.shard }}/4"',
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
+            '      - run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
         )
     )
     assert_error(

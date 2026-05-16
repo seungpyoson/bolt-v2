@@ -143,13 +143,17 @@ TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\
 TEST_SHARD_NAME_RE = re.compile(r"^\s+name:\s*nextest shard \$\{\{\s*matrix\.shard\s*\}\} of 4\s*$")
 TEST_PARTITION_COMMAND = (
     'just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" '
+    '"${{ steps.archive-root.outputs.archive_extract_root }}" '
     "--partition count:${{ matrix.shard }}/4"
 )
 TEST_REPRODUCTION_COMMAND = (
     "just test-archive-run .nextest-archive/nextest-archive.tar.zst "
+    "<managed-target-parent> "
     "--partition count:${{ matrix.shard }}/4"
 )
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
+TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
+TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
 TEST_ARCHIVE_BUILD_CACHE_KEY_RE = re.compile(r"^\s+key:\s*nextest-archive-build-v1\s*$")
 TEST_CACHE_WORKSPACES_RE = re.compile(
     r"^\s+workspaces:\s*\.\s*->\s*\$\{\{\s*steps\.setup\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
@@ -653,6 +657,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-shards matrix shard must be [1, 2, 3, 4]")
         if not has_line_matching(test_lines, TEST_SHARD_NAME_RE):
             errors.append("test-shards name must describe nextest shard")
+        if not job_has_setup_input(test_lines, "include-managed-target-dir", '"true"'):
+            errors.append("test-shards must resolve managed target dir")
+        if (
+            TEST_ARCHIVE_EXTRACT_ROOT_COMMAND not in test_text
+            or TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT not in test_text
+        ):
+            errors.append("test-shards must extract archive to managed target parent")
         if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
             errors.append("test-shards must run partitioned nextest from archive")
         if test_has_inline_shard_reproduction_command(test_lines):

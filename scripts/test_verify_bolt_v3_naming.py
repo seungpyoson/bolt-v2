@@ -43,11 +43,33 @@ accepted_non_nt_names: []
 """.lstrip()
 
 
-def test_load_audit_parses_repo_local_yaml_subset() -> None:
+def test_load_audit_uses_pyyaml_for_standard_yaml_features() -> None:
     original_audit_path = VERIFIER.AUDIT_PATH
+    audit_text = """
+audit_id: &audit_id probe
+version: 1
+notes: |
+  multiline note
+rules:
+  - name: "fixture"
+    include_globs: &rust_globs
+      - "src/**/*.rs"
+renamed_in_current_audit:
+  - from: "VenueKind"
+    to: "ProviderKey"
+defensive_forbidden: []
+path_scoped_forbidden:
+  - from: "MarketSlugFilter"
+    to: "ProviderOwnedFilter"
+    include_globs: *rust_globs
+    reason: >
+      provider
+      boundary
+accepted_non_nt_names: []
+""".lstrip()
     with tempfile.TemporaryDirectory() as tmp:
         audit_path = Path(tmp) / "audit.yaml"
-        audit_path.write_text(AUDIT_TEXT, encoding="utf-8")
+        audit_path.write_text(audit_text, encoding="utf-8")
         try:
             VERIFIER.AUDIT_PATH = audit_path
             audit = VERIFIER.load_audit()
@@ -55,8 +77,10 @@ def test_load_audit_parses_repo_local_yaml_subset() -> None:
             VERIFIER.AUDIT_PATH = original_audit_path
 
     scoped = audit["path_scoped_forbidden"][0]
-    if scoped["include_globs"] != ["src/core.rs"] or scoped["reason"] != "provider boundary":
-        raise AssertionError(f"nested list parse failed: {scoped!r}")
+    if scoped["include_globs"] != ["src/**/*.rs"] or scoped["reason"].strip() != "provider boundary":
+        raise AssertionError(f"standard YAML parse failed: {scoped!r}")
+    if audit["notes"] != "multiline note\n":
+        raise AssertionError(f"block scalar parse failed: {audit!r}")
 
 
 def test_load_audit_handles_inline_comments_and_single_quotes() -> None:
@@ -87,27 +111,6 @@ accepted_non_nt_names: []
     rule = audit["rules"][0]
     if rule["name"] != "fixture" or rule["include_globs"] != ["src/**/*.rs"]:
         raise AssertionError(f"inline comment parse failed: {rule!r}")
-
-
-def test_load_audit_rejects_unsupported_yaml_subset() -> None:
-    original_audit_path = VERIFIER.AUDIT_PATH
-    cases = {
-        "missing-colon": "audit_id \"probe\"\n",
-        "block-scalar": "audit_id: |\n  probe\n",
-    }
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            for name, audit_text in cases.items():
-                audit_path = Path(tmp) / f"{name}.yaml"
-                audit_path.write_text(audit_text, encoding="utf-8")
-                VERIFIER.AUDIT_PATH = audit_path
-                try:
-                    VERIFIER.load_audit()
-                except ValueError:
-                    continue
-                raise AssertionError(f"expected ValueError for {name}")
-    finally:
-        VERIFIER.AUDIT_PATH = original_audit_path
 
 
 def test_word_regex_is_bounded_to_identifier_words() -> None:
@@ -189,9 +192,8 @@ def test_main_reports_forbidden_and_required_names() -> None:
 
 def main() -> int:
     tests = [
-        test_load_audit_parses_repo_local_yaml_subset,
+        test_load_audit_uses_pyyaml_for_standard_yaml_features,
         test_load_audit_handles_inline_comments_and_single_quotes,
-        test_load_audit_rejects_unsupported_yaml_subset,
         test_word_regex_is_bounded_to_identifier_words,
         test_scan_paths_excludes_audit_target_git_and_reviews,
         test_main_reports_forbidden_and_required_names,

@@ -196,12 +196,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install source-fence Python dependencies
+        run: python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/source-fence.txt
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
           cache-targets: false
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: source-fence-v1
+          key: source-fence-v1-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
 
       - name: source-fence
         env:
@@ -209,8 +212,6 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: just source-fence
 
-  # #342 owns these canonical source-fence filters. Until #332 changes full
-  # nextest ownership, `test` intentionally still duplicates them under `gate`.
   test:
     name: test
     needs: [detector, source-fence]

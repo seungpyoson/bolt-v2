@@ -17,7 +17,7 @@
 
 - [x] T005 [US2] Add `scripts/verify_bolt_v3_pure_rust_runtime.py`
 - [x] T006 [US2] Add `scripts/verify_bolt_v3_status_map_current.py`
-- [x] T007 [US2] Make `scripts/verify_bolt_v3_naming.py` deterministic without ambient unpinned Python packages if required
+- [x] T007 [US2] Make `scripts/verify_bolt_v3_naming.py` deterministic with hashed PyYAML in CI
 - [x] T008 [US2] Update `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` row 3 to cite the pure-Rust runtime verifier
 
 ## Phase 4: Source-Fence Recipe And Workflow

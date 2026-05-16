@@ -77,7 +77,7 @@ As the maintainer, I can rely on `gate` and `just ci-lint-workflow` to fail clos
 
 - **SourceFenceJob**: GitHub Actions job that runs the structural verifier recipe and owns early failure for source-scan drift.
 - **SourceFenceRecipe**: `just source-fence`, the local and CI command that runs verifiers and targeted cargo test filters.
-- **VerifierScriptSet**: Six Python verifier scripts named by #342.
+- **VerifierScriptSet**: Six Python verifier scripts named by #342, with any non-stdlib CI dependency pinned by hash.
 - **GateInvariant**: Workflow and linter checks proving `source-fence` is required and fail-closed.
 - **TemporaryDuplicateOwnershipNote**: Documentation that #342 owns the canonical filters now, while #332 will later exclude them from full nextest shards or explicitly keep duplicate execution under the aggregate gate.
 

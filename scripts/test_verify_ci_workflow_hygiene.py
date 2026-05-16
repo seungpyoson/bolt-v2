@@ -134,15 +134,6 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
-          include-managed-target-dir: "true"
-      - uses: Swatinem/rust-cache@example
-        with:
-          cache-on-failure: true
-          cache-targets: true
-          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
-          cache-workspace-crates: "true"
-          add-rust-environment-hash-key: "true"
-          key: nextest-archive-build-v1
       - name: Restore nextest archive
         id: nextest-archive-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -746,51 +737,34 @@ def main() -> int:
         )
     )
     assert_error(
-        "test-archive cache must use archive-build key",
+        "test-archive must not use managed target rust-cache",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-build-v1",
-            "          key: nextest-v3",
+            "      - name: Restore nextest archive",
+            "      - uses: Swatinem/rust-cache@example\n"
+            "        with:\n"
+            "          cache-targets: true\n"
+            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n"
+            "          key: nextest-archive-build-v1\n"
+            "      - name: Restore nextest archive",
         ),
     )
     assert_error(
-        "test-archive cache must map workspace to managed target dir relative output",
+        "test-archive must not opt into managed target dir",
         replace_once(
             BASE_WORKFLOW,
-            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n",
-            "",
+            '          include-nextest-version: "true"',
+            '          include-nextest-version: "true"\n          include-managed-target-dir: "true"',
         ),
     )
     assert_error(
-        "test-archive cache must set cache-on-failure: true",
+        "test-archive must not save a second archive-build cache",
         replace_once(
             BASE_WORKFLOW,
-            "          cache-on-failure: true\n",
-            "",
-        ),
-    )
-    assert_error(
-        "test-archive cache must set cache-targets: true",
-        replace_once(
-            BASE_WORKFLOW,
-            "          cache-targets: true\n",
-            "",
-        ),
-    )
-    assert_error(
-        'test-archive cache must set cache-workspace-crates: "true"',
-        replace_once(
-            BASE_WORKFLOW,
-            '          cache-workspace-crates: "true"\n',
-            "",
-        ),
-    )
-    assert_error(
-        'test-archive cache must set add-rust-environment-hash-key: "true"',
-        replace_once(
-            BASE_WORKFLOW,
-            '          add-rust-environment-hash-key: "true"\n',
-            "",
+            "      - name: Restore nextest archive",
+            "      - name: Archive build cache key marker\n"
+            "        run: echo nextest-archive-build-v1\n"
+            "      - name: Restore nextest archive",
         ),
     )
     assert_error(

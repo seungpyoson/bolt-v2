@@ -44,7 +44,7 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-archive", "build")
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 LIVE_NODE_TEST_GROUP = "live-node"
 LIVE_NODE_UNIT_TEST_FILTERS = (
@@ -154,14 +154,6 @@ TEST_REPRODUCTION_COMMAND = (
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
 TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
 TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
-TEST_ARCHIVE_BUILD_CACHE_KEY_RE = re.compile(r"^\s+key:\s*nextest-archive-build-v1\s*$")
-TEST_CACHE_WORKSPACES_RE = re.compile(
-    r"^\s+workspaces:\s*\.\s*->\s*\$\{\{\s*steps\.setup\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
-)
-TEST_CACHE_ON_FAILURE_RE = re.compile(r"^\s+cache-on-failure:\s*true\s*$")
-TEST_CACHE_TARGETS_RE = re.compile(r"^\s+cache-targets:\s*true\s*$")
-TEST_CACHE_WORKSPACE_CRATES_RE = re.compile(r'^\s+cache-workspace-crates:\s*"true"\s*$')
-TEST_CACHE_RUST_ENV_HASH_RE = re.compile(r'^\s+add-rust-environment-hash-key:\s*"true"\s*$')
 TEST_ARCHIVE_KEY_INPUTS = (
     "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
     "'Cargo.lock'",
@@ -621,18 +613,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must declare nextest archive path")
         if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
             errors.append("test-archive cache key must include Rust and test graph inputs")
-        if not has_line_matching(archive_lines, TEST_ARCHIVE_BUILD_CACHE_KEY_RE):
-            errors.append("test-archive cache must use archive-build key")
-        if not has_line_matching(archive_lines, TEST_CACHE_WORKSPACES_RE):
-            errors.append("test-archive cache must map workspace to managed target dir relative output")
-        if not has_line_matching(archive_lines, TEST_CACHE_ON_FAILURE_RE):
-            errors.append("test-archive cache must set cache-on-failure: true")
-        if not has_line_matching(archive_lines, TEST_CACHE_TARGETS_RE):
-            errors.append("test-archive cache must set cache-targets: true")
-        if not has_line_matching(archive_lines, TEST_CACHE_WORKSPACE_CRATES_RE):
-            errors.append('test-archive cache must set cache-workspace-crates: "true"')
-        if not has_line_matching(archive_lines, TEST_CACHE_RUST_ENV_HASH_RE):
-            errors.append('test-archive cache must set add-rust-environment-hash-key: "true"')
+        if "Swatinem/rust-cache@" in archive_text:
+            errors.append("test-archive must not use managed target rust-cache")
+        if "include-managed-target-dir:" in archive_text:
+            errors.append("test-archive must not opt into managed target dir")
+        if "nextest-archive-build-v1" in archive_text:
+            errors.append("test-archive must not save a second archive-build cache")
         if TEST_ARCHIVE_RESTORE_ACTION not in archive_text:
             errors.append("test-archive must restore nextest archive cache")
         if TEST_ARCHIVE_SAVE_ACTION not in archive_text:

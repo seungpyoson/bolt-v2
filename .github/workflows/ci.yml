@@ -254,16 +254,6 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
-          include-managed-target-dir: "true"
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          cache-on-failure: true
-          cache-targets: true
-          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
-          cache-workspace-crates: "true"
-          add-rust-environment-hash-key: "true"
-          key: nextest-archive-build-v1
 
       - name: Restore nextest archive
         id: nextest-archive-cache

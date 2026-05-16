@@ -50,6 +50,8 @@ pub enum Phase8CanaryBlockReason {
     LiveOrderCountCapNotOne,
     NonPositiveRealizedVolatility,
     NonPositiveTimeToExpiry,
+    NonPositiveSpotPrice,
+    NonPositivePriceToBeatValue,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
@@ -76,13 +78,24 @@ impl Phase8StrategyInputSafetyAudit {
         }
     }
 
-    pub fn from_strategy_inputs(realized_volatility: Decimal, seconds_to_expiry: u64) -> Self {
+    pub fn from_strategy_inputs(
+        realized_volatility: Decimal,
+        seconds_to_expiry: u64,
+        spot_price: Decimal,
+        price_to_beat_value: Decimal,
+    ) -> Self {
         let mut block_reasons = Vec::new();
         if realized_volatility <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveRealizedVolatility);
         }
         if seconds_to_expiry == 0 {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveTimeToExpiry);
+        }
+        if spot_price <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveSpotPrice);
+        }
+        if price_to_beat_value <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositivePriceToBeatValue);
         }
         if block_reasons.is_empty() {
             Self::approved()
@@ -125,9 +138,18 @@ impl Phase8StrategyInputSafetyAudit {
             Decimal::from_str_exact(raw.realized_volatility.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input realized_volatility: {source}")
             })?;
+        let spot_price = Decimal::from_str_exact(raw.spot_price.trim()).map_err(|source| {
+            anyhow!("failed to parse phase8 strategy input spot_price: {source}")
+        })?;
+        let price_to_beat_value =
+            Decimal::from_str_exact(raw.price_to_beat_value.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input price_to_beat_value: {source}")
+            })?;
         Ok(Self::from_strategy_inputs(
             realized_volatility,
             raw.seconds_to_expiry,
+            spot_price,
+            price_to_beat_value,
         ))
     }
 
@@ -144,6 +166,8 @@ impl Phase8StrategyInputSafetyAudit {
 struct Phase8StrategyInputEvidenceFile {
     realized_volatility: String,
     seconds_to_expiry: u64,
+    spot_price: String,
+    price_to_beat_value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

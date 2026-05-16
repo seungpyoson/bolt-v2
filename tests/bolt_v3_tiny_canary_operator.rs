@@ -111,6 +111,106 @@ fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
 }
 
 #[test]
+fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "phase8-live-run-001";
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(&snapshot, run_id)
+        .expect_err("stale restart reconciliation evidence must fail");
+
+    assert!(
+        error.to_string().contains("restart reconciliation"),
+        "error should mention stale restart reconciliation evidence: {error}"
+    );
+}
+
+fn write_json_proof(path: &Path, value: serde_json::Value) {
+    std::fs::write(
+        path,
+        serde_json::to_vec(&value).expect("proof should serialize"),
+    )
+    .expect("proof should write");
+}
+
+#[test]
 fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let proof_path = temp.path().join("post-run-hygiene.json");
@@ -397,6 +497,7 @@ struct Phase8OperatorLiveResultSnapshot {
     nt_submit_event_sha256: Option<String>,
     venue_order_state_sha256: Option<String>,
     strategy_cancel_sha256: Option<String>,
+    restart_reconciliation_sha256: Option<String>,
     post_run_hygiene_sha256: Option<String>,
 }
 
@@ -469,6 +570,9 @@ impl Phase8OperatorLiveResultPaths {
                 Some(strategy_cancel_path) => phase8_optional_sha256_file(strategy_cancel_path)?,
                 None => None,
             },
+            restart_reconciliation_sha256: phase8_optional_sha256_file(
+                &self.restart_reconciliation_path,
+            )?,
             post_run_hygiene_sha256: phase8_optional_sha256_file(&self.post_run_hygiene_path)?,
         })
     }
@@ -499,6 +603,11 @@ impl Phase8OperatorLiveResultPaths {
                 "strategy cancel evidence",
             )?;
         }
+        phase8_assert_changed_after_run(
+            &self.restart_reconciliation_path,
+            &snapshot.restart_reconciliation_sha256,
+            "restart reconciliation evidence",
+        )?;
         phase8_assert_changed_after_run(
             &self.post_run_hygiene_path,
             &snapshot.post_run_hygiene_sha256,

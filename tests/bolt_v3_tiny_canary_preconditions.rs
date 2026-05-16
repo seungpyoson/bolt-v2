@@ -1475,6 +1475,31 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         "unsafe pre-run state must not create consumption evidence"
     );
 
+    write_phase8_pre_run_state_with_clob_fee_behavior(&pre_run_state_path, false, false);
+    let blocked_clob_fee_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+        .expect("pre-run state hash should compute");
+    let mut blocked_clob_fee_envelope = envelope.clone();
+    blocked_clob_fee_envelope.pre_run_state_sha256 = blocked_clob_fee_hash;
+    let blocked_clob_fee_error = blocked_clob_fee_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("unverified CLOB V2 fee behavior must fail closed");
+    assert!(
+        blocked_clob_fee_error
+            .to_string()
+            .contains("clob_v2_fee_behavior_verified"),
+        "error should mention blocked CLOB V2 fee proof: {blocked_clob_fee_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "unverified CLOB V2 fee behavior must not create consumption evidence"
+    );
+
     write_phase8_pre_run_state(&pre_run_state_path, false);
     envelope
         .validate_and_consume_against(
@@ -1695,6 +1720,14 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
 }
 
 fn write_phase8_pre_run_state(path: &std::path::Path, has_preexisting_position: bool) {
+    write_phase8_pre_run_state_with_clob_fee_behavior(path, has_preexisting_position, true);
+}
+
+fn write_phase8_pre_run_state_with_clob_fee_behavior(
+    path: &std::path::Path,
+    has_preexisting_position: bool,
+    clob_v2_fee_behavior_verified: bool,
+) {
     let json = serde_json::json!({
         "strategy_venue": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
@@ -1705,7 +1738,12 @@ fn write_phase8_pre_run_state(path: &std::path::Path, has_preexisting_position: 
         "market_window_approved": true,
         "funding_margin_covers_max_notional_plus_fees": true,
         "single_runner_lock_acquired": true,
-        "egress_identity_approved": true
+        "egress_identity_approved": true,
+        "clob_v2_adapter_signing_verified": true,
+        "clob_v2_collateral_accounting_verified": true,
+        "clob_v2_fee_behavior_verified": clob_v2_fee_behavior_verified,
+        "release_manifest_clob_signing_version": "clob_v2",
+        "release_manifest_nt_revision_matches_compiled_pin": true
     });
     std::fs::write(
         path,

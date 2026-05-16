@@ -1165,6 +1165,11 @@ struct Phase8PreRunStateEvidenceFile {
     funding_margin_covers_max_notional_plus_fees: bool,
     single_runner_lock_acquired: bool,
     egress_identity_approved: bool,
+    clob_v2_adapter_signing_verified: bool,
+    clob_v2_collateral_accounting_verified: bool,
+    clob_v2_fee_behavior_verified: bool,
+    release_manifest_clob_signing_version: String,
+    release_manifest_nt_revision_matches_compiled_pin: bool,
 }
 
 impl Phase8PreRunStateEvidenceFile {
@@ -1206,6 +1211,26 @@ impl Phase8PreRunStateEvidenceFile {
         require_pre_run_clearance(
             stringify!(egress_identity_approved),
             self.egress_identity_approved,
+        )?;
+        require_pre_run_clearance(
+            stringify!(clob_v2_adapter_signing_verified),
+            self.clob_v2_adapter_signing_verified,
+        )?;
+        require_pre_run_clearance(
+            stringify!(clob_v2_collateral_accounting_verified),
+            self.clob_v2_collateral_accounting_verified,
+        )?;
+        require_pre_run_clearance(
+            stringify!(clob_v2_fee_behavior_verified),
+            self.clob_v2_fee_behavior_verified,
+        )?;
+        require_pre_run_string(
+            stringify!(release_manifest_clob_signing_version),
+            &self.release_manifest_clob_signing_version,
+        )?;
+        require_pre_run_clearance(
+            stringify!(release_manifest_nt_revision_matches_compiled_pin),
+            self.release_manifest_nt_revision_matches_compiled_pin,
         )
     }
 }
@@ -1215,6 +1240,14 @@ fn require_pre_run_clearance(field: &'static str, satisfied: bool) -> Result<()>
         Ok(())
     } else {
         Err(pre_run_state_blocked(field))
+    }
+}
+
+fn require_pre_run_string(field: &'static str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        Err(pre_run_state_blocked(field))
+    } else {
+        Ok(())
     }
 }
 

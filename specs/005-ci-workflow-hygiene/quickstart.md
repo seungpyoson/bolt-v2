@@ -2,7 +2,7 @@
 
 ## Local Red/Green Checks
 
-From the #203 worktree:
+From the current workflow-hygiene worktree:
 
 ```bash
 python3 scripts/test_verify_ci_workflow_hygiene.py
@@ -15,7 +15,7 @@ Expected result after implementation: all commands pass.
 ## Workflow Sanity Checks
 
 ```bash
-rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|taiki-e/install-action|fallback: none|cargo-zigbuild-x86_64-unknown-linux-gnu|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
+rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|check-aarch64|source-fence|test-shards|taiki-e/install-action|fallback: none|cargo-zigbuild-x86_64-unknown-linux-gnu|needs\\.(detector|fmt-check|deny|clippy|check-aarch64|source-fence|test|build)\\.result" .github/workflows/ci.yml
 rg -n "advisories:|taiki-e/install-action|fallback: none|cargo-deny" .github/workflows/advisory.yml
 rg -n "cargo install cargo-(deny|nextest|zigbuild)" .github/workflows/ci.yml .github/workflows/advisory.yml
 ```
@@ -46,7 +46,12 @@ Exact-head CI must pass before external review:
 - `fmt-check`
 - `deny`
 - `clippy`
+- `check-aarch64`
 - `source-fence`
+- `nextest shard 1 of 4`
+- `nextest shard 2 of 4`
+- `nextest shard 3 of 4`
+- `nextest shard 4 of 4`
 - `test`
 - `build`
 - `gate`

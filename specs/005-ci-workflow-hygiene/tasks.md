@@ -41,7 +41,7 @@
 **Independent Test**: `just ci-lint-workflow` passes only when fmt-check has no detector need, build remains detector-gated, and deploy directly needs required lanes.
 
 - [x] T012 [US3] Remove `fmt-check` detector dependency in `.github/workflows/ci.yml`
-- [x] T013 [US3] Add direct deploy needs for detector, fmt-check, deny, clippy, source-fence, and test in `.github/workflows/ci.yml`
+- [x] T013 [US3] Add direct deploy needs for detector, fmt-check, deny, clippy, check-aarch64, source-fence, and test in `.github/workflows/ci.yml`
 - [x] T014 [US3] Enforce fmt-check/build/deploy semantics in `scripts/verify_ci_workflow_hygiene.py`
 
 ## Phase 6: Polish & Cross-Cutting
@@ -51,7 +51,7 @@
 - [x] T017 Run `just ci-lint-workflow`
 - [x] T018 Run `just fmt-check`
 - [x] T019 Run `git diff --check`
-- [x] T020 Update PR body with exact-head CI and residual #332/#195/#205/#344/#340 scope
+- [x] T020 Update PR body with exact-head CI, landed #332 base-topology note, and residual #195/#205/#344/#340 scope
 
 ## Phase 7: Prebuilt CI Tool Install Contract
 

@@ -150,13 +150,30 @@ CI_INSTALL_ACTION_TOOLS = {
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
 }
+CI_INSTALL_ACTION_COMMANDS = {
+    "deny": "just deny",
+    "advisories": "just deny-advisories",
+    "test-shards": "just test -- --partition count:${{ matrix.shard }}/4",
+}
+CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--color", "--config", "-C", "-Z"}
+CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
 ZIGBUILD_PREBUILT_LITERALS = (
     'version="${{ steps.setup.outputs.zigbuild_version }}"',
     'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
     "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
-    'curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"',
+    "curl \\",
+    "--retry 10",
+    "--retry-delay 3",
+    "--retry-all-errors",
+    "--fail",
+    "--location",
+    "--show-error",
+    "--silent",
+    '--output "$archive"',
+    '"$base_url/$archive"',
     'expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"',
     'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
+    'test "$actual" = "$expected"',
     'tar --extract --xz --file "$archive"',
     'mkdir -p "$HOME/.cargo/bin"',
     'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
@@ -363,21 +380,196 @@ def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
 
 
-def install_action_tool_block(job_lines: list[str], tool: str, output: str) -> list[str] | None:
-    expected_tool = f"tool: {tool}@${{{{ {output} }}}}"
-    for block in step_blocks(job_lines):
-        text = uncommented_text(block)
-        if f"uses: {TAIKI_INSTALL_ACTION}" in text and expected_tool in text:
-            return block
+def block_uses_exact_action(block: list[str], action: str) -> bool:
+    pattern = re.compile(rf"^\s*(?:-\s*)?uses:\s*{re.escape(action)}\s*$")
+    return any(pattern.match(strip_comment(line)) for line in block)
+
+
+def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tuple[int, list[str]] | None:
+    expected_tool = f"{tool}@${{{{ {output} }}}}"
+    for index, block in enumerate(step_blocks(job_lines)):
+        if block_uses_exact_action(block, TAIKI_INSTALL_ACTION) and block_has_input(block, "tool", expected_tool):
+            return index, block
     return None
 
 
-def cargo_install_arg_matches_tool(arg: str, tool: str) -> bool:
-    crate, separator, _version = arg.partition("@")
-    return arg == tool or (separator == "@" and crate == tool)
+def first_step_running_command(job_lines: list[str], command: str) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        if block_runs_command(block, command):
+            return index
+    return None
 
 
-def runs_cargo_install_tool(text: str, tool: str) -> bool:
+def first_step_containing_literals(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        text = uncommented_text(block)
+        if all(literal in text for literal in literals):
+            return index
+    return None
+
+
+def first_step_containing_literals_in_order(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        text = uncommented_text(block)
+        position = 0
+        for literal in literals:
+            found = text.find(literal, position)
+            if found < 0:
+                break
+            position = found + len(literal)
+        else:
+            return index
+    return None
+
+
+def shell_assignment_word(token: str) -> bool:
+    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token) is not None
+
+
+SUDO_OPTIONS_WITH_ARGUMENT = {
+    "-A",
+    "-a",
+    "-b",
+    "-C",
+    "-c",
+    "-D",
+    "-g",
+    "-h",
+    "-p",
+    "-R",
+    "-r",
+    "-T",
+    "-t",
+    "-U",
+    "-u",
+    "--askpass",
+    "--auth-type",
+    "--background",
+    "--chdir",
+    "--close-from",
+    "--command-timeout",
+    "--group",
+    "--host",
+    "--login-class",
+    "--prompt",
+    "--role",
+    "--type",
+    "--user",
+}
+SUDO_OPTIONS_WITHOUT_ARGUMENT = {
+    "-E",
+    "-e",
+    "-H",
+    "-i",
+    "-K",
+    "-k",
+    "-l",
+    "-n",
+    "-P",
+    "-S",
+    "-s",
+    "-V",
+    "-v",
+    "--bell",
+    "--edit",
+    "--help",
+    "--ignore-ticket",
+    "--list",
+    "--login",
+    "--non-interactive",
+    "--preserve-env",
+    "--remove-timestamp",
+    "--reset-timestamp",
+    "--stdin",
+    "--validate",
+    "--version",
+}
+ENV_OPTIONS_WITH_ARGUMENT = {
+    "-S",
+    "-u",
+    "-C",
+    "--split-string",
+    "--unset",
+    "--chdir",
+    "--block-signal",
+    "--default-signal",
+    "--ignore-signal",
+}
+ENV_OPTIONS_WITHOUT_ARGUMENT = {
+    "-0",
+    "-i",
+    "-v",
+    "--debug",
+    "--ignore-environment",
+    "--null",
+}
+TIME_OPTIONS_WITHOUT_ARGUMENT = {"-p"}
+
+
+def consume_assignment_words(tokens: list[str], index: int) -> int:
+    while index < len(tokens) and shell_assignment_word(tokens[index]):
+        index += 1
+    return index
+
+
+def consume_option_prefix(
+    tokens: list[str],
+    index: int,
+    options_with_argument: set[str],
+    options_without_argument: set[str],
+) -> int | None:
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in options_with_argument:
+            if index + 1 >= len(tokens):
+                return None
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if token in options_without_argument:
+            index += 1
+            continue
+        if len(token) > 2 and token[:2] in options_with_argument:
+            index += 1
+            continue
+        break
+    return index
+
+
+def command_prefix_allows_cargo(prefix: list[str]) -> bool:
+    index = consume_assignment_words(prefix, 0)
+    while index < len(prefix):
+        token = prefix[index]
+        if token == "command":
+            index += 1
+        elif token == "time":
+            index = consume_option_prefix(prefix, index + 1, set(), TIME_OPTIONS_WITHOUT_ARGUMENT)
+        elif token == "sudo":
+            index = consume_option_prefix(prefix, index + 1, SUDO_OPTIONS_WITH_ARGUMENT, SUDO_OPTIONS_WITHOUT_ARGUMENT)
+        elif token == "env":
+            index = consume_option_prefix(prefix, index + 1, ENV_OPTIONS_WITH_ARGUMENT, ENV_OPTIONS_WITHOUT_ARGUMENT)
+        else:
+            return False
+        if index is None:
+            return False
+        index = consume_assignment_words(prefix, index)
+    return True
+
+
+def cargo_token_is_command(tokens: list[str], index: int) -> bool:
+    boundaries = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
+    cursor = index - 1
+    while cursor >= 0 and tokens[cursor] not in boundaries:
+        cursor -= 1
+    prefix = tokens[cursor + 1 : index]
+    return command_prefix_allows_cargo(prefix)
+
+
+def runs_cargo_install(text: str) -> bool:
     for line in text.replace("\\\n", " ").splitlines():
         if "cargo" not in line or "install" not in line:
             continue
@@ -390,17 +582,32 @@ def runs_cargo_install_tool(text: str, tool: str) -> bool:
         for index, token in enumerate(tokens[:-1]):
             if token != "cargo":
                 continue
-            command_index = index + 1
-            while command_index < len(tokens) and tokens[command_index].startswith("+"):
-                command_index += 1
+            if not cargo_token_is_command(tokens, index):
+                continue
+            command_index = consume_cargo_global_options(tokens, index + 1)
             if command_index >= len(tokens) or tokens[command_index] != "install":
                 continue
-            for arg in tokens[command_index + 1 :]:
-                if arg in {";", "&&", "||", "|"}:
-                    break
-                if cargo_install_arg_matches_tool(arg, tool):
-                    return True
+            return True
     return False
+
+
+def consume_cargo_global_options(tokens: list[str], index: int) -> int:
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("+"):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        break
+    return index
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
@@ -776,27 +983,35 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
         if job_lines is None:
             continue
         text = uncommented_text(job_lines)
-        if runs_cargo_install_tool(text, tool):
+        if runs_cargo_install(text):
             errors.append(f"{workflow_name} {job} must not compile {tool} from source")
-        block = install_action_tool_block(job_lines, tool, output)
-        if block is None:
+        step = install_action_tool_step(job_lines, tool, output)
+        if step is None:
             errors.append(f"{workflow_name} {job} must install {tool} with pinned taiki-e/install-action")
             continue
+        install_index, block = step
         if not block_has_input(block, "fallback", "none"):
             errors.append(f"{workflow_name} {job} install-action fallback must be none")
+        command = CI_INSTALL_ACTION_COMMANDS[job]
+        command_index = first_step_running_command(job_lines, command)
+        if command_index is not None and install_index >= command_index:
+            errors.append(f"{workflow_name} {job} must install {tool} before {command}")
 
     build_lines = jobs.get("build")
     if build_lines is None:
         return errors
     build_text = uncommented_text(build_lines)
-    if runs_cargo_install_tool(build_text, "cargo-zigbuild"):
+    if runs_cargo_install(build_text):
         errors.append(f"{workflow_name} build must not compile cargo-zigbuild from source")
     if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
         errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
-    for literal in ZIGBUILD_PREBUILT_LITERALS:
-        if literal not in build_text:
-            errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
-            break
+    zigbuild_install_index = first_step_containing_literals_in_order(build_lines, ZIGBUILD_PREBUILT_LITERALS)
+    if zigbuild_install_index is None:
+        errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
+    else:
+        build_command_index = first_step_running_command(build_lines, "just build")
+        if build_command_index is not None and zigbuild_install_index >= build_command_index:
+            errors.append(f"{workflow_name} build must install cargo-zigbuild before just build")
     if 'test "$actual" = "$expected"' not in build_text:
         errors.append(f"{workflow_name} build must verify cargo-zigbuild archive checksum")
     return errors

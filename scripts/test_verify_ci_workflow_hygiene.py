@@ -188,7 +188,16 @@ jobs:
           version="${{ steps.setup.outputs.zigbuild_version }}"
           archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
           base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
           expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
           actual="$(sha256sum "$archive" | awk '{print $1}')"
           test "$actual" = "$expected"
@@ -882,12 +891,48 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c",
+            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c-suffix",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must install cargo-deny before just deny",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
+      - run: just deny""",
+            """      - run: just deny
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
+        ),
+    )
+    assert_error(
         "ci.yml deny must not compile cargo-deny from source",
         replace_once(
             BASE_WORKFLOW,
             "      - run: just deny",
             """      - run: |
           cargo install --locked cargo-deny
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo --config net.git-fetch-with-cli=true install cargo-deny --locked
           just deny""",
         ),
     )
@@ -912,6 +957,128 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo install --git https://github.com/EmbarkStudios/cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo install --path vendor/cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          if cargo install --git https://github.com/EmbarkStudios/cargo-deny --locked; then
+            just deny
+          fi""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          env cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          RUSTFLAGS= cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo -E cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          env -u RUSTFLAGS cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          { cargo install cargo-deny --locked; }
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          while cargo install cargo-deny --locked; do
+            break
+          done
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sleep 1 & cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_clean(
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          echo cargo install cargo-deny
+          just deny""",
+        )
+    )
+    assert_error(
         "ci.yml test-shards must install cargo-nextest with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
@@ -926,11 +1093,39 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci.yml test-shards must not compile cargo-nextest from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just test -- --partition count:${{ matrix.shard }}/4",
+            """      - run: |
+          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
+          just test -- --partition count:${{ matrix.shard }}/4""",
+        ),
+    )
+    assert_error(
         "ci.yml test-shards install-action fallback must be none",
         replace_once(
             BASE_WORKFLOW,
             "          fallback: none\n      - run: just test -- --partition count:${{ matrix.shard }}/4",
             "          fallback: cargo-install\n      - run: just test -- --partition count:${{ matrix.shard }}/4",
+        ),
+    )
+    assert_error(
+        "ci.yml test-shards must install cargo-nextest before just test",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+      - run: just test -- --partition count:${{ matrix.shard }}/4""",
+            """      - run: just test -- --partition count:${{ matrix.shard }}/4
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none""",
         ),
     )
     assert_error(
@@ -940,7 +1135,16 @@ def main() -> int:
             """          version="${{ steps.setup.outputs.zigbuild_version }}"
           archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
           base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
           expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
           actual="$(sha256sum "$archive" | awk '{print $1}')"
           test "$actual" = "$expected"
@@ -983,8 +1187,50 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo install --path tools/cargo-zigbuild --locked
+          just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo install --git https://github.com/rust-cross/cargo-zigbuild --locked
+          just build""",
+        ),
+    )
+    assert_error(
         "ci.yml build must verify cargo-zigbuild archive checksum",
         replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
+        replace_once(
+            BASE_WORKFLOW,
+            '          test "$actual" = "$expected"\n          tar --extract --xz --file "$archive"',
+            '          tar --extract --xz --file "$archive"\n          test "$actual" = "$expected"',
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
+        replace_once(
+            replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
+            "      - run: just build",
+            '''      - run: |
+          just build
+          test "$actual" = "$expected"''',
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
+        replace_once(BASE_WORKFLOW, "          --retry-all-errors \\\n", ""),
     )
     assert_error(
         "ci.yml build must use pinned cargo-zigbuild archive sha256",
@@ -995,6 +1241,83 @@ def main() -> int:
           expected="$(awk '{print $1}' "$archive.sha256")"
 """,
         ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild before just build",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-zigbuild
+        run: |
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version
+      - run: just build""",
+            """      - run: just build
+      - name: Install cargo-zigbuild
+        run: |
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version""",
+        ),
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must install cargo-deny before just deny-advisories",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
+      - name: Check advisories
+        run: just deny-advisories""",
+                """      - name: Check advisories
+        run: just deny-advisories
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
+            ),
+        },
     )
     assert_error(
         "gate must use always()",

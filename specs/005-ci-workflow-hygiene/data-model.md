@@ -44,7 +44,7 @@ Validation rules:
 ## DeployDefenseNeeds
 
 - **deploy_job**: `deploy`.
-- **direct_needs**: `gate`, `build`, `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`.
+- **direct_needs**: `gate`, `build`, `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `test`.
 
 Validation rules:
 
@@ -72,7 +72,7 @@ Validation rules:
 ## DetectorSerializationDecision
 
 - **removed_edge**: `fmt-check -> detector`.
-- **kept_edges**: `build -> detector`, `source-fence -> detector`, `test -> detector`, `test -> source-fence`.
+- **kept_edges**: `build -> detector`, `source-fence -> detector`, `test-shards -> detector`, `test-shards -> source-fence`, `test -> test-shards`.
 
 Validation rules:
 

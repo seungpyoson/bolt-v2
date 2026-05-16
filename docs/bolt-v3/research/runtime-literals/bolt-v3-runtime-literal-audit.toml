@@ -1301,3 +1301,11 @@ literal = '''b"\n"'''
 context = '''line.extend_from_slice(b"\n");'''
 classification = "decision_evidence_jsonl_record_separator"
 reason = "This is the JSONL line separator for one evidence record per line, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "6"
+context = '''if pricing_kurtosis <= Decimal::new(-6, 0) {'''
+classification = "phase8_strategy_input_formula_constant"
+reason = "This is the sigma-positive cutoff implied by the strategy fair-probability formula using 1 + pricing_kurtosis / 6, not an operator-configured runtime value."

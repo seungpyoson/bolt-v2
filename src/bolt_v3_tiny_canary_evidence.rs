@@ -57,6 +57,8 @@ pub enum Phase8CanaryBlockReason {
     NegativeFeeRateBasisPoints,
     MissingPriceToBeatSource,
     MissingReferenceQuoteTsEvent,
+    InvalidPricingKurtosis,
+    NegativeThetaDecayFactor,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
@@ -93,6 +95,8 @@ impl Phase8StrategyInputSafetyAudit {
         fee_rate_basis_points: Decimal,
         price_to_beat_source: &str,
         reference_quote_ts_event: u64,
+        pricing_kurtosis: Decimal,
+        theta_decay_factor: Decimal,
     ) -> Self {
         let mut block_reasons = Vec::new();
         if realized_volatility <= Decimal::ZERO {
@@ -121,6 +125,12 @@ impl Phase8StrategyInputSafetyAudit {
         }
         if reference_quote_ts_event == 0 {
             block_reasons.push(Phase8CanaryBlockReason::MissingReferenceQuoteTsEvent);
+        }
+        if pricing_kurtosis <= Decimal::new(-6, 0) {
+            block_reasons.push(Phase8CanaryBlockReason::InvalidPricingKurtosis);
+        }
+        if theta_decay_factor < Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NegativeThetaDecayFactor);
         }
         if block_reasons.is_empty() {
             Self::approved()
@@ -186,6 +196,17 @@ impl Phase8StrategyInputSafetyAudit {
             .map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input fee_rate_basis_points: {source}")
             })?;
+        let pricing_kurtosis =
+            Decimal::from_str_exact(raw.pricing_kurtosis.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input pricing_kurtosis: {source}")
+            })?;
+        let theta_decay_factor =
+            Decimal::from_str_exact(raw.theta_decay_factor.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input theta_decay_factor: {source}")
+            })?;
+        Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
+            anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
+        })?;
         Ok(Self::from_strategy_inputs(
             realized_volatility,
             raw.seconds_to_expiry,
@@ -196,6 +217,8 @@ impl Phase8StrategyInputSafetyAudit {
             fee_rate_basis_points,
             &raw.price_to_beat_source,
             raw.reference_quote_ts_event,
+            pricing_kurtosis,
+            theta_decay_factor,
         ))
     }
 
@@ -219,6 +242,9 @@ struct Phase8StrategyInputEvidenceFile {
     fee_rate_basis_points: String,
     price_to_beat_source: String,
     reference_quote_ts_event: u64,
+    pricing_kurtosis: String,
+    theta_decay_factor: String,
+    theta_scaled_min_edge_bps: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

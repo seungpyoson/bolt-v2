@@ -529,6 +529,30 @@ fn dry_canary_evidence_writer_rejects_malformed_ref_hashes() {
 }
 
 #[test]
+fn dry_canary_evidence_writer_rejects_live_order_ref() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+    );
+    evidence.live_order_ref = Some(valid_live_order_ref());
+
+    let error = evidence
+        .write_json_file(&evidence_path)
+        .expect_err("dry proof must not carry live order evidence");
+
+    assert!(
+        error.to_string().contains("live_order_ref"),
+        "error should mention live-only ref on dry proof: {error}"
+    );
+    assert!(
+        !evidence_path.exists(),
+        "dry proof with live-only ref must not create evidence file"
+    );
+}
+
+#[test]
 fn dry_canary_evidence_writer_rejects_existing_json_file() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("phase8-canary-evidence.json");

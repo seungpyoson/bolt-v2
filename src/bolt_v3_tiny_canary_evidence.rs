@@ -619,6 +619,7 @@ impl Phase8CanaryEvidence {
         )?;
         match self.outcome {
             Phase8CanaryOutcome::DryNoSubmitProof => {
+                validate_phase8_live_refs_absent(self)?;
                 validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_REJECTED,
@@ -637,12 +638,15 @@ impl Phase8CanaryEvidence {
                     decision_evidence_ref,
                 )
             }
-            Phase8CanaryOutcome::BlockedBeforeSubmit => validate_phase8_submit_admission_ref(
-                &self.submit_admission_ref,
-                SUBMIT_ADMISSION_STATUS_REJECTED,
-                u32::MIN,
-                BLOCKED_BEFORE_SUBMIT_REASON,
-            ),
+            Phase8CanaryOutcome::BlockedBeforeSubmit => {
+                validate_phase8_live_refs_absent(self)?;
+                validate_phase8_submit_admission_ref(
+                    &self.submit_admission_ref,
+                    SUBMIT_ADMISSION_STATUS_REJECTED,
+                    u32::MIN,
+                    BLOCKED_BEFORE_SUBMIT_REASON,
+                )
+            }
             Phase8CanaryOutcome::LiveCanaryProof => {
                 validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
@@ -712,6 +716,43 @@ impl Phase8CanaryEvidence {
                 validate_phase8_evidence_ref(stringify!(post_run_hygiene_ref), post_run_hygiene_ref)
             }
         }
+    }
+}
+
+fn validate_phase8_live_refs_absent(evidence: &Phase8CanaryEvidence) -> Result<()> {
+    validate_phase8_optional_absent(
+        stringify!(live_order_ref),
+        evidence.live_order_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(nt_submit_event_ref),
+        evidence.nt_submit_event_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(venue_order_state_ref),
+        evidence.venue_order_state_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(strategy_cancel_ref),
+        evidence.strategy_cancel_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(restart_reconciliation_ref),
+        evidence.restart_reconciliation_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(post_run_hygiene_ref),
+        evidence.post_run_hygiene_ref.is_some(),
+    )
+}
+
+fn validate_phase8_optional_absent(field: &'static str, present: bool) -> Result<()> {
+    if present {
+        Err(anyhow!(
+            "phase8 canary evidence {field} must be absent for non-live proof"
+        ))
+    } else {
+        Ok(())
     }
 }
 

@@ -13,6 +13,46 @@ use bolt_v2::{
 use rust_decimal::Decimal;
 use serde_json::Value;
 
+#[test]
+fn tiny_canary_quickstart_names_required_operator_artifacts() {
+    let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
+    let required_terms = [
+        "BOLT_V3_PHASE8_HEAD_SHA",
+        "BOLT_V3_PHASE8_ROOT_TOML_PATH",
+        "BOLT_V3_PHASE8_ROOT_TOML_SHA256",
+        "BOLT_V3_PHASE8_SSM_MANIFEST_PATH",
+        "BOLT_V3_PHASE8_SSM_MANIFEST_SHA256",
+        "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
+        "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
+        "BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH",
+        "BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256",
+        "BOLT_V3_PHASE8_PRE_RUN_STATE_PATH",
+        "BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256",
+        "BOLT_V3_PHASE8_ABORT_PLAN_PATH",
+        "BOLT_V3_PHASE8_ABORT_PLAN_SHA256",
+        "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
+        "BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",
+        "BOLT_V3_PHASE8_APPROVAL_NONCE_PATH",
+        "BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256",
+        "BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH",
+        "BOLT_V3_PHASE8_EVIDENCE_PATH",
+        "BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH",
+        "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
+        "BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH",
+        "BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH",
+        "BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH",
+        "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
+        "BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH",
+    ];
+
+    for term in required_terms {
+        assert!(
+            quickstart.contains(term),
+            "phase8 quickstart must name required operator artifact `{term}`"
+        );
+    }
+}
+
 #[tokio::test]
 async fn preflight_blocks_missing_phase7_report_before_build() {
     let loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");

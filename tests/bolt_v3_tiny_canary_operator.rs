@@ -137,6 +137,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             .as_ref()
             .map(|block| block.approval_id.as_str())
             .unwrap_or_default(),
+        &loaded,
         current_unix_seconds,
     )?;
     let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file(

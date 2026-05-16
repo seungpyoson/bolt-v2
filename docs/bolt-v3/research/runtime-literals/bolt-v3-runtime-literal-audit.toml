@@ -993,6 +993,22 @@ reason = "This names the non-secret operator envelope field containing the strat
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH"'''
+context = '''financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field pointing to the financial envelope evidence for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256"'''
+context = '''financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the financial envelope evidence checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID"'''
 context = '''operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,'''
 classification = "phase8_canary_operator_envelope_env_name"

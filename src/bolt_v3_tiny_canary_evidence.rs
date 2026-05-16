@@ -453,6 +453,8 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
     pub strategy_input_evidence_sha256: String,
+    pub financial_envelope_path: String,
+    pub financial_envelope_sha256: String,
     pub operator_approval_id: String,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,
@@ -476,6 +478,8 @@ impl Phase8OperatorApprovalEnvelope {
             strategy_input_evidence_sha256: required_env(
                 "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
             )?,
+            financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,
+            financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
             approval_not_before_unix_seconds: required_i64_env(
                 "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
@@ -532,6 +536,7 @@ impl Phase8OperatorApprovalEnvelope {
         current_head_sha: &str,
         current_root_toml_sha256: &str,
         live_canary_approval_id: &str,
+        loaded: &LoadedBoltV3Config,
         current_unix_seconds: i64,
     ) -> Result<()> {
         self.validate_against(
@@ -540,6 +545,7 @@ impl Phase8OperatorApprovalEnvelope {
             live_canary_approval_id,
         )?;
         self.validate_approval_not_consumed()?;
+        self.validate_financial_envelope_against(loaded)?;
         self.validate_approval_window(current_unix_seconds)?;
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
@@ -548,6 +554,31 @@ impl Phase8OperatorApprovalEnvelope {
             ));
         }
         self.write_approval_consumption_evidence(current_unix_seconds)
+    }
+
+    fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
+        let current_financial_envelope_sha256 = Self::sha256_file(&self.financial_envelope_path)?;
+        if self.financial_envelope_sha256 != current_financial_envelope_sha256 {
+            return Err(anyhow!(
+                "phase8 operator approval financial_envelope_sha256 does not match current financial envelope"
+            ));
+        }
+        let path = Path::new(&self.financial_envelope_path);
+        let file = fs::File::open(path).map_err(|source| {
+            anyhow!(
+                "failed to open phase8 financial envelope `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let approved: Phase8FinancialEnvelopeEvidenceFile =
+            serde_json::from_reader(BufReader::new(file)).map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 financial envelope `{}`: {source}",
+                    path.display()
+                )
+            })?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
+        approved.validate_matches(&loaded)
     }
 
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
@@ -672,6 +703,153 @@ impl Phase8OperatorApprovalEnvelope {
     pub fn root_path(&self) -> PathBuf {
         PathBuf::from(&self.root_toml_path)
     }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Phase8FinancialEnvelopeEvidenceFile {
+    max_live_order_count: u32,
+    max_notional_per_order: String,
+    strategy_instance_id: String,
+    strategy_venue: String,
+    configured_target_id: String,
+    target_kind: String,
+    rotating_market_family: String,
+    underlying_asset: String,
+    cadence_seconds: i64,
+    market_selection_rule: String,
+    order_notional_target: String,
+    maximum_position_notional: String,
+}
+
+impl Phase8FinancialEnvelopeEvidenceFile {
+    fn from_loaded(loaded: &LoadedBoltV3Config) -> Result<Self> {
+        let live_canary = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .ok_or_else(|| anyhow!("phase8 financial envelope requires `[live_canary]`"))?;
+        let mut strategies = loaded.strategies.iter();
+        let strategy = strategies.next().ok_or_else(|| {
+            anyhow!("phase8 financial envelope requires exactly one loaded strategy")
+        })?;
+        if strategies.next().is_some() {
+            return Err(anyhow!(
+                "phase8 financial envelope requires exactly one loaded strategy"
+            ));
+        }
+        let strategy = &strategy.config;
+        let target = strategy.target.as_table().ok_or_else(|| {
+            anyhow!("phase8 financial envelope strategy target must be a TOML table")
+        })?;
+        let parameters = strategy.parameters.as_table().ok_or_else(|| {
+            anyhow!("phase8 financial envelope strategy parameters must be a TOML table")
+        })?;
+        Ok(Self {
+            max_live_order_count: live_canary.max_live_order_count,
+            max_notional_per_order: live_canary.max_notional_per_order.clone(),
+            strategy_instance_id: strategy.strategy_instance_id.clone(),
+            strategy_venue: strategy.venue.clone(),
+            configured_target_id: required_toml_string(target, stringify!(configured_target_id))?,
+            target_kind: required_toml_string(target, stringify!(kind))?,
+            rotating_market_family: required_toml_string(
+                target,
+                stringify!(rotating_market_family),
+            )?,
+            underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
+            cadence_seconds: required_toml_integer(target, stringify!(cadence_seconds))?,
+            market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
+            order_notional_target: required_toml_string(
+                parameters,
+                stringify!(order_notional_target),
+            )?,
+            maximum_position_notional: required_toml_string(
+                parameters,
+                stringify!(maximum_position_notional),
+            )?,
+        })
+    }
+
+    fn validate_matches(&self, loaded: &Self) -> Result<()> {
+        if self.max_live_order_count != loaded.max_live_order_count {
+            return Err(financial_envelope_mismatch(stringify!(
+                max_live_order_count
+            )));
+        }
+        if self.max_notional_per_order != loaded.max_notional_per_order {
+            return Err(financial_envelope_mismatch(stringify!(
+                max_notional_per_order
+            )));
+        }
+        if self.strategy_instance_id != loaded.strategy_instance_id {
+            return Err(financial_envelope_mismatch(stringify!(
+                strategy_instance_id
+            )));
+        }
+        if self.strategy_venue != loaded.strategy_venue {
+            return Err(financial_envelope_mismatch(stringify!(strategy_venue)));
+        }
+        if self.configured_target_id != loaded.configured_target_id {
+            return Err(financial_envelope_mismatch(stringify!(
+                configured_target_id
+            )));
+        }
+        if self.target_kind != loaded.target_kind {
+            return Err(financial_envelope_mismatch(stringify!(target_kind)));
+        }
+        if self.rotating_market_family != loaded.rotating_market_family {
+            return Err(financial_envelope_mismatch(stringify!(
+                rotating_market_family
+            )));
+        }
+        if self.underlying_asset != loaded.underlying_asset {
+            return Err(financial_envelope_mismatch(stringify!(underlying_asset)));
+        }
+        if self.cadence_seconds != loaded.cadence_seconds {
+            return Err(financial_envelope_mismatch(stringify!(cadence_seconds)));
+        }
+        if self.market_selection_rule != loaded.market_selection_rule {
+            return Err(financial_envelope_mismatch(stringify!(
+                market_selection_rule
+            )));
+        }
+        if self.order_notional_target != loaded.order_notional_target {
+            return Err(financial_envelope_mismatch(stringify!(
+                order_notional_target
+            )));
+        }
+        if self.maximum_position_notional != loaded.maximum_position_notional {
+            return Err(financial_envelope_mismatch(stringify!(
+                maximum_position_notional
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 financial envelope `{field}` does not match loaded TOML")
+}
+
+fn required_toml_string(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<String> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
+}
+
+fn required_toml_integer(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<i64> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_integer)
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
 }
 
 #[derive(Serialize)]

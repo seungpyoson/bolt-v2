@@ -394,6 +394,8 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         ssm_manifest_sha256: "expected-ssm-hash".to_string(),
         strategy_input_evidence_path: "phase8-strategy-input-evidence.json".to_string(),
         strategy_input_evidence_sha256: "expected-strategy-input-hash".to_string(),
+        financial_envelope_path: "phase8-financial-envelope.json".to_string(),
+        financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -445,7 +447,13 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     .expect("approval nonce should write");
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
+    let financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+            .expect("financial envelope hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
@@ -454,6 +462,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256: strategy_input_hash,
+        financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
+        financial_envelope_sha256: financial_envelope_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -468,6 +478,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
+            &loaded,
             999,
         )
         .expect_err("approval before not_before should fail closed");
@@ -488,6 +499,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
+            &loaded,
             1_500,
         )
         .expect_err("nonce hash mismatch should fail closed");
@@ -505,6 +517,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
+            &loaded,
             1_500,
         )
         .expect("first approval consumption inside time window should pass");
@@ -533,6 +546,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
+            &loaded,
             2_001,
         )
         .expect_err("expired replay after consumption should fail closed as consumed");
@@ -548,6 +562,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
+            &loaded,
             1_500,
         )
         .expect_err("second approval consumption should fail closed");
@@ -585,6 +600,8 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256: strategy_input_hash,
+        financial_envelope_path: "phase8-financial-envelope.json".to_string(),
+        financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -644,6 +661,8 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256: strategy_input_hash,
+        financial_envelope_path: "phase8-financial-envelope.json".to_string(),
+        financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
@@ -673,6 +692,148 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
     assert!(
         error.to_string().contains("strategy_input_evidence_sha256"),
         "error should mention strategy input evidence hash mismatch: {error}"
+    );
+}
+
+#[test]
+fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
+    )
+    .expect("manifest should write");
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+        .expect("manifest hash should compute");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    std::fs::write(
+        &financial_envelope_path,
+        serde_json::to_vec(&serde_json::json!({
+            "max_live_order_count": 1,
+            "max_notional_per_order": "5.00",
+            "strategy_instance_id": "bitcoin_updown_main",
+            "strategy_venue": "polymarket_main",
+            "configured_target_id": "btc_updown_5m",
+            "target_kind": "rotating_market",
+            "rotating_market_family": "updown",
+            "underlying_asset": "BTC",
+            "cadence_seconds": 300,
+            "market_selection_rule": "active_or_next",
+            "order_notional_target": "5.00",
+            "maximum_position_notional": "10.00"
+        }))
+        .expect("financial envelope should serialize"),
+    )
+    .expect("financial envelope should write");
+    let financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+            .expect("financial envelope hash should compute");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
+    std::fs::write(
+        &approval_nonce_path,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+    )
+    .expect("approval nonce should write");
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+        .expect("approval nonce hash should compute");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .max_notional_per_order = "5.00".to_string();
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: "expected-head".to_string(),
+        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_sha256: "expected-config-hash".to_string(),
+        ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256: manifest_hash,
+        strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256: strategy_input_hash,
+        financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
+        financial_envelope_sha256: financial_envelope_hash,
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
+        approval_nonce_sha256: approval_nonce_hash,
+        approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+    };
+
+    let mut wrong_hash_envelope = envelope.clone();
+    wrong_hash_envelope.financial_envelope_sha256 =
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();
+    let wrong_hash_error = wrong_hash_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("financial envelope hash mismatch should fail closed");
+    assert!(
+        wrong_hash_error
+            .to_string()
+            .contains("financial_envelope_sha256"),
+        "error should mention financial envelope hash mismatch: {wrong_hash_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "financial mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_loaded = loaded.clone();
+    mismatched_loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .max_notional_per_order = "4.00".to_string();
+    let mismatched_config_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_loaded,
+            1_500,
+        )
+        .expect_err("financial envelope mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_config_error
+            .to_string()
+            .contains("max_notional_per_order"),
+        "error should mention mismatched financial field: {mismatched_config_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "financial mismatch must not create consumption evidence"
+    );
+
+    envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect("matching financial envelope should pass and consume approval");
+    assert!(
+        approval_consumption_path.exists(),
+        "matching financial envelope should create consumption evidence"
     );
 }
 
@@ -714,6 +875,28 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
         serde_json::to_vec(&json).expect("report should serialize"),
     )
     .expect("report should write");
+}
+
+fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {
+    let json = serde_json::json!({
+        "max_live_order_count": 1,
+        "max_notional_per_order": max_notional_per_order,
+        "strategy_instance_id": "bitcoin_updown_main",
+        "strategy_venue": "polymarket_main",
+        "configured_target_id": "btc_updown_5m",
+        "target_kind": "rotating_market",
+        "rotating_market_family": "updown",
+        "underlying_asset": "BTC",
+        "cadence_seconds": 300,
+        "market_selection_rule": "active_or_next",
+        "order_notional_target": "5.00",
+        "maximum_position_notional": "10.00"
+    });
+    std::fs::write(
+        path,
+        serde_json::to_vec(&json).expect("financial envelope should serialize"),
+    )
+    .expect("financial envelope should write");
 }
 
 fn runtime_capture_ref() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8RuntimeCaptureRef {

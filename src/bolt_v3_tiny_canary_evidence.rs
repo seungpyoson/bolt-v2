@@ -561,6 +561,7 @@ impl Phase8CanaryEvidence {
     }
 
     pub fn write_json_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.validate_before_write()?;
         let path = path.as_ref();
         if let Some(parent) = path
             .parent()
@@ -605,20 +606,103 @@ impl Phase8CanaryEvidence {
         }
         Ok(())
     }
+
+    fn validate_before_write(&self) -> Result<()> {
+        validate_phase8_evidence_hashes(
+            &self.root_config_sha256,
+            &self.ssm_manifest_sha256,
+            &self.ssm_manifest_ref,
+            &self.strategy_input_evidence_ref,
+            &self.runtime_capture_ref,
+        )?;
+        match self.outcome {
+            Phase8CanaryOutcome::DryNoSubmitProof => {
+                let decision_evidence_ref =
+                    self.decision_evidence_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for dry proof",
+                            stringify!(decision_evidence_ref)
+                        )
+                    })?;
+                validate_phase8_evidence_ref(
+                    stringify!(decision_evidence_ref),
+                    decision_evidence_ref,
+                )
+            }
+            Phase8CanaryOutcome::BlockedBeforeSubmit => Ok(()),
+            Phase8CanaryOutcome::LiveCanaryProof => {
+                let decision_evidence_ref =
+                    self.decision_evidence_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for live proof",
+                            stringify!(decision_evidence_ref)
+                        )
+                    })?;
+                let live_order_ref = self.live_order_ref.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "phase8 canary evidence {} must be present for live proof",
+                        stringify!(live_order_ref)
+                    )
+                })?;
+                let nt_submit_event_ref = self.nt_submit_event_ref.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "phase8 canary evidence {} must be present for live proof",
+                        stringify!(nt_submit_event_ref)
+                    )
+                })?;
+                let venue_order_state_ref =
+                    self.venue_order_state_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for live proof",
+                            stringify!(venue_order_state_ref)
+                        )
+                    })?;
+                let restart_reconciliation_ref =
+                    self.restart_reconciliation_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for live proof",
+                            stringify!(restart_reconciliation_ref)
+                        )
+                    })?;
+                let post_run_hygiene_ref = self.post_run_hygiene_ref.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "phase8 canary evidence {} must be present for live proof",
+                        stringify!(post_run_hygiene_ref)
+                    )
+                })?;
+                validate_phase8_evidence_ref(
+                    stringify!(decision_evidence_ref),
+                    decision_evidence_ref,
+                )?;
+                validate_phase8_live_order_ref(live_order_ref)?;
+                validate_phase8_evidence_ref(stringify!(nt_submit_event_ref), nt_submit_event_ref)?;
+                validate_phase8_evidence_ref(
+                    stringify!(venue_order_state_ref),
+                    venue_order_state_ref,
+                )?;
+                if let Some(strategy_cancel_ref) = &self.strategy_cancel_ref {
+                    validate_phase8_evidence_ref(
+                        stringify!(strategy_cancel_ref),
+                        strategy_cancel_ref,
+                    )?;
+                }
+                validate_phase8_evidence_ref(
+                    stringify!(restart_reconciliation_ref),
+                    restart_reconciliation_ref,
+                )?;
+                validate_phase8_evidence_ref(stringify!(post_run_hygiene_ref), post_run_hygiene_ref)
+            }
+        }
+    }
 }
 
 fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()> {
-    validate_phase8_sha256_field(stringify!(root_config_sha256), &input.root_config_sha256)?;
-    validate_phase8_sha256_field(stringify!(ssm_manifest_sha256), &input.ssm_manifest_sha256)?;
-    validate_phase8_evidence_ref(stringify!(ssm_manifest_ref), &input.ssm_manifest_ref)?;
-    validate_phase8_evidence_ref(
-        stringify!(strategy_input_evidence_ref),
+    validate_phase8_evidence_hashes(
+        &input.root_config_sha256,
+        &input.ssm_manifest_sha256,
+        &input.ssm_manifest_ref,
         &input.strategy_input_evidence_ref,
-    )?;
-    validate_phase8_nested_sha256_field(
-        stringify!(runtime_capture_ref),
-        stringify!(spool_root_hash),
-        &input.runtime_capture_ref.spool_root_hash,
+        &input.runtime_capture_ref,
     )?;
     if input.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
         return Err(anyhow!(
@@ -634,6 +718,27 @@ fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()>
         ));
     }
     Ok(())
+}
+
+fn validate_phase8_evidence_hashes(
+    root_config_sha256: &str,
+    ssm_manifest_sha256: &str,
+    ssm_manifest_ref: &Phase8EvidenceRef,
+    strategy_input_evidence_ref: &Phase8EvidenceRef,
+    runtime_capture_ref: &Phase8RuntimeCaptureRef,
+) -> Result<()> {
+    validate_phase8_sha256_field(stringify!(root_config_sha256), root_config_sha256)?;
+    validate_phase8_sha256_field(stringify!(ssm_manifest_sha256), ssm_manifest_sha256)?;
+    validate_phase8_evidence_ref(stringify!(ssm_manifest_ref), ssm_manifest_ref)?;
+    validate_phase8_evidence_ref(
+        stringify!(strategy_input_evidence_ref),
+        strategy_input_evidence_ref,
+    )?;
+    validate_phase8_nested_sha256_field(
+        stringify!(runtime_capture_ref),
+        stringify!(spool_root_hash),
+        &runtime_capture_ref.spool_root_hash,
+    )
 }
 
 fn validate_phase8_evidence_ref(

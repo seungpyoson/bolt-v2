@@ -498,6 +498,35 @@ fn dry_canary_evidence_writer_creates_redacted_json_file() {
 }
 
 #[test]
+fn dry_canary_evidence_writer_rejects_malformed_ref_hashes() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+        evidence_input(),
+        Phase8EvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "not-a-sha256".to_string(),
+        },
+    );
+
+    let error = evidence
+        .write_json_file(&evidence_path)
+        .expect_err("malformed dry proof ref must not be written");
+
+    assert!(
+        error
+            .to_string()
+            .contains("decision_evidence_ref.record_hash"),
+        "error should mention malformed dry proof decision ref: {error}"
+    );
+    assert!(
+        !evidence_path.exists(),
+        "malformed dry proof must not create evidence file"
+    );
+}
+
+#[test]
 fn dry_canary_evidence_writer_rejects_existing_json_file() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("phase8-canary-evidence.json");

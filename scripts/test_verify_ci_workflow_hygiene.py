@@ -63,8 +63,10 @@ jobs:
         with:
           key: deny
       - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
       - run: just deny
 
   clippy:
@@ -144,8 +146,10 @@ jobs:
         run: |
           echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
       - name: Install cargo-nextest
-        run: |
-          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
       - run: just test -- --partition count:${{ matrix.shard }}/4
 
   test:
@@ -181,7 +185,19 @@ jobs:
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
       - name: Install cargo-zigbuild
         run: |
-          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"
+          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
+          expected="$(awk '{print $1}' "$archive.sha256")"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -810,6 +826,74 @@ def main() -> int:
                 'cargo install cargo-deny --version "0.18.3" --locked',
             ),
         },
+    )
+    assert_error(
+        "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
+            """      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny install-action fallback must be none",
+        replace_once(
+            BASE_WORKFLOW,
+            "          fallback: none\n      - run: just deny",
+            "          fallback: cargo-install\n      - run: just deny",
+        ),
+    )
+    assert_error(
+        "ci.yml test-shards must install cargo-nextest with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none""",
+            """      - name: Install cargo-nextest
+        run: |
+          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml test-shards install-action fallback must be none",
+        replace_once(
+            BASE_WORKFLOW,
+            "          fallback: none\n      - run: just test -- --partition count:${{ matrix.shard }}/4",
+            "          fallback: cargo-install\n      - run: just test -- --partition count:${{ matrix.shard }}/4",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            """          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"
+          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
+          expected="$(awk '{print $1}' "$archive.sha256")"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version""",
+            '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
+        ),
+    )
+    assert_error(
+        "ci.yml build must verify cargo-zigbuild archive checksum",
+        replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
     )
     assert_error(
         "gate must use always()",

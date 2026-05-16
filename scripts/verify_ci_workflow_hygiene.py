@@ -141,6 +141,23 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c"
+CI_INSTALL_ACTION_TOOLS = {
+    "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
+    "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
+}
+ZIGBUILD_PREBUILT_LITERALS = (
+    'version="${{ steps.setup.outputs.zigbuild_version }}"',
+    'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
+    "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
+    'curl --fail --location --show-error --silent --output "$archive" "$base_url/$archive"',
+    'curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"',
+    'expected="$(awk \'{print $1}\' "$archive.sha256")"',
+    'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
+    'test "$actual" = "$expected"',
+    'tar --extract --xz --file "$archive"',
+    'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
+)
 
 
 def strip_comment(line: str) -> str:
@@ -339,6 +356,15 @@ def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
 
 def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
+
+
+def install_action_tool_block(job_lines: list[str], tool: str, output: str) -> list[str] | None:
+    expected_tool = f"tool: {tool}@${{{{ {output} }}}}"
+    for block in step_blocks(job_lines):
+        text = uncommented_text(block)
+        if f"uses: {TAIKI_INSTALL_ACTION}" in text and expected_tool in text:
+            return block
+    return None
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
@@ -705,6 +731,41 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
     return errors
 
 
+def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+    if workflow_name != "ci.yml" and not workflow_name.endswith("/ci.yml"):
+        return errors
+
+    jobs = parse_jobs(workflow_text)
+    for job, (tool, output) in CI_INSTALL_ACTION_TOOLS.items():
+        job_lines = jobs.get(job)
+        if job_lines is None:
+            continue
+        text = uncommented_text(job_lines)
+        if f"cargo install {tool}" in text:
+            errors.append(f"{workflow_name} {job} must not compile {tool} from source")
+        block = install_action_tool_block(job_lines, tool, output)
+        if block is None:
+            errors.append(f"{workflow_name} {job} must install {tool} with pinned taiki-e/install-action")
+            continue
+        if not block_has_input(block, "fallback", "none"):
+            errors.append(f"{workflow_name} {job} install-action fallback must be none")
+
+    build_lines = jobs.get("build")
+    if build_lines is None:
+        return errors
+    build_text = uncommented_text(build_lines)
+    if "cargo install cargo-zigbuild" in build_text:
+        errors.append(f"{workflow_name} build must not compile cargo-zigbuild from source")
+    for literal in ZIGBUILD_PREBUILT_LITERALS:
+        if literal not in build_text:
+            errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
+            break
+    if 'test "$actual" = "$expected"' not in build_text:
+        errors.append(f"{workflow_name} build must verify cargo-zigbuild archive checksum")
+    return errors
+
+
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
@@ -790,6 +851,7 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
             errors.extend(verify_workflow(workflow_text))
         errors.extend(verify_managed_workflow(workflow_text, workflow_name))
         errors.extend(verify_build_artifacts(workflow_text, workflow_name))
+        errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
     return errors

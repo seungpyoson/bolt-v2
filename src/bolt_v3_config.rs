@@ -232,6 +232,7 @@ pub struct LiveCanaryBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveCanaryOperatorEvidenceBlock {
+    pub approval_envelope_path: String,
     pub ssm_manifest_path: String,
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,

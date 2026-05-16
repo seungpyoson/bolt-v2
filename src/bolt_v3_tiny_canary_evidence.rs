@@ -465,11 +465,7 @@ pub struct TinyCanaryOperatorApprovalEnvelope {
 }
 
 impl TinyCanaryOperatorApprovalEnvelope {
-    pub fn from_config(
-        loaded: &LoadedBoltV3Config,
-        current_head_sha: &str,
-        current_root_toml_sha256: &str,
-    ) -> Result<Self> {
+    pub fn from_config(loaded: &LoadedBoltV3Config) -> Result<Self> {
         let live_canary = loaded
             .root
             .live_canary
@@ -478,10 +474,22 @@ impl TinyCanaryOperatorApprovalEnvelope {
         let operator_evidence = live_canary.operator_evidence.as_ref().ok_or_else(|| {
             anyhow!("tiny canary operator approval requires `[live_canary.operator_evidence]`")
         })?;
+        let approval_envelope_path = required_operator_path(
+            &loaded.root_path,
+            &operator_evidence.approval_envelope_path,
+            "[live_canary.operator_evidence].approval_envelope_path",
+        )?;
+        let approval_envelope_file = read_operator_approval_envelope_file(&approval_envelope_path)?;
         Ok(Self {
-            head_sha: current_head_sha.to_string(),
+            head_sha: required_config_value(
+                &approval_envelope_file.head_sha,
+                "[operator_approval_envelope].head_sha",
+            )?,
             root_toml_path: loaded.root_path.to_string_lossy().to_string(),
-            root_toml_sha256: current_root_toml_sha256.to_string(),
+            root_toml_sha256: required_config_value(
+                &approval_envelope_file.root_toml_sha256,
+                "[operator_approval_envelope].root_toml_sha256",
+            )?,
             ssm_manifest_path: required_operator_path(
                 &loaded.root_path,
                 &operator_evidence.ssm_manifest_path,
@@ -692,6 +700,23 @@ impl TinyCanaryOperatorApprovalEnvelope {
     pub fn root_path(&self) -> PathBuf {
         PathBuf::from(&self.root_toml_path)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct TinyCanaryOperatorApprovalEnvelopeFile {
+    head_sha: String,
+    root_toml_sha256: String,
+}
+
+fn read_operator_approval_envelope_file(
+    path: &str,
+) -> Result<TinyCanaryOperatorApprovalEnvelopeFile> {
+    let bytes = fs::read(path).map_err(|source| {
+        anyhow!("failed to read tiny canary operator approval envelope `{path}`: {source}")
+    })?;
+    serde_json::from_slice(&bytes).map_err(|source| {
+        anyhow!("failed to parse tiny canary operator approval envelope `{path}`: {source}")
+    })
 }
 
 #[derive(Serialize)]

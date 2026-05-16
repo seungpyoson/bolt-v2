@@ -945,6 +945,30 @@ reason = "This is a structural evidence label used only when tiny canary blocks 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"[live_canary.operator_evidence].approval_envelope_path"'''
+context = '''"[live_canary.operator_evidence].approval_envelope_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"[operator_approval_envelope].head_sha"'''
+context = '''"[operator_approval_envelope].head_sha",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the independent operator approval envelope field used in a validation diagnostic; the runtime value itself is read from the approval envelope file."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"[operator_approval_envelope].root_toml_sha256"'''
+context = '''"[operator_approval_envelope].root_toml_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the independent operator approval envelope field used in a validation diagnostic; the runtime value itself is read from the approval envelope file."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"[live_canary.operator_evidence].ssm_manifest_path"'''
 context = '''"[live_canary.operator_evidence].ssm_manifest_path",'''
 classification = "tiny_canary_operator_evidence_config_diagnostic"

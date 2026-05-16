@@ -564,7 +564,11 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
 
 #[test]
 fn operator_approval_envelope_projects_operator_evidence_from_config() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
     let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    write_operator_approval_envelope(temp.path(), "approved-head", "approved-root-hash");
     loaded
         .root
         .live_canary
@@ -572,12 +576,11 @@ fn operator_approval_envelope_projects_operator_evidence_from_config() {
         .expect("live canary block should exist")
         .operator_evidence = Some(operator_evidence_block());
 
-    let envelope =
-        TinyCanaryOperatorApprovalEnvelope::from_config(&loaded, "current-head", "root-hash")
-            .expect("operator evidence config should project into envelope");
+    let envelope = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect("operator evidence config should project into envelope");
 
-    assert_eq!(envelope.head_sha, "current-head");
-    assert_eq!(envelope.root_toml_sha256, "root-hash");
+    assert_eq!(envelope.head_sha, "approved-head");
+    assert_eq!(envelope.root_toml_sha256, "approved-root-hash");
     assert_eq!(
         envelope.root_toml_path,
         loaded.root_path.to_string_lossy().to_string()
@@ -620,12 +623,77 @@ fn operator_approval_envelope_projects_operator_evidence_from_config() {
 }
 
 #[test]
+fn operator_approval_envelope_from_config_rejects_current_checkout_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    write_operator_approval_envelope(temp.path(), "approved-head", "approved-root-hash");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary block should exist")
+        .operator_evidence = Some(operator_evidence_block());
+
+    let envelope = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect("operator evidence config should project into envelope");
+
+    let head_error = envelope
+        .validate_against(
+            "current-head",
+            "approved-root-hash",
+            "operator-approved-canary-001",
+        )
+        .expect_err("approval file head must be compared against current checkout head");
+    assert!(
+        head_error.to_string().contains("head_sha"),
+        "error should mention head mismatch: {head_error}"
+    );
+
+    let root_error = envelope
+        .validate_against(
+            "approved-head",
+            "current-root-hash",
+            "operator-approved-canary-001",
+        )
+        .expect_err("approval file root hash must be compared against current root TOML");
+    assert!(
+        root_error.to_string().contains("root_toml_sha256"),
+        "error should mention root mismatch: {root_error}"
+    );
+}
+
+#[test]
+fn operator_approval_envelope_requires_independent_approval_file() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary block should exist")
+        .operator_evidence = Some(operator_evidence_block());
+
+    let error = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect_err("operator approval file should be required");
+
+    assert!(
+        error
+            .to_string()
+            .contains("failed to read tiny canary operator approval envelope"),
+        "error should mention approval envelope read failure: {error}"
+    );
+}
+
+#[test]
 fn operator_approval_envelope_rejects_missing_operator_evidence_config() {
     let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
 
-    let error =
-        TinyCanaryOperatorApprovalEnvelope::from_config(&loaded, "current-head", "root-hash")
-            .expect_err("operator evidence config should be required");
+    let error = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect_err("operator evidence config should be required");
 
     assert!(
         error
@@ -987,6 +1055,7 @@ fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryEvidence
 
 fn operator_evidence_block() -> LiveCanaryOperatorEvidenceBlock {
     LiveCanaryOperatorEvidenceBlock {
+        approval_envelope_path: "operator/approval-envelope.json".to_string(),
         ssm_manifest_path: "operator/ssm-manifest.json".to_string(),
         ssm_manifest_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
@@ -1010,4 +1079,19 @@ fn operator_evidence_block() -> LiveCanaryOperatorEvidenceBlock {
         strategy_cancel_path: Some("operator/strategy-cancel.json".to_string()),
         restart_reconciliation_path: "operator/restart-reconciliation.json".to_string(),
     }
+}
+
+fn write_operator_approval_envelope(root: &std::path::Path, head_sha: &str, root_hash: &str) {
+    let path = root.join("operator/approval-envelope.json");
+    std::fs::create_dir_all(path.parent().expect("approval envelope should have parent"))
+        .expect("approval envelope parent should create");
+    let json = serde_json::json!({
+        "head_sha": head_sha,
+        "root_toml_sha256": root_hash
+    });
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json).expect("approval envelope should serialize"),
+    )
+    .expect("approval envelope should write");
 }

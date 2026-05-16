@@ -2848,22 +2848,39 @@ impl BinaryOracleEdgeTaker {
             None if pending_matches => ManagedPositionOrigin::StrategyEntry,
             None => ManagedPositionOrigin::RecoveryBootstrap,
         };
-        self.exposure = ExposureState::Managed(ManagedPositionState {
-            position: self.build_open_position_state(
-                preserved.as_ref(),
-                pending_context.as_ref(),
-                PositionMaterializationSpec {
-                    instrument_id,
-                    position_id,
-                    entry_order_side,
-                    side,
-                    quantity,
-                    avg_px_open,
-                },
-                pending_matches,
-            ),
-            origin,
-        });
+        let materialized_position = self.build_open_position_state(
+            preserved.as_ref(),
+            pending_context.as_ref(),
+            PositionMaterializationSpec {
+                instrument_id,
+                position_id,
+                entry_order_side,
+                side,
+                quantity,
+                avg_px_open,
+            },
+            pending_matches,
+        );
+        self.exposure = match self.exposure.exit_pending().cloned() {
+            Some(exit_pending)
+                if exit_pending.position.as_ref().is_some_and(|managed| {
+                    managed.position.position_id == position_id
+                        && managed.position.instrument_id == instrument_id
+                }) =>
+            {
+                ExposureState::ExitPending(ExitPendingState {
+                    position: Some(ManagedPositionState {
+                        position: materialized_position,
+                        origin,
+                    }),
+                    pending_exit: exit_pending.pending_exit,
+                })
+            }
+            _ => ExposureState::Managed(ManagedPositionState {
+                position: materialized_position,
+                origin,
+            }),
+        };
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
     }
@@ -7966,6 +7983,67 @@ mod tests {
 
         assert!(strategy.managed_position().is_none());
         assert!(pending_exit_ref(&strategy).is_none());
+    }
+
+    #[test]
+    fn position_change_preserves_pending_exit_correlation() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let position_id = PositionId::from("P-EXIT-CHANGE");
+        let exit_client_order_id = ClientOrderId::from("EXIT-CHANGE");
+        let open_position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id,
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        strategy.materialize_position_from_event(
+            instrument_id,
+            position_id,
+            OrderSide::Buy,
+            PositionSide::Long,
+            Quantity::new(7.0, 2),
+            0.470,
+        );
+
+        let exit_pending = strategy
+            .exposure
+            .exit_pending()
+            .expect("position change should keep exit pending");
+        assert_eq!(
+            exit_pending.pending_exit.client_order_id,
+            exit_client_order_id
+        );
+        assert_eq!(exit_pending.pending_exit.position_id, Some(position_id));
+        assert!(!exit_pending.pending_exit.fill_received);
+        assert!(!exit_pending.pending_exit.close_received);
+
+        let position = exit_pending
+            .position
+            .as_ref()
+            .expect("exit pending should keep managed position");
+        assert_eq!(position.origin, ManagedPositionOrigin::StrategyEntry);
+        assert_eq!(position.position.quantity, Quantity::new(7.0, 2));
+        assert_eq!(position.position.avg_px_open, 0.470);
     }
 
     #[test]

@@ -216,6 +216,7 @@ max_live_order_count = 1
 max_notional_per_order = "1.00"
 
 [live_canary.operator_evidence]
+approval_envelope_path = "reports/operator-approval-envelope.json"
 ssm_manifest_path = "reports/ssm-manifest.redacted.json"
 ssm_manifest_sha256 = "<sha256>"
 strategy_input_evidence_path = "reports/strategy-input-evidence.json"
@@ -817,6 +818,12 @@ This section is optional for parse/build-only checks and required before `run_bo
 ### `[live_canary.operator_evidence]`
 
 This section is optional for parse/build-only checks and required by the ignored tiny-canary operator harness before live-capital proof. Runtime values are read from TOML, not from a second env-var contract.
+
+#### `approval_envelope_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- independent operator approval envelope path containing approved `head_sha` and `root_toml_sha256`
 
 #### `ssm_manifest_path`
 

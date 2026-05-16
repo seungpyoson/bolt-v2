@@ -163,8 +163,7 @@ fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner() -> 
     let loaded = load_bolt_v3_config(std::path::Path::new(&root_toml_path))?;
     let root_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&loaded.root_path)?;
     let current_head = tiny_canary_current_checkout_head_sha()?;
-    let envelope =
-        TinyCanaryOperatorApprovalEnvelope::from_config(&loaded, &current_head, &root_hash)?;
+    let envelope = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)?;
     let current_unix_seconds = tiny_canary_current_unix_seconds()?;
     envelope.validate_and_consume_against(
         &current_head,

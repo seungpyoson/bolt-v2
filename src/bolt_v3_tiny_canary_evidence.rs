@@ -55,6 +55,8 @@ pub enum Phase8CanaryBlockReason {
     NonPositiveExpectedEdgeBasisPoints,
     NonPositiveWorstCaseEdgeBasisPoints,
     NegativeFeeRateBasisPoints,
+    MissingPriceToBeatSource,
+    MissingReferenceQuoteTsEvent,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
@@ -89,6 +91,8 @@ impl Phase8StrategyInputSafetyAudit {
         expected_edge_basis_points: Decimal,
         worst_case_edge_basis_points: Decimal,
         fee_rate_basis_points: Decimal,
+        price_to_beat_source: &str,
+        reference_quote_ts_event: u64,
     ) -> Self {
         let mut block_reasons = Vec::new();
         if realized_volatility <= Decimal::ZERO {
@@ -111,6 +115,12 @@ impl Phase8StrategyInputSafetyAudit {
         }
         if fee_rate_basis_points < Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
+        }
+        if price_to_beat_source.trim().is_empty() {
+            block_reasons.push(Phase8CanaryBlockReason::MissingPriceToBeatSource);
+        }
+        if reference_quote_ts_event == 0 {
+            block_reasons.push(Phase8CanaryBlockReason::MissingReferenceQuoteTsEvent);
         }
         if block_reasons.is_empty() {
             Self::approved()
@@ -184,6 +194,8 @@ impl Phase8StrategyInputSafetyAudit {
             expected_edge_basis_points,
             worst_case_edge_basis_points,
             fee_rate_basis_points,
+            &raw.price_to_beat_source,
+            raw.reference_quote_ts_event,
         ))
     }
 
@@ -205,6 +217,8 @@ struct Phase8StrategyInputEvidenceFile {
     expected_edge_basis_points: String,
     worst_case_edge_basis_points: String,
     fee_rate_basis_points: String,
+    price_to_beat_source: String,
+    reference_quote_ts_event: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

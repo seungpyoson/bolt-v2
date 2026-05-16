@@ -16,6 +16,7 @@ Expected result after implementation: all commands pass.
 
 ```bash
 rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|source-fence|needs\\.(detector|fmt-check|deny|clippy|source-fence|test|build)\\.result" .github/workflows/ci.yml
+rg -n "live-node|max-threads|lake_batch|nt_runtime_capture|platform_runtime" .config/nextest.toml
 ```
 
 Expected evidence:
@@ -25,6 +26,7 @@ Expected evidence:
 - Jobs using `steps.setup.outputs.managed_target_dir` set `include-managed-target-dir: "true"`.
 - `deploy.needs` includes all required safety lanes directly.
 - `gate` checks all required lane results.
+- `.config/nextest.toml` assigns `lake_batch`, `nt_runtime_capture`, and `platform_runtime` to the `live-node` group with `max-threads = 1`.
 
 ## Verification Gate
 

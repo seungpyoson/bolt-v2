@@ -137,6 +137,7 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
+          cache-on-failure: true
           cache-targets: true
           workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
           cache-workspace-crates: "true"
@@ -693,6 +694,22 @@ def main() -> int:
         ),
     )
     assert_error(
+        "test-shards cache must set cache-on-failure: true",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-on-failure: true\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-shards cache must set cache-targets: true",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-targets: true\n",
+            "",
+        ),
+    )
+    assert_error(
         'test-shards cache must set cache-workspace-crates: "true"',
         replace_once(
             BASE_WORKFLOW,
@@ -1137,6 +1154,14 @@ def main() -> int:
             BASE_ACTION,
             '        echo "managed_target_dir_relative=$managed_target_dir_relative" >> "$GITHUB_OUTPUT"',
             '        echo "managed_target_dir=$managed_target_dir" >> "$GITHUB_OUTPUT"',
+        ),
+    )
+    assert_error(
+        "setup action target_dir step must compute managed_target_dir_relative from workspace to target dir",
+        action=replace_once(
+            BASE_ACTION,
+            """        managed_target_dir_relative="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$managed_target_dir")\"""",
+            """        managed_target_dir_relative="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$managed_target_dir" "$GITHUB_WORKSPACE")\"""",
         ),
     )
     assert_error(

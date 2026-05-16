@@ -87,6 +87,10 @@ SETUP_TARGET_DIR_RELATIVE_EXPORT_RE = re.compile(
 SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE = re.compile(
     r'^\s*echo\s+"managed_target_dir_relative=\$managed_target_dir_relative"\s*>>\s*"\$GITHUB_OUTPUT"\s*$'
 )
+SETUP_TARGET_DIR_RELATIVE_COMPUTE = (
+    "managed_target_dir_relative=\"$(python3 -c 'import os, sys; "
+    "print(os.path.relpath(sys.argv[2], sys.argv[1]))' \"$GITHUB_WORKSPACE\" \"$managed_target_dir\")\""
+)
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
@@ -143,6 +147,8 @@ TEST_SHARD_CACHE_KEY_RE = re.compile(r"^\s+key:\s*nextest-v3-shard-\$\{\{\s*matr
 TEST_CACHE_WORKSPACES_RE = re.compile(
     r"^\s+workspaces:\s*\.\s*->\s*\$\{\{\s*steps\.setup\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
 )
+TEST_CACHE_ON_FAILURE_RE = re.compile(r"^\s+cache-on-failure:\s*true\s*$")
+TEST_CACHE_TARGETS_RE = re.compile(r"^\s+cache-targets:\s*true\s*$")
 TEST_CACHE_WORKSPACE_CRATES_RE = re.compile(r'^\s+cache-workspace-crates:\s*"true"\s*$')
 TEST_CACHE_RUST_ENV_HASH_RE = re.compile(r'^\s+add-rust-environment-hash-key:\s*"true"\s*$')
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
@@ -592,6 +598,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-shards cache must use shard-scoped nextest key")
         if not has_line_matching(test_lines, TEST_CACHE_WORKSPACES_RE):
             errors.append("test-shards cache must map workspace to managed target dir relative output")
+        if not has_line_matching(test_lines, TEST_CACHE_ON_FAILURE_RE):
+            errors.append("test-shards cache must set cache-on-failure: true")
+        if not has_line_matching(test_lines, TEST_CACHE_TARGETS_RE):
+            errors.append("test-shards cache must set cache-targets: true")
         if not has_line_matching(test_lines, TEST_CACHE_WORKSPACE_CRATES_RE):
             errors.append('test-shards cache must set cache-workspace-crates: "true"')
         if not has_line_matching(test_lines, TEST_CACHE_RUST_ENV_HASH_RE):
@@ -646,7 +656,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     for job in TARGET_DIR_JOBS:
         if job in jobs and not job_uses_managed_target_dir(jobs[job]):
-            errors.append(f"{job} must use setup.outputs.managed_target_dir")
+            errors.append(f"{job} must use setup.outputs.managed_target_dir or managed_target_dir_relative")
 
     for job in CACHE_KEY_JOBS:
         if job in jobs and not job_has_explicit_cache_key(jobs[job]):
@@ -752,6 +762,8 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action must export managed_target_dir from target_dir step")
     if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir_relative from target_dir step")
+    if not any(line.strip() == SETUP_TARGET_DIR_RELATIVE_COMPUTE for line in uncommented_lines):
+        errors.append("setup action target_dir step must compute managed_target_dir_relative from workspace to target dir")
     if not any(SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action target_dir step must write managed_target_dir_relative")
     if not any(SETUP_TARGET_DIR_IF_RE.match(line) for line in uncommented_lines):

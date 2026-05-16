@@ -509,6 +509,27 @@ impl Phase8CanaryEvidence {
                 "phase8 live canary proof admitted_order_count expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {admitted_order_count}"
             ));
         }
+        validate_phase8_evidence_ref(stringify!(decision_evidence_ref), &decision_evidence_ref)?;
+        validate_phase8_live_order_ref(&live_order_ref)?;
+        validate_phase8_evidence_ref(
+            stringify!(nt_submit_event_ref),
+            &result_refs.nt_submit_event_ref,
+        )?;
+        validate_phase8_evidence_ref(
+            stringify!(venue_order_state_ref),
+            &result_refs.venue_order_state_ref,
+        )?;
+        if let Some(strategy_cancel_ref) = &result_refs.strategy_cancel_ref {
+            validate_phase8_evidence_ref(stringify!(strategy_cancel_ref), strategy_cancel_ref)?;
+        }
+        validate_phase8_evidence_ref(
+            stringify!(restart_reconciliation_ref),
+            &result_refs.restart_reconciliation_ref,
+        )?;
+        validate_phase8_evidence_ref(
+            stringify!(post_run_hygiene_ref),
+            &result_refs.post_run_hygiene_ref,
+        )?;
         Ok(Self {
             schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
             head_sha: input.head_sha,
@@ -583,6 +604,49 @@ impl Phase8CanaryEvidence {
         }
         Ok(())
     }
+}
+
+fn validate_phase8_evidence_ref(
+    label: &'static str,
+    evidence_ref: &Phase8EvidenceRef,
+) -> Result<()> {
+    validate_phase8_nested_sha256_field(label, stringify!(path_hash), &evidence_ref.path_hash)?;
+    validate_phase8_nested_sha256_field(label, stringify!(record_hash), &evidence_ref.record_hash)
+}
+
+fn validate_phase8_live_order_ref(live_order_ref: &Phase8LiveOrderRef) -> Result<()> {
+    validate_phase8_nested_sha256_field(
+        stringify!(live_order_ref),
+        stringify!(client_order_id_hash),
+        &live_order_ref.client_order_id_hash,
+    )?;
+    validate_phase8_nested_sha256_field(
+        stringify!(live_order_ref),
+        stringify!(venue_order_id_hash),
+        &live_order_ref.venue_order_id_hash,
+    )
+}
+
+fn validate_phase8_nested_sha256_field(parent: &str, child: &str, value: &str) -> Result<()> {
+    let mut field = String::from(parent);
+    field.push('.');
+    field.push_str(child);
+    validate_phase8_sha256_field(&field, value)
+}
+
+fn validate_phase8_sha256_field(field: &str, value: &str) -> Result<()> {
+    if phase8_is_sha256_hex(value) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "phase8 live canary proof {field} must be a sha256 hash"
+        ))
+    }
+}
+
+fn phase8_is_sha256_hex(value: &str) -> bool {
+    let digest = Sha256::digest([]);
+    value.len() == digest.len() + digest.len() && value.chars().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -679,6 +679,49 @@ fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
 }
 
 #[test]
+fn live_canary_evidence_rejects_malformed_result_refs() {
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        Phase8EvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "not-a-sha256".to_string(),
+        },
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("malformed decision evidence ref must not produce live canary proof");
+
+    assert!(
+        error
+            .to_string()
+            .contains("decision_evidence_ref.record_hash"),
+        "error should mention malformed decision evidence record hash: {error}"
+    );
+
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+        Phase8LiveOrderRef {
+            client_order_id_hash: String::new(),
+            venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_string(),
+        },
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("missing live order client hash must not produce live canary proof");
+
+    assert!(
+        error
+            .to_string()
+            .contains("live_order_ref.client_order_id_hash"),
+        "error should mention malformed live order client hash: {error}"
+    );
+}
+
+#[test]
 fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
@@ -1774,6 +1817,32 @@ fn runtime_capture_ref() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8Runtime
         spool_root_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             .to_string(),
         run_id: "phase8-dry-run".to_string(),
+    }
+}
+
+fn valid_evidence_ref(path_prefix: &str, record_prefix: &str) -> Phase8EvidenceRef {
+    Phase8EvidenceRef {
+        path_hash: path_prefix.repeat(16),
+        record_hash: record_prefix.repeat(16),
+    }
+}
+
+fn valid_live_order_ref() -> Phase8LiveOrderRef {
+    Phase8LiveOrderRef {
+        client_order_id_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            .to_string(),
+        venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            .to_string(),
+    }
+}
+
+fn valid_live_canary_result_refs() -> Phase8LiveCanaryResultRefs {
+    Phase8LiveCanaryResultRefs {
+        nt_submit_event_ref: valid_evidence_ref("1111", "2222"),
+        venue_order_state_ref: valid_evidence_ref("3333", "4444"),
+        strategy_cancel_ref: Some(valid_evidence_ref("5555", "6666")),
+        restart_reconciliation_ref: valid_evidence_ref("7777", "8888"),
+        post_run_hygiene_ref: valid_evidence_ref("9999", "aaaa"),
     }
 }
 

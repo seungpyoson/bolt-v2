@@ -62,6 +62,7 @@ use self::fees::PolymarketClobFeeProvider;
 
 pub const KEY: &str = "polymarket";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
+const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
     consumer: "Polymarket execution venue",
@@ -331,6 +332,16 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
             ));
         }
     }
+    if data.subscribe_new_markets {
+        errors.push(format!(
+            "venues.{key}.data.subscribe_new_markets must be false in the current controlled-loading scope because pinned NT subscribes to all Polymarket markets when this flag is true"
+        ));
+    }
+    if data.auto_load_missing_instruments {
+        errors.push(format!(
+            "venues.{key}.data.auto_load_missing_instruments must be false in the current controlled-loading scope because missing-instrument auto-load can trigger ad-hoc Polymarket instrument discovery"
+        ));
+    }
     if let Some(PolymarketNewMarketFilterConfig::Keyword { keyword }) = &data.new_market_filter
         && keyword.trim().is_empty()
     {
@@ -473,13 +484,14 @@ pub fn resolve_secrets(
         &secrets.api_key_ssm_path,
         resolver,
     )?;
-    let api_secret = resolve_field(
+    let api_secret_raw = resolve_field(
         context.venue_key,
         "api_secret_ssm_path",
         context.region,
         &secrets.api_secret_ssm_path,
         resolver,
     )?;
+    let api_secret = normalize_api_secret_padding(api_secret_raw);
     let passphrase = resolve_field(
         context.venue_key,
         "passphrase_ssm_path",
@@ -497,6 +509,13 @@ pub fn resolve_secrets(
 
 fn has_valid_private_key_shape(private_key: &str) -> bool {
     EvmPrivateKey::new(private_key).is_ok()
+}
+
+fn normalize_api_secret_padding(mut api_secret: String) -> String {
+    let pad_len = (URL_SAFE_BASE64_BLOCK_WIDTH - api_secret.len() % URL_SAFE_BASE64_BLOCK_WIDTH)
+        % URL_SAFE_BASE64_BLOCK_WIDTH;
+    api_secret.extend(std::iter::repeat_n('=', pad_len));
+    api_secret
 }
 
 pub fn map_adapters(
@@ -617,6 +636,22 @@ fn map_data(
         })?;
     let filters = build_market_slug_filters_for_venue(instrument_filters, venue_key, clock)?;
     let new_market_filter = map_new_market_filter(venue_key, cfg.new_market_filter.as_ref())?;
+    if cfg.subscribe_new_markets {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key: venue_key.to_string(),
+            field: "data.subscribe_new_markets",
+            message: "must be false in the current controlled-loading scope because pinned NT subscribes to all Polymarket markets when this flag is true"
+                .to_string(),
+        });
+    }
+    if cfg.auto_load_missing_instruments {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key: venue_key.to_string(),
+            field: "data.auto_load_missing_instruments",
+            message: "must be false in the current controlled-loading scope because missing-instrument auto-load can trigger ad-hoc Polymarket instrument discovery"
+                .to_string(),
+        });
+    }
     Ok(PolymarketDataClientConfig {
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
@@ -792,5 +827,17 @@ fn nt_signature_type(value: PolymarketSignatureType) -> NtPolymarketSignatureTyp
         PolymarketSignatureType::Eoa => NtPolymarketSignatureType::Eoa,
         PolymarketSignatureType::PolyProxy => NtPolymarketSignatureType::PolyProxy,
         PolymarketSignatureType::PolyGnosisSafe => NtPolymarketSignatureType::PolyGnosisSafe,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_api_secret_padding;
+
+    #[test]
+    fn polymarket_api_secret_padding_preserves_padded_shape() {
+        assert_eq!(normalize_api_secret_padding("abcd".to_string()), "abcd");
+        assert_eq!(normalize_api_secret_padding("abc".to_string()), "abc=");
+        assert_eq!(normalize_api_secret_padding("ab".to_string()), "ab==");
     }
 }

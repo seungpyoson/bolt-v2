@@ -8,8 +8,7 @@ use bolt_v2::{
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
     bolt_v3_providers::{
         binance::{
-            BinanceDataConfig, BinanceEnvironment, BinanceExecutionConfig, BinanceMarginType,
-            BinanceProductType, ResolvedBoltV3BinanceSecrets,
+            BinanceDataConfig, BinanceEnvironment, BinanceProductType, ResolvedBoltV3BinanceSecrets,
         },
         polymarket::{
             self, PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSignatureType,
@@ -19,10 +18,9 @@ use bolt_v2::{
     bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
 };
 use nautilus_binance::common::enums::{
-    BinanceEnvironment as NtBinanceEnvironment, BinanceMarginType as NtBinanceMarginType,
-    BinanceProductType as NtBinanceProductType,
+    BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
 };
-use nautilus_binance::config::{BinanceDataClientConfig, BinanceExecClientConfig};
+use nautilus_binance::config::BinanceDataClientConfig;
 use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
@@ -116,12 +114,6 @@ fn binance_data_config(loaded: &LoadedBoltV3Config) -> BinanceDataConfig {
         .expect("fixture binance data should parse")
 }
 
-fn binance_execution_config() -> BinanceExecutionConfig {
-    binance_execution_value()
-        .try_into()
-        .expect("fixture binance execution should parse")
-}
-
 fn nt_polymarket_signature_type(
     signature_type: PolymarketSignatureType,
 ) -> NtPolymarketSignatureType {
@@ -145,13 +137,6 @@ fn nt_binance_environment(environment: BinanceEnvironment) -> NtBinanceEnvironme
         BinanceEnvironment::Mainnet => NtBinanceEnvironment::Mainnet,
         BinanceEnvironment::Testnet => NtBinanceEnvironment::Testnet,
         BinanceEnvironment::Demo => NtBinanceEnvironment::Demo,
-    }
-}
-
-fn nt_binance_margin_type(margin_type: BinanceMarginType) -> NtBinanceMarginType {
-    match margin_type {
-        BinanceMarginType::Cross => NtBinanceMarginType::Cross,
-        BinanceMarginType::Isolated => NtBinanceMarginType::Isolated,
     }
 }
 
@@ -341,7 +326,7 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 }
 
 #[test]
-fn adapter_mapper_forwards_configured_subscribe_new_markets_to_nt() {
+fn adapter_mapper_rejects_subscribe_new_markets_true() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     polymarket_data_table(&mut loaded).insert(
@@ -350,19 +335,32 @@ fn adapter_mapper_forwards_configured_subscribe_new_markets_to_nt() {
     );
 
     let resolved = fixture_resolved_secrets();
-    let configs = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect("configured subscribe_new_markets should map");
-    let polymarket = configs
-        .venues
-        .get("polymarket_main")
-        .expect("polymarket_main must be present in mapper output");
-    let data = polymarket
-        .data
-        .as_ref()
-        .expect("polymarket [data] block must produce an NT data config")
-        .config_as::<PolymarketDataClientConfig>()
-        .expect("polymarket [data] should downcast to NT PolymarketDataClientConfig");
-    assert!(data.subscribe_new_markets);
+    let error = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect_err("subscribe_new_markets=true must fail closed before NT mapping");
+    let message = error.to_string();
+    assert!(
+        message.contains("subscribe_new_markets") && message.contains("controlled-loading"),
+        "unexpected adapter mapping error: {message}"
+    );
+}
+
+#[test]
+fn adapter_mapper_rejects_auto_load_missing_instruments_true() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    polymarket_data_table(&mut loaded).insert(
+        "auto_load_missing_instruments".to_string(),
+        toml::Value::Boolean(true),
+    );
+
+    let resolved = fixture_resolved_secrets();
+    let error = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect_err("auto_load_missing_instruments=true must fail closed before NT mapping");
+    let message = error.to_string();
+    assert!(
+        message.contains("auto_load_missing_instruments") && message.contains("controlled-loading"),
+        "unexpected adapter mapping error: {message}"
+    );
 }
 
 #[test]
@@ -693,10 +691,9 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 }
 
 #[test]
-fn binance_execution_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
+fn binance_execution_venue_fails_closed_before_nt_mapping() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let expected_exec = binance_execution_config();
     let venue = loaded
         .root
         .venues
@@ -706,91 +703,15 @@ fn binance_execution_venue_config_plus_resolved_secrets_maps_to_nt_native_fields
     venue.execution = Some(binance_execution_value());
     let resolved = fixture_resolved_secrets();
 
-    let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
-
-    let binance = configs
-        .venues
-        .get("binance_reference")
-        .expect("binance_reference must be present in mapper output");
+    let error = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect_err("Binance execution must fail closed before NT mapping");
+    let message = error.to_string();
     assert!(
-        binance.data.is_none(),
-        "execution-only Binance venue must not synthesize a data client"
+        message.contains("binance_reference")
+            && message.contains("execution")
+            && message.contains("reference-data scope"),
+        "unexpected Binance execution mapping error: {message}"
     );
-    let exec = binance
-        .execution
-        .as_ref()
-        .expect("binance [execution] block must produce an NT execution config")
-        .config_as::<BinanceExecClientConfig>()
-        .expect("binance [execution] should downcast to NT BinanceExecClientConfig");
-
-    assert_eq!(
-        exec.trader_id,
-        nautilus_model::identifiers::TraderId::from(loaded.root.trader_id.as_str())
-    );
-    assert_eq!(
-        exec.account_id,
-        nautilus_model::identifiers::AccountId::from(expected_exec.account_id.as_str())
-    );
-    let expected_product_types: Vec<_> = expected_exec
-        .product_types
-        .iter()
-        .copied()
-        .map(nt_binance_product_type)
-        .collect();
-    assert_eq!(exec.product_types, expected_product_types);
-    assert_eq!(
-        exec.environment,
-        nt_binance_environment(expected_exec.environment)
-    );
-    assert_eq!(
-        exec.base_url_http.as_deref(),
-        Some(expected_exec.base_url_http.as_str())
-    );
-    assert_eq!(
-        exec.base_url_ws.as_deref(),
-        Some(expected_exec.base_url_ws.as_str())
-    );
-    assert_eq!(
-        exec.base_url_ws_trading.as_deref(),
-        Some(expected_exec.base_url_ws_trading.as_str())
-    );
-    assert_eq!(exec.use_ws_trading, expected_exec.use_ws_trading);
-    assert_eq!(exec.use_position_ids, expected_exec.use_position_ids);
-    assert_eq!(
-        exec.default_taker_fee.to_string(),
-        expected_exec.default_taker_fee
-    );
-    assert_eq!(
-        exec.api_key.as_deref(),
-        Some(fixture_binance_secrets().api_key.as_str())
-    );
-    assert_eq!(
-        exec.api_secret.as_deref(),
-        Some(fixture_binance_secrets().api_secret.as_str())
-    );
-    assert_eq!(
-        exec.futures_leverages
-            .as_ref()
-            .map(|values| values.clone().into_iter().collect::<BTreeMap<_, _>>()),
-        Some(expected_exec.futures_leverages)
-    );
-    let expected_margin_types: BTreeMap<_, _> = expected_exec
-        .futures_margin_types
-        .into_iter()
-        .map(|(symbol, margin_type)| (symbol, nt_binance_margin_type(margin_type)))
-        .collect();
-    assert_eq!(
-        exec.futures_margin_types
-            .as_ref()
-            .map(|values| values.clone().into_iter().collect::<BTreeMap<_, _>>()),
-        Some(expected_margin_types)
-    );
-    assert_eq!(
-        exec.treat_expired_as_canceled,
-        expected_exec.treat_expired_as_canceled
-    );
-    assert_eq!(exec.use_trade_lite, expected_exec.use_trade_lite);
-    assert_eq!(exec.transport_backend, expected_exec.transport_backend);
 }
 
 #[test]

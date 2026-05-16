@@ -12,9 +12,10 @@
 //!
 //! This module also owns the per-venue startup-validation policy for
 //! Binance venues: typed deserialization of each present block,
-//! cross-block presence rule ([secrets] is only allowed alongside
-//! [data] or [execution]), Binance data/execution bounds, and Binance
-//! secret-path ownership. The
+//! cross-block presence rule ([secrets] is only allowed alongside a
+//! configured adapter block), Binance data bounds, Binance execution
+//! parse-time diagnostics plus current-scope fail-closed rejection, and
+//! Binance secret-path ownership. The
 //! cross-provider rule that [data] requires [secrets] is declared by
 //! [`REQUIRED_SECRET_BLOCKS`] and enforced centrally in
 //! `bolt_v3_providers::validate_venue_block`. Core startup validation in
@@ -25,23 +26,16 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
-use std::{
-    any::Any,
-    collections::{BTreeMap, HashMap},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{any::Any, collections::BTreeMap, str::FromStr, sync::Arc};
 
 use nautilus_binance::{
     common::credential::Ed25519Credential,
     common::enums::{
-        BinanceEnvironment as NtBinanceEnvironment, BinanceMarginType as NtBinanceMarginType,
-        BinanceProductType as NtBinanceProductType,
+        BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
     },
     config::{BinanceDataClientConfig, BinanceExecClientConfig},
     factories::{BinanceDataClientFactory, BinanceExecutionClientFactory},
 };
-use nautilus_model::identifiers::{AccountId, TraderId};
 use nautilus_network::websocket::TransportBackend;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -212,7 +206,12 @@ pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
     }
     if let Some(execution) = &venue.execution {
         match execution.clone().try_into::<BinanceExecutionConfig>() {
-            Ok(parsed) => errors.extend(validate_execution_bounds(key, &parsed)),
+            Ok(parsed) => {
+                errors.extend(validate_execution_bounds(key, &parsed));
+                errors.push(format!(
+                    "venues.{key}.execution is not supported in the current Binance reference-data scope; Binance execution requires a separate approved runtime contract"
+                ));
+            }
             Err(message) => errors.push(format!("venues.{key}.execution: {message}")),
         }
     }
@@ -459,29 +458,11 @@ fn map_execution(
                 message,
             }
         })?;
-    Ok(BinanceExecClientConfig {
-        trader_id: TraderId::from(root.trader_id.as_str()),
-        account_id: AccountId::from(cfg.account_id.as_str()),
-        product_types: cfg.product_types.into_iter().map(nt_product_type).collect(),
-        environment: nt_environment(cfg.environment),
-        base_url_http: Some(cfg.base_url_http),
-        base_url_ws: Some(cfg.base_url_ws),
-        base_url_ws_trading: Some(cfg.base_url_ws_trading),
-        use_ws_trading: cfg.use_ws_trading,
-        use_position_ids: cfg.use_position_ids,
-        default_taker_fee,
-        api_key: Some(secrets.api_key.clone()),
-        api_secret: Some(secrets.api_secret.clone()),
-        futures_leverages: Some(cfg.futures_leverages.into_iter().collect::<HashMap<_, _>>()),
-        futures_margin_types: Some(
-            cfg.futures_margin_types
-                .into_iter()
-                .map(|(symbol, margin_type)| (symbol, nt_margin_type(margin_type)))
-                .collect::<HashMap<_, _>>(),
-        ),
-        treat_expired_as_canceled: cfg.treat_expired_as_canceled,
-        use_trade_lite: cfg.use_trade_lite,
-        transport_backend: cfg.transport_backend,
+    let _ = (root, secrets, default_taker_fee);
+    Err(BoltV3AdapterMappingError::ValidationInvariant {
+        venue_key: venue_key.to_string(),
+        field: "execution",
+        message: "is not supported in the current Binance reference-data scope; Binance execution requires a separate approved runtime contract".to_string(),
     })
 }
 
@@ -553,13 +534,6 @@ fn nt_environment(value: BinanceEnvironment) -> NtBinanceEnvironment {
         BinanceEnvironment::Mainnet => NtBinanceEnvironment::Mainnet,
         BinanceEnvironment::Testnet => NtBinanceEnvironment::Testnet,
         BinanceEnvironment::Demo => NtBinanceEnvironment::Demo,
-    }
-}
-
-fn nt_margin_type(value: BinanceMarginType) -> NtBinanceMarginType {
-    match value {
-        BinanceMarginType::Cross => NtBinanceMarginType::Cross,
-        BinanceMarginType::Isolated => NtBinanceMarginType::Isolated,
     }
 }
 

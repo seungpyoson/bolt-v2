@@ -46,6 +46,14 @@ classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
 
 [[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "number"
+literal = "4"
+context = "const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;"
+classification = "credential_encoding_width"
+reason = "This is the URL-safe base64 quantum width used only to normalize Polymarket API-secret padding before NT credential construction; it is not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/mod.rs"
 kind = "string"
 literal = "\"data\""

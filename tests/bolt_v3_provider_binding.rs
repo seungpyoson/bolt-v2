@@ -12,8 +12,8 @@
 //!      the injected fixed clock.
 //!   2. Multi-target filter ordering follows declared strategy
 //!      sequence and never reorders by an accidental sort key.
-//!   3. `subscribe_new_markets` remains a configured NT data-client
-//!      value through the instrument-filter entry point.
+//!   3. Broad Polymarket discovery flags fail closed through the
+//!      instrument-filter entry point.
 //!   4. An empty `InstrumentFilterConfig` installs no provider filter,
 //!      preserving the previous default behaviour for non-rotating
 //!      configurations.
@@ -146,7 +146,7 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
 }
 
 #[test]
-fn provider_binding_forwards_auto_load_missing_instruments_from_toml() {
+fn provider_binding_rejects_auto_load_missing_instruments_true() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let data = loaded
@@ -170,22 +170,11 @@ fn provider_binding_forwards_auto_load_missing_instruments_from_toml() {
         &instrument_filters,
         fixed_clock(601),
     )
-    .expect("mapping with instrument filter should succeed");
-
-    let polymarket = configs
-        .venues
-        .get("polymarket_main")
-        .expect("polymarket_main must be present in mapper output");
-    let data = polymarket
-        .data
-        .as_ref()
-        .expect("polymarket [data] block must produce an NT data config")
-        .config_as::<PolymarketDataClientConfig>()
-        .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
-
+    .expect_err("auto_load_missing_instruments=true must fail closed before NT mapping");
+    let message = configs.to_string();
     assert!(
-        data.auto_load_missing_instruments,
-        "provider binding must take NT missing-instrument auto-load from TOML"
+        message.contains("auto_load_missing_instruments") && message.contains("controlled-loading"),
+        "unexpected provider binding error: {message}"
     );
 }
 
@@ -323,7 +312,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
 }
 
 #[test]
-fn instrument_filters_path_forwards_configured_subscribe_new_markets() {
+fn instrument_filters_path_rejects_subscribe_new_markets_true() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
@@ -344,24 +333,18 @@ fn instrument_filters_path_forwards_configured_subscribe_new_markets() {
         instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
     let clock = fixed_clock(0);
 
-    let configs = map_bolt_v3_adapters_with_instrument_filters(
+    let error = map_bolt_v3_adapters_with_instrument_filters(
         &loaded,
         &resolved,
         &instrument_filters,
         clock,
     )
-    .expect("configured subscribe_new_markets should map through instrument-filter path");
-    let polymarket = configs
-        .venues
-        .get("polymarket_main")
-        .expect("polymarket_main must be present in mapper output");
-    let data = polymarket
-        .data
-        .as_ref()
-        .expect("polymarket [data] block must map")
-        .config_as::<PolymarketDataClientConfig>()
-        .expect("polymarket [data] should downcast to NT PolymarketDataClientConfig");
-    assert!(data.subscribe_new_markets);
+    .expect_err("subscribe_new_markets=true must fail closed before NT mapping");
+    let message = error.to_string();
+    assert!(
+        message.contains("subscribe_new_markets") && message.contains("controlled-loading"),
+        "unexpected provider binding error: {message}"
+    );
 }
 
 #[test]

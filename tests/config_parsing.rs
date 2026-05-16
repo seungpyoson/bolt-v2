@@ -1471,7 +1471,7 @@ fn rejects_binance_data_empty_product_types() {
 }
 
 #[test]
-fn accepts_binance_execution_block_when_configured_from_toml() {
+fn rejects_binance_execution_block_in_current_reference_data_scope() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mut fixture =
@@ -1482,13 +1482,15 @@ fn accepts_binance_execution_block_when_configured_from_toml() {
         toml::from_str(&fixture).expect("binance execution fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages.is_empty(),
-        "configured Binance execution venue must validate without a current-scope rejection: {messages:#?}"
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "Binance execution must fail closed in the current reference-data scope, got: {messages:#?}"
     );
 }
 
 #[test]
-fn accepts_binance_execution_only_block_when_configured_from_toml() {
+fn rejects_binance_execution_only_block_in_current_reference_data_scope() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mut fixture = fixture_without_binance_data_block();
@@ -1497,8 +1499,10 @@ fn accepts_binance_execution_only_block_when_configured_from_toml() {
         toml::from_str(&fixture).expect("binance execution-only fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages.is_empty(),
-        "configured Binance execution-only venue must validate when [secrets] are present: {messages:#?}"
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "Binance execution-only venue must fail closed in the current reference-data scope, got: {messages:#?}"
     );
 }
 
@@ -1621,7 +1625,7 @@ fn rejects_polymarket_data_only_venue_with_secrets_block() {
 }
 
 #[test]
-fn accepts_configured_polymarket_data_subscribe_new_markets() {
+fn rejects_polymarket_data_subscribe_new_markets_true() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
@@ -1632,10 +1636,29 @@ fn accepts_configured_polymarket_data_subscribe_new_markets() {
         toml::from_str(&mutated).expect("subscribe_new_markets=true fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        !messages
-            .iter()
-            .any(|m| m.contains("polymarket_main") && m.contains("subscribe_new_markets")),
-        "configured subscribe_new_markets must validate, got: {messages:#?}"
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("subscribe_new_markets")
+            && m.contains("controlled-loading")),
+        "subscribe_new_markets=true must fail closed in current controlled-loading scope, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_data_auto_load_missing_instruments_true() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "auto_load_missing_instruments = false",
+        "auto_load_missing_instruments = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("auto_load_missing_instruments=true fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("auto_load_missing_instruments")
+            && m.contains("controlled-loading")),
+        "auto_load_missing_instruments=true must fail closed in current controlled-loading scope, got: {messages:#?}"
     );
 }
 

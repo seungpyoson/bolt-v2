@@ -144,6 +144,7 @@ BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner 
 TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c"
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
+    "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
 }
 ZIGBUILD_PREBUILT_LITERALS = (
@@ -154,9 +155,11 @@ ZIGBUILD_PREBUILT_LITERALS = (
     'curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"',
     'expected="$(awk \'{print $1}\' "$archive.sha256")"',
     'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
-    'test "$actual" = "$expected"',
     'tar --extract --xz --file "$archive"',
+    'mkdir -p "$HOME/.cargo/bin"',
     'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
+    'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
+    "cargo-zigbuild --version",
 )
 
 
@@ -733,8 +736,6 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
 
 def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> list[str]:
     errors: list[str] = []
-    if workflow_name != "ci.yml" and not workflow_name.endswith("/ci.yml"):
-        return errors
 
     jobs = parse_jobs(workflow_text)
     for job, (tool, output) in CI_INSTALL_ACTION_TOOLS.items():

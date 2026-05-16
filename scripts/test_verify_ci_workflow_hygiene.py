@@ -291,8 +291,10 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
       - name: Check advisories
         run: just deny-advisories
 """
@@ -822,8 +824,36 @@ def main() -> int:
             "ci.yml": BASE_WORKFLOW,
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
-                'cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked',
-                'cargo install cargo-deny --version "0.18.3" --locked',
+                "tool: cargo-deny@${{ steps.setup.outputs.deny_version }}",
+                "tool: cargo-deny@0.18.3",
+            ),
+        },
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must install cargo-deny with pinned taiki-e/install-action",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
+                """      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked""",
+            ),
+        },
+    )
+    assert_workflows_error(
+        "advisory.yml advisories install-action fallback must be none",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                "          fallback: none\n      - name: Check advisories",
+                "          fallback: cargo-install\n      - name: Check advisories",
             ),
         },
     )

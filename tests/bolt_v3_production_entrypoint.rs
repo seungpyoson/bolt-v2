@@ -113,6 +113,7 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
         "src/config.rs",
         "src/validate.rs",
         "src/platform/resolution_basis.rs",
+        "src/bolt_v3_market_identity.rs",
         "tests/ruleset_selector.rs",
     ] {
         assert!(
@@ -129,6 +130,14 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
     assert!(
         !lib.contains("pub mod live_node_setup;"),
         "lib must not expose dead legacy LiveNode setup"
+    );
+    assert!(
+        !lib.contains("pub mod raw_capture_transport;"),
+        "lib must not expose dead legacy raw-capture transport"
+    );
+    assert!(
+        !lib.contains("pub mod bolt_v3_market_identity;"),
+        "lib must not expose retired bolt-v3 market-identity module (superseded by bolt_v3_instrument_filters)"
     );
     assert!(
         !lib.contains("pub mod clients;"),

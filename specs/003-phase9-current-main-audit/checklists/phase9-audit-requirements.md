@@ -84,8 +84,8 @@
 
 ## Current-head External Review Status (added 2026-05-17)
 
-- [x] CHK055 Audit-report Current-head Re-anchor section declares `9fb1a239cfc046f8446b10a5724aa343b7f86c2a` as the current head and `fc7e081e254a56d4578cf471c00842a63c1eb778` as superseded (closes MECE P0-A).
+- [x] CHK055 Audit-report Current-head Re-anchor section declares the production-code head SHA at section authoring (`9fb1a239cfc046f8446b10a5724aa343b7f86c2a`), marks `fc7e081e254a56d4578cf471c00842a63c1eb778` as superseded, and defers to the PR body's "Current pushed head" line for the authoritative current literal HEAD SHA (closes MECE P0-A and the related NEW-1 stale-head self-reference surfaced by GLM at-head re-review).
 - [x] CHK056 Audit-report explicitly states that all prior external-review approvals cover the superseded SHA and identifies the additional unreviewed commits at current head (closes MECE P0-B documentation portion).
 - [x] CHK057 PR-body External Review Status section is annotated to reflect that DeepSeek/GLM `source_content_transmission: not_sent` reviews approved without seeing source (closes MECE P0-L).
-- [ ] CHK058 External re-review wave (Claude, Gemini, Kimi, GLM, DeepSeek) is rerun at current head `9fb1a239` — tracked as T074 (closes MECE P0-B operational portion). OPEN.
+- [ ] CHK058 External re-review wave (Claude, Gemini, Kimi, GLM, DeepSeek) is rerun at the current PR head (production-code SHA `9fb1a239` at task-authoring time; docs-only commits since do not change code behavior; review SHA must match current literal HEAD published in PR body) — tracked as T074 (closes MECE P0-B operational portion). OPEN.
 - [x] CHK059 Audit-report states that this PR must not be merged while Phase 9 audit/remediation is open per FR-007 (closes MECE P0-M).

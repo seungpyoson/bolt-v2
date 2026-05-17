@@ -494,6 +494,16 @@ mod tests {
 
     #[test]
     fn ssm_resolver_session_does_not_trim_resolved_secret_values() {
+        // The bolt-v3 secret contract pins the SSM resolver as byte-exact:
+        // `SsmResolverSession::resolve` returns the parameter value
+        // unchanged, and `bolt_v3_secrets::resolve_field` owns every
+        // whitespace rejection (empty, padded, embedded). The earlier
+        // version of this guard only forbade `.trim()`, which left
+        // `.trim_start()`, `.trim_end()`, `.replace(`, and regex-based
+        // normalization paths able to silently regress the byte-exact
+        // contract without tripping any test. Per MECE PR #331 P3
+        // round-1 finding P3-NB1, this guard now rejects every
+        // transform variant the contract forbids on the resolve body.
         let source = include_str!("secrets.rs");
         let resolve_body = source
             .split_once("    pub fn resolve(")
@@ -501,9 +511,20 @@ mod tests {
             .map(|(body, _)| body)
             .expect("SsmResolverSession::resolve body must be present");
 
-        assert!(
-            !resolve_body.contains(".trim()"),
-            "SsmResolverSession::resolve must return the raw SSM value so bolt_v3_secrets::resolve_field owns whitespace rejection"
-        );
+        for forbidden in [
+            ".trim()",
+            ".trim_start()",
+            ".trim_end()",
+            ".replace(",
+            "Regex::",
+            "regex::Regex",
+        ] {
+            assert!(
+                !resolve_body.contains(forbidden),
+                "SsmResolverSession::resolve must return the raw SSM value so \
+                 bolt_v3_secrets::resolve_field owns whitespace rejection; found \
+                 forbidden transform `{forbidden}` in the resolve body"
+            );
+        }
     }
 }

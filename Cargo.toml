@@ -42,6 +42,7 @@ tokio-util = "0.7"
 toml = "1.1"
 url = "2"
 ustr = "1.1.0"
+zeroize = "1.8.2"
 
 [dev-dependencies]
 arrow = "58.1.0"

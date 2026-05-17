@@ -36,8 +36,10 @@ use nautilus_binance::{
     config::BinanceDataClientConfig,
     factories::BinanceDataClientFactory,
 };
+use nautilus_core::string::secret::REDACTED;
 use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     bolt_v3_adapters::{
@@ -156,26 +158,17 @@ pub struct BinanceSecretsConfig {
     pub api_secret_ssm_path: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedBoltV3BinanceSecrets {
     pub api_key: String,
     pub api_secret: String,
 }
 
-struct RedactedDebug;
-
-impl std::fmt::Debug for RedactedDebug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[REDACTED]")
-    }
-}
-
 impl std::fmt::Debug for ResolvedBoltV3BinanceSecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted = RedactedDebug;
         f.debug_struct("ResolvedBoltV3BinanceSecrets")
-            .field("api_key", &redacted)
-            .field("api_secret", &redacted)
+            .field("api_key", &REDACTED)
+            .field("api_secret", &REDACTED)
             .finish()
     }
 }

@@ -481,6 +481,80 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_polymarket_private_key_error_does_not_leak_raw_input_bytes() {
+        // Per MECE PR #331 P3 round-1 finding P3-NB2: when the
+        // resolver wraps the NT EvmPrivateKey validator error, the raw
+        // SSM value must not appear in the wrapped error chain. NT's
+        // current EvmPrivateKey::new diagnostic does not embed the
+        // input, but a future NT revision that included the offending
+        // bytes in its error string would propagate them through
+        // `BoltV3SecretError::Display` to operator logs. This guard
+        // pins the no-leak contract by passing a distinct sentinel
+        // value and asserting the sentinel is not a substring of any
+        // surface of the wrapped error (`source` field or `Display`
+        // output).
+        let loaded = fixture_loaded_config();
+        let sentinel = "BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_2BC58A4DE0F1";
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/polymarket_main/private_key" {
+                Ok::<_, &'static str>(sentinel.to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err(
+            "sentinel private_key must fail shape validation before NT client construction",
+        );
+
+        assert_eq!(error.field, "private_key_ssm_path");
+        assert!(
+            !error.source.contains(sentinel),
+            "wrapped error source must not include the raw secret bytes; got source: {}",
+            error.source
+        );
+        let displayed = error.to_string();
+        assert!(
+            !displayed.contains(sentinel),
+            "wrapped error Display output must not include the raw secret bytes; got: {displayed}"
+        );
+    }
+
+    #[test]
+    fn wrapped_binance_api_secret_error_does_not_leak_raw_input_bytes() {
+        // Per MECE PR #331 P3 round-1 finding P3-NB2: same no-leak
+        // contract as
+        // `wrapped_polymarket_private_key_error_does_not_leak_raw_input_bytes`,
+        // applied to the Binance Ed25519Credential validator wrapper.
+        // The sentinel passes resolve_field's whitespace checks but
+        // fails Ed25519 PKCS8 base64 shape validation; the wrapped
+        // error must not surface the sentinel bytes.
+        let loaded = fixture_loaded_config();
+        let sentinel = "BOLTV3_API_SECRET_SENTINEL_DO_NOT_LEAK_8D4F2E1AC3B7";
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/binance_reference/api_secret" {
+                Ok::<_, &'static str>(sentinel.to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err("sentinel api_secret must fail shape validation before NT client construction");
+
+        assert_eq!(error.field, "api_secret_ssm_path");
+        assert!(
+            !error.source.contains(sentinel),
+            "wrapped error source must not include the raw secret bytes; got source: {}",
+            error.source
+        );
+        let displayed = error.to_string();
+        assert!(
+            !displayed.contains(sentinel),
+            "wrapped error Display output must not include the raw secret bytes; got: {displayed}"
+        );
+    }
+
+    #[test]
     fn rejects_whitespace_padded_resolved_secret_values_without_trimming() {
         let loaded = fixture_loaded_config();
 

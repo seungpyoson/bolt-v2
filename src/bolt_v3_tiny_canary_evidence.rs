@@ -24,6 +24,7 @@ const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
 const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
 const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
 const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
+const PHASE8_ALLOWED_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -54,9 +55,11 @@ pub enum Phase8CanaryBlockReason {
     NonPositivePriceToBeatValue,
     NonPositiveExpectedEdgeBasisPoints,
     NonPositiveWorstCaseEdgeBasisPoints,
+    EdgeBasisPointsMismatch,
     NonPositiveThetaScaledMinEdgeBps,
     NegativeFeeRateBasisPoints,
     MissingPriceToBeatSource,
+    UnsupportedPriceToBeatSource,
     MissingReferenceQuoteTsEvent,
     InvalidPricingKurtosis,
     NegativeThetaDecayFactor,
@@ -123,14 +126,20 @@ impl Phase8StrategyInputSafetyAudit {
         if inputs.worst_case_edge_basis_points <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints);
         }
+        if inputs.expected_edge_basis_points != inputs.worst_case_edge_basis_points {
+            block_reasons.push(Phase8CanaryBlockReason::EdgeBasisPointsMismatch);
+        }
         if inputs.theta_scaled_min_edge_bps <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveThetaScaledMinEdgeBps);
         }
         if inputs.fee_rate_basis_points < Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
         }
-        if inputs.price_to_beat_source.trim().is_empty() {
+        let price_to_beat_source = inputs.price_to_beat_source.trim();
+        if price_to_beat_source.is_empty() {
             block_reasons.push(Phase8CanaryBlockReason::MissingPriceToBeatSource);
+        } else if price_to_beat_source != PHASE8_ALLOWED_PRICE_TO_BEAT_SOURCE {
+            block_reasons.push(Phase8CanaryBlockReason::UnsupportedPriceToBeatSource);
         }
         if inputs.reference_quote_ts_event == 0 {
             block_reasons.push(Phase8CanaryBlockReason::MissingReferenceQuoteTsEvent);

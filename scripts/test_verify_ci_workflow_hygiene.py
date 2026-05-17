@@ -1056,6 +1056,14 @@ def main() -> int:
         ),
     )
     assert_error(
+        "on.push must have no paths-ignore",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - '.specify/**'\n\njobs:",
+            "      - '.specify/**'\n\n  push:\n    branches: [main]\n    paths-ignore:\n      - 'docs/**'\n\njobs:",
+        ),
+    )
+    assert_error(
         "build needs detector",
         replace_once(
             BASE_WORKFLOW,

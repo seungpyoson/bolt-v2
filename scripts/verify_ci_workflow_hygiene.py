@@ -270,8 +270,10 @@ def strip_comment(line: str) -> str:
     return line.rstrip()
 
 
-def extract_pull_request_paths_ignore(workflow_text: str) -> tuple[str, ...] | None:
-    """Return the paths-ignore list under `on.pull_request`, or None if absent.
+def extract_paths_ignore_for_trigger(
+    workflow_text: str, trigger: str
+) -> tuple[str, ...] | None:
+    """Return the paths-ignore list under `on.<trigger>`, or None if absent.
 
     Parses the block-style YAML this repo uses; flow-style maps are not supported.
     """
@@ -292,10 +294,10 @@ def extract_pull_request_paths_ignore(workflow_text: str) -> tuple[str, ...] | N
     on_idx = section_index(0, "on:", max_indent=-1)
     if on_idx is None:
         return None
-    pr_idx = section_index(on_idx + 1, "  pull_request:", max_indent=0)
-    if pr_idx is None:
+    trigger_idx = section_index(on_idx + 1, f"  {trigger}:", max_indent=0)
+    if trigger_idx is None:
         return None
-    pi_idx = section_index(pr_idx + 1, "    paths-ignore:", max_indent=2)
+    pi_idx = section_index(trigger_idx + 1, "    paths-ignore:", max_indent=2)
     if pi_idx is None:
         return None
 
@@ -1020,11 +1022,17 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
 
-    actual_paths_ignore = extract_pull_request_paths_ignore(workflow_text)
-    if actual_paths_ignore is None or tuple(sorted(actual_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
+    actual_pr_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "pull_request")
+    if actual_pr_paths_ignore is None or tuple(sorted(actual_pr_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
         errors.append(
             "on.pull_request paths-ignore must match baseline "
-            f"{CI_PR_PATHS_IGNORE_BASELINE} (got {actual_paths_ignore!r})"
+            f"{CI_PR_PATHS_IGNORE_BASELINE} (got {actual_pr_paths_ignore!r})"
+        )
+    actual_push_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "push")
+    if actual_push_paths_ignore is not None:
+        errors.append(
+            "on.push must have no paths-ignore (push to main/tags must always run full CI); "
+            f"got {actual_push_paths_ignore!r}"
         )
 
     for job in REQUIRED_JOBS:

@@ -5,7 +5,7 @@
 
 ## Summary
 
-Implement #342 as a stacked follow-up to the #343 baseline. Add a first-class `source-fence` CI job and `just source-fence` recipe that run the Bolt-v3 verifier script set and two canonical structural test filters before full `test`. Extend `gate` and `just ci-lint-workflow` so the new lane is required and fail-closed. Do not implement #332 sharding, #195 artifact retention, #205 deploy deduplication, #335/#344 path-filter work, or #340 config-path migration.
+Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a first-class `source-fence` CI job and `just source-fence` recipe that run the Bolt-v3 verifier script set and canonical structural test binaries before full `test`. Extend `gate` and `just ci-lint-workflow` so the new lane is required and fail-closed. Do not implement #332 sharding, #195 artifact retention, #205 deploy deduplication, #335/#344 path-filter work, or #340 config-path migration.
 
 ## Technical Context
 
@@ -38,7 +38,7 @@ Detailed decisions are in [research.md](research.md).
 - Use one `just source-fence` recipe as the local/CI source of truth.
 - Add the two missing verifier scripts instead of deleting them from the #342 contract.
 - Keep temporary duplicate execution explicit until #332 changes full nextest ownership.
-- Keep Python verifier dependencies deterministic by avoiding new unpinned pip installs.
+- Keep Python verifier dependencies deterministic with hashed CI requirements.
 
 ## Phase 1 Design Summary
 
@@ -50,7 +50,7 @@ Implementation surfaces:
 - `justfile`: add `source-fence` recipe and narrow linter invariants for job/gate/test dependencies.
 - `scripts/verify_bolt_v3_pure_rust_runtime.py`: new pure-Rust runtime verifier.
 - `scripts/verify_bolt_v3_status_map_current.py`: new status-map evidence verifier.
-- `scripts/verify_bolt_v3_naming.py`: remove reliance on ambient PyYAML if needed for deterministic CI.
+- `scripts/verify_bolt_v3_naming.py`: use PyYAML from the hashed source-fence CI requirements file.
 - `docs/bolt-v3/2026-04-28-source-grounded-status-map.md`: update row 3 to cite the new verifier.
 
 ## Project Structure

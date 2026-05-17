@@ -15,6 +15,7 @@ use serde::Deserialize;
 use std::env;
 use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
@@ -23,6 +24,7 @@ fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
 
     assert!(source.contains("#[ignore]"));
     assert!(source.contains("Phase8OperatorApprovalEnvelope::from_env"));
+    assert!(source.contains("validate_and_consume_against"));
     assert!(source.contains("evaluate_phase8_canary_preflight"));
     assert!(source.contains("write_json_file"));
     assert!(source.contains("build_bolt_v3_live_node"));
@@ -125,7 +127,8 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
     let loaded = load_bolt_v3_config(std::path::Path::new(&envelope.root_toml_path))?;
     let root_hash = Phase8OperatorApprovalEnvelope::sha256_file(&envelope.root_toml_path)?;
     let current_head = phase8_current_checkout_head_sha()?;
-    envelope.validate_against(
+    let current_unix_seconds = phase8_current_unix_seconds()?;
+    envelope.validate_and_consume_against(
         &current_head,
         &root_hash,
         loaded
@@ -134,6 +137,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             .as_ref()
             .map(|block| block.approval_id.as_str())
             .unwrap_or_default(),
+        current_unix_seconds,
     )?;
     let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &envelope.strategy_input_evidence_path,
@@ -214,6 +218,14 @@ fn phase8_current_checkout_head_sha() -> anyhow::Result<String> {
         return Err(anyhow::anyhow!("git rev-parse HEAD returned an empty head"));
     }
     Ok(head.to_string())
+}
+
+fn phase8_current_unix_seconds() -> anyhow::Result<i64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| anyhow::anyhow!("system time is before UNIX_EPOCH: {source}"))?;
+    i64::try_from(duration.as_secs())
+        .map_err(|source| anyhow::anyhow!("current unix seconds exceeds i64: {source}"))
 }
 
 fn phase8_operator_evidence_input(

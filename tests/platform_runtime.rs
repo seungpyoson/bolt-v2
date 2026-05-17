@@ -72,9 +72,26 @@ fn polymarket_selector(tag_slug: &str) -> Value {
     Value::Table(selector)
 }
 use tempfile::tempdir;
-use tokio::{sync::Notify, task::LocalSet};
+use tokio::{
+    sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, Notify},
+    task::LocalSet,
+};
 
 static LIVE_NODE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static LIVE_NODE_TEST_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+
+async fn acquire_live_node_test_lock() -> AsyncMutexGuard<'static, ()> {
+    LIVE_NODE_TEST_LOCK
+        .get_or_init(|| AsyncMutex::new(()))
+        .lock()
+        .await
+}
+
+fn blocking_acquire_live_node_test_lock() -> AsyncMutexGuard<'static, ()> {
+    LIVE_NODE_TEST_LOCK
+        .get_or_init(|| AsyncMutex::new(()))
+        .blocking_lock()
+}
 
 fn with_live_node_build_lock<T>(build: impl FnOnce() -> T) -> T {
     let _guard = LIVE_NODE_BUILD_LOCK
@@ -622,6 +639,7 @@ fn run_multithread_localset_test<F>(test: F)
 where
     F: Future<Output = ()> + 'static,
 {
+    let _guard = blocking_acquire_live_node_test_lock();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -763,6 +781,7 @@ fn stub_runtime_services_with_loader(
 
 #[tokio::test(flavor = "current_thread")]
 async fn platform_runtime_starts_and_stops_with_node() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let uploader = MockUploader::default();
@@ -792,6 +811,7 @@ async fn platform_runtime_starts_and_stops_with_node() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_eligible_market_emits_idle_decision_and_keeps_running() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let uploader = MockUploader::default();
@@ -855,6 +875,7 @@ fn binance_btcusdt_1m() -> ResolutionBasis {
 
 #[tokio::test(flavor = "current_thread")]
 async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let mut cfg = test_config(dir.path());
     cfg.rulesets[0].selector_poll_interval_ms = 1_000;
@@ -928,6 +949,7 @@ async fn selector_runtime_emits_reject_records_with_final_decision_for_same_tick
 
 #[tokio::test(flavor = "current_thread")]
 async fn eligible_market_emits_active_decision() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let uploader = MockUploader::default();
@@ -1072,6 +1094,7 @@ fn selector_keeps_loading_and_publishing_active_decision_while_positions_open() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn selector_waits_for_running_before_polling_candidates() {
+    let _guard = acquire_live_node_test_lock().await;
     struct CountingLoader {
         calls: Arc<AtomicUsize>,
     }
@@ -1425,6 +1448,7 @@ fn runtime_does_not_remove_pre_registered_template_strategy_on_shutdown() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn freeze_window_market_emits_freeze_decision() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let uploader = MockUploader::default();
@@ -1496,6 +1520,7 @@ fn ruleset_mode_rejects_duplicate_runtime_strategy_templates() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn cancellation_token_stops_background_tasks_cleanly() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let uploader = MockUploader::default();
@@ -1517,6 +1542,7 @@ async fn cancellation_token_stops_background_tasks_cleanly() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn audit_task_failure_triggers_fail_closed_shutdown() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let release = Arc::new(Notify::new());
@@ -1549,6 +1575,7 @@ async fn audit_task_failure_triggers_fail_closed_shutdown() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn selector_loader_failure_triggers_fail_closed_shutdown() {
+    let _guard = acquire_live_node_test_lock().await;
     struct FailingLoader;
 
     impl CandidateMarketLoader for FailingLoader {
@@ -1625,6 +1652,7 @@ fn runtime_strategy_build_failure_surfaces_during_wiring() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn runtime_passes_ruleset_loader_timeout_through_config() {
+    let _guard = acquire_live_node_test_lock().await;
     #[derive(Default)]
     struct CapturingLoader {
         seen_rulesets: Arc<Mutex<Vec<RulesetConfig>>>,
@@ -1678,6 +1706,7 @@ async fn runtime_passes_ruleset_loader_timeout_through_config() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn reference_snapshot_is_forwarded_into_audit_spool() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let publish_topic = cfg.reference.publish_topic.clone();
@@ -1779,6 +1808,7 @@ async fn reference_snapshot_is_forwarded_into_audit_spool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn background_producers_stop_emitting_before_runtime_shutdown() {
+    let _guard = acquire_live_node_test_lock().await;
     let dir = tempdir().unwrap();
     let cfg = test_config(dir.path());
     let publish_topic = cfg.reference.publish_topic.clone();
@@ -1851,6 +1881,7 @@ async fn background_producers_stop_emitting_before_runtime_shutdown() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn reference_snapshot_audit_send_failure_surfaces_through_shutdown() {
+    let _guard = acquire_live_node_test_lock().await;
     struct PendingLoader;
 
     impl CandidateMarketLoader for PendingLoader {

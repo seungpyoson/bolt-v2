@@ -6,6 +6,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 nextest_version := "0.9.132"
 deny_version := "0.19.0"
 zigbuild_version := "0.22.1"
+zigbuild_x86_64_unknown_linux_gnu_sha256 := "21e18a5f8ae64b9ed34c5c1cf7bba5af3bd96d77fd43d713eae85b922506d941"
 zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
@@ -74,7 +75,7 @@ verify-bolt-v3-pure-rust-runtime: check-workspace
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
 
-fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks verify-bolt-v3-core-boundary verify-bolt-v3-naming verify-bolt-v3-status-map-current verify-bolt-v3-pure-rust-runtime
+fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
 fmt: check-workspace require-rust-verification-owner
@@ -104,6 +105,12 @@ clippy: check-workspace require-rust-verification-owner
 test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
+test-archive archive *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
+
+test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}
+
 build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
 
@@ -123,8 +130,9 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate -- --nocapture
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_production_entrypoint -- --nocapture
+    # #342 owns these canonical source-fence checks. Until #332 changes full
+    # nextest ownership, `test` intentionally still duplicates them under `gate`.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
 
 live-generate: check-workspace require-rust-verification-owner
     #!/usr/bin/env bash

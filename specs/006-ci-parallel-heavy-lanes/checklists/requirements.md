@@ -12,7 +12,7 @@
 - [x] CHK004 Are shard reproduction logs required? [Completeness, Spec FR-007]
 - [x] CHK005 Is fail-closed aggregate gate behavior represented for clippy, check-aarch64, source-fence, aggregate test, and build skip semantics? [Completeness, Spec FR-008..FR-010]
 - [x] CHK006 Is #342 source-fence ownership explicitly resolved instead of silently narrowed? [Completeness, Spec FR-011..FR-012]
-- [x] CHK007 Are #195 cache-key coordination and bounded shard keys represented? [Completeness, Research]
+- [x] CHK007 Are #195 cache-key coordination and the bounded shared nextest cache policy represented? [Completeness, Research]
 - [x] CHK008 Is exact before/after timing evidence required but not overclaimed before CI exists? [Completeness, Spec FR-015]
 
 ## Requirement Clarity
@@ -27,7 +27,7 @@
 - [x] CHK013 Does the spec keep #342 source-fence before full test? [Consistency, Spec FR-011]
 - [x] CHK014 Does the spec avoid #195, #205, #344, #340, and generic #203 work while still preserving #332 requirements? [Consistency, Spec FR-016]
 - [x] CHK015 Does the spec preserve the single aggregate gate instead of requiring each matrix child as a separate required status? [Consistency, Spec FR-009..FR-010]
-- [x] CHK016 Does the cache-key decision stay shard-aware but bounded? [Consistency, Research]
+- [x] CHK016 Does the cache-key decision stay bounded and avoid per-shard cold-cache duplication? [Consistency, Research]
 
 ## Acceptance Criteria Quality
 

@@ -31,7 +31,7 @@ All via `just` (must be installed). The justfile is the single source of truth â
 | Command | What it does |
 |---------|-------------|
 | `just build` | Release cross-compile via `cargo zigbuild` (target: `aarch64-unknown-linux-gnu`). |
-| `just test` | `cargo nextest run --locked`; pass nextest args after `--`, e.g. `just test -- --partition count:1/4`. |
+| `just test` | `cargo nextest run --locked`; pass nextest args after `--`, e.g. `just test -- --partition count:1/4`; LiveNode-heavy integration binaries are serialized by `.config/nextest.toml`. |
 | `just source-fence` | Bolt-v3 source-fence verifier set + targeted structural cargo test filters before the full test lane. |
 | `just fmt` | `cargo fmt` (gated by rust-verification wrapper). |
 | `just fmt-check` | `cargo fmt --check` + Python verification scripts as prerequisites. |
@@ -41,7 +41,7 @@ All via `just` (must be installed). The justfile is the single source of truth â
 | `just check-aarch64` | `cargo check --target aarch64-unknown-linux-gnu`. |
 | `just setup` | Install pinned `cargo-nextest`, `cargo-deny`, `cargo-zigbuild`; verify Zig 0.15.2 is installed. |
 | `just live` | Generate runtime config from `config/live.local.toml` â†’ `config/live.toml`, then run. |
-| `just ci-lint-workflow` | Verify CI workflow topology, gate/deploy semantics, managed target-dir opt-ins, and shell-script cargo invocation hygiene. |
+| `just ci-lint-workflow` | Verify CI workflow topology, gate/deploy semantics, managed target-dir opt-ins, nextest LiveNode serialization config, prebuilt CI build-tool installs, and shell-script cargo invocation hygiene. |
 
 ## Conventions
 

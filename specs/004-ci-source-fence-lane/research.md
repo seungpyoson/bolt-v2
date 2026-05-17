@@ -30,8 +30,8 @@
 
 **Alternatives considered**: Share restore keys between `source-fence` and `test`. Rejected for this slice because it changes cache strategy outside the source-fence contract and makes the lane's own warm-cache evidence less direct.
 
-## Decision: Avoid new Python package installation
+## Decision: Pin PyYAML for the naming verifier
 
-**Rationale**: #342 requires deterministic verifiers. Depending on ambient runner image packages or unpinned `pip install` behavior is not deterministic and violates the repo's dependency discipline.
+**Rationale**: #342 requires deterministic verifiers, and the naming audit is YAML. A hashed source-fence requirement keeps CI dependency resolution deterministic while preserving PyYAML's complete parser behavior for future audit-file edits.
 
-**Alternatives considered**: Install PyYAML in CI. Rejected because it adds an unpinned Python dependency for a source-scan lane when the existing audit YAML is simple enough for a repo-local parser.
+**Alternatives considered**: Keep a repo-local YAML subset parser. Rejected because it creates parser maintenance risk and can fail future valid YAML edits for parse-shape reasons unrelated to the audit data.

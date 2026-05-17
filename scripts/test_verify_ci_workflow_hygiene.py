@@ -50,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
+        id: setup
         with:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
@@ -72,8 +73,10 @@ jobs:
         with:
           key: deny
       - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
       - run: just deny
 
   clippy:
@@ -87,7 +90,6 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
-          include-build-values: "true"
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
@@ -98,10 +100,17 @@ jobs:
   check-aarch64:
     name: check-aarch64
     needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve aarch64 coverage owner
+        run: |
+          if [[ "${{ needs.detector.outputs.build_required }}" == "true" ]]; then
+            echo "build_required=true; aarch64 coverage is provided by build"
+          else
+            echo "build_required=false; running standalone aarch64 check"
+          fi
       - uses: ./.github/actions/setup-environment
+        if: needs.detector.outputs.build_required != 'true'
         with:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
@@ -109,12 +118,15 @@ jobs:
           use-default-target: "true"
           include-managed-target-dir: "true"
       - name: Install aarch64 cross compiler
+        if: needs.detector.outputs.build_required != 'true'
         run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       - uses: Swatinem/rust-cache@example
+        if: needs.detector.outputs.build_required != 'true'
         with:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
           key: check-aarch64
-      - run: just check-aarch64
+      - if: needs.detector.outputs.build_required != 'true'
+        run: just check-aarch64
 
   source-fence:
     name: source-fence
@@ -133,9 +145,54 @@ jobs:
           key: source-fence
       - run: just source-fence
 
-  test:
-    name: test
+  test-archive:
+    name: nextest archive
     needs: [detector, source-fence]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+    steps:
+      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+      - name: Restore nextest archive
+        id: nextest-archive-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}
+      - name: Install cargo-nextest
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+      - name: Build nextest archive
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          just test-archive "$NEXTEST_ARCHIVE_PATH"
+      - name: Save nextest archive
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          if-no-files-found: error
+          retention-days: 1
+
+  test-shards:
+    name: nextest shard ${{ matrix.shard }} of 4
+    needs: test-archive
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     strategy:
@@ -144,25 +201,42 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - uses: ./.github/actions/setup-environment
+        id: setup
         with:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
-      - uses: Swatinem/rust-cache@example
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}
-          cache-targets: true
-          cache-workspace-crates: "true"
-          add-rust-environment-hash-key: "true"
-          key: nextest-v3-shard-${{ matrix.shard }}-of-4
+          name: nextest-archive
+          path: ${{ runner.temp }}/nextest-archive
+      - name: Resolve archive extraction root
+        id: archive-root
+        run: |
+          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"
+          echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"
       - name: Show shard reproduction command
         run: |
-          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
+          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
       - name: Install cargo-nextest
-        run: |
-          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
-      - run: just test -- --partition count:${{ matrix.shard }}/4
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
+
+  test:
+    name: test
+    needs: test-shards
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
+            exit 1
+          fi
 
   build:
     name: build
@@ -186,7 +260,27 @@ jobs:
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
       - name: Install cargo-zigbuild
         run: |
-          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -248,7 +342,7 @@ jobs:
             if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
               exit 1
             fi
-            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+            if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
               exit 1
             fi
             if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
@@ -342,8 +436,10 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
       - name: Check advisories
         run: just deny-advisories
 """
@@ -385,6 +481,8 @@ outputs:
     value: ${{ steps.shared.outputs.zig_version }}
   zigbuild_version:
     value: ${{ steps.shared.outputs.zigbuild_version }}
+  zigbuild_x86_64_unknown_linux_gnu_sha256:
+    value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
   rust_verification_source_repo:
@@ -426,6 +524,7 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
+          echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
     - name: Install managed Rust owner
       shell: bash
@@ -448,30 +547,62 @@ runs:
 """
 
 
-def assert_clean(workflow: str = BASE_WORKFLOW, action: str = BASE_ACTION) -> None:
+BASE_NEXTEST_CONFIG = """
+[test-groups]
+live-node = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(=bolt_v2) & (test(~bolt_v3_client_registration::tests::) | test(~bolt_v3_live_node::tests::) | test(~platform::runtime::tests::))'
+test-group = 'live-node'
+
+[[profile.default.overrides]]
+filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=bolt_v3_tiny_canary_operator) | binary(=config_parsing) | binary(=eth_chainlink_taker_runtime) | binary(=lake_batch) | binary(=live_node_run) | binary(=nt_runtime_capture) | binary(=platform_runtime) | binary(=polymarket_bootstrap) | binary(=venue_contract)'
+test-group = 'live-node'
+"""
+
+
+def assert_clean(
+    workflow: str = BASE_WORKFLOW,
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
     verifier = load_verifier()
-    errors = verifier.verify_text(workflow, action)
+    errors = verifier.verify_text(workflow, action, nextest_config)
     if errors:
         raise AssertionError(f"expected no errors, got: {errors}")
 
 
-def assert_workflows_clean(workflows: dict[str, str], action: str = BASE_ACTION) -> None:
+def assert_workflows_clean(
+    workflows: dict[str, str],
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
     verifier = load_verifier()
-    errors = verifier.verify_workflows(workflows, action)
+    errors = verifier.verify_workflows(workflows, action, nextest_config)
     if errors:
         raise AssertionError(f"expected no errors, got: {errors}")
 
 
-def assert_error(fragment: str, workflow: str = BASE_WORKFLOW, action: str = BASE_ACTION) -> None:
+def assert_error(
+    fragment: str,
+    workflow: str = BASE_WORKFLOW,
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
     verifier = load_verifier()
-    errors = verifier.verify_text(workflow, action)
+    errors = verifier.verify_text(workflow, action, nextest_config)
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
 
-def assert_workflows_error(fragment: str, workflows: dict[str, str], action: str = BASE_ACTION) -> None:
+def assert_workflows_error(
+    fragment: str,
+    workflows: dict[str, str],
+    action: str = BASE_ACTION,
+    nextest_config: str = BASE_NEXTEST_CONFIG,
+) -> None:
     verifier = load_verifier()
-    errors = verifier.verify_workflows(workflows, action)
+    errors = verifier.verify_workflows(workflows, action, nextest_config)
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected error containing {fragment!r}, got: {errors}")
 
@@ -557,6 +688,44 @@ def assert_body_exits_requires_top_level_exit() -> None:
         raise AssertionError("body_exits must accept one top-level exit 1")
 
 
+def assert_nextest_live_node_group_required() -> None:
+    assert_error(
+        "nextest config missing live-node test group",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("live-node = { max-threads = 1 }", ""),
+    )
+    assert_error(
+        "nextest live-node test group max-threads must be 1",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("max-threads = 1", "max-threads = 2"),
+    )
+    assert_error(
+        "nextest config must assign LiveNode test paths to live-node group",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("binary(=venue_contract)", "binary(=config_schema)"),
+    )
+    assert_error(
+        "nextest config must assign LiveNode test paths to live-node group",
+        nextest_config=BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
+    )
+    assert_error(
+        "missing test(~platform::runtime::tests::)",
+        nextest_config=BASE_NEXTEST_CONFIG.replace(
+            " | test(~platform::runtime::tests::)",
+            "",
+        ),
+    )
+
+
+def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
+    verifier = load_verifier()
+    for binary in verifier.LIVE_NODE_NEXTEST_BINARIES:
+        assert_error(
+            f"missing binary(={binary})",
+            nextest_config=BASE_NEXTEST_CONFIG.replace(f"binary(={binary}) | ", "").replace(
+                f" | binary(={binary})",
+                "",
+            ),
+        )
+
+
 def main() -> int:
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
@@ -564,6 +733,8 @@ def main() -> int:
     assert_strip_comment_handles_single_quoted_backslash()
     assert_required_job_indentation_is_actionable()
     assert_body_exits_requires_top_level_exit()
+    assert_nextest_live_node_group_required()
+    assert_nextest_live_node_group_covers_bolt_v3_builders()
     for job in (
         "detector",
         "fmt-check",
@@ -571,6 +742,8 @@ def main() -> int:
         "clippy",
         "check-aarch64",
         "source-fence",
+        "test-archive",
+        "test-shards",
         "test",
         "build",
         "same-sha-main-evidence",
@@ -581,6 +754,15 @@ def main() -> int:
     for job in ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
         if job == "build":
+            continue
+        if job == "check-aarch64":
+            assert_error(
+                f"gate must check needs.{job}.result",
+                BASE_WORKFLOW.replace(
+                    f'"${{{{ needs.{job}.result }}}}" != "success"',
+                    f'"${{{{ omitted.{job}.result }}}}" != "success"',
+                ),
+            )
             continue
         assert_error(
             f"gate must check needs.{job}.result",
@@ -613,7 +795,11 @@ def main() -> int:
     )
     assert_error(
         "check-aarch64 must run just check-aarch64",
-        replace_once(BASE_WORKFLOW, "      - run: just check-aarch64", "      - run: echo skip check-aarch64"),
+        replace_once(
+            BASE_WORKFLOW,
+            "      - if: needs.detector.outputs.build_required != 'true'\n        run: just check-aarch64",
+            "      - if: needs.detector.outputs.build_required != 'true'\n        run: echo skip check-aarch64",
+        ),
     )
     assert_error(
         "check-aarch64 must install aarch64 cross compiler packages",
@@ -621,6 +807,60 @@ def main() -> int:
             BASE_WORKFLOW,
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross",
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu",
+        ),
+    )
+    assert_error(
+        "check-aarch64 must have no job-level if condition",
+        replace_once(
+            BASE_WORKFLOW,
+            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    runs-on: ubuntu-latest",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    if: needs.detector.outputs.build_required != 'true'\n    runs-on: ubuntu-latest",
+        ),
+    )
+    assert_error(
+        "check-aarch64 must document build-lane aarch64 coverage delegation",
+        BASE_WORKFLOW.replace(
+            """      - name: Resolve aarch64 coverage owner
+        run: |
+          if [[ "${{ needs.detector.outputs.build_required }}" == "true" ]]; then
+            echo "build_required=true; aarch64 coverage is provided by build"
+          else
+            echo "build_required=false; running standalone aarch64 check"
+          fi
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "check-aarch64 setup must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: ./.github/actions/setup-environment\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error(
+        "check-aarch64 compiler install must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Install aarch64 cross compiler\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - name: Install aarch64 cross compiler",
+        ),
+    )
+    assert_error(
+        "check-aarch64 cache must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: Swatinem/rust-cache@example\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - uses: Swatinem/rust-cache@example",
+        ),
+    )
+    assert_error(
+        "check-aarch64 command must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - if: needs.detector.outputs.build_required != 'true'\n        run: just check-aarch64",
+            "      - run: just check-aarch64",
         ),
     )
     assert_error(
@@ -648,71 +888,209 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test matrix must set fail-fast false",
+        "test-shards matrix must set fail-fast false",
         replace_once(BASE_WORKFLOW, "      fail-fast: false", "      fail-fast: true"),
     )
     assert_error(
-        "test matrix shard must be [1, 2, 3, 4]",
+        "test-shards matrix shard must be [1, 2, 3, 4]",
         replace_once(BASE_WORKFLOW, "        shard: [1, 2, 3, 4]", "        shard: [1, 2, 3]"),
     )
     assert_error(
-        "test must run partitioned nextest through just test",
-        replace_once(BASE_WORKFLOW, "      - run: just test -- --partition count:${{ matrix.shard }}/4", "      - run: just test"),
-    )
-    assert_error(
-        "test must log shard reproduction command",
+        "test-shards name must describe nextest shard",
         replace_once(
             BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"\n',
+            "    name: nextest shard ${{ matrix.shard }} of 4",
+            "    name: test (${{ matrix.shard }})",
+        ),
+    )
+    assert_error(
+        "test-shards must run partitioned nextest from archive",
+        replace_once(
+            BASE_WORKFLOW,
+            '      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
+            "      - run: just test",
+        ),
+    )
+    assert_error(
+        "test-shards must resolve managed target dir",
+        replace_once(
+            BASE_WORKFLOW,
+            '          include-nextest-version: "true"\n          include-managed-target-dir: "true"\n      - name: Download nextest archive',
+            '          include-nextest-version: "true"\n      - name: Download nextest archive',
+        ),
+    )
+    assert_error(
+        "test-shards must extract archive to managed target parent",
+        replace_once(
+            BASE_WORKFLOW,
+            '          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"',
+            '          archive_extract_root="$RUNNER_TEMP/nextest-archive-extract"',
+        ),
+    )
+    assert_error(
+        "test-shards must log shard reproduction command",
+        replace_once(
+            BASE_WORKFLOW,
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"\n',
             "",
         ),
     )
     assert_error(
-        "test shard reproduction command must use YAML block scalar",
+        "test-shards reproduction command must use YAML block scalar",
         replace_once(
             BASE_WORKFLOW,
-            '        run: |\n          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
-            '        run: echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"',
+            '        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
+            '        run: echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
+        ),
+    )
+    assert_clean(
+        replace_once(
+            BASE_WORKFLOW,
+            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
+            '      - run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
+        )
+    )
+    assert_error(
+        "test-archive must not use managed target rust-cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Restore nextest archive",
+            "      - uses: Swatinem/rust-cache@example\n"
+            "        with:\n"
+            "          cache-targets: true\n"
+            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n"
+            "          key: nextest-archive-build-v1\n"
+            "      - name: Restore nextest archive",
         ),
     )
     assert_error(
-        "test cache key must include matrix.shard",
-        replace_once(BASE_WORKFLOW, "          key: nextest-v3-shard-${{ matrix.shard }}-of-4", "          key: nextest-v3"),
-    )
-    assert_error(
-        "test cache must use rust-cache workspaces managed target mapping",
+        "test-archive must not opt into managed target dir",
         replace_once(
             BASE_WORKFLOW,
-            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}",
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}",
+            '          include-nextest-version: "true"',
+            '          include-nextest-version: "true"\n          include-managed-target-dir: "true"',
         ),
     )
     assert_error(
-        "test cache must not use opaque cache-directories for managed target dir",
+        "test-archive must not save a second archive-build cache",
         replace_once(
             BASE_WORKFLOW,
-            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}",
-            "          workspaces: . -> ${{ steps.setup.outputs.managed_target_dir_relative }}\n          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}",
+            "      - name: Restore nextest archive",
+            "      - name: Archive build cache key marker\n"
+            "        run: echo nextest-archive-build-v1\n"
+            "      - name: Restore nextest archive",
         ),
     )
     assert_error(
-        "test cache must preserve workspace crates",
-        replace_once(BASE_WORKFLOW, '          cache-workspace-crates: "true"', '          cache-workspace-crates: "false"'),
-    )
-    assert_error(
-        "test cache must enable rust environment hash key",
+        "test-archive must restore nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            '          add-rust-environment-hash-key: "true"',
-            '          add-rust-environment-hash-key: "false"',
+            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "",
         ),
     )
     assert_error(
-        "test cache key must not include github.sha",
+        "test-archive must save nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4",
-            "          key: nextest-v3-shard-${{ matrix.shard }}-of-4-${{ github.sha }}",
+            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive cache key must include Rust and test graph inputs",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs'",
+                "'tests/**/*.rs'",
+            ),
+            "'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs'",
+            "'tests/**/*.rs'",
+        ),
+    )
+    assert_error(
+        "test-archive cache must not use restore-keys",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'src/**/*.rs', 'tests/**/*.rs', 'benches/**/*.rs', 'examples/**/*.rs') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+        ),
+    )
+    assert_error(
+        "test-archive build must be skipped on archive cache hit",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Build nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'",
+            "      - name: Build nextest archive",
+        ),
+    )
+    assert_error(
+        "test-archive must upload nextest archive artifact",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Upload nextest archive\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-shards must download nextest archive artifact",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Download nextest archive\n        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-shards must not restore a per-shard Rust target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Download nextest archive",
+            "      - uses: Swatinem/rust-cache@example\n        with:\n          key: nextest-v3-shard-${{ matrix.shard }}-of-4\n      - name: Download nextest archive",
+        ),
+    )
+    assert_error(
+        "test-archive needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
+            "  test-archive:\n    name: nextest archive\n    needs: source-fence",
+        ),
+    )
+    assert_error(
+        "test-archive needs source-fence",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
+            "  test-archive:\n    name: nextest archive\n    needs: detector",
+        ),
+    )
+    assert_error(
+        "test-shards needs test-archive",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: detector",
+        ),
+    )
+    assert_error(
+        "test needs test-shards",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test:\n    name: test\n    needs: test-shards",
+            "  test:\n    name: test\n    needs: detector",
+        ),
+    )
+    assert_error(
+        "test must check needs.test-shards.result",
+        replace_once(BASE_WORKFLOW, "needs.test-shards.result", "omitted.test-shards.result"),
+    )
+    assert_error(
+        "test must use always()",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test:\n    name: test\n    needs: test-shards\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}",
+            "  test:\n    name: test\n    needs: test-shards",
         ),
     )
     assert_error(
@@ -747,11 +1125,7 @@ def main() -> int:
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
     )
-    assert_error(
-        "test needs source-fence",
-        replace_once(BASE_WORKFLOW, "needs: [detector, source-fence]", "needs: [detector]"),
-    )
-    for job in ("fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
+    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "test-shards", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
     assert_error(
         "build needs detector",
@@ -852,21 +1226,639 @@ def main() -> int:
             "ci.yml": BASE_WORKFLOW,
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
-                'cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked',
-                'cargo install cargo-deny --version "0.18.3" --locked',
+                "tool: cargo-deny@${{ steps.setup.outputs.deny_version }}",
+                "tool: cargo-deny@0.18.3",
+            ),
+        },
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must install cargo-deny with pinned taiki-e/install-action",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
+                """      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked""",
+            ),
+        },
+    )
+    assert_workflows_error(
+        "advisory.yml advisories install-action fallback must be none",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                "          fallback: none\n      - name: Check advisories",
+                "          fallback: cargo-install\n      - name: Check advisories",
+            ),
+        },
+    )
+    assert_error(
+        "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
+            """      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny install-action fallback must be none",
+        replace_once(
+            BASE_WORKFLOW,
+            "          fallback: none\n      - run: just deny",
+            "          fallback: cargo-install\n      - run: just deny",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c",
+            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c-suffix",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must install cargo-deny before just deny",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
+      - run: just deny""",
+            """      - run: just deny
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo install --locked cargo-deny
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo --config net.git-fetch-with-cli=true install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo +stable install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo install cargo-deny@${{ steps.setup.outputs.deny_version }} --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo install --git https://github.com/EmbarkStudios/cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo install --path vendor/cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          if cargo install --git https://github.com/EmbarkStudios/cargo-deny --locked; then
+            just deny
+          fi""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          env cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          RUSTFLAGS= cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo -E cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo -EH cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo -A cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo --askpass cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo -b cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo --background cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo --preserve-env=PATH cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          env -u RUSTFLAGS cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          env -iu RUSTFLAGS cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          { cargo install cargo-deny --locked; }
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          while cargo install cargo-deny --locked; do
+            break
+          done
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sleep 1 & cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_clean(
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          echo cargo install cargo-deny
+          just deny""",
+        )
+    )
+    assert_error(
+        "ci.yml docs-tool-smoke must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "  gate:\n",
+            """  docs-tool-smoke:
+    name: docs-tool-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cargo install cargo-deny --locked
+
+  gate:
+""",
+        ),
+    )
+    assert_error(
+        "ci.yml source-fence must not compile cargo-nextest from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just source-fence",
+            """      - run: |
+          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
+          just source-fence""",
+        ),
+    )
+    assert_error(
+        "ci.yml test-archive must install cargo-nextest with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-nextest
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none""",
+            """      - name: Install cargo-nextest
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml test-archive must not compile cargo-nextest from source",
+        replace_once(
+            BASE_WORKFLOW,
+            '          just test-archive "$NEXTEST_ARCHIVE_PATH"',
+            '''          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
+          just test-archive "$NEXTEST_ARCHIVE_PATH"''',
+        ),
+    )
+    assert_error(
+        "ci.yml test-shards must install cargo-nextest with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none""",
+            """      - name: Install cargo-nextest
+        run: |
+          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml test-shards must not compile cargo-nextest from source",
+        replace_once(
+            BASE_WORKFLOW,
+            '      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
+            """      - run: |
+          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
+          just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4""",
+        ),
+    )
+    assert_error(
+        "ci.yml test-shards install-action fallback must be none",
+        replace_once(
+            BASE_WORKFLOW,
+            '          fallback: none\n      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
+            '          fallback: cargo-install\n      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
+        ),
+    )
+    assert_error(
+        "ci.yml test-shards must install cargo-nextest before just test-archive-run",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4""",
+            """      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            """          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version""",
+            '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo install --version "${{ steps.setup.outputs.zigbuild_version }}" cargo-zigbuild
+          just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo +stable install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}"
+          just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo install cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }} --locked
+          just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo install --path tools/cargo-zigbuild --locked
+          just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just build",
+            """      - run: |
+          cargo install --git https://github.com/rust-cross/cargo-zigbuild --locked
+          just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml fmt-check must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just fmt-check",
+            """      - run: |
+          cargo install --path vendor/cargo-zigbuild --locked
+          just fmt-check""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must verify cargo-zigbuild archive checksum",
+        replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
+        replace_once(
+            BASE_WORKFLOW,
+            '          test "$actual" = "$expected"\n          tar --extract --xz --file "$archive"',
+            '          tar --extract --xz --file "$archive"\n          test "$actual" = "$expected"',
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
+        replace_once(
+            replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
+            "      - run: just build",
+            '''      - run: |
+          just build
+          test "$actual" = "$expected"''',
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
+        replace_once(BASE_WORKFLOW, "          --retry-all-errors \\\n", ""),
+    )
+    assert_error(
+        "ci.yml build must use pinned cargo-zigbuild archive sha256",
+        replace_once(
+            BASE_WORKFLOW,
+            '          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"\n',
+            """          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
+          expected="$(awk '{print $1}' "$archive.sha256")"
+""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild before just build",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Install cargo-zigbuild
+        run: |
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version
+      - run: just build""",
+            """      - run: just build
+      - name: Install cargo-zigbuild
+        run: |
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \\
+            --retry 10 \\
+            --retry-delay 3 \\
+            --retry-all-errors \\
+            --fail \\
+            --location \\
+            --show-error \\
+            --silent \\
+            --output "$archive" \\
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version""",
+        ),
+    )
+    assert_workflows_error(
+        "advisory.yml advisories must install cargo-deny before just deny-advisories",
+        {
+            "ci.yml": BASE_WORKFLOW,
+            "advisory.yml": replace_once(
+                BASE_ADVISORY_WORKFLOW,
+                """      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
+      - name: Check advisories
+        run: just deny-advisories""",
+                """      - name: Check advisories
+        run: just deny-advisories
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none""",
             ),
         },
     )
     assert_error(
         "gate must use always()",
-        replace_once(BASE_WORKFLOW, "if: ${{ always() }}", "if: ${{ always() && false }}"),
+        replace_once(
+            BASE_WORKFLOW,
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}",
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() && false }}}}",
+        ),
     )
     assert_error(
         "gate must use always()",
         replace_once(
-            replace_once(BASE_WORKFLOW, "    if: ${{ always() }}\n", ""),
-            "      - run: |",
-            "      - if: ${{ always() }}\n        run: |",
+            replace_once(
+                BASE_WORKFLOW,
+                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
+                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n",
+            ),
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
         ),
     )
     assert_error(
@@ -1151,15 +2143,23 @@ def main() -> int:
         action=replace_once(
             BASE_ACTION,
             "    value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}",
-            '    value: ""',
+            '    value: "" # ${{ steps.target_dir.outputs.managed_target_dir_relative }}',
         ),
     )
     assert_error(
-        "setup action must compute managed_target_dir_relative",
+        "setup action target_dir step must write managed_target_dir_relative",
         action=replace_once(
             BASE_ACTION,
-            '        managed_target_dir_relative="$(python3 -c \'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))\' "$GITHUB_WORKSPACE" "$managed_target_dir")"\n',
-            '        python3 -c \'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))\' "$GITHUB_WORKSPACE" "$managed_target_dir" >/dev/null\n',
+            '        echo "managed_target_dir_relative=$managed_target_dir_relative" >> "$GITHUB_OUTPUT"',
+            '        echo "managed_target_dir=$managed_target_dir" >> "$GITHUB_OUTPUT"',
+        ),
+    )
+    assert_error(
+        "setup action target_dir step must compute managed_target_dir_relative from workspace to target dir",
+        action=replace_once(
+            BASE_ACTION,
+            """        managed_target_dir_relative="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$managed_target_dir")\"""",
+            """        managed_target_dir_relative="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$managed_target_dir" "$GITHUB_WORKSPACE")\"""",
         ),
     )
     assert_error(

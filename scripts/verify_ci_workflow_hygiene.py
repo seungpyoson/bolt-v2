@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shlex
 import sys
+import tomllib
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -15,6 +17,7 @@ DEFAULT_WORKFLOWS = (
     REPO_ROOT / ".github" / "workflows" / "advisory.yml",
 )
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
+DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 REQUIRED_JOBS = (
     "detector",
@@ -23,6 +26,8 @@ REQUIRED_JOBS = (
     "clippy",
     "check-aarch64",
     "source-fence",
+    "test-archive",
+    "test-shards",
     "test",
     "build",
     "same-sha-main-evidence",
@@ -42,10 +47,56 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test", "build")
-CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build")
+TAG_SKIP_REQUIRED_JOBS = (
+    "fmt-check",
+    "deny",
+    "clippy",
+    "source-fence",
+    "test-archive",
+    "test-shards",
+    "test",
+)
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
+CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+LIVE_NODE_TEST_GROUP = "live-node"
+LIVE_NODE_UNIT_TEST_FILTERS = (
+    "binary(=bolt_v2)",
+    "test(~bolt_v3_client_registration::tests::)",
+    "test(~bolt_v3_live_node::tests::)",
+    "test(~platform::runtime::tests::)",
+)
+LIVE_NODE_NEXTEST_BINARIES = (
+    "bolt_v3_adapter_mapping",
+    "bolt_v3_client_registration",
+    "bolt_v3_controlled_connect",
+    "bolt_v3_credential_log_suppression",
+    "bolt_v3_live_canary_gate",
+    "bolt_v3_readiness",
+    "bolt_v3_strategy_registration",
+    "bolt_v3_submit_admission",
+    "bolt_v3_tiny_canary_operator",
+    "config_parsing",
+    "eth_chainlink_taker_runtime",
+    "lake_batch",
+    "live_node_run",
+    "nt_runtime_capture",
+    "platform_runtime",
+    "polymarket_bootstrap",
+    "venue_contract",
+)
+LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
+CHECK_AARCH64_JOB_LEVEL_IF_RE = re.compile(r"^    if:\s*.*$")
+CHECK_AARCH64_STANDALONE_IF_RE = re.compile(
+    r"^\s+(?:-\s*)?if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*!=\s*['\"]true['\"]\s*(?:\}\})?\s*$"
+)
 TAG_SKIP_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+TAG_SKIP_ALWAYS_IF_RE = re.compile(
+    r"^    if:\s*\$\{\{\s*(?:"
+    r"!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*always\(\)"
+    r"|always\(\)\s*&&\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)"
+    r")\s*\}\}\s*$"
+)
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
@@ -66,6 +117,13 @@ SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_di
 SETUP_TARGET_DIR_RELATIVE_EXPORT_RE = re.compile(
     r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
 )
+SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE = re.compile(
+    r'^\s*echo\s+"managed_target_dir_relative=\$managed_target_dir_relative"\s*>>\s*"\$GITHUB_OUTPUT"\s*$'
+)
+SETUP_TARGET_DIR_RELATIVE_COMPUTE = (
+    "managed_target_dir_relative=\"$(python3 -c 'import os, sys; "
+    "print(os.path.relpath(sys.argv[2], sys.argv[1]))' \"$GITHUB_WORKSPACE\" \"$managed_target_dir\")\""
+)
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
@@ -75,23 +133,22 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
-    "inputs.include-managed-target-dir",
     "CLAUDE_CONFIG_READ_TOKEN:",
     "inputs.claude-config-read-token",
     "just ci-lint-workflow",
-    "managed_target_dir_relative",
-    "os.path.relpath",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
     "just --evaluate deny_version",
     "just --evaluate nextest_version",
     "just --evaluate target",
     "just --evaluate zig_version",
     "just --evaluate zigbuild_version",
+    "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
     "just --evaluate rust_verification_source_repo",
     "just --evaluate rust_verification_source_sha",
     "just --evaluate rust_verification_ci_install_script",
     'target-dir --repo "$GITHUB_WORKSPACE"',
+    "os.path.relpath",
 )
 SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_toolchain": "steps.shared.outputs.rust_toolchain",
@@ -100,6 +157,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "target": "steps.shared.outputs.target",
     "zig_version": "steps.shared.outputs.zig_version",
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
+    "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
     "rust_verification_source_repo": "steps.shared.outputs.rust_verification_source_repo",
     "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
@@ -116,24 +174,88 @@ SETUP_ACTION_ORDERED_STEPS = (
 )
 TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
 TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
-TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
-TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
+TEST_SHARD_NAME_RE = re.compile(r"^\s+name:\s*nextest shard \$\{\{\s*matrix\.shard\s*\}\} of 4\s*$")
+TEST_PARTITION_COMMAND = (
+    'just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" '
+    '"${{ steps.archive-root.outputs.archive_extract_root }}" '
+    "--partition count:${{ matrix.shard }}/4"
+)
+TEST_REPRODUCTION_COMMAND = (
+    "just test-archive-run .nextest-archive/nextest-archive.tar.zst "
+    "<managed-target-parent> "
+    "--partition count:${{ matrix.shard }}/4"
+)
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
-TEST_SHARD_CACHE_RE = re.compile(r"^\s+key:\s*.*matrix\.shard.*of-4\s*$")
-CACHE_KEY_RE = re.compile(r"^\s+key:\s*\S+.*$")
+TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
+TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_KEY_INPUTS = (
+    "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+    "'Cargo.lock'",
+    "'Cargo.toml'",
+    "'rust-toolchain.toml'",
+    "'.cargo/config.toml'",
+    "'.config/nextest.toml'",
+    "'.claude/rust-verification.toml'",
+    "'justfile'",
+    "'src/**/*.rs'",
+    "'tests/**/*.rs'",
+    "'benches/**/*.rs'",
+    "'examples/**/*.rs'",
+)
+TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
+TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
+TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
-    r"(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|source-fence)"
+    r"(fmt-check|deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
     r"([^A-Za-z0-9_]|$)"
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
-TEST_WORKSPACES_RE = re.compile(
-    r"^\s+workspaces:\s*\.\s*->\s*\$\{\{\s*steps\.setup\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
+TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c"
+CI_INSTALL_ACTION_TOOLS = {
+    "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
+    "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
+    "test-archive": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
+    "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
+}
+CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
+CI_INSTALL_ACTION_COMMANDS = {
+    "deny": "just deny",
+    "advisories": "just deny-advisories",
+    "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
+    "test-shards": TEST_PARTITION_COMMAND,
+}
+CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--color", "--config", "-C", "-Z"}
+CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
+ZIGBUILD_PREBUILT_LITERALS = (
+    'version="${{ steps.setup.outputs.zigbuild_version }}"',
+    'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
+    "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
+    "curl \\",
+    "--retry 10",
+    "--retry-delay 3",
+    "--retry-all-errors",
+    "--fail",
+    "--location",
+    "--show-error",
+    "--silent",
+    '--output "$archive"',
+    '"$base_url/$archive"',
+    'expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"',
+    'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
+    'test "$actual" = "$expected"',
+    'tar --extract --xz --file "$archive"',
+    'mkdir -p "$HOME/.cargo/bin"',
+    'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
+    'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
+    "cargo-zigbuild --version",
 )
-TEST_CACHE_TARGETS_TRUE_RE = re.compile(r"^\s+cache-targets:\s*(['\"]?)true\1\s*$")
-TEST_CACHE_WORKSPACE_CRATES_RE = re.compile(r"^\s+cache-workspace-crates:\s*(['\"]?)true\1\s*$")
-TEST_RUST_ENV_HASH_RE = re.compile(r"^\s+add-rust-environment-hash-key:\s*(['\"]?)true\1\s*$")
 
 
 def strip_comment(line: str) -> str:
@@ -306,7 +428,11 @@ def job_has_setup_input(job_lines: list[str], name: str, value: str | None = Non
 
 
 def job_uses_managed_target_dir(job_lines: list[str]) -> bool:
-    return any("steps.setup.outputs.managed_target_dir" in strip_comment(line) for line in job_lines)
+    return any(
+        "steps.setup.outputs.managed_target_dir" in strip_comment(line)
+        or "steps.setup.outputs.managed_target_dir_relative" in strip_comment(line)
+        for line in job_lines
+    )
 
 
 def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
@@ -334,42 +460,307 @@ def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
 
 
-def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
-    return [block for block in step_blocks(job_lines) if any("Swatinem/rust-cache" in line for line in block)]
-
-
-def test_cache_block(job_lines: list[str]) -> list[str]:
-    blocks = rust_cache_blocks(job_lines)
-    if not blocks:
-        return []
-    return blocks[0]
-
-
-def block_has_line_matching(block: list[str], pattern: re.Pattern[str]) -> bool:
+def block_uses_exact_action(block: list[str], action: str) -> bool:
+    pattern = re.compile(rf"^\s*(?:-\s*)?uses:\s*{re.escape(action)}\s*$")
     return any(pattern.match(strip_comment(line)) for line in block)
 
 
-def block_has_managed_target_cache_directories(block: list[str]) -> bool:
-    return any(
-        "cache-directories:" in strip_comment(line) and "steps.setup.outputs.managed_target_dir" in strip_comment(line)
-        for line in block
-    )
+def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tuple[int, list[str]] | None:
+    expected_tool = f"{tool}@${{{{ {output} }}}}"
+    for index, block in enumerate(step_blocks(job_lines)):
+        if block_uses_exact_action(block, TAIKI_INSTALL_ACTION) and block_has_input(block, "tool", expected_tool):
+            return index, block
+    return None
 
 
-def block_cache_key_contains_github_sha(block: list[str]) -> bool:
-    return any("key:" in strip_comment(line) and "github.sha" in strip_comment(line) for line in block)
+def first_step_running_command(job_lines: list[str], command: str) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        if block_runs_command(block, command):
+            return index
+    return None
+
+
+def first_step_containing_literals(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        text = uncommented_text(block)
+        if all(literal in text for literal in literals):
+            return index
+    return None
+
+
+def first_step_containing_literals_in_order(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        text = uncommented_text(block)
+        position = 0
+        for literal in literals:
+            found = text.find(literal, position)
+            if found < 0:
+                break
+            position = found + len(literal)
+        else:
+            return index
+    return None
+
+
+def shell_assignment_word(token: str) -> bool:
+    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token) is not None
+
+
+SUDO_OPTIONS_WITH_ARGUMENT = {
+    "-a",
+    "-C",
+    "-c",
+    "-D",
+    "-g",
+    "-h",
+    "-p",
+    "-R",
+    "-r",
+    "-T",
+    "-t",
+    "-U",
+    "-u",
+    "--auth-type",
+    "--chdir",
+    "--close-from",
+    "--command-timeout",
+    "--group",
+    "--host",
+    "--login-class",
+    "--prompt",
+    "--role",
+    "--type",
+    "--user",
+}
+SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT = {
+    "--preserve-env",
+}
+SUDO_OPTIONS_WITHOUT_ARGUMENT = {
+    "-A",
+    "-b",
+    "-E",
+    "-e",
+    "-H",
+    "-i",
+    "-K",
+    "-k",
+    "-l",
+    "-n",
+    "-P",
+    "-S",
+    "-s",
+    "-V",
+    "-v",
+    "--askpass",
+    "--background",
+    "--bell",
+    "--edit",
+    "--help",
+    "--ignore-ticket",
+    "--list",
+    "--login",
+    "--non-interactive",
+    "--remove-timestamp",
+    "--reset-timestamp",
+    "--stdin",
+    "--validate",
+    "--version",
+}
+ENV_OPTIONS_WITH_ARGUMENT = {
+    "-S",
+    "-u",
+    "-C",
+    "--split-string",
+    "--unset",
+    "--chdir",
+    "--block-signal",
+    "--default-signal",
+    "--ignore-signal",
+}
+ENV_OPTIONS_WITHOUT_ARGUMENT = {
+    "-0",
+    "-i",
+    "-v",
+    "--debug",
+    "--ignore-environment",
+    "--null",
+}
+TIME_OPTIONS_WITHOUT_ARGUMENT = {"-p"}
+SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
+
+
+def consume_assignment_words(tokens: list[str], index: int) -> int:
+    while index < len(tokens) and shell_assignment_word(tokens[index]):
+        index += 1
+    return index
+
+
+def consume_option_prefix(
+    tokens: list[str],
+    index: int,
+    options_with_argument: set[str],
+    options_without_argument: set[str],
+    options_with_optional_argument: set[str] | None = None,
+) -> int | None:
+    options_with_optional_argument = options_with_optional_argument or set()
+    short_options_with_argument = {option for option in options_with_argument if re.match(r"^-[A-Za-z0-9]$", option)}
+    short_options_without_argument = {option for option in options_without_argument if re.match(r"^-[A-Za-z0-9]$", option)}
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in options_with_argument:
+            if index + 1 >= len(tokens):
+                return None
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_optional_argument if option.startswith("--")):
+            index += 1
+            continue
+        if token in options_with_optional_argument:
+            index += 1
+            continue
+        if token in options_without_argument:
+            index += 1
+            continue
+        if len(token) > 2 and token.startswith("-") and not token.startswith("--"):
+            offset = 1
+            while offset < len(token):
+                option = f"-{token[offset]}"
+                if option in short_options_without_argument:
+                    offset += 1
+                    continue
+                if option in short_options_with_argument:
+                    if offset + 1 < len(token):
+                        index += 1
+                    elif index + 1 < len(tokens):
+                        index += 2
+                    else:
+                        return None
+                    break
+                return None
+            else:
+                index += 1
+            continue
+        break
+    return index
+
+
+def command_prefix_allows_cargo(prefix: list[str]) -> bool:
+    index = consume_assignment_words(prefix, 0)
+    while index < len(prefix):
+        token = prefix[index]
+        if token == "command":
+            index += 1
+        elif token == "time":
+            index = consume_option_prefix(prefix, index + 1, set(), TIME_OPTIONS_WITHOUT_ARGUMENT)
+        elif token == "sudo":
+            index = consume_option_prefix(
+                prefix,
+                index + 1,
+                SUDO_OPTIONS_WITH_ARGUMENT,
+                SUDO_OPTIONS_WITHOUT_ARGUMENT,
+                SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT,
+            )
+        elif token == "env":
+            index = consume_option_prefix(prefix, index + 1, ENV_OPTIONS_WITH_ARGUMENT, ENV_OPTIONS_WITHOUT_ARGUMENT)
+        else:
+            return False
+        if index is None:
+            return False
+        index = consume_assignment_words(prefix, index)
+    return True
+
+
+def cargo_token_is_command(tokens: list[str], index: int) -> bool:
+    cursor = index - 1
+    while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
+        cursor -= 1
+    prefix = tokens[cursor + 1 : index]
+    return command_prefix_allows_cargo(prefix)
+
+
+def source_build_tool_from_token(token: str) -> str | None:
+    token = token.rstrip("/")
+    for tool in CI_SOURCE_BUILD_TOOLS:
+        if token == tool or token.startswith(f"{tool}@"):
+            return tool
+        if token.endswith(f"/{tool}") or token.endswith(f"/{tool}.git"):
+            return tool
+    return None
+
+
+def cargo_install_source_build_tools(tokens: list[str], command_index: int) -> set[str]:
+    tools: set[str] = set()
+    index = command_index + 1
+    while index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
+        token = tokens[index]
+        if token in ("--package", "-p") and index + 1 < len(tokens):
+            tool = source_build_tool_from_token(tokens[index + 1])
+            if tool is not None:
+                tools.add(tool)
+            index += 2
+            continue
+        if token.startswith("--package="):
+            tool = source_build_tool_from_token(token.removeprefix("--package="))
+            if tool is not None:
+                tools.add(tool)
+            index += 1
+            continue
+        tool = source_build_tool_from_token(token)
+        if tool is not None:
+            tools.add(tool)
+        index += 1
+    return tools
+
+
+def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
+    tools: set[str] = set()
+    for line in text.replace("\\\n", " ").splitlines():
+        if "cargo" not in line or "install" not in line:
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        for index, token in enumerate(tokens[:-1]):
+            if token != "cargo":
+                continue
+            if not cargo_token_is_command(tokens, index):
+                continue
+            command_index = consume_cargo_global_options(tokens, index + 1)
+            if command_index >= len(tokens) or tokens[command_index] != "install":
+                continue
+            tools.update(cargo_install_source_build_tools(tokens, command_index))
+    return tools
+
+
+def consume_cargo_global_options(tokens: list[str], index: int) -> int:
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("+"):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        break
+    return index
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
-    for block in step_blocks(job_lines):
-        for index, line in enumerate(block):
-            clean = strip_comment(line).strip()
-            if clean == "run: |":
-                for nested in block[index + 1 :]:
-                    if strip_comment(nested).strip() == TEST_REPRODUCTION_ECHO:
-                        return True
-                break
-    return False
+    return job_runs_command(job_lines, TEST_REPRODUCTION_ECHO)
 
 
 def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
@@ -382,7 +773,11 @@ def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
 
 
 def job_skips_tag_reuse(job_lines: list[str]) -> bool:
-    return has_line_matching(job_lines, TAG_SKIP_IF_RE)
+    return has_line_matching(job_lines, TAG_SKIP_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+
+
+def job_if_uses_always(job_lines: list[str]) -> bool:
+    return has_line_matching(job_lines, GATE_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
 
 
 def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
@@ -409,6 +804,49 @@ def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
 def check_aarch64_installs_cross_compiler_packages(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "gcc-aarch64-linux-gnu" in text and "libc6-dev-arm64-cross" in text
+
+
+def check_aarch64_has_coverage_owner_step(job_lines: list[str]) -> bool:
+    for block in step_blocks(job_lines):
+        text = uncommented_text(block)
+        if "Resolve aarch64 coverage owner" not in text:
+            continue
+        return (
+            "needs.detector.outputs.build_required" in text
+            and "aarch64 coverage is provided by build" in text
+            and "running standalone aarch64 check" in text
+        )
+    return False
+
+
+def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    checks = (
+        (
+            "check-aarch64 setup must run only when build_required is not true",
+            lambda block: any("./.github/actions/setup-environment" in line for line in block),
+        ),
+        (
+            "check-aarch64 compiler install must run only when build_required is not true",
+            lambda block: "gcc-aarch64-linux-gnu" in uncommented_text(block)
+            or "libc6-dev-arm64-cross" in uncommented_text(block),
+        ),
+        (
+            "check-aarch64 cache must run only when build_required is not true",
+            lambda block: any("Swatinem/rust-cache" in line for line in block),
+        ),
+        (
+            "check-aarch64 command must run only when build_required is not true",
+            lambda block: block_runs_command(block, "just check-aarch64"),
+        ),
+    )
+    blocks = step_blocks(job_lines)
+    for message, matches in checks:
+        for block in blocks:
+            if matches(block) and not has_line_matching(block, CHECK_AARCH64_STANDALONE_IF_RE):
+                errors.append(message)
+                break
+    return errors
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
@@ -489,6 +927,8 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
     for job in TAG_SKIPPED_JOBS:
         if not branch_exits(gate_text, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
             errors.append(f"gate must require {job} skipped on tag reuse")
+    if not branch_exits(gate_text, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
+        errors.append("gate must require check-aarch64 success on tag reuse")
     return errors
 
 
@@ -631,7 +1071,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
         errors.append("fmt-check must not need detector")
 
-    for job in ("fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
+    for job in TAG_SKIP_REQUIRED_JOBS:
         if job in jobs and not job_skips_tag_reuse(jobs[job]):
             errors.append(f"{job} must skip on tag reuse")
 
@@ -641,8 +1081,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
         errors.append("source-fence must run just source-fence")
 
-    if "test" in jobs and "source-fence" not in extract_needs(jobs["test"]):
-        errors.append("test needs source-fence")
+    if "test-archive" in jobs:
+        test_archive_needs = extract_needs(jobs["test-archive"])
+        if "detector" not in test_archive_needs:
+            errors.append("test-archive needs detector")
+        if "source-fence" not in test_archive_needs:
+            errors.append("test-archive needs source-fence")
+    if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
+        errors.append("test-shards needs test-archive")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -654,38 +1100,80 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "check-aarch64" in jobs:
         if "detector" not in extract_needs(jobs["check-aarch64"]):
             errors.append("check-aarch64 needs detector")
+        if has_line_matching(jobs["check-aarch64"], CHECK_AARCH64_JOB_LEVEL_IF_RE):
+            errors.append("check-aarch64 must have no job-level if condition")
+        if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
         if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):
             errors.append("check-aarch64 must run just check-aarch64")
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
             errors.append("check-aarch64 must install aarch64 cross compiler packages")
+        errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
+
+    if "test-archive" in jobs:
+        archive_lines = jobs["test-archive"]
+        archive_text = uncommented_text(archive_lines)
+        if TEST_ARCHIVE_PATH not in archive_text:
+            errors.append("test-archive must declare nextest archive path")
+        if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
+            errors.append("test-archive cache key must include Rust and test graph inputs")
+        if "Swatinem/rust-cache@" in archive_text:
+            errors.append("test-archive must not use managed target rust-cache")
+        if "include-managed-target-dir:" in archive_text:
+            errors.append("test-archive must not opt into managed target dir")
+        if "nextest-archive-build-v1" in archive_text:
+            errors.append("test-archive must not save a second archive-build cache")
+        if TEST_ARCHIVE_RESTORE_ACTION not in archive_text:
+            errors.append("test-archive must restore nextest archive cache")
+        if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
+            errors.append("test-archive must save nextest archive cache")
+        if TEST_ARCHIVE_UPLOAD_ACTION not in archive_text:
+            errors.append("test-archive must upload nextest archive artifact")
+        if "restore-keys:" in archive_text:
+            errors.append("test-archive cache must not use restore-keys")
+        if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
+            errors.append("test-archive cache must use archive path env")
+        if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 3:
+            errors.append("test-archive build must be skipped on archive cache hit")
+        if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
+            errors.append("test-archive must build through just test-archive")
+
+    if "test-shards" in jobs:
+        test_lines = jobs["test-shards"]
+        test_text = uncommented_text(test_lines)
+        if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
+            errors.append("test-shards matrix must set fail-fast false")
+        if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
+            errors.append("test-shards matrix shard must be [1, 2, 3, 4]")
+        if not has_line_matching(test_lines, TEST_SHARD_NAME_RE):
+            errors.append("test-shards name must describe nextest shard")
+        if not job_has_setup_input(test_lines, "include-managed-target-dir", '"true"'):
+            errors.append("test-shards must resolve managed target dir")
+        if (
+            TEST_ARCHIVE_EXTRACT_ROOT_COMMAND not in test_text
+            or TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT not in test_text
+        ):
+            errors.append("test-shards must extract archive to managed target parent")
+        if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
+            errors.append("test-shards must run partitioned nextest from archive")
+        if test_has_inline_shard_reproduction_command(test_lines):
+            errors.append("test-shards reproduction command must use YAML block scalar")
+        elif not test_has_shard_reproduction_command(test_lines):
+            errors.append("test-shards must log shard reproduction command")
+        if TEST_ARCHIVE_DOWNLOAD_ACTION not in test_text:
+            errors.append("test-shards must download nextest archive artifact")
+        if "Swatinem/rust-cache" in test_text:
+            errors.append("test-shards must not restore a per-shard Rust target cache")
 
     if "test" in jobs:
-        test_lines = jobs["test"]
-        cache_block = test_cache_block(test_lines)
-        if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
-            errors.append("test matrix must set fail-fast false")
-        if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
-            errors.append("test matrix shard must be [1, 2, 3, 4]")
-        if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
-            errors.append("test must run partitioned nextest through just test")
-        if test_has_inline_shard_reproduction_command(test_lines):
-            errors.append("test shard reproduction command must use YAML block scalar")
-        elif not test_has_shard_reproduction_command(test_lines):
-            errors.append("test must log shard reproduction command")
-        if not has_line_matching(test_lines, TEST_SHARD_CACHE_RE):
-            errors.append("test cache key must include matrix.shard")
-        if not block_has_line_matching(cache_block, TEST_WORKSPACES_RE):
-            errors.append("test cache must use rust-cache workspaces managed target mapping")
-        if block_has_managed_target_cache_directories(cache_block):
-            errors.append("test cache must not use opaque cache-directories for managed target dir")
-        if not block_has_line_matching(cache_block, TEST_CACHE_TARGETS_TRUE_RE):
-            errors.append("test cache must enable target caching")
-        if not block_has_line_matching(cache_block, TEST_CACHE_WORKSPACE_CRATES_RE):
-            errors.append("test cache must preserve workspace crates")
-        if not block_has_line_matching(cache_block, TEST_RUST_ENV_HASH_RE):
-            errors.append("test cache must enable rust environment hash key")
-        if block_cache_key_contains_github_sha(cache_block):
-            errors.append("test cache key must not include github.sha")
+        test_needs = extract_needs(jobs["test"])
+        test_text = uncommented_text(jobs["test"])
+        if "test-shards" not in test_needs:
+            errors.append("test needs test-shards")
+        if not gate_checks_lane_success(test_text, "test-shards"):
+            errors.append("test must check needs.test-shards.result")
+        if not job_if_uses_always(jobs["test"]):
+            errors.append("test must use always()")
 
     if "build" in jobs:
         if "detector" not in extract_needs(jobs["build"]):
@@ -745,11 +1233,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     for job in TARGET_DIR_JOBS:
         if job in jobs and not job_uses_managed_target_dir(jobs[job]):
-            errors.append(f"{job} must use setup.outputs.managed_target_dir")
+            errors.append(f"{job} must use setup.outputs.managed_target_dir or managed_target_dir_relative")
 
     for job in CACHE_KEY_JOBS:
         if job in jobs and not job_has_explicit_cache_key(jobs[job]):
-            errors.append(f"{job} must declare explicit rust-cache key")
+            errors.append(f"{job} must declare explicit rust-cache key or shared-key")
 
     return errors
 
@@ -781,7 +1269,7 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
                 errors.append(f"{workflow_name} {job} must include deny version")
             if "steps.setup.outputs.deny_version" not in uncommented_text(lines):
                 errors.append(f"{workflow_name} {job} must use setup.outputs.deny_version")
-        if "test" in lanes:
+        if lanes.intersection({"test", "test-archive", "test-archive-run"}):
             if not job_has_setup_input(lines, "include-nextest-version", '"true"'):
                 errors.append(f"{workflow_name} {job} must include nextest version")
             if "steps.setup.outputs.nextest_version" not in uncommented_text(lines):
@@ -824,6 +1312,48 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
     return errors
 
 
+def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+
+    jobs = parse_jobs(workflow_text)
+    for job, job_lines in jobs.items():
+        for tool in sorted(cargo_install_source_build_tools_in_text(uncommented_text(job_lines))):
+            errors.append(f"{workflow_name} {job} must not compile {tool} from source")
+
+    for job, (tool, output) in CI_INSTALL_ACTION_TOOLS.items():
+        job_lines = jobs.get(job)
+        if job_lines is None:
+            continue
+        step = install_action_tool_step(job_lines, tool, output)
+        if step is None:
+            errors.append(f"{workflow_name} {job} must install {tool} with pinned taiki-e/install-action")
+            continue
+        install_index, block = step
+        if not block_has_input(block, "fallback", "none"):
+            errors.append(f"{workflow_name} {job} install-action fallback must be none")
+        command = CI_INSTALL_ACTION_COMMANDS[job]
+        command_index = first_step_running_command(job_lines, command)
+        if command_index is not None and install_index >= command_index:
+            errors.append(f"{workflow_name} {job} must install {tool} before {command}")
+
+    build_lines = jobs.get("build")
+    if build_lines is None:
+        return errors
+    build_text = uncommented_text(build_lines)
+    if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
+        errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
+    zigbuild_install_index = first_step_containing_literals_in_order(build_lines, ZIGBUILD_PREBUILT_LITERALS)
+    if zigbuild_install_index is None:
+        errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
+    else:
+        build_command_index = first_step_running_command(build_lines, "just build")
+        if build_command_index is not None and zigbuild_install_index >= build_command_index:
+            errors.append(f"{workflow_name} build must install cargo-zigbuild before just build")
+    if 'test "$actual" = "$expected"' not in build_text:
+        errors.append(f"{workflow_name} build must verify cargo-zigbuild archive checksum")
+    return errors
+
+
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
@@ -851,32 +1381,81 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action must export managed_target_dir from target_dir step")
     if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir_relative from target_dir step")
-    if not any("managed_target_dir_relative=\"$(" in line and "os.path.relpath" in line for line in uncommented_lines):
-        errors.append("setup action must compute managed_target_dir_relative")
+    if not any(line.strip() == SETUP_TARGET_DIR_RELATIVE_COMPUTE for line in uncommented_lines):
+        errors.append("setup action target_dir step must compute managed_target_dir_relative from workspace to target dir")
+    if not any(SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE.match(line) for line in uncommented_lines):
+        errors.append("setup action target_dir step must write managed_target_dir_relative")
     if not any(SETUP_TARGET_DIR_IF_RE.match(line) for line in uncommented_lines):
         errors.append("setup action target dir step must be conditional")
     return errors
 
 
-def verify_text(workflow_text: str, action_text: str) -> list[str]:
-    return verify_workflows({"ci.yml": workflow_text}, action_text)
+def verify_nextest_config(config_text: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        config = tomllib.loads(config_text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"nextest config invalid TOML: {exc}"]
+
+    groups = config.get("test-groups", {})
+    if not isinstance(groups, dict):
+        groups = {}
+    live_node_group = groups.get(LIVE_NODE_TEST_GROUP)
+    if not isinstance(live_node_group, dict):
+        errors.append("nextest config missing live-node test group")
+    elif live_node_group.get("max-threads") != 1:
+        errors.append("nextest live-node test group max-threads must be 1")
+
+    profile = config.get("profile", {})
+    default_profile = profile.get("default", {}) if isinstance(profile, dict) else {}
+    overrides = default_profile.get("overrides", []) if isinstance(default_profile, dict) else []
+    if not isinstance(overrides, list):
+        overrides = []
+    live_node_filters = [
+        override.get("filter")
+        for override in overrides
+        if isinstance(override, dict) and override.get("test-group") == LIVE_NODE_TEST_GROUP
+    ]
+    missing_binaries = [
+        binary
+        for binary in LIVE_NODE_NEXTEST_BINARIES
+        if not any(isinstance(filter_expr, str) and f"binary(={binary})" in filter_expr for filter_expr in live_node_filters)
+    ]
+    missing_unit_filters = [
+        fragment
+        for fragment in LIVE_NODE_UNIT_TEST_FILTERS
+        if not any(isinstance(filter_expr, str) and fragment in filter_expr for filter_expr in live_node_filters)
+    ]
+    if missing_binaries or missing_unit_filters:
+        missing = ", ".join(
+            [f"binary(={binary})" for binary in missing_binaries] + missing_unit_filters
+        )
+        errors.append(f"nextest config must assign LiveNode test paths to live-node group: missing {missing}")
+    return errors
 
 
-def verify_workflows(workflows: dict[str, str], action_text: str) -> list[str]:
+def verify_text(workflow_text: str, action_text: str, nextest_config_text: str) -> list[str]:
+    return verify_workflows({"ci.yml": workflow_text}, action_text, nextest_config_text)
+
+
+def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config_text: str) -> list[str]:
     errors: list[str] = []
     for workflow_name, workflow_text in workflows.items():
         if workflow_name == "ci.yml" or workflow_name.endswith("/ci.yml"):
             errors.extend(verify_workflow(workflow_text))
         errors.extend(verify_managed_workflow(workflow_text, workflow_name))
         errors.extend(verify_build_artifacts(workflow_text, workflow_name))
+        errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
     errors.extend(verify_setup_action(action_text))
+    errors.extend(verify_nextest_config(nextest_config_text))
     return errors
 
 
 def main() -> int:
     workflow_texts = {workflow.relative_to(REPO_ROOT).as_posix(): workflow.read_text() for workflow in DEFAULT_WORKFLOWS if workflow.exists()}
     action_text = DEFAULT_SETUP_ACTION.read_text()
-    errors = verify_workflows(workflow_texts, action_text)
+    nextest_config_text = DEFAULT_NEXTEST_CONFIG.read_text()
+    errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

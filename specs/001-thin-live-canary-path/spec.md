@@ -126,7 +126,7 @@ As the operator, I can approve one tiny live order with configured caps and get 
 - **BoltV3LiveCanaryGateReport**: Validated operator approval, readiness report path, readiness report byte cap, order count cap, notional cap, and root cap.
 - **SubmitAdmissionState**: Runtime counter and cap state consumed before each live submit.
 - **NoSubmitReadinessReport**: Redacted real-connectivity report consumed by the live canary gate.
-- **CanaryRunEvidence**: Redacted artifact proving config checksum, approval, NT submit, venue result, cancel if needed, and reconciliation.
+- **CanaryRunEvidence**: Redacted artifact proving config checksum, operator approval, strategy-input/source-bound market selection, financial envelope, pre-run state, abort plan, strategy-instance hash binding, NT submit, venue result, cancel if needed, restart reconciliation, and post-run hygiene.
 
 ## Success Criteria
 

@@ -51,7 +51,7 @@ As the operator, I can use the Phase 7 report as a prerequisite for Phase 8 plan
 **Acceptance Scenarios**:
 
 1. **Given** only local Phase 7 tests have run, **When** Phase 8 readiness is evaluated, **Then** the outcome is "not ready for live order" because no approved real no-submit report exists.
-2. **Given** a redacted no-submit report exists, **When** Phase 8 planning begins, **Then** it must still require strategy-input safety review for `eth_chainlink_taker`, Chainlink feed path, exchange references, market selection, volatility, kurtosis, theta, fee and slippage model, caps, and edge economics.
+2. **Given** a redacted no-submit report exists, **When** Phase 8 planning begins, **Then** it must still require strategy-input safety review for the configured binary-oracle edge taker inputs, including approved price-to-beat source, reference quote timestamp, source-bound market selection, volatility, kurtosis, theta, fee and slippage model, caps, and edge economics.
 
 ### Edge Cases
 

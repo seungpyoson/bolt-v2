@@ -76,6 +76,7 @@ Preconditions:
 - exact head and root TOML bound through `BOLT_V3_PHASE8_HEAD_SHA`, `BOLT_V3_PHASE8_ROOT_TOML_PATH`, and `BOLT_V3_PHASE8_ROOT_TOML_SHA256`
 - redacted SSM manifest bound through `BOLT_V3_PHASE8_SSM_MANIFEST_PATH` and `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`
 - strategy input evidence bound through `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH` and `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256`
+- `next` strategy input evidence includes `market_selection_source_path` and `market_selection_source_sha256` for the NT runtime `market_selection_result` source artifact; nearest-next candidates come from that source artifact, not from the strategy evidence file alone
 - financial envelope evidence bound through `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH` and `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`
 - pre-run state evidence bound through `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH` and `BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256`
 - pre-run state evidence carries sha256 hashes for host clock, account state, market state, funding/margin, single-runner lock, egress identity, CLOB V2 signing/collateral/fee behavior, and release-manifest proofs

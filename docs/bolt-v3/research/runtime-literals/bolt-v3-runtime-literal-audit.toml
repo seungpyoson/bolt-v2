@@ -1129,10 +1129,42 @@ reason = "This is an accepted Phase 8 strategy-input evidence outcome for the ne
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"market_selection_result"'''
+context = '''const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";'''
+classification = "phase8_strategy_input_market_selection_source_contract"
+reason = "This is the record_kind expected for the source-bound Phase 8 market-selection evidence artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"nt_runtime_selection_snapshot"'''
+context = '''const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";'''
+classification = "phase8_strategy_input_market_selection_source_contract"
+reason = "This is the Phase 8 source identifier for NT runtime-selection snapshot evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"phase8 strategy input evidence"'''
 context = '''"phase8 strategy input evidence",'''
 classification = "phase8_approval_bound_artifact_label"
 reason = "This label names the approval-bound strategy input artifact in checksum diagnostics; the artifact path and checksum come from the operator envelope."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"market selection source evidence"'''
+context = '''phase8_reject_parent_dir(source_path, "market selection source evidence")?;'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the source-bound market-selection evidence path in traversal diagnostics; the path comes from the strategy input evidence artifact."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 market selection source evidence"'''
+context = '''"phase8 market selection source evidence",'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the source-bound market-selection artifact in checksum diagnostics; the artifact path and checksum come from strategy input evidence."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"

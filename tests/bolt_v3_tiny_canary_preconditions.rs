@@ -612,9 +612,60 @@ fn strategy_audit_requires_nearest_next_market_selection() {
             .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
     );
 
+    let market_selection_source_path = temp.path().join("market-selection-source.json");
+    std::fs::write(
+        &market_selection_source_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "market_selection_result",
+            "source": "nt_runtime_selection_snapshot",
+            "market_selection_timestamp_milliseconds": 1234567890_u64,
+            "candidate_market_start_timestamps_milliseconds": [1234667000_u64, 1234767000_u64],
+            "market_selection_outcome": "next",
+            "polymarket_condition_id": "condition-1",
+            "polymarket_market_slug": "btc-updown-5m",
+            "polymarket_question_id": "question-1",
+            "up_instrument_id": "condition-1-UP.POLYMARKET",
+            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "selected_market_observed_timestamp": 1234567890_u64,
+            "polymarket_market_start_timestamp_milliseconds": 1234667000_u64,
+            "polymarket_market_end_timestamp_milliseconds": 1234967000_u64
+        }))
+        .expect("market selection source evidence should serialize"),
+    )
+    .expect("market selection source evidence should write");
+    let market_selection_source_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
+            .expect("market selection source evidence hash should compute");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"candidate_market_start_timestamps_milliseconds":[1234667000,1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234667000,"polymarket_market_end_timestamp_milliseconds":1234967000}"#,
+        serde_json::to_vec(&serde_json::json!({
+            "realized_volatility": "2.5",
+            "seconds_to_expiry": 300_u64,
+            "spot_price": "100000.0",
+            "price_to_beat_value": "100000.0",
+            "expected_edge_basis_points": "12.5",
+            "worst_case_edge_basis_points": "12.5",
+            "fee_rate_basis_points": "0",
+            "price_to_beat_source": "chainlink_data_streams.report_at_boundary",
+            "reference_quote_ts_event": 1234567890_u64,
+            "pricing_kurtosis": "0",
+            "theta_decay_factor": "0",
+            "theta_scaled_min_edge_bps": "12.5",
+            "market_selection_timestamp_milliseconds": 1234567890_u64,
+            "candidate_market_start_timestamps_milliseconds": [1234667000_u64, 1234767000_u64],
+            "market_selection_source_path": market_selection_source_path.to_string_lossy(),
+            "market_selection_source_sha256": market_selection_source_hash,
+            "market_selection_outcome": "next",
+            "polymarket_condition_id": "condition-1",
+            "polymarket_market_slug": "btc-updown-5m",
+            "polymarket_question_id": "question-1",
+            "up_instrument_id": "condition-1-UP.POLYMARKET",
+            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "selected_market_observed_timestamp": 1234567890_u64,
+            "polymarket_market_start_timestamp_milliseconds": 1234667000_u64,
+            "polymarket_market_end_timestamp_milliseconds": 1234967000_u64
+        }))
+        .expect("strategy input evidence should serialize"),
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -627,6 +678,109 @@ fn strategy_audit_requires_nearest_next_market_selection() {
     .expect("matching strategy input evidence should parse");
 
     assert!(audit.is_approved());
+}
+
+#[test]
+fn strategy_audit_rejects_next_market_without_source_bound_candidates() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"candidate_market_start_timestamps_milliseconds":[1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234767000,"polymarket_market_end_timestamp_milliseconds":1235067000}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+
+    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        &strategy_input_path,
+        strategy_input_hash,
+    )
+    .expect("matching strategy input evidence should parse");
+
+    assert!(!audit.is_approved());
+    assert!(
+        audit
+            .block_reasons()
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
+    );
+}
+
+#[test]
+fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let market_selection_source_path = temp.path().join("market-selection-source.json");
+    std::fs::write(
+        &market_selection_source_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "market_selection_result",
+            "source": "nt_runtime_selection_snapshot",
+            "market_selection_timestamp_milliseconds": 1234567890_u64,
+            "candidate_market_start_timestamps_milliseconds": [1234667000_u64, 1234767000_u64],
+            "market_selection_outcome": "next",
+            "polymarket_condition_id": "condition-1",
+            "polymarket_market_slug": "btc-updown-5m",
+            "polymarket_question_id": "question-1",
+            "up_instrument_id": "condition-1-UP.POLYMARKET",
+            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "selected_market_observed_timestamp": 1234567890_u64,
+            "polymarket_market_start_timestamp_milliseconds": 1234767000_u64,
+            "polymarket_market_end_timestamp_milliseconds": 1235067000_u64
+        }))
+        .expect("market selection source evidence should serialize"),
+    )
+    .expect("market selection source evidence should write");
+    let market_selection_source_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
+            .expect("market selection source evidence hash should compute");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        serde_json::to_vec(&serde_json::json!({
+            "realized_volatility": "2.5",
+            "seconds_to_expiry": 300_u64,
+            "spot_price": "100000.0",
+            "price_to_beat_value": "100000.0",
+            "expected_edge_basis_points": "12.5",
+            "worst_case_edge_basis_points": "12.5",
+            "fee_rate_basis_points": "0",
+            "price_to_beat_source": "chainlink_data_streams.report_at_boundary",
+            "reference_quote_ts_event": 1234567890_u64,
+            "pricing_kurtosis": "0",
+            "theta_decay_factor": "0",
+            "theta_scaled_min_edge_bps": "12.5",
+            "market_selection_timestamp_milliseconds": 1234567890_u64,
+            "candidate_market_start_timestamps_milliseconds": [1234767000_u64],
+            "market_selection_source_path": market_selection_source_path.to_string_lossy(),
+            "market_selection_source_sha256": market_selection_source_hash,
+            "market_selection_outcome": "next",
+            "polymarket_condition_id": "condition-1",
+            "polymarket_market_slug": "btc-updown-5m",
+            "polymarket_question_id": "question-1",
+            "up_instrument_id": "condition-1-UP.POLYMARKET",
+            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "selected_market_observed_timestamp": 1234567890_u64,
+            "polymarket_market_start_timestamp_milliseconds": 1234767000_u64,
+            "polymarket_market_end_timestamp_milliseconds": 1235067000_u64
+        }))
+        .expect("strategy input evidence should serialize"),
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+
+    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        &strategy_input_path,
+        strategy_input_hash,
+    )
+    .expect("matching strategy input evidence should parse");
+
+    assert!(!audit.is_approved());
+    assert!(
+        audit
+            .block_reasons()
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
+    );
 }
 
 #[test]

@@ -632,6 +632,7 @@ The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-
 - `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`: sha256 of the redacted SSM manifest evidence
 - `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH`: strategy-input safety evidence path
 - `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256`: sha256 of the strategy-input safety evidence
+- When strategy input evidence reports `market_selection_outcome = "next"`, it must also include `market_selection_source_path` and `market_selection_source_sha256` for a `market_selection_result` artifact with `source = "nt_runtime_selection_snapshot"`. The audit derives nearest-next candidates from that source-bound artifact and rejects a self-reported or truncated candidate list.
 - `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH`: financial-envelope evidence path
 - `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`: sha256 of the financial-envelope evidence
 - `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH`: pre-run host/account/market/funding/runner/egress state evidence path

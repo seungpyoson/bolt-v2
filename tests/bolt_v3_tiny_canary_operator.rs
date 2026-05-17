@@ -247,6 +247,47 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
 }
 
 #[test]
+fn live_result_paths_reject_restart_reconciliation_outside_runtime_capture() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let spool_root = temp.path().join("runtime-spool");
+    let outside_root = temp.path().join("operator-written");
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: outside_root
+            .join("decision.json")
+            .to_string_lossy()
+            .to_string(),
+        client_order_id_hash: "c".repeat(64),
+        venue_order_id_hash: "d".repeat(64),
+        nt_submit_event_path: spool_root
+            .join("nt-submit.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: spool_root
+            .join("venue-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: outside_root
+            .join("restart.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: spool_root
+            .join("post-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let error = paths
+        .assert_belongs_to_runtime_capture(&spool_root.to_string_lossy())
+        .expect_err("restart reconciliation evidence outside runtime capture must fail");
+
+    assert!(
+        error.to_string().contains("restart reconciliation"),
+        "error should mention restart reconciliation evidence path: {error}"
+    );
+}
+
+#[test]
 fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let run_id = "phase8-live-run-001";
@@ -928,6 +969,11 @@ impl Phase8OperatorLiveResultPaths {
                 "strategy cancel evidence",
             )?;
         }
+        phase8_assert_path_starts_with(
+            &self.restart_reconciliation_path,
+            spool_root,
+            "restart reconciliation evidence",
+        )?;
         phase8_assert_path_starts_with(
             &self.post_run_hygiene_path,
             spool_root,

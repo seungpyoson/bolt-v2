@@ -27,6 +27,8 @@ const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_
 const PHASE8_ALLOWED_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
+const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
+const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";
 pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -249,6 +251,19 @@ impl Phase8StrategyInputSafetyAudit {
                 ),
             Phase8CanaryBlockReason::InvalidMarketSelectionOutcome,
         );
+        let source_bound_candidate_market_start_timestamps_milliseconds =
+            phase8_source_bound_candidate_market_start_timestamps(&raw, market_selection_outcome)?;
+        let candidate_market_start_timestamps_milliseconds = match market_selection_outcome {
+            PHASE8_MARKET_SELECTION_OUTCOME_NEXT => {
+                source_bound_candidate_market_start_timestamps_milliseconds
+                    .as_deref()
+                    .unwrap_or(&[])
+            }
+            _ => raw
+                .candidate_market_start_timestamps_milliseconds
+                .as_deref()
+                .unwrap_or(&[]),
+        };
         audit.block_if(
             !market_selection_outcome.is_empty()
                 && !phase8_market_selection_outcome_matches_window(
@@ -256,9 +271,7 @@ impl Phase8StrategyInputSafetyAudit {
                     raw.market_selection_timestamp_milliseconds,
                     raw.polymarket_market_start_timestamp_milliseconds,
                     raw.polymarket_market_end_timestamp_milliseconds,
-                    raw.candidate_market_start_timestamps_milliseconds
-                        .as_deref()
-                        .unwrap_or(&[]),
+                    candidate_market_start_timestamps_milliseconds,
                 ),
             Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
         );
@@ -287,6 +300,72 @@ impl Phase8StrategyInputSafetyAudit {
             self.block_reasons.push(reason);
         }
     }
+}
+
+fn phase8_source_bound_candidate_market_start_timestamps(
+    raw: &Phase8StrategyInputEvidenceFile,
+    market_selection_outcome: &str,
+) -> Result<Option<Vec<u64>>> {
+    if market_selection_outcome != PHASE8_MARKET_SELECTION_OUTCOME_NEXT {
+        return Ok(None);
+    }
+    let Some(source_path) = raw
+        .market_selection_source_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|source_path| !source_path.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(source_sha256) = raw
+        .market_selection_source_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|source_sha256| phase8_is_sha256_hex(source_sha256))
+    else {
+        return Ok(None);
+    };
+
+    phase8_reject_parent_dir(source_path, "market selection source evidence")?;
+    let source: Phase8MarketSelectionSourceEvidenceFile =
+        Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
+            source_path,
+            source_sha256,
+            "phase8 market selection source evidence",
+            "phase8 market selection source evidence sha256 does not match current evidence",
+        )?;
+
+    if source.record_kind.trim() != PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND
+        || source.source.trim() != PHASE8_MARKET_SELECTION_SOURCE
+        || !phase8_market_selection_source_matches_strategy(raw, &source)
+    {
+        return Ok(None);
+    }
+    if let Some(reported_candidates) = raw.candidate_market_start_timestamps_milliseconds.as_ref()
+        && reported_candidates != &source.candidate_market_start_timestamps_milliseconds
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(source.candidate_market_start_timestamps_milliseconds))
+}
+
+fn phase8_market_selection_source_matches_strategy(
+    raw: &Phase8StrategyInputEvidenceFile,
+    source: &Phase8MarketSelectionSourceEvidenceFile,
+) -> bool {
+    source.market_selection_timestamp_milliseconds == raw.market_selection_timestamp_milliseconds
+        && source.market_selection_outcome.trim() == raw.market_selection_outcome.trim()
+        && source.polymarket_condition_id.trim() == raw.polymarket_condition_id.trim()
+        && source.polymarket_market_slug.trim() == raw.polymarket_market_slug.trim()
+        && source.polymarket_question_id.trim() == raw.polymarket_question_id.trim()
+        && source.up_instrument_id.trim() == raw.up_instrument_id.trim()
+        && source.down_instrument_id.trim() == raw.down_instrument_id.trim()
+        && source.selected_market_observed_timestamp == raw.selected_market_observed_timestamp
+        && source.polymarket_market_start_timestamp_milliseconds
+            == raw.polymarket_market_start_timestamp_milliseconds
+        && source.polymarket_market_end_timestamp_milliseconds
+            == raw.polymarket_market_end_timestamp_milliseconds
 }
 
 fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> bool {
@@ -347,6 +426,26 @@ struct Phase8StrategyInputEvidenceFile {
     theta_scaled_min_edge_bps: String,
     market_selection_timestamp_milliseconds: u64,
     candidate_market_start_timestamps_milliseconds: Option<Vec<u64>>,
+    market_selection_source_path: Option<String>,
+    market_selection_source_sha256: Option<String>,
+    market_selection_outcome: String,
+    polymarket_condition_id: String,
+    polymarket_market_slug: String,
+    polymarket_question_id: String,
+    up_instrument_id: String,
+    down_instrument_id: String,
+    selected_market_observed_timestamp: u64,
+    polymarket_market_start_timestamp_milliseconds: u64,
+    polymarket_market_end_timestamp_milliseconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8MarketSelectionSourceEvidenceFile {
+    record_kind: String,
+    source: String,
+    market_selection_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: Vec<u64>,
     market_selection_outcome: String,
     polymarket_condition_id: String,
     polymarket_market_slug: String,
@@ -1098,6 +1197,18 @@ fn validate_phase8_sha256_field(field: &str, value: &str) -> Result<()> {
 fn phase8_is_sha256_hex(value: &str) -> bool {
     let digest = Sha256::digest([]);
     value.len() == digest.len() + digest.len() && value.chars().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
+    if Path::new(path)
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(anyhow!(
+            "phase8 {label} path must not contain parent directory traversal"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

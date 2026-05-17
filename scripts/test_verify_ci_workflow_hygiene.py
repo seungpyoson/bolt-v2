@@ -1059,12 +1059,27 @@ def main() -> int:
         ),
     )
     assert_error(
-        "shared Cargo registry/git cache save must be single-owner",
+        "deny shared Cargo registry/git cache save must be single-owner",
         replace_once(
             BASE_WORKFLOW,
             "          save-if: ${{ github.job == 'test-archive' }}",
             "          save-if: true",
         ),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache save must be single-owner",
+        replace_once(
+            BASE_WORKFLOW,
+            "          save-if: ${{ github.job == 'test-archive' }}",
+            "          cache-comment: |\n            save-if: ${{ github.job == 'test-archive' }}",
+        ),
+    )
+    assert_clean(
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-bin: false",
+            '          cache-bin: "false"',
+        )
     )
     assert_error(
         "test-shards matrix must set fail-fast false",
@@ -1130,7 +1145,7 @@ def main() -> int:
         )
     )
     assert_error(
-        "test-archive must not use managed target rust-cache",
+        "test-archive must use only shared Cargo registry/git rust-cache blocks",
         replace_once(
             BASE_WORKFLOW,
             "      - name: Restore nextest archive",

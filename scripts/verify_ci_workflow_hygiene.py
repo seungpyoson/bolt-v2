@@ -498,12 +498,47 @@ def block_has_target_dir_opt_in(block: list[str]) -> bool:
     return any(TARGET_DIR_OPT_IN_RE.match(strip_comment(line)) for line in block)
 
 
+def unquote_yaml_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def block_input_items(block: list[str]) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    with_indent: int | None = None
+    input_indent: int | None = None
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        if with_indent is None:
+            match = re.match(r"^(\s*)with:\s*$", clean)
+            if match is not None:
+                with_indent = len(match.group(1))
+                input_indent = with_indent + 2
+            continue
+
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent <= with_indent:
+            break
+        if indent != input_indent:
+            continue
+        match = re.match(rf"^\s{{{input_indent}}}([A-Za-z0-9_.-]+):\s*(.*)$", clean)
+        if match is not None:
+            items.append((match.group(1), match.group(2).strip()))
+    return items
+
+
 def block_has_input(block: list[str], name: str, value: str | None = None) -> bool:
-    if value is None:
-        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*(?:\S+.*)?$")
-    else:
-        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*{re.escape(value)}\s*$")
-    return any(pattern.match(strip_comment(line)) for line in block)
+    expected = None if value is None else unquote_yaml_scalar(value)
+    for item_name, item_value in block_input_items(block):
+        if item_name != name:
+            continue
+        if expected is None or unquote_yaml_scalar(item_value) == expected:
+            return True
+    return False
 
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
@@ -556,7 +591,7 @@ def shared_registry_cache_errors(job: str, job_lines: list[str]) -> list[str]:
         if not block_has_input(block, "cache-bin", "false"):
             errors.append(f"{job} shared Cargo registry/git cache must disable cargo bin caching")
         if not block_has_input(block, "save-if", SHARED_REGISTRY_SAVE_IF):
-            errors.append("shared Cargo registry/git cache save must be single-owner")
+            errors.append(f"{job} shared Cargo registry/git cache save must be single-owner")
         if block_has_input(block, "cache-directories"):
             errors.append(f"{job} shared Cargo registry/git cache must not include target directories")
     return errors
@@ -1264,8 +1299,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must declare nextest archive path")
         if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
             errors.append("test-archive cache key must include Rust and test graph inputs")
-        if any(not block_is_shared_registry_cache(block) for block in rust_cache_blocks(archive_lines)):
-            errors.append("test-archive must not use managed target rust-cache")
         if "include-managed-target-dir:" in archive_text:
             errors.append("test-archive must not opt into managed target dir")
         if "nextest-archive-build-v1" in archive_text:

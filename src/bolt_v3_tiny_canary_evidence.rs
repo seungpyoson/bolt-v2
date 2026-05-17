@@ -1207,15 +1207,11 @@ impl Phase8OperatorApprovalEnvelope {
     }
 
     fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
-        let path = Path::new(&self.financial_envelope_path);
-        let approved: Phase8FinancialEnvelopeEvidenceFile =
-            Self::read_json_file_with_expected_sha256(
-                path,
-                &self.financial_envelope_sha256,
-                "phase8 financial envelope",
-                "phase8 operator approval financial_envelope_sha256 does not match current financial envelope",
-            )?;
-        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
+        let approved = self.read_financial_envelope()?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+            loaded,
+            &approved.strategy_instance_id,
+        )?;
         approved.validate_matches(&loaded)
     }
 
@@ -1227,7 +1223,11 @@ impl Phase8OperatorApprovalEnvelope {
             "phase8 pre-run state evidence",
             "phase8 operator approval pre_run_state_sha256 does not match current pre-run state evidence",
         )?;
-        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
+        let approved_financial = self.read_financial_envelope()?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+            loaded,
+            &approved_financial.strategy_instance_id,
+        )?;
         approved.validate_matches_loaded(&loaded)
     }
 
@@ -1239,8 +1239,22 @@ impl Phase8OperatorApprovalEnvelope {
             "phase8 abort plan evidence",
             "phase8 operator approval abort_plan_sha256 does not match current abort plan evidence",
         )?;
-        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
+        let approved_financial = self.read_financial_envelope()?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+            loaded,
+            &approved_financial.strategy_instance_id,
+        )?;
         approved.validate_matches_loaded(&loaded)
+    }
+
+    fn read_financial_envelope(&self) -> Result<Phase8FinancialEnvelopeEvidenceFile> {
+        let path = Path::new(&self.financial_envelope_path);
+        Self::read_json_file_with_expected_sha256(
+            path,
+            &self.financial_envelope_sha256,
+            "phase8 financial envelope",
+            "phase8 operator approval financial_envelope_sha256 does not match current financial envelope",
+        )
     }
 
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
@@ -1436,19 +1450,31 @@ struct Phase8FinancialEnvelopeEvidenceFile {
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
-    fn from_loaded(loaded: &LoadedBoltV3Config) -> Result<Self> {
+    fn from_loaded_for_strategy(
+        loaded: &LoadedBoltV3Config,
+        strategy_instance_id: &str,
+    ) -> Result<Self> {
         let live_canary = loaded
             .root
             .live_canary
             .as_ref()
             .ok_or_else(|| anyhow!("phase8 financial envelope requires `[live_canary]`"))?;
-        let mut strategies = loaded.strategies.iter();
-        let strategy = strategies.next().ok_or_else(|| {
-            anyhow!("phase8 financial envelope requires exactly one loaded strategy")
-        })?;
-        if strategies.next().is_some() {
+        if strategy_instance_id.trim().is_empty() {
             return Err(anyhow!(
-                "phase8 financial envelope requires exactly one loaded strategy"
+                "phase8 financial envelope requires non-empty strategy_instance_id"
+            ));
+        }
+        let mut matching_strategies = loaded.strategies.iter().filter(|strategy| {
+            strategy.config.strategy_instance_id.as_str() == strategy_instance_id
+        });
+        let strategy = matching_strategies.next().ok_or_else(|| {
+            anyhow!(
+                "phase8 financial envelope strategy_instance_id does not match a loaded strategy"
+            )
+        })?;
+        if matching_strategies.next().is_some() {
+            return Err(anyhow!(
+                "phase8 financial envelope strategy_instance_id matches multiple loaded strategies"
             ));
         }
         let strategy = &strategy.config;

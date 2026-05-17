@@ -2165,6 +2165,35 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         "exit order mismatch must not create consumption evidence"
     );
 
+    let mut multi_strategy_loaded = loaded.clone();
+    let mut secondary_strategy = multi_strategy_loaded.strategies[0].clone();
+    secondary_strategy.config.strategy_instance_id = "bitcoin_updown_secondary".to_string();
+    multi_strategy_loaded.strategies.push(secondary_strategy);
+    let multi_strategy_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-multi-strategy.json");
+    let mut multi_strategy_envelope = envelope.clone();
+    multi_strategy_envelope.approval_consumption_path = multi_strategy_consumption_path
+        .to_string_lossy()
+        .to_string();
+    multi_strategy_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &multi_strategy_loaded,
+            1_500,
+        )
+        .expect(
+            "financial envelope should bind the approved strategy by id in multi-strategy config",
+        );
+    assert!(
+        multi_strategy_consumption_path.exists(),
+        "multi-strategy validation should create consumption evidence for the approved strategy"
+    );
+    std::fs::remove_file(&multi_strategy_consumption_path)
+        .expect("multi-strategy consumption evidence should remove");
+
     envelope
         .validate_and_consume_against(
             "expected-head",

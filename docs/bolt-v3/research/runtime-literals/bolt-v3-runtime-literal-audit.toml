@@ -1145,6 +1145,14 @@ reason = "This label names the approval-bound financial envelope artifact in che
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"phase8 financial envelope strategy_instance_id matches multiple loaded strategies"'''
+context = '''"phase8 financial envelope strategy_instance_id matches multiple loaded strategies"'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This fail-closed diagnostic reports an ambiguous approved strategy id before any live runner attempt."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"phase8 pre-run state evidence"'''
 context = '''"phase8 pre-run state evidence",'''
 classification = "phase8_approval_bound_artifact_label"
